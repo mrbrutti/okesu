@@ -1,0 +1,42 @@
+[Unit]
+Description=Okesu autonomous agent — %i
+Documentation=https://github.com/section9labs/okesu
+After=network-online.target
+Wants=network-online.target
+# Restart on any failure; wait 5 s between attempts.
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+# The instance name (%i) must match an agent file in /etc/okesu/agents/.
+ExecStart=/usr/local/bin/okesu daemon --agent %i
+Restart=on-failure
+RestartSec=5s
+
+# Run as a dedicated low-privilege user.
+User=okesu
+Group=okesu
+
+# Filesystem hardening.
+WorkingDirectory=/var/lib/okesu/%i
+ReadWritePaths=/var/lib/okesu/%i /etc/okesu /tmp
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+
+# Environment — agent-specific overrides go in /etc/okesu/agents/%i.env.
+EnvironmentFile=-/etc/okesu/agents/%i.env
+
+# Pass logs to journald; structured JSONL lines are preserved.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=okesu-%i
+
+# Allow the process to receive SIGHUP for hot config reload.
+KillSignal=SIGTERM
+SendSIGHUP=yes
+
+[Install]
+WantedBy=multi-user.target
