@@ -284,6 +284,7 @@ type AgentDef struct {
 	StateDir   string         `yaml:"stateDir"`   // path for state files and findings
 	DedupeTTL  string         `yaml:"dedupeTtl"`  // e.g. "1h" — suppress duplicate findings
 	Collectors []CollectorDef `yaml:"collectors"` // pre-collector shell commands
+	Outputs    []OutputDef    `yaml:"outputs"`    // output sinks (stdout|file|webhook)
 
 	Body string // system prompt body (content after the frontmatter)
 }

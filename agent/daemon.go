@@ -19,8 +19,9 @@ type DaemonConfig struct {
 	Cron       string         // cron expression, e.g. "*/5 * * * *"
 	Overlap    string         // "skip" (default) | "queue"
 	StateDir   string         // directory for state files, dedup cache, findings
-	DedupeTTL  time.Duration  // window for suppressing duplicate findings (Phase 3)
+	DedupeTTL  time.Duration  // window for suppressing duplicate findings
 	Collectors []CollectorDef // pre-collector commands run before each tick
+	Outputs    []OutputDef    // output sinks; defaults to stdout-only when empty
 }
 
 // RunDaemon runs the agent in daemon mode: sleeps until the next scheduled tick,
@@ -31,6 +32,14 @@ type DaemonConfig struct {
 //   - SIGHUP           — reserved for hot config reload (Phase 6)
 func RunDaemon(cfg Config, dcfg DaemonConfig) error {
 	hostname, _ := os.Hostname()
+
+	// Phase 4: initialize output sinks before first Emit.
+	sink, err := BuildSinks(dcfg.Outputs)
+	if err != nil {
+		return fmt.Errorf("building output sinks: %w", err)
+	}
+	SetGlobalSink(sink)
+	defer sink.Close()
 
 	Emit(Event{
 		Type:     EventDaemonStart,

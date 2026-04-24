@@ -473,6 +473,7 @@ func buildDaemonConfig(cmd *cobra.Command, def *agent.AgentDef) (agent.DaemonCon
 			}
 		}
 		dcfg.Collectors = def.Collectors
+		dcfg.Outputs = def.Outputs
 	}
 
 	// CLI overrides — highest precedence.

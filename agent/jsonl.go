@@ -1,11 +1,8 @@
 package agent
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
-	"sync"
-	"time"
 )
 
 // EventType identifies the kind of JSONL event emitted to stdout.
@@ -21,11 +18,13 @@ const (
 	EventError      EventType = "error"       // fatal error
 
 	// Daemon mode events
-	EventDaemonStart      EventType = "daemon_start"      // daemon process started
-	EventDaemonStop       EventType = "daemon_stop"       // daemon shutting down cleanly
-	EventTickStart        EventType = "tick_start"        // tick beginning
-	EventTickDone         EventType = "tick_done"         // tick complete
-	EventCollectorResult  EventType = "collector_result"  // pre-collector finished
+	EventDaemonStart     EventType = "daemon_start"     // daemon process started
+	EventDaemonStop      EventType = "daemon_stop"      // daemon shutting down cleanly
+	EventTickStart       EventType = "tick_start"       // tick beginning
+	EventTickDone        EventType = "tick_done"        // tick complete
+	EventCollectorResult EventType = "collector_result" // pre-collector finished
+	EventFinding         EventType = "finding"          // agent-reported security finding
+	EventActionDenied    EventType = "action_denied"    // RBAC blocked a tool call
 )
 
 // Event is the canonical JSONL line written to stdout.
@@ -52,6 +51,8 @@ type Event struct {
 	Result    string `json:"result,omitempty"`    // tick_done: completed|skipped|error
 	Collector string `json:"collector,omitempty"` // collector_result: collector name
 	Bytes     int    `json:"bytes,omitempty"`     // collector_result: output size
+	Severity  string `json:"severity,omitempty"`  // finding: critical|high|medium|low|info
+	Title     string `json:"title,omitempty"`     // finding: short title
 }
 
 // Usage reports token consumption at session end.
@@ -60,23 +61,13 @@ type Usage struct {
 	OutputTokens int64 `json:"output_tokens"`
 }
 
-// mu protects stdout writes — tool handlers run in parallel goroutines.
-var mu sync.Mutex
-
-// Emit writes an event as a single JSONL line to stdout.
+// Emit writes an event via the active global sink.
+// Thread-safe: sink implementations are required to be concurrent-safe.
 func Emit(e Event) {
-	e.Ts = time.Now().UnixMilli()
-	b, err := json.Marshal(e)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "jsonl marshal error: %v\n", err)
-		return
-	}
-	mu.Lock()
-	fmt.Printf("%s\n", b)
-	mu.Unlock()
+	emitToSink(e)
 }
 
-// EmitError writes an error event to stdout and a human message to stderr.
+// EmitError writes an error event and a human message to stderr.
 func EmitError(err error) {
 	Emit(Event{Type: EventError, Error: err.Error()})
 	fmt.Fprintf(os.Stderr, "error: %v\n", err)
