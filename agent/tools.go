@@ -285,6 +285,7 @@ type AgentDef struct {
 	DedupeTTL  string         `yaml:"dedupeTtl"`  // e.g. "1h" — suppress duplicate findings
 	Collectors []CollectorDef `yaml:"collectors"` // pre-collector shell commands
 	Outputs    []OutputDef    `yaml:"outputs"`    // output sinks (stdout|file|webhook)
+	Actions    ActionsConfig  `yaml:"actions"`    // RBAC allow/deny policy
 
 	Body string // system prompt body (content after the frontmatter)
 }

@@ -121,7 +121,13 @@ func RunOpenAI(cfg Config) error {
 				Turn:     turn,
 			})
 
-			output := ExecuteTool(tc.Name, input)
+			var output string
+			if ok, reason := CheckRBAC(cfg.RBAC, tc.Name, input); !ok {
+				EmitActionDenied(tc.Name, input, reason)
+				output = fmt.Sprintf("action denied: %s", reason)
+			} else {
+				output = ExecuteTool(tc.Name, input)
+			}
 
 			Emit(Event{
 				Type:     EventToolResult,

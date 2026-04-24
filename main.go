@@ -143,10 +143,15 @@ func buildConfig(cmd *cobra.Command, args []string, provider string, def *agent.
 	name := ""
 	systemPrompt := ""
 	var allowedTools []string
+	var rbac *agent.RBACPolicy
 	if def != nil {
 		name = def.Name
 		systemPrompt = def.Body
 		allowedTools = def.Tools
+		if len(def.Actions.RBAC.Allow) > 0 || len(def.Actions.RBAC.Deny) > 0 {
+			p := def.Actions.RBAC
+			rbac = &p
+		}
 	}
 
 	prompt := ""
@@ -164,6 +169,7 @@ func buildConfig(cmd *cobra.Command, args []string, provider string, def *agent.
 		Effort:       effort,
 		MaxTurns:     maxTurns,
 		AllowedTools: allowedTools,
+		RBAC:         rbac,
 	}, nil
 }
 

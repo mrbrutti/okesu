@@ -27,6 +27,9 @@ type Config struct {
 	// AllowedTools restricts which tools are exposed to the model.
 	// Empty means all tools. Accepts okesu and Claude Code CLI tool names.
 	AllowedTools []string
+	// RBAC enforces allow/deny rules on tool calls at dispatch time.
+	// Nil means no restrictions.
+	RBAC *RBACPolicy
 }
 
 // RunClaude runs a fully autonomous agentic loop against the Anthropic API using
@@ -43,7 +46,7 @@ func RunClaude(cfg Config) error {
 		Model:    cfg.Model,
 	})
 
-	tools, err := buildBetaTools(ActiveTools(cfg.AllowedTools))
+	tools, err := buildBetaTools(ActiveTools(cfg.AllowedTools), cfg.RBAC)
 	if err != nil {
 		return fmt.Errorf("building tools: %w", err)
 	}
@@ -128,7 +131,7 @@ func RunClaude(cfg Config) error {
 // Each handler emits tool_call / tool_result JSONL events and delegates execution
 // to ExecuteTool. Handlers run concurrently when the model issues parallel tool
 // calls, so Emit uses a mutex internally.
-func buildBetaTools(toolDefs []ToolDef) ([]anthropic.BetaTool, error) {
+func buildBetaTools(toolDefs []ToolDef, rbac *RBACPolicy) ([]anthropic.BetaTool, error) {
 	result := make([]anthropic.BetaTool, 0, len(toolDefs))
 	for _, t := range toolDefs {
 		schema := anthropic.BetaToolInputSchemaParam{
@@ -147,6 +150,16 @@ func buildBetaTools(toolDefs []ToolDef) ([]anthropic.BetaTool, error) {
 					ToolName: td.Name,
 					Input:    input,
 				})
+
+				// RBAC check before execution.
+				if ok, reason := CheckRBAC(rbac, td.Name, input); !ok {
+					EmitActionDenied(td.Name, input, reason)
+					denied := fmt.Sprintf("action denied: %s", reason)
+					Emit(Event{Type: EventToolResult, ToolName: td.Name, Output: denied})
+					return anthropic.BetaToolResultBlockParamContentUnion{
+						OfText: &anthropic.BetaTextBlockParam{Text: denied},
+					}, nil
+				}
 
 				output := ExecuteTool(td.Name, input)
 
