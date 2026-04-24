@@ -54,6 +54,9 @@ func RunDaemon(cfg Config, dcfg DaemonConfig) error {
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
 	defer signal.Stop(sigCh)
 
+	// Load persisted state (dedup cache, tick count, last tick time).
+	state := LoadState(dcfg.StateDir, cfg.Name)
+
 	var tickNum int64
 	lastRunAt := readLastRunAt(dcfg.StateDir, cfg.Name)
 
@@ -84,7 +87,7 @@ func RunDaemon(cfg Config, dcfg DaemonConfig) error {
 			// Run the tick in a goroutine so the main loop can still handle signals.
 			go func(t int64, lr time.Time) {
 				defer tickMu.Unlock()
-				execTick(cfg, dcfg, hostname, t, lr)
+				execTick(cfg, dcfg, hostname, t, lr, state)
 				lastRunAt = time.Now()
 			}(n, lastRun)
 
@@ -118,7 +121,7 @@ func RunDaemon(cfg Config, dcfg DaemonConfig) error {
 
 // execTick runs one complete tick: emits tick_start, runs pre-collectors,
 // renders the system prompt template, runs the agentic loop, emits tick_done.
-func execTick(cfg Config, dcfg DaemonConfig, hostname string, tickNum int64, lastRunAt time.Time) {
+func execTick(cfg Config, dcfg DaemonConfig, hostname string, tickNum int64, lastRunAt time.Time, state *DaemonState) {
 	start := time.Now()
 
 	Emit(Event{
@@ -127,6 +130,9 @@ func execTick(cfg Config, dcfg DaemonConfig, hostname string, tickNum int64, las
 		Host:  hostname,
 		Tick:  tickNum,
 	})
+
+	// Phase 3: prune dedup cache before running the tick.
+	state.PruneDedup()
 
 	// Phase 2: run pre-collectors in parallel, then render system prompt.
 	results := RunCollectors(dcfg.Collectors, cfg, hostname, tickNum)
@@ -149,6 +155,9 @@ func execTick(cfg Config, dcfg DaemonConfig, hostname string, tickNum int64, las
 
 	// Touch last-run marker so next tick can calculate elapsed time.
 	touchLastRun(dcfg.StateDir, cfg.Name)
+
+	// Phase 3: record tick in persistent state.
+	state.RecordTick(dcfg.StateDir, cfg.Name)
 
 	var runErr error
 	if cfg.Provider == "claude" {
