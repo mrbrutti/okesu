@@ -36,7 +36,7 @@ func RunDaemon(cfg Config, dcfg DaemonConfig) error {
 	hostname, _ := os.Hostname()
 
 	// Phase 4: initialize output sinks before first Emit.
-	sink, err := BuildSinks(dcfg.Outputs)
+	sink, err := BuildSinks(dcfg.Outputs, cfg.Name, hostname)
 	if err != nil {
 		return fmt.Errorf("building output sinks: %w", err)
 	}
@@ -85,12 +85,18 @@ func RunDaemon(cfg Config, dcfg DaemonConfig) error {
 				cfg.Effort = rc.Effort
 			}
 			Emit(Event{
-				Type:  EventText,
+				Type:  EventConfigReloaded,
 				Agent: cfg.Name,
 				Host:  hostname,
-				Text:  "remote config applied",
+				Text:  "remote config applied via management plane",
 			})
 		})
+	}
+
+	// Create findings directory under stateDir so the AI can write structured findings.
+	if dcfg.StateDir != "" && cfg.Name != "" {
+		findingsDir := filepath.Join(dcfg.StateDir, cfg.Name, "findings")
+		_ = os.MkdirAll(findingsDir, 0755)
 	}
 
 	nextTick, err := buildSchedule(dcfg)
@@ -145,7 +151,7 @@ func RunDaemon(cfg Config, dcfg DaemonConfig) error {
 			timer.Stop()
 
 			if sig == syscall.SIGHUP {
-				// Phase 6: hot config reload — re-parse agent file and apply.
+				// Hot config reload — re-parse agent file from disk and apply.
 				if cfg.Name != "" {
 					if def, err := ParseAgentFile(cfg.Name); err == nil {
 						if def.MaxTurns > 0 {
@@ -157,10 +163,10 @@ func RunDaemon(cfg Config, dcfg DaemonConfig) error {
 					}
 				}
 				Emit(Event{
-					Type:  EventText,
+					Type:  EventConfigReloaded,
 					Agent: cfg.Name,
 					Host:  hostname,
-					Text:  "SIGHUP received — config reloaded",
+					Text:  "SIGHUP received — agent file reloaded from disk",
 				})
 				continue
 			}
@@ -195,8 +201,23 @@ func execTick(cfg Config, dcfg DaemonConfig, hostname string, tickNum int64, las
 	state.PruneDedup()
 
 	// Phase 2: run pre-collectors in parallel, then render system prompt.
-	results := RunCollectors(dcfg.Collectors, cfg, hostname, tickNum)
-	tctx := BuildTickContext(cfg, hostname, tickNum, lastRunAt, results)
+	// A non-optional collector failure aborts the tick.
+	results, colErr := RunCollectors(dcfg.Collectors, cfg, hostname, tickNum)
+	if colErr != nil {
+		EmitError(fmt.Errorf("tick %d aborted: %w", tickNum, colErr))
+		state.RecordTick(dcfg.StateDir, cfg.Name, true)
+		Emit(Event{
+			Type:     EventTickDone,
+			Agent:    cfg.Name,
+			Host:     hostname,
+			Tick:     tickNum,
+			Result:   "error",
+			Duration: time.Since(start).Round(time.Millisecond).String(),
+		})
+		return
+	}
+
+	tctx := BuildTickContext(cfg, hostname, tickNum, lastRunAt, dcfg.StateDir, results)
 
 	rendered, err := RenderPrompt(cfg.SystemPrompt, tctx)
 	if err != nil {
@@ -210,15 +231,13 @@ func execTick(cfg Config, dcfg DaemonConfig, hostname string, tickNum int64, las
 	tickCfg.Prompt = fmt.Sprintf(
 		"Perform your scheduled check. Tick: %d. Time: %s.",
 		tickNum,
-		tctx.Time.Format(time.RFC3339),
+		tctx.TickTime,
 	)
 
 	// Touch last-run marker so next tick can calculate elapsed time.
 	touchLastRun(dcfg.StateDir, cfg.Name)
 
 	// Phase 3: record tick in persistent state.
-	state.RecordTick(dcfg.StateDir, cfg.Name)
-
 	var runErr error
 	if cfg.Provider == "claude" {
 		runErr = RunClaude(tickCfg)
@@ -226,19 +245,22 @@ func execTick(cfg Config, dcfg DaemonConfig, hostname string, tickNum int64, las
 		runErr = RunOpenAI(tickCfg)
 	}
 
+	hadError := runErr != nil
+	state.RecordTick(dcfg.StateDir, cfg.Name, hadError)
+
 	result := "completed"
-	if runErr != nil {
+	if hadError {
 		result = "error"
 		EmitError(runErr)
 	}
 
 	Emit(Event{
-		Type:   EventTickDone,
-		Agent:  cfg.Name,
-		Host:   hostname,
-		Tick:   tickNum,
-		Result: result,
-		Text:   time.Since(start).Round(time.Millisecond).String(),
+		Type:     EventTickDone,
+		Agent:    cfg.Name,
+		Host:     hostname,
+		Tick:     tickNum,
+		Result:   result,
+		Duration: time.Since(start).Round(time.Millisecond).String(),
 	})
 }
 

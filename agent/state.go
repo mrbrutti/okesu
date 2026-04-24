@@ -19,6 +19,8 @@ type DaemonState struct {
 	Dedup map[string]int64 `json:"dedup,omitempty"`
 	// TickCount is the total number of ticks executed across all restarts.
 	TickCount int64 `json:"tick_count"`
+	// ErrorCount is the total number of ticks that ended with an error.
+	ErrorCount int64 `json:"error_count"`
 	// LastTickAt is the UTC time the most recent tick started.
 	LastTickAt time.Time `json:"last_tick_at,omitempty"`
 }
@@ -113,10 +115,14 @@ func (s *DaemonState) PruneDedup() {
 	}
 }
 
-// RecordTick updates TickCount and LastTickAt and saves state.
-func (s *DaemonState) RecordTick(stateDir, name string) {
+// RecordTick updates TickCount, ErrorCount, and LastTickAt and saves state.
+// hadError should be true when the tick's agentic loop returned an error.
+func (s *DaemonState) RecordTick(stateDir, name string, hadError bool) {
 	s.mu.Lock()
 	s.TickCount++
+	if hadError {
+		s.ErrorCount++
+	}
 	s.LastTickAt = time.Now().UTC()
 	s.mu.Unlock()
 	_ = SaveState(stateDir, name, s)

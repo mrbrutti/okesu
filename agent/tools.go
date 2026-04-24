@@ -283,10 +283,10 @@ type AgentDef struct {
 	Overlap    string         `yaml:"overlap"`    // "skip" (default) | "queue"
 	StateDir   string         `yaml:"stateDir"`   // path for state files and findings
 	DedupeTTL  string         `yaml:"dedupeTtl"`  // e.g. "1h" — suppress duplicate findings
-	Collectors []CollectorDef `yaml:"collectors"` // pre-collector shell commands
-	Outputs    []OutputDef    `yaml:"outputs"`    // output sinks (stdout|file|webhook)
-	Actions    ActionsConfig  `yaml:"actions"`    // RBAC allow/deny policy
-	Mgmt       MgmtConfig     `yaml:"mgmt"`       // management plane connection
+	Collectors []CollectorDef `yaml:"collectors"`  // pre-collector shell commands
+	Outputs    []OutputDef    `yaml:"outputs"`     // output sinks (stdout|file|webhook)
+	Actions    ActionsConfig  `yaml:"actions"`     // RBAC allow/deny policy
+	Mgmt       MgmtConfig     `yaml:"management"`  // management plane connection (key: management:)
 
 	Body string // system prompt body (content after the frontmatter)
 }

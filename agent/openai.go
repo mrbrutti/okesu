@@ -127,6 +127,16 @@ func RunOpenAI(cfg Config) error {
 				output = fmt.Sprintf("action denied: %s", reason)
 			} else {
 				output = ExecuteTool(tc.Name, input)
+				// In daemon mode, also emit action_taken for downstream alerting.
+				if cfg.IsDaemon {
+					Emit(Event{
+						Type:     EventActionTaken,
+						ToolName: tc.Name,
+						Input:    input,
+						Output:   output,
+						Turn:     turn,
+					})
+				}
 			}
 
 			Emit(Event{

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sync"
 	"text/template"
 	"time"
@@ -14,39 +15,74 @@ import (
 // CollectorDef describes a pre-collector shell command that runs before each
 // agentic tick. The output is injected into the system prompt via Go templates.
 type CollectorDef struct {
-	Name    string        `yaml:"name"`              // unique identifier, used in templates
-	Command string        `yaml:"command"`           // shell command to run
-	Timeout time.Duration `yaml:"-"`                 // parsed from TimeoutStr
-	TimeoutStr string     `yaml:"timeout,omitempty"` // e.g. "30s" — parsed at load time
+	Name       string        `yaml:"name"`              // unique identifier, used in templates
+	Command    string        `yaml:"command"`           // shell command to run
+	Timeout    time.Duration `yaml:"-"`                 // parsed from TimeoutStr
+	TimeoutStr string        `yaml:"timeout,omitempty"` // e.g. "30s" — parsed at load time
+	Optional   bool          `yaml:"optional"`          // true: failure is skipped silently; false (default): failure aborts tick
 }
 
 // CollectorResult holds the output of a single pre-collector.
 type CollectorResult struct {
 	Name     string
+	Command  string        // shell command that was executed
 	Output   string
 	Error    string
+	Skipped  bool          // true when an optional collector failed and was skipped
 	Duration time.Duration
 }
 
 // TickContext is passed to the Go template when rendering the per-tick system
 // prompt. It contains metadata about the current tick and all collector outputs.
+//
+// Template variables (design §3.1):
+//
+//	{{.HostID}}       — hostname (alias for .Host)
+//	{{.Host}}         — hostname
+//	{{.CloudRegion}}  — cloud region (AWS/GCP/Azure env vars, or "unknown")
+//	{{.AgentName}}    — agent name from frontmatter (alias for .Agent)
+//	{{.Agent}}        — agent name
+//	{{.TickTime}}     — RFC3339 timestamp of this tick (string, alias for .Time)
+//	{{.Time}}         — tick start time (time.Time)
+//	{{.LastRunISO}}   — ISO 8601 timestamp of the previous tick (string)
+//	{{.LastRunAt}}    — previous tick time (time.Time)
+//	{{.LastRunFile}}  — absolute path to the last_run sentinel file
+//	{{.StateDir}}     — state directory path
+//	{{.Collectors}}   — map[name]CollectorResult for indexed access
+//	{{.CollectorsList}} — []CollectorResult for range iteration
 type TickContext struct {
-	Tick       int64
-	Time       time.Time
-	Host       string
-	Agent      string
-	LastRunAt  time.Time
-	Collectors map[string]CollectorResult
+	// Convenience string aliases (design-specified names)
+	HostID      string
+	CloudRegion string
+	AgentName   string
+	TickTime    string
+	LastRunISO  string
+	LastRunFile string
+	StateDir    string
+
+	// Strongly-typed fields
+	Tick          int64
+	Time          time.Time
+	Host          string
+	Agent         string
+	LastRunAt     time.Time
+	Collectors    map[string]CollectorResult // indexed access: index .Collectors "name"
+	CollectorsList []CollectorResult         // slice for {{range .CollectorsList}}
 }
 
 // RunCollectors executes all collectors in parallel and returns their results.
 // Each collector times out after its configured Timeout (default 30s).
-func RunCollectors(collectors []CollectorDef, cfg Config, hostname string, tickNum int64) []CollectorResult {
+//
+// Returns an error if any non-optional collector fails — the caller should
+// abort the tick in that case. Optional collectors that fail are included in
+// the results with Skipped=true and are never fatal.
+func RunCollectors(collectors []CollectorDef, cfg Config, hostname string, tickNum int64) ([]CollectorResult, error) {
 	if len(collectors) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	results := make([]CollectorResult, len(collectors))
+	errs := make([]error, len(collectors))
 	var wg sync.WaitGroup
 
 	for i, c := range collectors {
@@ -56,6 +92,14 @@ func RunCollectors(collectors []CollectorDef, cfg Config, hostname string, tickN
 			start := time.Now()
 			res := runCollector(col)
 			res.Duration = time.Since(start)
+
+			if res.Error != "" && col.Optional {
+				res.Skipped = true
+				res.Error = fmt.Sprintf("skipped (optional): %s", res.Error)
+			} else if res.Error != "" && !col.Optional {
+				errs[idx] = fmt.Errorf("collector %q failed: %s", col.Name, res.Error)
+			}
+
 			results[idx] = res
 
 			Emit(Event{
@@ -66,16 +110,24 @@ func RunCollectors(collectors []CollectorDef, cfg Config, hostname string, tickN
 				Collector: col.Name,
 				Output:    res.Output,
 				Error:     res.Error,
+				Bytes:     len(res.Output),
 			})
 		}(i, c)
 	}
 
 	wg.Wait()
-	return results
+
+	// Return the first non-optional failure as an error.
+	for _, err := range errs {
+		if err != nil {
+			return results, err
+		}
+	}
+	return results, nil
 }
 
 func runCollector(col CollectorDef) CollectorResult {
-	res := CollectorResult{Name: col.Name}
+	res := CollectorResult{Name: col.Name, Command: col.Command}
 
 	timeout := col.Timeout
 	if timeout <= 0 {
@@ -109,30 +161,53 @@ func runCollector(col CollectorDef) CollectorResult {
 }
 
 // BuildTickContext constructs the template data passed to RenderPrompt.
-func BuildTickContext(cfg Config, hostname string, tickNum int64, lastRunAt time.Time, results []CollectorResult) TickContext {
+func BuildTickContext(cfg Config, hostname string, tickNum int64, lastRunAt time.Time, stateDir string, results []CollectorResult) TickContext {
+	now := time.Now().UTC()
 	colMap := make(map[string]CollectorResult, len(results))
 	for _, r := range results {
 		colMap[r.Name] = r
 	}
+
+	lastRunISO := ""
+	if !lastRunAt.IsZero() {
+		lastRunISO = lastRunAt.UTC().Format(time.RFC3339)
+	}
+
+	lastRunFile := ""
+	if stateDir != "" && cfg.Name != "" {
+		lastRunFile = filepath.Join(stateDir, cfg.Name, "last_run")
+	}
+
 	return TickContext{
-		Tick:       tickNum,
-		Time:       time.Now().UTC(),
-		Host:       hostname,
-		Agent:      cfg.Name,
-		LastRunAt:  lastRunAt,
-		Collectors: colMap,
+		// Design-specified convenience names
+		HostID:      hostname,
+		CloudRegion: envCloudRegion(),
+		AgentName:   cfg.Name,
+		TickTime:    now.Format(time.RFC3339),
+		LastRunISO:  lastRunISO,
+		LastRunFile: lastRunFile,
+		StateDir:    stateDir,
+
+		// Strongly-typed fields
+		Tick:          tickNum,
+		Time:          now,
+		Host:          hostname,
+		Agent:         cfg.Name,
+		LastRunAt:     lastRunAt,
+		Collectors:    colMap,
+		CollectorsList: results,
 	}
 }
 
 // RenderPrompt renders the agent's system prompt (a Go template) against tctx.
-// If the body contains no template directives, it is returned unchanged.
+// If the body is empty, a sensible default prompt is returned.
 // Returns an error only when the template fails to parse or execute.
 func RenderPrompt(body string, tctx TickContext) (string, error) {
 	if body == "" {
 		return fmt.Sprintf(
 			"Perform your scheduled check. Tick: %d. Time: %s.",
 			tctx.Tick,
-			tctx.Time.Format(time.RFC3339),
+			tctx.TickTime,
 		), nil
 	}
 
@@ -160,18 +235,15 @@ func RenderPrompt(body string, tctx TickContext) (string, error) {
 // envCloudRegion returns the cloud region from well-known environment variables.
 // Supports AWS, GCP, and Azure conventions, falling back to "unknown".
 func envCloudRegion() string {
-	// AWS
 	if r := os.Getenv("AWS_DEFAULT_REGION"); r != "" {
 		return r
 	}
 	if r := os.Getenv("AWS_REGION"); r != "" {
 		return r
 	}
-	// GCP
 	if r := os.Getenv("CLOUDSDK_COMPUTE_REGION"); r != "" {
 		return r
 	}
-	// Azure
 	if r := os.Getenv("AZURE_REGION"); r != "" {
 		return r
 	}

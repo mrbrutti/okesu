@@ -3,8 +3,8 @@ Description=Okesu autonomous agent — %i
 Documentation=https://github.com/section9labs/okesu
 After=network-online.target
 Wants=network-online.target
-# Restart on any failure; wait 5 s between attempts.
-StartLimitIntervalSec=60
+# Allow 5 restarts within 5 minutes before systemd gives up.
+StartLimitIntervalSec=300
 StartLimitBurst=5
 
 [Service]
@@ -12,7 +12,7 @@ Type=simple
 # The instance name (%i) must match an agent file in /etc/okesu/agents/.
 ExecStart=/usr/local/bin/okesu daemon --agent %i
 Restart=on-failure
-RestartSec=5s
+RestartSec=10s
 
 # Run as a dedicated low-privilege user.
 User=okesu
@@ -20,16 +20,18 @@ Group=okesu
 
 # Filesystem hardening.
 WorkingDirectory=/var/lib/okesu/%i
-ReadWritePaths=/var/lib/okesu/%i /etc/okesu /tmp
+ReadWritePaths=/var/lib/okesu /var/log/okesu /etc/okesu /tmp
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
 NoNewPrivileges=yes
+# Drop all capabilities — okesu needs none for normal operation.
+CapabilityBoundingSet=
 
-# Environment — agent-specific overrides go in /etc/okesu/agents/%i.env.
+# Environment — agent-specific secrets go in /etc/okesu/agents/%i.env (mode 0600).
 EnvironmentFile=-/etc/okesu/agents/%i.env
 
-# Pass logs to journald; structured JSONL lines are preserved.
+# Pass logs to journald; structured JSONL lines are preserved as-is.
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=okesu-%i

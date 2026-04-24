@@ -215,13 +215,13 @@ func (m *MgmtPlane) post(path string, payload interface{}) error {
 // buildMTLSConfig constructs a tls.Config using certs from certDir.
 // Expected files:
 //
-//	<certDir>/agent.crt  — agent client certificate
-//	<certDir>/agent.key  — agent private key
-//	<certDir>/ca.crt     — CA certificate to verify the server
+//	<certDir>/client.crt  — agent client certificate
+//	<certDir>/client.key  — agent private key
+//	<certDir>/ca.crt      — CA certificate to verify the server
 func buildMTLSConfig(certDir string) (*tls.Config, error) {
 	cert, err := tls.LoadX509KeyPair(
-		certDir+"/agent.crt",
-		certDir+"/agent.key",
+		certDir+"/client.crt",
+		certDir+"/client.key",
 	)
 	if err != nil {
 		return nil, fmt.Errorf("loading agent cert: %w", err)

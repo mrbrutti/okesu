@@ -418,6 +418,7 @@ Schedule precedence (highest to lowest):
 				return err
 			}
 			cfg.APIKey = apiKey
+			cfg.IsDaemon = true
 
 			dcfg, err := buildDaemonConfig(cmd, def)
 			if err != nil {

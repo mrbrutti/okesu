@@ -1,0 +1,15 @@
+{
+  "apiKeyHelper": "grep ANTHROPIC_API_KEY ~/.config/.env | cut -d= -f2 | tr -d '\"'",
+  "permissions": {
+    "allow": [
+      "Bash(*)",
+      "Read(*)",
+      "Edit(*)",
+      "Write(*)",
+      "WebSearch",
+      "WebFetch(domain:developers.openai.com)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)"
+    ]
+  }
+}

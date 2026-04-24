@@ -21,6 +21,45 @@ type Sink interface {
 	Close() error
 }
 
+// FilteredSink wraps any Sink and only forwards events whose type is in the
+// allowed set. An empty allowed set means all events are forwarded.
+type FilteredSink struct {
+	inner   Sink
+	allowed map[EventType]struct{}
+}
+
+// NewFilteredSink wraps inner with an event-type filter. eventTypes is the
+// allow-list; pass nil or empty to forward everything.
+func NewFilteredSink(inner Sink, eventTypes []string) *FilteredSink {
+	if len(eventTypes) == 0 {
+		return &FilteredSink{inner: inner} // nil map = pass all
+	}
+	m := make(map[EventType]struct{}, len(eventTypes))
+	for _, t := range eventTypes {
+		m[EventType(t)] = struct{}{}
+	}
+	return &FilteredSink{inner: inner, allowed: m}
+}
+
+func (f *FilteredSink) Write(line []byte) error {
+	if len(f.allowed) == 0 {
+		return f.inner.Write(line)
+	}
+	var ev struct {
+		Type EventType `json:"type"`
+	}
+	if err := json.Unmarshal(line, &ev); err != nil {
+		// Unparseable — pass through to avoid silent drops.
+		return f.inner.Write(line)
+	}
+	if _, ok := f.allowed[ev.Type]; !ok {
+		return nil // filtered out
+	}
+	return f.inner.Write(line)
+}
+
+func (f *FilteredSink) Close() error { return f.inner.Close() }
+
 // StdoutSink writes JSONL events to os.Stdout with a mutex.
 type StdoutSink struct {
 	mu sync.Mutex
@@ -54,11 +93,14 @@ func (s *JSONLFileSink) Close() error            { return s.fb.Close() }
 
 // WebhookSink delivers JSONL events to an HTTP endpoint with:
 //   - HMAC-SHA256 signing (X-Okesu-Signature header) when secret != ""
+//   - Identity headers: X-Okesu-Agent, X-Okesu-Host, X-Okesu-Timestamp
 //   - Exponential backoff retry (up to maxRetries attempts)
 //   - In-memory ring buffer so callers are never blocked by network latency
 type WebhookSink struct {
 	url        string
 	secret     string
+	agentName  string
+	host       string
 	maxRetries int
 	buf        *MemoryBuffer
 	queue      chan []byte
@@ -69,13 +111,16 @@ type WebhookSink struct {
 }
 
 // NewWebhookSink starts the background delivery goroutine.
-func NewWebhookSink(url, secret string, maxRetries, bufCap int) *WebhookSink {
+// agentName and host are included in every request as identity headers.
+func NewWebhookSink(url, secret, agentName, host string, maxRetries, bufCap int) *WebhookSink {
 	if maxRetries <= 0 {
 		maxRetries = 3
 	}
 	s := &WebhookSink{
 		url:        url,
 		secret:     secret,
+		agentName:  agentName,
+		host:       host,
 		maxRetries: maxRetries,
 		buf:        NewMemoryBuffer(bufCap),
 		queue:      make(chan []byte, 512),
@@ -94,7 +139,7 @@ func (s *WebhookSink) Write(line []byte) error {
 	select {
 	case s.queue <- cp:
 	default:
-		// Queue full — event dropped from delivery (still in ring buffer).
+		// Queue full — event dropped from delivery (still in ring buffer for replay).
 	}
 	return nil
 }
@@ -142,6 +187,9 @@ func (s *WebhookSink) post(line []byte) error {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/x-ndjson")
+	req.Header.Set("X-Okesu-Agent", s.agentName)
+	req.Header.Set("X-Okesu-Host", s.host)
+	req.Header.Set("X-Okesu-Timestamp", fmt.Sprintf("%d", time.Now().UnixMilli()))
 	if s.secret != "" {
 		mac := hmac.New(sha256.New, []byte(s.secret))
 		mac.Write(line)
@@ -205,7 +253,6 @@ var (
 )
 
 // SetGlobalSink replaces the active output sink.
-// Call before the first Emit; not safe to call concurrently with Emit.
 func SetGlobalSink(s Sink) {
 	globalSinkMu.Lock()
 	globalSink = s
@@ -213,7 +260,6 @@ func SetGlobalSink(s Sink) {
 }
 
 // emitToSink marshals e and writes it to the active global sink.
-// It replaces the direct fmt.Printf in Emit when sinks are configured.
 func emitToSink(e Event) {
 	e.Ts = time.Now().UnixMilli()
 	b, err := json.Marshal(e)
@@ -229,9 +275,11 @@ func emitToSink(e Event) {
 	}
 }
 
-// BuildSinks constructs a FanoutSink (or plain StdoutSink) from OutputDef slice.
-// Always includes stdout unless the list is non-empty and no stdout entry is present.
-func BuildSinks(outputs []OutputDef) (Sink, error) {
+// BuildSinks constructs a FanoutSink (or simpler sink) from OutputDef slice.
+// agentName and host are used to populate webhook identity headers.
+// Always includes stdout unless the list is non-empty and no stdout entry is
+// present. Each sink is wrapped in FilteredSink if Events is non-empty.
+func BuildSinks(outputs []OutputDef, agentName, host string) (Sink, error) {
 	if len(outputs) == 0 {
 		return &StdoutSink{}, nil
 	}
@@ -239,20 +287,27 @@ func BuildSinks(outputs []OutputDef) (Sink, error) {
 	var sinks []Sink
 	hasStdout := false
 	for _, o := range outputs {
+		var raw Sink
 		switch o.Type {
 		case "stdout":
 			hasStdout = true
-			sinks = append(sinks, &StdoutSink{})
+			raw = &StdoutSink{}
 		case "file":
 			fs, err := NewJSONLFileSink(o.Path, o.MaxBytes)
 			if err != nil {
 				return nil, fmt.Errorf("file sink %q: %w", o.Path, err)
 			}
-			sinks = append(sinks, fs)
+			raw = fs
 		case "webhook":
-			sinks = append(sinks, NewWebhookSink(o.URL, o.Secret, o.Retries, o.BufferCap))
+			raw = NewWebhookSink(o.URL, o.Secret, agentName, host, o.Retries, o.BufferCap)
 		default:
 			return nil, fmt.Errorf("unknown sink type %q", o.Type)
+		}
+		// Wrap with event filter if specified.
+		if len(o.Events) > 0 {
+			sinks = append(sinks, NewFilteredSink(raw, o.Events))
+		} else {
+			sinks = append(sinks, raw)
 		}
 	}
 	if !hasStdout {

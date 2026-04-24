@@ -79,6 +79,6 @@ func EmitActionDenied(toolName string, input map[string]interface{}, reason stri
 		Type:     EventActionDenied,
 		ToolName: toolName,
 		Input:    input,
-		Text:     reason,
+		Reason:   reason,
 	})
 }

@@ -119,13 +119,16 @@ func (fb *FileBuffer) Close() error {
 
 // OutputDef describes one output sink configured in an agent file.
 type OutputDef struct {
-	Type     string `yaml:"type"`               // "stdout" | "file" | "webhook"
-	Path     string `yaml:"path,omitempty"`     // file sink: path to JSONL log
-	MaxBytes int64  `yaml:"maxBytes,omitempty"` // file sink: rotation threshold
-	URL      string `yaml:"url,omitempty"`      // webhook sink: endpoint URL
-	Secret   string `yaml:"secret,omitempty"`   // webhook sink: HMAC-SHA256 signing secret
-	Retries  int    `yaml:"retries,omitempty"`  // webhook sink: max delivery attempts
-	BufferCap int   `yaml:"bufferCap,omitempty"` // webhook sink: in-memory ring buffer size
+	Type      string   `yaml:"type"`               // "stdout" | "file" | "webhook"
+	Path      string   `yaml:"path,omitempty"`     // file sink: path to JSONL log
+	MaxBytes  int64    `yaml:"maxBytes,omitempty"` // file sink: rotation threshold
+	URL       string   `yaml:"url,omitempty"`      // webhook sink: endpoint URL
+	Secret    string   `yaml:"secret,omitempty"`   // webhook sink: HMAC-SHA256 signing secret
+	Retries   int      `yaml:"retries,omitempty"`  // webhook sink: max delivery attempts
+	BufferCap int      `yaml:"bufferCap,omitempty"` // webhook sink: in-memory ring buffer size
+	// Events filters which event types this sink receives.
+	// Empty (default) means all events. Example: [finding, action_taken, action_denied]
+	Events    []string `yaml:"events,omitempty"`
 }
 
 // retryDelay returns an exponential back-off delay for retry attempt n (0-indexed).

@@ -24,7 +24,10 @@ const (
 	EventTickDone        EventType = "tick_done"        // tick complete
 	EventCollectorResult EventType = "collector_result" // pre-collector finished
 	EventFinding         EventType = "finding"          // agent-reported security finding
+	EventActionTaken     EventType = "action_taken"     // tool executed after RBAC allow
 	EventActionDenied    EventType = "action_denied"    // RBAC blocked a tool call
+	EventAPIUnavailable  EventType = "api_unavailable"  // AI API unreachable
+	EventConfigReloaded  EventType = "config_reloaded"  // management plane pushed new config
 )
 
 // Event is the canonical JSONL line written to stdout.
@@ -44,15 +47,28 @@ type Event struct {
 	Turn       int         `json:"turn,omitempty"`
 	Ts         int64       `json:"ts"`
 
-	// Daemon mode fields
-	Agent     string `json:"agent,omitempty"`     // agent name
-	Host      string `json:"host,omitempty"`      // hostname running the daemon
-	Tick      int64  `json:"tick,omitempty"`      // tick sequence number
-	Result    string `json:"result,omitempty"`    // tick_done: completed|skipped|error
+	// Daemon lifecycle fields
+	Agent      string `json:"agent,omitempty"`       // agent name
+	Host       string `json:"host,omitempty"`        // hostname running the daemon
+	Tick       int64  `json:"tick,omitempty"`        // tick sequence number
+	Result     string `json:"result,omitempty"`      // tick_done: completed|skipped|error
+	Duration   string `json:"duration,omitempty"`    // tick_done: wall time e.g. "1.4s"
+	Findings   int    `json:"findings,omitempty"`    // tick_done: count of findings emitted
+	ActionsTaken int  `json:"actions_taken,omitempty"` // tick_done: count of allowed tool calls
+
+	// Collector fields
 	Collector string `json:"collector,omitempty"` // collector_result: collector name
 	Bytes     int    `json:"bytes,omitempty"`     // collector_result: output size
+
+	// Finding fields
 	Severity  string `json:"severity,omitempty"`  // finding: critical|high|medium|low|info
-	Title     string `json:"title,omitempty"`     // finding: short title
+	Title     string `json:"title,omitempty"`     // finding: short human-readable title
+	Evidence  string `json:"evidence,omitempty"`  // finding: raw lines from telemetry
+	Resource  string `json:"resource,omitempty"`  // finding: affected resource (pid:N, path:/...)
+	DedupKey  string `json:"dedup_key,omitempty"` // finding: dedup cache key
+
+	// RBAC / action fields
+	Reason string `json:"reason,omitempty"` // action_denied: why the call was blocked
 }
 
 // Usage reports token consumption at session end.
