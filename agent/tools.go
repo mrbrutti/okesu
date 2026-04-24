@@ -286,6 +286,7 @@ type AgentDef struct {
 	Collectors []CollectorDef `yaml:"collectors"` // pre-collector shell commands
 	Outputs    []OutputDef    `yaml:"outputs"`    // output sinks (stdout|file|webhook)
 	Actions    ActionsConfig  `yaml:"actions"`    // RBAC allow/deny policy
+	Mgmt       MgmtConfig     `yaml:"mgmt"`       // management plane connection
 
 	Body string // system prompt body (content after the frontmatter)
 }

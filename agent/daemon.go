@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/signal"
@@ -22,6 +23,7 @@ type DaemonConfig struct {
 	DedupeTTL  time.Duration  // window for suppressing duplicate findings
 	Collectors []CollectorDef // pre-collector commands run before each tick
 	Outputs    []OutputDef    // output sinks; defaults to stdout-only when empty
+	Mgmt       MgmtConfig     // management plane connection config
 }
 
 // RunDaemon runs the agent in daemon mode: sleeps until the next scheduled tick,
@@ -49,6 +51,48 @@ func RunDaemon(cfg Config, dcfg DaemonConfig) error {
 		Model:    cfg.Model,
 	})
 
+	// Phase 6: connect to management plane if configured.
+	mgmtCtx, mgmtCancel := context.WithCancel(context.Background())
+	defer mgmtCancel()
+
+	// Load persisted state (dedup cache, tick count, last tick time).
+	state := LoadState(dcfg.StateDir, cfg.Name)
+
+	mgmt, mgmtErr := NewMgmtPlane(dcfg.Mgmt, cfg)
+	if mgmtErr != nil {
+		Emit(Event{
+			Type:  EventText,
+			Agent: cfg.Name,
+			Host:  hostname,
+			Text:  fmt.Sprintf("mgmt plane init error (continuing without it): %v", mgmtErr),
+		})
+	} else if mgmt != nil {
+		if err := mgmt.Register(); err != nil {
+			Emit(Event{
+				Type:  EventText,
+				Agent: cfg.Name,
+				Host:  hostname,
+				Text:  fmt.Sprintf("mgmt registration error: %v", err),
+			})
+		}
+		mgmt.StartHeartbeat(mgmtCtx, state)
+		mgmt.StartConfigPoller(mgmtCtx, func(rc remoteConfig) {
+			// Hot-apply non-destructive config changes.
+			if rc.MaxTurns > 0 {
+				cfg.MaxTurns = rc.MaxTurns
+			}
+			if rc.Effort != "" {
+				cfg.Effort = rc.Effort
+			}
+			Emit(Event{
+				Type:  EventText,
+				Agent: cfg.Name,
+				Host:  hostname,
+				Text:  "remote config applied",
+			})
+		})
+	}
+
 	nextTick, err := buildSchedule(dcfg)
 	if err != nil {
 		return err
@@ -62,9 +106,6 @@ func RunDaemon(cfg Config, dcfg DaemonConfig) error {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
 	defer signal.Stop(sigCh)
-
-	// Load persisted state (dedup cache, tick count, last tick time).
-	state := LoadState(dcfg.StateDir, cfg.Name)
 
 	var tickNum int64
 	lastRunAt := readLastRunAt(dcfg.StateDir, cfg.Name)
@@ -104,12 +145,22 @@ func RunDaemon(cfg Config, dcfg DaemonConfig) error {
 			timer.Stop()
 
 			if sig == syscall.SIGHUP {
-				// Phase 6: hot config reload from management plane.
+				// Phase 6: hot config reload — re-parse agent file and apply.
+				if cfg.Name != "" {
+					if def, err := ParseAgentFile(cfg.Name); err == nil {
+						if def.MaxTurns > 0 {
+							cfg.MaxTurns = def.MaxTurns
+						}
+						if def.Effort != "" {
+							cfg.Effort = def.Effort
+						}
+					}
+				}
 				Emit(Event{
 					Type:  EventText,
 					Agent: cfg.Name,
 					Host:  hostname,
-					Text:  "SIGHUP received — hot config reload arrives in Phase 6",
+					Text:  "SIGHUP received — config reloaded",
 				})
 				continue
 			}
