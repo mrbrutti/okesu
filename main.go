@@ -462,6 +462,17 @@ func buildDaemonConfig(cmd *cobra.Command, def *agent.AgentDef) (agent.DaemonCon
 			}
 			dcfg.DedupeTTL = d
 		}
+		// Parse collector timeouts from their string representation.
+		for i, c := range def.Collectors {
+			if c.TimeoutStr != "" {
+				d, err := time.ParseDuration(c.TimeoutStr)
+				if err != nil {
+					return dcfg, fmt.Errorf("invalid collector %q timeout %q: %w", c.Name, c.TimeoutStr, err)
+				}
+				def.Collectors[i].Timeout = d
+			}
+		}
+		dcfg.Collectors = def.Collectors
 	}
 
 	// CLI overrides — highest precedence.

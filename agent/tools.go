@@ -277,12 +277,13 @@ type AgentDef struct {
 	Effort      string   `yaml:"effort"`
 
 	// Daemon mode fields
-	Mode      string `yaml:"mode"`      // "task" (default) | "daemon"
-	Interval  string `yaml:"interval"`  // e.g. "30s", "5m", "1h"
-	Cron      string `yaml:"cron"`      // cron expression, e.g. "*/5 * * * *"
-	Overlap   string `yaml:"overlap"`   // "skip" (default) | "queue"
-	StateDir  string `yaml:"stateDir"`  // path for state files and findings
-	DedupeTTL string `yaml:"dedupeTtl"` // e.g. "1h" — suppress duplicate findings
+	Mode       string         `yaml:"mode"`       // "task" (default) | "daemon"
+	Interval   string         `yaml:"interval"`   // e.g. "30s", "5m", "1h"
+	Cron       string         `yaml:"cron"`       // cron expression, e.g. "*/5 * * * *"
+	Overlap    string         `yaml:"overlap"`    // "skip" (default) | "queue"
+	StateDir   string         `yaml:"stateDir"`   // path for state files and findings
+	DedupeTTL  string         `yaml:"dedupeTtl"`  // e.g. "1h" — suppress duplicate findings
+	Collectors []CollectorDef `yaml:"collectors"` // pre-collector shell commands
 
 	Body string // system prompt body (content after the frontmatter)
 }

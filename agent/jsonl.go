@@ -21,10 +21,11 @@ const (
 	EventError      EventType = "error"       // fatal error
 
 	// Daemon mode events
-	EventDaemonStart EventType = "daemon_start" // daemon process started
-	EventDaemonStop  EventType = "daemon_stop"  // daemon shutting down cleanly
-	EventTickStart   EventType = "tick_start"   // tick beginning
-	EventTickDone    EventType = "tick_done"    // tick complete
+	EventDaemonStart      EventType = "daemon_start"      // daemon process started
+	EventDaemonStop       EventType = "daemon_stop"       // daemon shutting down cleanly
+	EventTickStart        EventType = "tick_start"        // tick beginning
+	EventTickDone         EventType = "tick_done"         // tick complete
+	EventCollectorResult  EventType = "collector_result"  // pre-collector finished
 )
 
 // Event is the canonical JSONL line written to stdout.
@@ -45,10 +46,12 @@ type Event struct {
 	Ts         int64       `json:"ts"`
 
 	// Daemon mode fields
-	Agent  string `json:"agent,omitempty"`  // agent name
-	Host   string `json:"host,omitempty"`   // hostname running the daemon
-	Tick   int64  `json:"tick,omitempty"`   // tick sequence number
-	Result string `json:"result,omitempty"` // tick_done: completed|skipped|error
+	Agent     string `json:"agent,omitempty"`     // agent name
+	Host      string `json:"host,omitempty"`      // hostname running the daemon
+	Tick      int64  `json:"tick,omitempty"`      // tick sequence number
+	Result    string `json:"result,omitempty"`    // tick_done: completed|skipped|error
+	Collector string `json:"collector,omitempty"` // collector_result: collector name
+	Bytes     int    `json:"bytes,omitempty"`     // collector_result: output size
 }
 
 // Usage reports token consumption at session end.

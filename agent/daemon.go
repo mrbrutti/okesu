@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
@@ -14,11 +15,12 @@ import (
 // DaemonConfig holds scheduling and runtime configuration for daemon mode.
 // Populated from agent file frontmatter; individual fields are overridable via CLI flags.
 type DaemonConfig struct {
-	Interval  time.Duration // fixed interval between ticks (mutually exclusive with Cron)
-	Cron      string        // cron expression, e.g. "*/5 * * * *"
-	Overlap   string        // "skip" (default) | "queue"
-	StateDir  string        // directory for state files, dedup cache, findings
-	DedupeTTL time.Duration // window for suppressing duplicate findings (Phase 3)
+	Interval   time.Duration  // fixed interval between ticks (mutually exclusive with Cron)
+	Cron       string         // cron expression, e.g. "*/5 * * * *"
+	Overlap    string         // "skip" (default) | "queue"
+	StateDir   string         // directory for state files, dedup cache, findings
+	DedupeTTL  time.Duration  // window for suppressing duplicate findings (Phase 3)
+	Collectors []CollectorDef // pre-collector commands run before each tick
 }
 
 // RunDaemon runs the agent in daemon mode: sleeps until the next scheduled tick,
@@ -53,6 +55,7 @@ func RunDaemon(cfg Config, dcfg DaemonConfig) error {
 	defer signal.Stop(sigCh)
 
 	var tickNum int64
+	lastRunAt := readLastRunAt(dcfg.StateDir, cfg.Name)
 
 	for {
 		next := nextTick(time.Now())
@@ -63,6 +66,7 @@ func RunDaemon(cfg Config, dcfg DaemonConfig) error {
 		case <-timer.C:
 			tickNum++
 			n := tickNum
+			lastRun := lastRunAt // snapshot for the goroutine closure
 
 			if !tickMu.TryLock() {
 				// Previous tick is still running — apply overlap policy.
@@ -78,10 +82,11 @@ func RunDaemon(cfg Config, dcfg DaemonConfig) error {
 			}
 
 			// Run the tick in a goroutine so the main loop can still handle signals.
-			go func(t int64) {
+			go func(t int64, lr time.Time) {
 				defer tickMu.Unlock()
-				execTick(cfg, hostname, t)
-			}(n)
+				execTick(cfg, dcfg, hostname, t, lr)
+				lastRunAt = time.Now()
+			}(n, lastRun)
 
 		case sig := <-sigCh:
 			timer.Stop()
@@ -111,10 +116,9 @@ func RunDaemon(cfg Config, dcfg DaemonConfig) error {
 	}
 }
 
-// execTick runs one complete tick: emits tick_start, runs the agentic loop,
-// emits tick_done. In Phase 1 the prompt is a fixed message assembled here.
-// Phase 2 replaces this with pre-collector output rendered through the agent template.
-func execTick(cfg Config, hostname string, tickNum int64) {
+// execTick runs one complete tick: emits tick_start, runs pre-collectors,
+// renders the system prompt template, runs the agentic loop, emits tick_done.
+func execTick(cfg Config, dcfg DaemonConfig, hostname string, tickNum int64, lastRunAt time.Time) {
 	start := time.Now()
 
 	Emit(Event{
@@ -124,14 +128,27 @@ func execTick(cfg Config, hostname string, tickNum int64) {
 		Tick:  tickNum,
 	})
 
-	// Build a per-tick copy of cfg with the tick prompt injected.
-	// Phase 2 will render the agent file's Go template here instead.
+	// Phase 2: run pre-collectors in parallel, then render system prompt.
+	results := RunCollectors(dcfg.Collectors, cfg, hostname, tickNum)
+	tctx := BuildTickContext(cfg, hostname, tickNum, lastRunAt, results)
+
+	rendered, err := RenderPrompt(cfg.SystemPrompt, tctx)
+	if err != nil {
+		EmitError(fmt.Errorf("tick %d prompt render: %w", tickNum, err))
+		rendered = tctx.buildFallbackPrompt()
+	}
+
+	// Build a per-tick copy of cfg with rendered system prompt and default user prompt.
 	tickCfg := cfg
+	tickCfg.SystemPrompt = rendered
 	tickCfg.Prompt = fmt.Sprintf(
 		"Perform your scheduled check. Tick: %d. Time: %s.",
 		tickNum,
-		time.Now().UTC().Format(time.RFC3339),
+		tctx.Time.Format(time.RFC3339),
 	)
+
+	// Touch last-run marker so next tick can calculate elapsed time.
+	touchLastRun(dcfg.StateDir, cfg.Name)
 
 	var runErr error
 	if cfg.Provider == "claude" {
@@ -154,6 +171,49 @@ func execTick(cfg Config, hostname string, tickNum int64) {
 		Result: result,
 		Text:   time.Since(start).Round(time.Millisecond).String(),
 	})
+}
+
+// buildFallbackPrompt returns a minimal prompt when template rendering fails.
+func (tctx TickContext) buildFallbackPrompt() string {
+	return fmt.Sprintf(
+		"Perform your scheduled check. Tick: %d. Time: %s.",
+		tctx.Tick,
+		tctx.Time.Format(time.RFC3339),
+	)
+}
+
+// touchLastRun writes the current timestamp to stateDir/<name>/last_run
+// so the next tick can read it with readLastRunAt.
+func touchLastRun(stateDir, name string) {
+	if stateDir == "" {
+		return
+	}
+	dir := filepath.Join(stateDir, name)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return
+	}
+	_ = os.WriteFile(
+		filepath.Join(dir, "last_run"),
+		[]byte(time.Now().UTC().Format(time.RFC3339Nano)),
+		0644,
+	)
+}
+
+// readLastRunAt reads the timestamp written by touchLastRun and returns
+// the zero time if the file is absent or unparseable.
+func readLastRunAt(stateDir, name string) time.Time {
+	if stateDir == "" {
+		return time.Time{}
+	}
+	data, err := os.ReadFile(filepath.Join(stateDir, name, "last_run"))
+	if err != nil {
+		return time.Time{}
+	}
+	t, err := time.Parse(time.RFC3339Nano, string(data))
+	if err != nil {
+		return time.Time{}
+	}
+	return t
 }
 
 // buildSchedule returns a function that computes the next scheduled time after t.
