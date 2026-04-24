@@ -1,6 +1,6 @@
 # Okesu Architecture
 
-Okesu is a fully autonomous AI agent runner written in Go. It exposes a single binary with three subcommands (`claude`, `codex`, `auto`) that each drive an agentic loop against either the Anthropic or OpenAI API. The agent executes tools — bash, file I/O, search — on the local machine with no sandbox and streams all activity as JSONL to stdout.
+Okesu is a fully autonomous AI agent runner written in Go. It exposes a single binary with four subcommands (`claude`, `codex`, `auto`, `daemon`) that drive an agentic loop against either the Anthropic or OpenAI API. The agent executes tools — bash, file I/O, search — on the local machine with no sandbox and streams all activity as JSONL to stdout (or to configured sinks).
 
 ---
 
@@ -9,21 +9,23 @@ Okesu is a fully autonomous AI agent runner written in Go. It exposes a single b
 1. [High-Level Overview](#1-high-level-overview)
 2. [Package Structure](#2-package-structure)
 3. [CLI Layer — `main.go`](#3-cli-layer--maingo)
-   - [Startup Sequence](#startup-sequence)
-   - [Environment Loading — `.env` file](#environment-loading--env-file)
-   - [Command Tree](#command-tree)
-   - [Shared Flags](#shared-flags)
-   - [API Key Resolution](#api-key-resolution)
 4. [Agent File System](#4-agent-file-system)
 5. [Configuration Pipeline](#5-configuration-pipeline)
 6. [Tool System — `agent/tools.go`](#6-tool-system--agenttoolsgo)
 7. [Claude Runner — `agent/claude.go`](#7-claude-runner--agentclaudego)
 8. [OpenAI Runner — `agent/openai.go`](#8-openai-runner--agentopeniago)
 9. [JSONL Event Bus — `agent/jsonl.go`](#9-jsonl-event-bus--agentjsonlgo)
-10. [Provider Inference — `auto` Command](#10-provider-inference--auto-command)
-11. [End-to-End Request Flow](#11-end-to-end-request-flow)
-12. [Concurrency Model](#12-concurrency-model)
-13. [Data Structures Reference](#13-data-structures-reference)
+10. [Output Sinks — `agent/sinks.go` + `agent/buffer.go`](#10-output-sinks--agentsinksgo--agentbuffergo)
+11. [Provider Inference — `auto` Command](#11-provider-inference--auto-command)
+12. [Daemon Mode — `agent/daemon.go`](#12-daemon-mode--agentdaemongo)
+13. [Pre-Collectors — `agent/collectors.go`](#13-pre-collectors--agentcollectorsgo)
+14. [Persistent State — `agent/state.go`](#14-persistent-state--agentstatego)
+15. [RBAC Action Filtering — `agent/rbac.go`](#15-rbac-action-filtering--agentrbacgo)
+16. [Management Plane — `agent/mgmt.go`](#16-management-plane--agentmgmtgo)
+17. [Deployment — systemd + install script](#17-deployment--systemd--install-script)
+18. [End-to-End Request Flow](#18-end-to-end-request-flow)
+19. [Concurrency Model](#19-concurrency-model)
+20. [Data Structures Reference](#20-data-structures-reference)
 
 ---
 
@@ -31,40 +33,52 @@ Okesu is a fully autonomous AI agent runner written in Go. It exposes a single b
 
 ```mermaid
 graph TD
-    DotEnv["~/.config/.env\n(optional)"] --> |"loadDotEnv()\nat startup"| Env["process environment\nANTHROPIC_API_KEY\nOPENAI_API_KEY ..."]
+    DotEnv["~/.config/.env\n(optional)"] --> |"loadDotEnv()\nat startup"| Env["process environment"]
     Env --> CLI
 
-    CLI["okesu CLI\n(main.go)"] --> |"parses flags\nloads agent file"| Config["Config struct"]
+    CLI["okesu CLI\n(main.go)"] --> |"task mode"| Config["Config struct"]
+    CLI --> |"daemon mode"| Daemon["RunDaemon()\nagent/daemon.go"]
+
     Config --> |"provider=claude"| RunClaude["RunClaude()\nagent/claude.go"]
     Config --> |"provider=codex"| RunOpenAI["RunOpenAI()\nagent/openai.go"]
-    Config --> |"provider=auto\n(inferred)"| Infer["inferProvider()\nmodel prefix / agent file / env keys"]
-    Infer --> RunClaude
-    Infer --> RunOpenAI
+
+    Daemon --> |"each tick"| Collectors["RunCollectors()\nagent/collectors.go"]
+    Collectors --> |"TickContext"| Template["RenderPrompt()\nGo template"]
+    Template --> |"rendered system prompt"| RunClaude
+    Template --> |"rendered system prompt"| RunOpenAI
 
     RunClaude --> |"BetaToolRunnerStreaming"| AnthropicAPI["Anthropic API\n/v1/messages"]
     RunOpenAI --> |"Responses API"| OpenAIAPI["OpenAI API\n/v1/responses"]
 
-    AnthropicAPI --> |"tool_call"| Tools["ExecuteTool()\nagent/tools.go"]
-    OpenAIAPI --> |"function_call"| Tools
+    AnthropicAPI --> |"tool_call"| RBAC["CheckRBAC()\nagent/rbac.go"]
+    OpenAIAPI --> |"function_call"| RBAC
+    RBAC --> |"allowed"| Tools["ExecuteTool()\nagent/tools.go"]
+    RBAC --> |"denied"| Denied["EventActionDenied"]
 
-    Tools --> |"bash / read_file\nwrite_file / list_files / search"| OS["Local OS"]
-    OS --> |"output string"| Tools
-    Tools --> |"result"| AnthropicAPI
-    Tools --> |"result"| OpenAIAPI
+    Tools --> |"bash/read_file\nwrite_file/list_files/search"| OS["Local OS"]
+    OS --> |"output"| Tools
 
-    RunClaude --> JSONL["Emit()\nagent/jsonl.go"]
-    RunOpenAI --> JSONL
-    Tools --> JSONL
-    JSONL --> |"stdout"| Consumer["Caller / Orchestrator"]
+    RunClaude --> Emit["Emit()\nagent/jsonl.go"]
+    RunOpenAI --> Emit
+    Tools --> Emit
+    Daemon --> Emit
+
+    Emit --> Sinks["FanoutSink\nagent/sinks.go"]
+    Sinks --> Stdout["StdoutSink"]
+    Sinks --> File["JSONLFileSink\n(rotating)"]
+    Sinks --> Webhook["WebhookSink\n(HMAC + retry)"]
+
+    Daemon --> State["DaemonState\nagent/state.go"]
+    Daemon --> Mgmt["MgmtPlane\nagent/mgmt.go"]
 ```
 
 **Key design decisions:**
 
-- **No sandbox.** Every tool call executes directly on the host. The model can run arbitrary bash commands, read and write any file reachable by the process, and search any directory.
-- **JSONL protocol.** Every event — text delta, tool call, tool result, session end — is a single JSON line written to stdout. Callers parse line-by-line.
-- **Provider abstraction.** A single `Config` struct is handed to either `RunClaude` or `RunOpenAI`. The runners handle all SDK-specific translation internally.
-- **Agent files as configuration.** `.md` files with YAML frontmatter carry model, provider, tools, maxTurns, and effort — no code changes needed to define a new agent persona.
-- **Zero-config credential loading.** `~/.config/.env` is read at startup so API keys are available without shell exports. Existing shell variables always take precedence.
+- **No sandbox.** Every tool call executes directly on the host. RBAC policies (allow/deny lists) are the only execution gate.
+- **JSONL protocol.** Every event — text delta, tool call, tool result, session end — is a single JSON line. All sinks receive the same stream.
+- **Provider abstraction.** A single `Config` struct is handed to either `RunClaude` or `RunOpenAI`. Runners handle all SDK translation internally.
+- **Agent files as configuration.** `.md` files with YAML frontmatter carry every runtime option — model, tools, schedule, collectors, RBAC, outputs, mgmt plane.
+- **Daemon mode.** A persistent tick loop runs the agentic loop on a cron or interval schedule. Pre-collectors inject host data into the system prompt before each tick.
 
 ---
 
@@ -72,121 +86,74 @@ graph TD
 
 ```
 okesu/
-├── main.go                      # CLI entry point (Cobra commands)
-├── go.mod                       # Module: github.com/section9labs/okesu
+├── main.go                        # CLI entry point (Cobra commands)
+├── go.mod                         # Module: github.com/section9labs/okesu
 │
 ├── agent/
-│   ├── claude.go                # Anthropic agentic loop + Config struct
-│   ├── openai.go                # OpenAI agentic loop (Responses API)
-│   ├── tools.go                 # Tool definitions, execution, agent file parsing
-│   └── jsonl.go                 # JSONL event types and Emit()
+│   ├── claude.go                  # Anthropic agentic loop + Config struct
+│   ├── openai.go                  # OpenAI agentic loop (Responses API)
+│   ├── tools.go                   # Tool definitions, execution, AgentDef parsing
+│   ├── jsonl.go                   # JSONL event types and Emit()
+│   ├── daemon.go                  # Daemon loop, scheduler, DaemonConfig
+│   ├── collectors.go              # Pre-collector execution and template rendering
+│   ├── state.go                   # Persistent daemon state, dedup cache
+│   ├── buffer.go                  # MemoryBuffer (ring), FileBuffer (rotating)
+│   ├── sinks.go                   # Sink interface, StdoutSink, JSONLFileSink,
+│   │                              #   WebhookSink, FanoutSink, global sink registry
+│   ├── rbac.go                    # RBACPolicy, CheckRBAC, EmitActionDenied
+│   └── mgmt.go                    # Management plane: mTLS, register, heartbeat, poll
+│
+├── systemd/
+│   └── okesu-agent@.service       # Systemd template unit
+│
+├── scripts/
+│   └── install.sh                 # Install binary, user, dirs, and systemd unit
 │
 ├── .claude/
-│   ├── settings.local.json      # Claude Code CLI project settings
+│   ├── settings.local.json
 │   └── agents/
-│       └── security-reviewer.md # Example agent file
+│       └── security-reviewer.md   # Example agent file
 │
 └── docs/
-    └── architecture.md          # This document
+    ├── architecture.md            # This document
+    └── daemon.design.md           # Daemon design discussion
 ```
 
 **Dependencies:**
 
 | Package | Version | Role |
 |---|---|---|
-| `github.com/anthropics/anthropic-sdk-go` | v1.37.0 | Anthropic API client + BetaToolRunner |
-| `github.com/openai/openai-go/v3` | v3.32.0 | OpenAI Responses API client |
+| `github.com/anthropics/anthropic-sdk-go` | v1.37.0 | Anthropic API + BetaToolRunner |
+| `github.com/openai/openai-go/v3` | v3.32.0 | OpenAI Responses API |
 | `github.com/spf13/cobra` | v1.10.2 | CLI framework |
-| `gopkg.in/yaml.v3` | v3.0.1 | Agent file frontmatter parsing |
+| `github.com/robfig/cron/v3` | v3.0.1 | Cron expression parsing |
+| `gopkg.in/yaml.v3` | v3.0.1 | Agent file frontmatter |
 
 ---
 
 ## 3. CLI Layer — `main.go`
 
-Okesu uses [Cobra](https://github.com/spf13/cobra) to define three subcommands. All share the same flag set and configuration pipeline.
+Okesu uses [Cobra](https://github.com/spf13/cobra) to define four subcommands. All share the same flag set and configuration pipeline.
 
 ### Startup Sequence
-
-`main()` runs two steps before handing off to Cobra:
 
 ```mermaid
 flowchart LR
     main["main()"] --> LD["loadDotEnv()\nload ~/.config/.env"]
-    LD --> RC["rootCmd().Execute()\nparse flags + dispatch"]
-    RC --> Cmd["claude | codex | auto\nRunE handler"]
+    LD --> RC["rootCmd().Execute()"]
+    RC --> Cmd["claude | codex | auto | daemon\nRunE handler"]
 ```
-
-Environment loading happens unconditionally before any flag parsing, so API keys from `.env` are available to all subcommands and to `inferProvider`.
 
 ### Environment Loading — `.env` file
 
-`loadDotEnv()` reads `~/.config/.env` at process startup and populates the environment with any variables not already set. Variables already exported in the shell always take precedence.
+`loadDotEnv()` reads `~/.config/.env` at startup and populates missing env vars. Existing shell exports always take precedence.
 
-```mermaid
-flowchart TD
-    L["loadDotEnv()"] --> H{"HOME set?"}
-    H --> |"no"| Return["return (no-op)"]
-    H --> |"yes"| Read["os.ReadFile\n~/.config/.env"]
-    Read --> |"file missing\nor unreadable"| Return
-    Read --> |"ok"| Lines["iterate lines"]
-    Lines --> Skip{"blank or\n# comment?"}
-    Skip --> |"yes"| Lines
-    Skip --> |"no"| Strip["strip 'export ' prefix"]
-    Strip --> Split["split on first '='"]
-    Split --> |"no '='"| Lines
-    Split --> Unquote["strip surrounding\n\" or ' quotes"]
-    Unquote --> Exists{"os.Getenv(key)\nalready set?"}
-    Exists --> |"yes — env wins"| Lines
-    Exists --> |"no"| Set["os.Setenv(key, val)"]
-    Set --> Lines
-```
-
-**Supported line formats:**
-
+**Supported formats:**
 ```bash
-ANTHROPIC_API_KEY=sk-ant-abc123          # bare value
-OPENAI_API_KEY="sk-abc123"               # double-quoted
-AWS_SECRET_KEY='abc123'                  # single-quoted
-export SOME_OTHER_VAR=value              # optional export prefix
-# this line is a comment                 # ignored
-                                         # blank lines ignored
-```
-
-**Implementation:**
-
-```go
-func loadDotEnv() {
-    home := os.Getenv("HOME")
-    if home == "" {
-        return
-    }
-    data, err := os.ReadFile(filepath.Join(home, ".config", ".env"))
-    if err != nil {
-        return  // silently skip — file is optional
-    }
-    for _, line := range strings.Split(string(data), "\n") {
-        line = strings.TrimSpace(line)
-        if line == "" || strings.HasPrefix(line, "#") {
-            continue
-        }
-        line = strings.TrimPrefix(line, "export ")
-        idx := strings.IndexByte(line, '=')
-        if idx < 1 {
-            continue
-        }
-        key := strings.TrimSpace(line[:idx])
-        val := strings.TrimSpace(line[idx+1:])
-        if len(val) >= 2 {
-            if (val[0] == '"' && val[len(val)-1] == '"') ||
-                (val[0] == '\'' && val[len(val)-1] == '\'') {
-                val = val[1 : len(val)-1]
-            }
-        }
-        if key != "" && os.Getenv(key) == "" {  // existing env vars win
-            os.Setenv(key, val)
-        }
-    }
-}
+ANTHROPIC_API_KEY=sk-ant-abc123
+OPENAI_API_KEY="sk-abc123"
+export SOME_VAR=value
+# comment line — ignored
 ```
 
 ### Command Tree
@@ -196,140 +163,156 @@ graph LR
     okesu --> claude["claude &lt;prompt&gt;\nAnthropic API"]
     okesu --> codex["codex &lt;prompt&gt;\nOpenAI API"]
     okesu --> auto["auto &lt;prompt&gt;\nInfers provider"]
+    okesu --> daemon["daemon\n--agent required\nno prompt arg"]
 ```
 
 ### Shared Flags
 
-```go
-func sharedFlags(cmd *cobra.Command) {
-    cmd.Flags().String("model", "", "Model override")
-    cmd.Flags().String("system", "", "Path to system prompt file")
-    cmd.Flags().String("agent", "", "Agent name — loads from .claude/agents/ or .codex/agents/")
-    cmd.Flags().String("api-key", "", "API key (overrides env var)")
-    cmd.Flags().Int64("max-tokens", 8192, "Maximum tokens per response")
-    cmd.Flags().String("effort", "", "Thinking depth — claude: low|medium|high|xhigh|max  codex: low|medium|high|xhigh")
-    cmd.Flags().Int("max-turns", 0, "Maximum agentic loop iterations (0 = unlimited)")
-}
-```
+All subcommands share:
 
-### Flag Precedence (highest to lowest)
+| Flag | Default | Description |
+|---|---|---|
+| `--model` | | Model override |
+| `--system` | | Path to system prompt file |
+| `--agent` | | Agent file name (searches `.claude/agents/`, `~/.claude/agents/`, etc.) |
+| `--api-key` | | API key override |
+| `--max-tokens` | 8192 | Token cap per response |
+| `--effort` | | Reasoning depth: `low\|medium\|high\|xhigh\|max` |
+| `--max-turns` | 0 | Loop cap (0 = unlimited) |
+
+The `daemon` subcommand adds:
+
+| Flag | Description |
+|---|---|
+| `--interval` | Override tick interval (e.g. `30s`, `5m`) |
+| `--cron` | Override cron schedule (e.g. `"0 * * * *"`) |
+
+### Flag Precedence
 
 ```
 CLI flag  >  agent file frontmatter  >  built-in default
 ```
 
-For example, if the agent file declares `model: claude-opus-4-6` but the user passes `--model claude-sonnet-4-6`, the CLI flag wins.
-
 ### API Key Resolution
-
-API keys go through a three-tier lookup. `loadDotEnv()` runs before any of this, so `~/.config/.env` values are already in the process environment by the time `resolveAPIKey` is called:
 
 ```mermaid
 flowchart LR
-    Start["resolveAPIKey(cmd, envVar)"] --> F{"--api-key\nflag set?"}
-    F --> |"yes"| Use["use flag value"]
-    F --> |"no"| E{"os.Getenv\nANTHROPIC_API_KEY\nor OPENAI_API_KEY"}
-    E --> |"set (shell export\nor ~/.config/.env)"| Use
-    E --> |"not set"| Err["error: no API key"]
-```
-
-**Full precedence chain (highest to lowest):**
-
-```
---api-key flag  >  shell export  >  ~/.config/.env  >  error
-```
-
-```go
-func resolveAPIKey(cmd *cobra.Command, envVar string) (string, error) {
-    key, _ := cmd.Flags().GetString("api-key")
-    if key == "" {
-        key = os.Getenv(envVar)  // picks up shell export OR ~/.config/.env value
-    }
-    if key == "" {
-        return "", fmt.Errorf("no API key — set %s or use --api-key", envVar)
-    }
-    return key, nil
-}
+    F{"--api-key\nflag?"}
+    F --> |"yes"| Use["use flag"]
+    F --> |"no"| E{"ANTHROPIC_API_KEY\nor OPENAI_API_KEY\n(shell or .env)"}
+    E --> |"set"| Use
+    E --> |"not set"| Err["error"]
 ```
 
 ---
 
 ## 4. Agent File System
 
-Agent files are Markdown documents with YAML frontmatter. They encode both the agent's persona (as a system prompt in the body) and its runtime configuration (in the frontmatter).
+Agent files are Markdown with YAML frontmatter. They encode both persona (body = system prompt) and full runtime configuration (frontmatter).
 
 ### File Discovery
 
-`ParseAgentFile(name)` searches four directories in order, stopping at the first match:
+`ParseAgentFile(name)` searches four directories, stopping at the first match:
 
-```mermaid
-flowchart TD
-    Start["ParseAgentFile(name)"] --> P1[".claude/agents/&lt;name&gt;.md\n(project-local, Claude CLI convention)"]
-    P1 --> |"not found"| P2[".codex/agents/&lt;name&gt;.md\n(project-local, Codex convention)"]
-    P2 --> |"not found"| P3["~/.claude/agents/&lt;name&gt;.md\n(user global)"]
-    P3 --> |"not found"| P4["~/.codex/agents/&lt;name&gt;.md\n(user global)"]
-    P4 --> |"not found"| Err["error: agent not found"]
-    P1 --> |"found"| Parse
-    P2 --> |"found"| Parse
-    P3 --> |"found"| Parse
-    P4 --> |"found"| Parse["parseAgentContent()"]
-    Parse --> AgentDef["*AgentDef"]
+```
+1. .claude/agents/<name>.md       (project-local)
+2. .codex/agents/<name>.md        (project-local)
+3. ~/.claude/agents/<name>.md     (user-global)
+4. ~/.codex/agents/<name>.md      (user-global)
 ```
 
-### Frontmatter Format
+### Full Frontmatter Schema
 
 ```yaml
 ---
-name: security-reviewer
-description: Expert security engineer for code review.
-model: claude-opus-4-6          # default model (overridable by --model)
-provider: claude                 # "claude" | "codex" — used by okesu auto
-tools: [bash, read_file, write_file, list_files, search]
-maxTurns: 100                    # agentic loop cap (overridable by --max-turns)
-effort: high                     # reasoning depth (overridable by --effort)
+name: edr-agent
+description: Endpoint detection and response daemon
+model: claude-opus-4-6
+provider: claude               # "claude" | "codex"
+tools: [bash, read_file, search]
+maxTurns: 50
+effort: high
+
+# Daemon scheduling
+mode: daemon
+interval: 60s                  # OR use cron:
+cron: "*/5 * * * *"
+overlap: skip                  # "skip" | "queue"
+stateDir: /var/lib/okesu/edr
+dedupeTtl: 1h
+
+# Pre-collectors (run before each tick)
+collectors:
+  - name: processes
+    command: ps aux
+    timeout: 10s
+  - name: netstat
+    command: ss -tnp
+    timeout: 10s
+
+# Output sinks
+outputs:
+  - type: stdout
+  - type: file
+    path: /var/log/okesu/edr.jsonl
+    maxBytes: 104857600         # 100 MB rotation
+  - type: webhook
+    url: https://siem.example.com/ingest
+    secret: hmac-signing-secret
+    retries: 3
+
+# RBAC action policy
+actions:
+  rbac:
+    deny:
+      - tool: bash
+        reason: no arbitrary shell in production
+    allow:
+      - tool: read_file
+      - tool: search
+
+# Management plane
+mgmt:
+  url: https://mgmt.example.com
+  heartbeatSec: 30
+  pollSec: 60
+  certDir: /etc/okesu
 ---
 
-You are a world-class security engineer...   ← becomes SystemPrompt / Instructions
+You are an autonomous EDR agent. Your role is to...
+
+<!-- Go template directives are expanded before each tick: -->
+Current time: {{ .Time.Format "2006-01-02T15:04:05Z" }}
+Processes:
+{{ index .Collectors "processes" | .Output }}
 ```
 
-### Tool Name Mapping
-
-The `tools:` list accepts either okesu-native names or Claude Code CLI names:
-
-| Claude Code CLI | okesu canonical |
-|---|---|
-| `Bash` | `bash` |
-| `Read` | `read_file` |
-| `Edit`, `Write` | `write_file` |
-| `Glob` | `list_files` |
-| `Grep` | `search` |
-
-```go
-func normalizeToolName(name string) string {
-    switch strings.ToLower(name) {
-    case "bash":               return "bash"
-    case "read", "read_file":  return "read_file"
-    case "write", "edit",
-         "write_file":         return "write_file"
-    case "glob", "list_files": return "list_files"
-    case "grep", "search":     return "search"
-    default:                   return ""   // silently ignored
-    }
-}
-```
-
-### AgentDef Struct
+### AgentDef Struct (full)
 
 ```go
 type AgentDef struct {
-    Name        string   `yaml:"name"`
-    Description string   `yaml:"description"`
-    Model       string   `yaml:"model"`
-    Provider    string   `yaml:"provider"`   // "claude" | "codex"
-    Tools       []string `yaml:"tools"`      // okesu or Claude Code CLI names
-    MaxTurns    int      `yaml:"maxTurns"`
-    Effort      string   `yaml:"effort"`
-    Body        string   // system prompt body (content after the frontmatter)
+    // Task mode
+    Name, Description, Model, Provider string
+    Tools    []string
+    MaxTurns int
+    Effort   string
+
+    // Daemon scheduling
+    Mode, Interval, Cron, Overlap, StateDir, DedupeTTL string
+
+    // Pre-collectors
+    Collectors []CollectorDef
+
+    // Output sinks
+    Outputs []OutputDef
+
+    // RBAC
+    Actions ActionsConfig
+
+    // Management plane
+    Mgmt MgmtConfig
+
+    Body string  // system prompt (after frontmatter)
 }
 ```
 
@@ -337,43 +320,21 @@ type AgentDef struct {
 
 ## 5. Configuration Pipeline
 
-All three subcommands funnel through `buildConfig()`, which merges CLI flags with agent frontmatter and applies provider-specific defaults.
-
 ```mermaid
 flowchart TD
     Cmd["Cobra RunE"] --> RA["resolveAgent(cmd)"]
-    RA --> |"--agent flag"| PAF["ParseAgentFile(name)\n→ *AgentDef"]
-    RA --> |"--system flag"| SF["os.ReadFile(path)\n→ &AgentDef{Body: content}"]
-    RA --> |"neither"| Nil["nil"]
+    RA --> PAF["ParseAgentFile → *AgentDef"]
+    RA --> SF["os.ReadFile(--system) → &AgentDef{Body}"]
+    RA --> Nil["nil (no agent/system)"]
 
-    PAF --> BC["buildConfig(cmd, args, provider, def)"]
+    PAF --> BC["buildConfig()"]
     SF --> BC
     Nil --> BC
 
-    BC --> |"model: CLI flag wins"| M{"model\nempty?"}
-    M --> |"yes"| MAgent["use def.Model"]
-    M --> |"no"| MFlag["use CLI --model"]
-    MAgent --> MDefault{"still\nempty?"}
-    MDefault --> |"claude"| MC["claude-opus-4-6"]
-    MDefault --> |"codex"| MO["gpt-4o"]
+    BC --> Config["agent.Config{\n  Name, Provider, Model, Prompt,\n  SystemPrompt, MaxTokens, Effort,\n  MaxTurns, AllowedTools, RBAC, APIKey\n}"]
 
-    BC --> Config["agent.Config{\n  Model, Prompt, SystemPrompt,\n  Effort, MaxTokens, MaxTurns,\n  AllowedTools, APIKey, Provider\n}"]
-```
-
-### Config Struct
-
-```go
-type Config struct {
-    Provider     string    // "claude" | "codex"
-    Model        string    // e.g. "claude-opus-4-6", "gpt-4o"
-    Prompt       string    // the user's task (positional arg)
-    SystemPrompt string    // agent body text → system / instructions
-    MaxTokens    int64     // max tokens per API response
-    APIKey       string    // resolved API key
-    Effort       string    // reasoning depth: low|medium|high|xhigh|max
-    MaxTurns     int       // loop cap; 0 = unlimited
-    AllowedTools []string  // empty = all tools
-}
+    BC -.daemon only.-> BDC["buildDaemonConfig()"]
+    BDC --> DConfig["agent.DaemonConfig{\n  Interval/Cron, Overlap, StateDir,\n  DedupeTTL, Collectors, Outputs, Mgmt\n}"]
 ```
 
 ---
@@ -382,304 +343,86 @@ type Config struct {
 
 ### The Five Built-in Tools
 
-```mermaid
-graph LR
-    Model["Model"] --> |"tool_call"| Dispatch["ExecuteTool(name, input)"]
-    Dispatch --> bash["bash\nRuns any shell command\nvia exec.Command"]
-    Dispatch --> read_file["read_file\nos.ReadFile(path)\ntruncates at 128 KB"]
-    Dispatch --> write_file["write_file\nos.WriteFile(path, content)\ncreates parent dirs"]
-    Dispatch --> list_files["list_files\nfilepath.Glob(pattern)"]
-    Dispatch --> search["search\ngrep -rn pattern path\noptional --include glob"]
-    bash --> |"string output"| Model
-    read_file --> |"string output"| Model
-    write_file --> |"string output"| Model
-    list_files --> |"string output"| Model
-    search --> |"string output"| Model
-```
-
-### Tool Definitions
-
-Each tool is declared as a `ToolDef` containing a JSON Schema for the model:
-
-```go
-type ToolDef struct {
-    Name        string
-    Description string
-    Parameters  map[string]interface{}  // full JSON Schema object
-    Required    []string
-}
-```
-
-Example — the `bash` tool:
-
-```go
-{
-    Name:        "bash",
-    Description: "Execute a shell command. Returns combined stdout and stderr.",
-    Parameters: map[string]interface{}{
-        "type": "object",
-        "properties": map[string]interface{}{
-            "command": map[string]interface{}{
-                "type":        "string",
-                "description": "The bash command to execute.",
-            },
-            "timeout_seconds": map[string]interface{}{
-                "type":        "integer",
-                "description": "Optional timeout in seconds (default: 120).",
-            },
-        },
-    },
-    Required: []string{"command"},
-}
-```
+| Tool | Action | Truncation |
+|---|---|---|
+| `bash` | `exec.Command("bash", "-c", cmd)` | 64 KB |
+| `read_file` | `os.ReadFile(path)` | 128 KB |
+| `write_file` | `os.WriteFile(path, content, 0644)` | none |
+| `list_files` | `filepath.Glob(pattern)` | none |
+| `search` | `grep -rn pattern [--include glob]` | 32 KB |
 
 ### Tool Filtering via `ActiveTools`
 
-When `AllowedTools` is non-empty, only the listed tools are exposed to the model:
+When `AllowedTools` is non-empty, only listed tools are exposed to the model. Accepts both okesu names and Claude Code CLI names (`Bash`, `Read`, `Edit`, `Glob`, `Grep`).
 
 ```go
-func ActiveTools(names []string) []ToolDef {
-    if len(names) == 0 {
-        return Tools   // all tools
-    }
-    allowed := make(map[string]bool)
-    for _, n := range names {
-        if norm := normalizeToolName(n); norm != "" {
-            allowed[norm] = true
-        }
-    }
-    result := []ToolDef{}
-    for _, t := range Tools {
-        if allowed[t.Name] {
-            result = append(result, t)
-        }
-    }
-    return result
-}
+func ActiveTools(names []string) []ToolDef  // empty = all tools
 ```
-
-This is called at runner startup before the first API request:
-
-```go
-// In RunClaude:
-tools, err := buildBetaTools(ActiveTools(cfg.AllowedTools))
-
-// In RunOpenAI:
-tools := buildResponsesTools(ActiveTools(cfg.AllowedTools))
-```
-
-### Output Limits
-
-| Tool | Truncation |
-|---|---|
-| `bash` | 64 KB |
-| `read_file` | 128 KB |
-| `search` | 32 KB |
-| `write_file` | none (input, not output) |
-| `list_files` | none |
 
 ---
 
 ## 7. Claude Runner — `agent/claude.go`
 
-The Claude runner uses the Anthropic SDK's built-in `BetaToolRunnerStreaming`, which manages the multi-turn tool loop, parallel tool execution, and message history accumulation internally.
+Uses the Anthropic SDK's `BetaToolRunnerStreaming`, which manages the multi-turn tool loop and parallel tool execution internally.
 
-### Architecture
-
-```mermaid
-sequenceDiagram
-    participant Main as RunClaude()
-    participant SDK as BetaToolRunnerStreaming
-    participant API as Anthropic API
-    participant Tools as ExecuteTool()
-
-    Main->>SDK: NewToolRunnerStreaming(tools, params)
-    loop AllStreaming() — one iteration per API round-trip
-        SDK->>API: POST /v1/messages (with tool definitions)
-        API-->>SDK: stream events
-        SDK-->>Main: text delta events (BetaRawContentBlockDeltaEvent)
-        Main->>Main: Emit(EventText)
-        API-->>SDK: tool_use blocks
-        SDK->>Tools: handler(ctx, input) [parallel via errgroup]
-        Tools-->>SDK: output string
-        SDK->>API: POST /v1/messages (with tool_result blocks)
-    end
-    SDK-->>Main: loop ends when stop_reason = end_turn
-    Main->>Main: Emit(EventDone)
-```
-
-### Key Implementation Details
-
-**Tool handler registration** — each tool gets a closure that emits JSONL before and after execution:
+### Tool Handler with RBAC
 
 ```go
-tool := toolrunner.NewBetaTool(
-    td.Name,
-    td.Description,
-    schema,
-    func(ctx context.Context, input map[string]interface{}) (anthropic.BetaToolResultBlockParamContentUnion, error) {
-        Emit(Event{Type: EventToolCall, ToolName: td.Name, Input: input})
-        output := ExecuteTool(td.Name, input)
-        Emit(Event{Type: EventToolResult, ToolName: td.Name, Output: output})
+func(ctx context.Context, input map[string]interface{}) (anthropic.BetaToolResultBlockParamContentUnion, error) {
+    Emit(Event{Type: EventToolCall, ToolName: td.Name, Input: input})
+
+    // RBAC check before execution
+    if ok, reason := CheckRBAC(rbac, td.Name, input); !ok {
+        EmitActionDenied(td.Name, input, reason)
+        denied := "action denied: " + reason
+        Emit(Event{Type: EventToolResult, ToolName: td.Name, Output: denied})
         return anthropic.BetaToolResultBlockParamContentUnion{
-            OfText: &anthropic.BetaTextBlockParam{Text: output},
+            OfText: &anthropic.BetaTextBlockParam{Text: denied},
         }, nil
-    },
-)
-```
-
-**Effort / extended thinking:**
-
-```go
-if cfg.Effort != "" {
-    msgParams.OutputConfig = anthropic.BetaOutputConfigParam{
-        Effort: anthropic.BetaOutputConfigEffort(cfg.Effort),
-        // "low" | "medium" | "high" | "xhigh" | "max"
     }
+
+    output := ExecuteTool(td.Name, input)
+    Emit(Event{Type: EventToolResult, ToolName: td.Name, Output: output})
+    return anthropic.BetaToolResultBlockParamContentUnion{
+        OfText: &anthropic.BetaTextBlockParam{Text: output},
+    }, nil
 }
 ```
 
-**MaxTurns enforcement** — breaks from the range-over-func iterator (Go 1.23):
+### Effort / Extended Thinking
 
 ```go
-turn := 0
-for events, err := range runner.AllStreaming(context.Background()) {
-    turn++
-    if cfg.MaxTurns > 0 && turn > cfg.MaxTurns {
-        break   // valid in Go 1.23 range-over-func
-    }
-    for event, err := range events {
-        if delta, ok := event.AsAny().(anthropic.BetaRawContentBlockDeltaEvent); ok {
-            if text, ok := delta.Delta.AsAny().(anthropic.BetaTextDelta); ok {
-                Emit(Event{Type: EventText, Text: text.Text, Turn: turn})
-            }
-        }
-    }
+msgParams.OutputConfig = anthropic.BetaOutputConfigParam{
+    Effort: anthropic.BetaOutputConfigEffort(cfg.Effort),  // "low"|"medium"|"high"|"xhigh"|"max"
 }
-```
-
-**Parallel tool execution** — the SDK uses `errgroup` internally to run tool handlers concurrently when the model issues multiple tool calls in the same turn. This is why `Emit()` uses a mutex.
-
-### Message Flow Inside the SDK
-
-```
-BetaMessageNewParams
-  ├── Model: "claude-opus-4-6"
-  ├── MaxTokens: 8192
-  ├── System: [{Text: systemPrompt}]
-  ├── Messages: [{role: user, content: prompt}]
-  ├── OutputConfig: {Effort: "high"}
-  └── Tools: [BetaTool{name, description, schema, handler}]
-                    ↕ runner manages internally
-         BetaMessage (response)
-           ├── content: [TextBlock | ToolUseBlock]
-           └── stop_reason: "tool_use" | "end_turn"
 ```
 
 ---
 
 ## 8. OpenAI Runner — `agent/openai.go`
 
-The OpenAI runner uses the **Responses API** (`/v1/responses`), required for models with function calling + reasoning (e.g. `gpt-5.4-cyber`). Unlike the Claude runner, the tool loop is implemented manually.
+Uses the **Responses API** (`/v1/responses`). The tool loop is implemented manually; the server retains conversation state via `previous_response_id`.
 
-### Why Responses API, not Chat Completions
-
-Models with `reasoning_effort` require `/v1/responses`. Sending function tools to `/v1/chat/completions` returns:
-
-```
-400 Bad Request: Function tools with reasoning_effort are not supported for
-gpt-5.4-cyber in /v1/chat/completions. Please use /v1/responses instead.
-```
-
-The Responses API is also stateful via `previous_response_id` — the server retains the conversation, so each turn only sends the delta (tool results) rather than the full history.
-
-### Architecture
+### Multi-Turn Loop
 
 ```mermaid
 sequenceDiagram
-    participant Main as RunOpenAI()
-    participant API as OpenAI Responses API
+    participant Runner as RunOpenAI()
+    participant API as /v1/responses
 
-    Main->>API: NewStreaming(params)\nInput: prompt string
-    loop SSE stream
-        API-->>Main: response.output_text.delta → Emit(EventText)
-        API-->>Main: response.completed → completedResp
-    end
-    Main->>Main: extract function_call items from completedResp.Output
-    alt tool calls found AND turn < MaxTurns
-        Main->>Main: ExecuteTool() for each call → Emit(EventToolCall/Result)
-        Main->>API: NewStreaming(params)\nPreviousResponseID: resp.ID\nInput: [function_call_output items]
-        Note over Main,API: loop repeats
-    else no tool calls OR MaxTurns reached
-        Main->>Main: Emit(EventDone)
-    end
-```
-
-### Multi-Turn State via `previous_response_id`
-
-The Responses API is **server-side stateful**. The first request carries the full prompt; subsequent requests reference the previous response ID and carry only tool results:
-
-```go
-// Turn 1 — seed with user prompt
-firstParams.Input = responses.ResponseNewParamsInputUnion{
-    OfString: param.NewOpt(cfg.Prompt),
-}
-
-// Turn N — submit tool results only
-nextParams.PreviousResponseID = param.NewOpt(prevResponseID)
-nextParams.Input = responses.ResponseNewParamsInputUnion{
-    OfInputItemList: responses.ResponseInputParam(resultItems),
-}
-```
-
-Tool results are wrapped as `ResponseInputItemFunctionCallOutputParam`:
-
-```go
-resultItems = append(resultItems,
-    responses.ResponseInputItemParamOfFunctionCallOutput(tc.CallID, output),
-)
-```
-
-### Detecting Tool Calls in the Response
-
-After each stream completes, the runner inspects `completedResp.Output` (obtained from the `response.completed` SSE event):
-
-```go
-var toolCalls []responses.ResponseFunctionToolCall
-for _, item := range completedResp.Output {
-    if item.Type == "function_call" {
-        toolCalls = append(toolCalls, item.AsFunctionCall())
-        // tc.Name, tc.CallID, tc.Arguments (JSON string)
-    }
-}
+    Runner->>API: Turn 1: Input = prompt string
+    API-->>Runner: SSE deltas + response.completed
+    Runner->>Runner: extract function_calls, CheckRBAC, ExecuteTool
+    Runner->>API: Turn N: PreviousResponseID + tool results
+    Note over Runner,API: repeat until no function_calls
+    Runner->>Runner: Emit(EventDone)
 ```
 
 ### Effort / Reasoning
 
 ```go
-if cfg.Effort != "" {
-    baseParams.Reasoning = shared.ReasoningParam{
-        Effort: shared.ReasoningEffort(cfg.Effort),
-        // "low" | "medium" | "high" | "xhigh"
-    }
-}
-```
-
-### Tool Schema Conversion
-
-Each `ToolDef` is converted to a `FunctionToolParam` for the Responses API:
-
-```go
-responses.ToolUnionParam{
-    OfFunction: &responses.FunctionToolParam{
-        Name:        t.Name,
-        Description: param.NewOpt(t.Description),
-        Parameters: map[string]interface{}{
-            "type":       "object",
-            "properties": t.Parameters["properties"],
-            "required":   t.Required,
-        },
-    },
+baseParams.Reasoning = shared.ReasoningParam{
+    Effort: shared.ReasoningEffort(cfg.Effort),  // "low"|"medium"|"high"|"xhigh"
 }
 ```
 
@@ -687,306 +430,35 @@ responses.ToolUnionParam{
 
 ## 9. JSONL Event Bus — `agent/jsonl.go`
 
-All activity is serialized as JSONL to stdout. Callers (orchestrators, log collectors, UIs) read line-by-line.
+All activity is serialized as JSONL. `Emit()` routes every event through the active global sink (see §10).
 
 ### Event Types
 
-```go
-const (
-    EventInit       EventType = "init"         // session started
-    EventText       EventType = "text"         // streaming text delta from model
-    EventToolCall   EventType = "tool_call"    // model is invoking a tool
-    EventToolResult EventType = "tool_result"  // tool execution completed
-    EventDone       EventType = "done"         // session complete with usage
-    EventError      EventType = "error"        // fatal error
-)
-```
+| Event | When |
+|---|---|
+| `init` | Session started |
+| `text` | Streaming text delta |
+| `tool_call` | Model invoking a tool |
+| `tool_result` | Tool execution completed |
+| `done` | Session complete with usage |
+| `error` | Fatal error |
+| `daemon_start` | Daemon process started |
+| `daemon_stop` | Clean shutdown |
+| `tick_start` | Tick beginning |
+| `tick_done` | Tick complete (`completed\|skipped\|error`) |
+| `collector_result` | Pre-collector command finished |
+| `finding` | Agent-reported security finding |
+| `action_denied` | RBAC blocked a tool call |
 
-### Event Schema
+### Full Event Schema
 
 ```go
 type Event struct {
     Type       EventType   `json:"type"`
-    Provider   string      `json:"provider,omitempty"`   // "claude" | "codex"
-    Model      string      `json:"model,omitempty"`
-    Text       string      `json:"text,omitempty"`        // EventText only
-    ToolID     string      `json:"tool_id,omitempty"`     // OpenAI call_id
-    ToolName   string      `json:"tool_name,omitempty"`
-    Input      interface{} `json:"input,omitempty"`       // tool arguments
-    Output     string      `json:"output,omitempty"`      // tool result
-    Error      string      `json:"error,omitempty"`
-    StopReason string      `json:"stop_reason,omitempty"`
-    Usage      *Usage      `json:"usage,omitempty"`       // EventDone only
-    Turn       int         `json:"turn,omitempty"`        // loop iteration
-    Ts         int64       `json:"ts"`                    // Unix milliseconds
-}
-```
-
-### Example Session Stream
-
-```jsonl
-{"type":"init","provider":"claude","model":"claude-opus-4-6","ts":1745000000000}
-{"type":"text","text":"I'll start by listing the files in the repository.","turn":1,"ts":1745000000120}
-{"type":"tool_call","tool_name":"list_files","input":{"pattern":"./**/*.go"},"turn":1,"ts":1745000000340}
-{"type":"tool_result","tool_name":"list_files","output":"./main.go\n./agent/claude.go\n...","turn":1,"ts":1745000000350}
-{"type":"text","text":"Now let me read the main entry point.","turn":2,"ts":1745000001200}
-{"type":"tool_call","tool_name":"read_file","input":{"path":"./main.go"},"turn":2,"ts":1745000001400}
-{"type":"tool_result","tool_name":"read_file","output":"package main\n...","turn":2,"ts":1745000001405}
-{"type":"text","text":"I found a command injection vulnerability on line 42...","turn":3,"ts":1745000002000}
-{"type":"done","provider":"claude","model":"claude-opus-4-6","stop_reason":"end_turn","usage":{"input_tokens":4821,"output_tokens":1203},"ts":1745000005000}
-```
-
-### Thread Safety
-
-Tool handlers in the Claude runner execute concurrently (the SDK uses `errgroup`). `Emit()` is protected by a package-level mutex so JSON lines are never interleaved:
-
-```go
-var mu sync.Mutex
-
-func Emit(e Event) {
-    e.Ts = time.Now().UnixMilli()
-    b, _ := json.Marshal(e)
-    mu.Lock()
-    fmt.Printf("%s\n", b)
-    mu.Unlock()
-}
-```
-
----
-
-## 10. Provider Inference — `auto` Command
-
-`okesu auto` runs the same agentic loop as `claude` or `codex` but determines the provider automatically so the user doesn't need to know or specify it.
-
-### Inference Priority
-
-```mermaid
-flowchart TD
-    Start["inferProvider(model, def)"] --> A{"def.Provider\nset in frontmatter?"}
-    A --> |"claude / anthropic"| Claude["provider = claude"]
-    A --> |"codex / openai"| Codex["provider = codex"]
-    A --> |"not set"| B{"model flag\nor def.Model\nnon-empty?"}
-    B --> |"claude-*"| Claude
-    B --> |"gpt-* / o1-* / o3-* / o4-*"| Codex
-    B --> |"unrecognised\nor empty"| C{"API keys\nin environment?"}
-    C --> |"only ANTHROPIC_API_KEY"| Claude
-    C --> |"only OPENAI_API_KEY"| Codex
-    C --> |"both or neither"| Err["error: cannot determine provider"]
-```
-
-### Implementation
-
-```go
-func inferProvider(model string, def *agent.AgentDef) (string, error) {
-    // 1. Explicit provider in agent file frontmatter
-    if def != nil && def.Provider != "" {
-        switch strings.ToLower(def.Provider) {
-        case "claude", "anthropic": return "claude", nil
-        case "codex", "openai":     return "codex", nil
-        }
-    }
-
-    // 2. Model name prefix
-    if model != "" {
-        lower := strings.ToLower(model)
-        if strings.HasPrefix(lower, "claude") { return "claude", nil }
-        if strings.HasPrefix(lower, "gpt")  ||
-           strings.HasPrefix(lower, "o1")   ||
-           strings.HasPrefix(lower, "o3")   ||
-           strings.HasPrefix(lower, "o4")   { return "codex", nil }
-    }
-
-    // 3. Available API keys
-    hasAnthropic := os.Getenv("ANTHROPIC_API_KEY") != ""
-    hasOpenAI    := os.Getenv("OPENAI_API_KEY") != ""
-    if hasAnthropic && !hasOpenAI { return "claude", nil }
-    if hasOpenAI && !hasAnthropic { return "codex", nil }
-
-    return "", fmt.Errorf("cannot determine provider — ...")
-}
-```
-
-### Common `auto` Patterns
-
-```bash
-# Provider from agent file frontmatter (provider: claude)
-okesu auto --agent security-reviewer "audit ./api"
-
-# Provider inferred from model prefix
-okesu auto --model claude-opus-4-6 "refactor this module"
-okesu auto --model gpt-4o "find memory leaks"
-
-# Provider inferred from env (only OPENAI_API_KEY is set)
-okesu auto "summarise the codebase"
-```
-
----
-
-## 11. End-to-End Request Flow
-
-### Claude — Full Turn Sequence
-
-```mermaid
-sequenceDiagram
-    participant User
-    participant Main as main.go
-    participant Runner as RunClaude()
-    participant SDK as BetaToolRunnerStreaming
-    participant API as api.anthropic.com
-    participant Exec as ExecuteTool()
-
-    User->>Main: okesu claude --agent security-reviewer "audit ./src"
-    Main->>Main: ParseAgentFile("security-reviewer")
-    Main->>Main: buildConfig() → Config{...}
-    Main->>Runner: RunClaude(cfg)
-    Runner->>Runner: buildBetaTools(ActiveTools(cfg.AllowedTools))
-    Runner->>SDK: NewToolRunnerStreaming(tools, params)
-
-    loop Turn 1
-        SDK->>API: POST /v1/messages\n{model, system, messages, tools}
-        API-->>SDK: SSE: content_block_delta (text)
-        SDK-->>Runner: BetaRawContentBlockDeltaEvent
-        Runner->>Runner: Emit(EventText)
-        API-->>SDK: SSE: content_block_stop
-        API-->>SDK: SSE: message_delta {stop_reason: tool_use}
-        API-->>SDK: SSE: tool_use {name: list_files, input: {pattern: ...}}
-        SDK->>Exec: handler(ctx, {pattern: "**/*.go"})
-        Exec->>Exec: Emit(EventToolCall)
-        Exec->>Exec: filepath.Glob(pattern)
-        Exec->>Exec: Emit(EventToolResult)
-        Exec-->>SDK: output string
-    end
-
-    loop Turn 2
-        SDK->>API: POST /v1/messages\n{..., tool_result: [output]}
-        Note over SDK,API: loop continues until stop_reason = end_turn
-    end
-
-    SDK-->>Runner: AllStreaming() exhausted
-    Runner->>Runner: Emit(EventDone)
-    Runner-->>Main: nil
-```
-
-### OpenAI — Full Turn Sequence
-
-```mermaid
-sequenceDiagram
-    participant User
-    participant Main as main.go
-    participant Runner as RunOpenAI()
-    participant API as api.openai.com/v1/responses
-    participant Exec as ExecuteTool()
-
-    User->>Main: okesu codex --model gpt-5.4-cyber --effort xhigh "audit ./src"
-    Main->>Main: buildConfig() → Config{...}
-    Main->>Runner: RunOpenAI(cfg)
-    Runner->>Runner: buildResponsesTools(ActiveTools(cfg.AllowedTools))
-
-    loop Turn 1
-        Runner->>API: NewStreaming(ResponseNewParams)\nInput: prompt string
-        API-->>Runner: SSE: response.output_text.delta
-        Runner->>Runner: Emit(EventText)
-        API-->>Runner: SSE: response.completed {Output: [function_call{...}]}
-        Runner->>Runner: extract function_call items
-        Runner->>Exec: ExecuteTool("bash", {command: "..."})
-        Exec->>Exec: Emit(EventToolCall)
-        Exec->>Exec: exec.Command("bash", "-c", command)
-        Exec->>Exec: Emit(EventToolResult)
-        Exec-->>Runner: output string
-    end
-
-    loop Turn 2
-        Runner->>API: NewStreaming(ResponseNewParams)\nPreviousResponseID: resp.ID\nInput: [function_call_output{callID, output}]
-        Note over Runner,API: loop continues until Output has no function_call items
-    end
-
-    Runner->>Runner: Emit(EventDone)
-    Runner-->>Main: nil
-```
-
----
-
-## 12. Concurrency Model
-
-```mermaid
-graph TD
-    subgraph "Claude Runner (SDK-managed concurrency)"
-        R1["AllStreaming() goroutine"] --> |"errgroup"| T1["tool handler 1\ngoroutine"]
-        R1 --> |"errgroup"| T2["tool handler 2\ngoroutine"]
-        R1 --> |"errgroup"| T3["tool handler N\ngoroutine"]
-        T1 --> |"Emit() — mutex"| Stdout
-        T2 --> |"Emit() — mutex"| Stdout
-        T3 --> |"Emit() — mutex"| Stdout
-    end
-
-    subgraph "OpenAI Runner (sequential)"
-        R2["main goroutine"] --> S1["stream turn 1"]
-        S1 --> TC["execute tool calls\n(sequential)"]
-        TC --> S2["stream turn 2"]
-        S2 --> TC2["execute tool calls"]
-        TC2 --> Done["done"]
-    end
-```
-
-**Claude** — The `BetaToolRunnerStreaming` SDK uses `errgroup` to run tool handlers in parallel when the model issues multiple tool calls in one turn. All tool handlers are independent Go functions sharing the process state. The mutex in `Emit()` ensures output lines are never interleaved.
-
-**OpenAI** — The manual loop runs tool calls sequentially in the main goroutine. No additional goroutines are spawned. The mutex in `Emit()` is still present for correctness but is not strictly needed.
-
----
-
-## 13. Data Structures Reference
-
-### Complete Config
-
-```go
-type Config struct {
-    Provider     string    // "claude" | "codex"
-    Model        string    // API model identifier
-    Prompt       string    // user task (positional CLI arg)
-    SystemPrompt string    // agent file body → system / instructions field
-    MaxTokens    int64     // per-response token cap (default 8192)
-    APIKey       string    // resolved API key
-    Effort       string    // "low"|"medium"|"high"|"xhigh"|"max"
-    MaxTurns     int       // agentic loop cap; 0 = unlimited
-    AllowedTools []string  // empty = all 5 tools; otherwise filtered subset
-}
-```
-
-### Tool Definition
-
-```go
-type ToolDef struct {
-    Name        string
-    Description string
-    Parameters  map[string]interface{}  // JSON Schema {"type":"object","properties":{...}}
-    Required    []string
-}
-```
-
-### Agent File Definition
-
-```go
-type AgentDef struct {
-    Name        string   `yaml:"name"`
-    Description string   `yaml:"description"`
-    Model       string   `yaml:"model"`
-    Provider    string   `yaml:"provider"`
-    Tools       []string `yaml:"tools"`
-    MaxTurns    int      `yaml:"maxTurns"`
-    Effort      string   `yaml:"effort"`
-    Body        string   // system prompt body
-}
-```
-
-### JSONL Event
-
-```go
-type Event struct {
-    Type       EventType   `json:"type"`           // init|text|tool_call|tool_result|done|error
     Provider   string      `json:"provider,omitempty"`
     Model      string      `json:"model,omitempty"`
     Text       string      `json:"text,omitempty"`
-    ToolID     string      `json:"tool_id,omitempty"`   // OpenAI call_id
+    ToolID     string      `json:"tool_id,omitempty"`
     ToolName   string      `json:"tool_name,omitempty"`
     Input      interface{} `json:"input,omitempty"`
     Output     string      `json:"output,omitempty"`
@@ -994,27 +466,588 @@ type Event struct {
     StopReason string      `json:"stop_reason,omitempty"`
     Usage      *Usage      `json:"usage,omitempty"`
     Turn       int         `json:"turn,omitempty"`
-    Ts         int64       `json:"ts"`             // Unix milliseconds
+    Ts         int64       `json:"ts"`             // Unix ms
+    // Daemon fields
+    Agent     string `json:"agent,omitempty"`
+    Host      string `json:"host,omitempty"`
+    Tick      int64  `json:"tick,omitempty"`
+    Result    string `json:"result,omitempty"`
+    Collector string `json:"collector,omitempty"`
+    Bytes     int    `json:"bytes,omitempty"`
+    Severity  string `json:"severity,omitempty"`   // finding: critical|high|medium|low|info
+    Title     string `json:"title,omitempty"`       // finding: short title
+}
+```
+
+---
+
+## 10. Output Sinks — `agent/sinks.go` + `agent/buffer.go`
+
+All events flow through a pluggable global sink. The default (task mode) is `StdoutSink`. Daemon mode initializes `BuildSinks(dcfg.Outputs)` at startup and replaces the global sink before the first `Emit`.
+
+### Sink Interface
+
+```go
+type Sink interface {
+    Write(line []byte) error
+    Close() error
+}
+```
+
+### Sink Types
+
+```mermaid
+graph LR
+    FanoutSink --> StdoutSink["StdoutSink\nfmt.Printf + mutex"]
+    FanoutSink --> JSONLFileSink["JSONLFileSink\nFileBuffer\n(rotating JSONL)"]
+    FanoutSink --> WebhookSink["WebhookSink\nHMAC-SHA256\nasync queue\nexponential backoff"]
+```
+
+### WebhookSink Architecture
+
+```mermaid
+flowchart LR
+    Emit["Emit()"] --> Q["channel queue\n(cap 512)"]
+    Q --> D["deliver()\ngoroutine"]
+    D --> |"attempt 1..N"| HTTP["POST\nX-Okesu-Signature: sha256=..."]
+    Emit --> Ring["MemoryBuffer\n(ring buffer)\nreplay on reconnect"]
+```
+
+**HMAC signing:**
+```go
+mac := hmac.New(sha256.New, []byte(s.secret))
+mac.Write(line)
+req.Header.Set("X-Okesu-Signature", "sha256="+hex.EncodeToString(mac.Sum(nil)))
+```
+
+### FileBuffer Rotation
+
+When the log file exceeds `maxBytes`, it is renamed to `<path>.1` and a new file is opened. Only one backup is kept.
+
+### Agent File Configuration
+
+```yaml
+outputs:
+  - type: stdout
+  - type: file
+    path: /var/log/okesu/agent.jsonl
+    maxBytes: 104857600
+  - type: webhook
+    url: https://siem.example.com/events
+    secret: my-hmac-secret
+    retries: 3
+    bufferCap: 1024
+```
+
+---
+
+## 11. Provider Inference — `auto` Command
+
+```mermaid
+flowchart TD
+    Start["inferProvider(model, def)"] --> A{"def.Provider\nin frontmatter?"}
+    A --> |"claude/anthropic"| Claude["claude"]
+    A --> |"codex/openai"| Codex["codex"]
+    A --> |"not set"| B{"model prefix?"}
+    B --> |"claude-*"| Claude
+    B --> |"gpt-*/o1-*/o2-*/o3-*/o4-*"| Codex
+    B --> |"unknown"| C{"API keys?"}
+    C --> |"only ANTHROPIC_API_KEY"| Claude
+    C --> |"only OPENAI_API_KEY"| Codex
+    C --> |"both or neither"| Err["error"]
+```
+
+---
+
+## 12. Daemon Mode — `agent/daemon.go`
+
+Daemon mode runs an endless agentic loop on a configurable schedule. Each iteration (tick) runs the full pipeline: collect → render → run → persist.
+
+### Daemon Lifecycle
+
+```mermaid
+flowchart TD
+    Start["RunDaemon()"] --> Sinks["BuildSinks → SetGlobalSink"]
+    Sinks --> State["LoadState(stateDir)"]
+    State --> Mgmt["NewMgmtPlane → Register\n+ StartHeartbeat\n+ StartConfigPoller"]
+    Mgmt --> Schedule["buildSchedule\n(cron or interval)"]
+    Schedule --> Loop["event loop"]
+
+    Loop --> Timer["timer fires"]
+    Timer --> TryLock{"tickMu.TryLock()"}
+    TryLock --> |"locked"| Goroutine["go execTick(...)"]
+    TryLock --> |"busy — skip"| Emit["Emit tick_done skipped"]
+    Goroutine --> Unlock["tickMu.Unlock()"]
+
+    Loop --> Signal["signal received"]
+    Signal --> |"SIGHUP"| Reload["re-parse agent file\nhot-apply MaxTurns/Effort"]
+    Signal --> |"SIGTERM/SIGINT"| Drain["tickMu.Lock() — wait\nEmit daemon_stop\nreturn nil"]
+```
+
+### Tick Execution (`execTick`)
+
+```mermaid
+flowchart TD
+    T["execTick()"] --> PS["state.PruneDedup()"]
+    PS --> RC["RunCollectors() — parallel"]
+    RC --> BTC["BuildTickContext()"]
+    BTC --> RP["RenderPrompt(systemPrompt, tctx)"]
+    RP --> Touch["touchLastRun(stateDir)"]
+    Touch --> Rec["state.RecordTick(stateDir)"]
+    Rec --> Run["RunClaude() or RunOpenAI()"]
+    Run --> Emit["Emit tick_done"]
+```
+
+### Schedule Configuration
+
+Priority (highest to lowest):
+1. `--cron` CLI flag
+2. `--interval` CLI flag
+3. `cron:` in agent file
+4. `interval:` in agent file
+5. Default: 60 seconds
+
+### Overlap Policy
+
+`overlap: skip` (default) — if a tick is still running when the next fires, the new tick is skipped with a `tick_done result=skipped` event. The `sync.Mutex.TryLock()` pattern serves double duty: overlap detection on the timer path and clean-shutdown wait on the signal path.
+
+---
+
+## 13. Pre-Collectors — `agent/collectors.go`
+
+Pre-collectors are shell commands that run in parallel before each agentic tick. Their output is injected into the system prompt via Go templates, giving the model fresh host context every cycle.
+
+### Execution Flow
+
+```mermaid
+flowchart LR
+    Tick["execTick"] --> RC["RunCollectors(collectors)"]
+    RC --> |"goroutine 1"| C1["bash -c 'ps aux'\ntimeout 10s"]
+    RC --> |"goroutine 2"| C2["bash -c 'ss -tnp'\ntimeout 10s"]
+    RC --> |"goroutine N"| CN["..."]
+    C1 --> Merge["[]CollectorResult"]
+    C2 --> Merge
+    CN --> Merge
+    Merge --> BTC["BuildTickContext()"]
+    BTC --> RP["RenderPrompt(body, TickContext)"]
+```
+
+### TickContext Template Data
+
+```go
+type TickContext struct {
+    Tick      int64
+    Time      time.Time
+    Host      string
+    Agent     string
+    LastRunAt time.Time
+    Collectors map[string]CollectorResult  // keyed by collector name
+}
+```
+
+### Template Example
+
+```markdown
+---
+collectors:
+  - name: processes
+    command: ps aux
+    timeout: 10s
+  - name: connections
+    command: ss -tnp
+    timeout: 10s
+---
+You are an EDR agent. Current time: {{ now }}
+Host: {{ .Host }} ({{ cloudRegion }})
+Last run: {{ .LastRunAt.Format "2006-01-02T15:04:05Z" }}
+
+=== Running Processes ===
+{{ (index .Collectors "processes").Output }}
+
+=== Network Connections ===
+{{ (index .Collectors "connections").Output }}
+```
+
+**Available template functions:**
+- `{{ now }}` — current UTC time as RFC3339
+- `{{ env "VAR_NAME" }}` — read environment variable
+- `{{ cloudRegion }}` — cloud region from `AWS_DEFAULT_REGION` / `AWS_REGION` / `CLOUDSDK_COMPUTE_REGION` / `AZURE_REGION`
+
+---
+
+## 14. Persistent State — `agent/state.go`
+
+`DaemonState` is persisted atomically to `stateDir/<name>/state.json` after every tick. It survives daemon restarts.
+
+### State Contents
+
+```go
+type DaemonState struct {
+    Dedup      map[string]int64 `json:"dedup"`        // hash → expiry (Unix ms)
+    TickCount  int64            `json:"tick_count"`
+    LastTickAt time.Time        `json:"last_tick_at"`
+}
+```
+
+### Dedup Cache
+
+Prevents re-alerting on findings that were already reported within `dedupeTtl`:
+
+```go
+func (s *DaemonState) IsDuplicate(text string, ttl time.Duration) bool
+func (s *DaemonState) AddToDedup(text string, ttl time.Duration)
+func (s *DaemonState) PruneDedup()  // removes expired entries
+```
+
+Uses SHA-256 content hashing (64-bit prefix for space efficiency):
+```go
+func contentHash(text string) string {
+    h := sha256.Sum256([]byte(text))
+    return fmt.Sprintf("%x", h[:8])
+}
+```
+
+### Atomic Writes
+
+State is written to `state.json.tmp` then renamed to `state.json` to prevent corruption on crash:
+```go
+os.WriteFile(path+".tmp", data, 0644)
+os.Rename(path+".tmp", path)
+```
+
+---
+
+## 15. RBAC Action Filtering — `agent/rbac.go`
+
+RBAC policies enforce allow/deny rules on tool calls **before** `ExecuteTool` is called. Blocked calls return a denial message to the model (not a Go error), so the model can reason about the restriction.
+
+### Evaluation Order
+
+```mermaid
+flowchart TD
+    Check["CheckRBAC(policy, toolName, input)"] --> D{"deny list\nnon-empty?"}
+    D --> |"matches a rule"| Deny["return false, reason"]
+    D --> |"no match"| A{"allow list\nnon-empty?"}
+    A --> |"matches a rule"| Allow["return true"]
+    A --> |"no match"| Block["return false, not on allow list"]
+    A --> |"allow list empty"| Allow2["return true (default)"]
+```
+
+### Agent File Configuration
+
+```yaml
+actions:
+  rbac:
+    deny:
+      - tool: bash
+        reason: arbitrary shell not permitted in production
+    allow:
+      - tool: read_file
+      - tool: search
+      - tool: list_files
+```
+
+### Integration Points
+
+- **Claude** (`buildBetaTools`): RBAC is checked inside every tool handler closure.
+- **OpenAI** (`RunOpenAI`): RBAC is checked in the tool execution loop before `ExecuteTool`.
+- **Denied calls**: emit `EventActionDenied` + return `"action denied: <reason>"` to the model.
+
+---
+
+## 16. Management Plane — `agent/mgmt.go`
+
+The management plane is an optional central server that daemons connect to for registration, heartbeat reporting, and remote config delivery. The connection uses mutual TLS (TLS 1.3).
+
+### Architecture
+
+```mermaid
+sequenceDiagram
+    participant Daemon as RunDaemon()
+    participant Mgmt as MgmtPlane
+    participant Server as Management Server
+
+    Daemon->>Mgmt: NewMgmtPlane (loads mTLS certs)
+    Mgmt->>Server: POST /api/v1/agents/register
+    loop every HeartbeatSec (default 30s)
+        Mgmt->>Server: POST /api/v1/agents/<name>/heartbeat\n{host, ts, tick_count}
+    end
+    loop every PollSec (default 60s)
+        Mgmt->>Server: GET /api/v1/agents/<name>/config
+        Server-->>Mgmt: {max_turns, effort, suspended}
+        Mgmt->>Daemon: onReload(remoteConfig) — hot-apply
+    end
+    Daemon->>Daemon: SIGHUP received — re-parse agent file
+```
+
+### Certificate Layout
+
+```
+/etc/okesu/
+├── agent.crt    ← agent client certificate
+├── agent.key    ← agent private key
+└── ca.crt       ← CA certificate (verifies management server)
+```
+
+`NewMgmtPlane` returns `(nil, nil)` when `mgmt.url` is empty — daemons operate normally without a management plane. If cert loading fails, a warning is emitted and the daemon continues without management connectivity.
+
+### Agent File Configuration
+
+```yaml
+mgmt:
+  url: https://mgmt.example.com
+  heartbeatSec: 30
+  pollSec: 60
+  certDir: /etc/okesu
+```
+
+### SIGHUP Hot Reload
+
+On `SIGHUP`, the daemon re-parses the agent file from disk and hot-applies `maxTurns` and `effort`. The next tick uses the updated config. No process restart is needed.
+
+```bash
+# Trigger hot reload:
+systemctl kill --signal=SIGHUP okesu-agent@edr-agent
+```
+
+---
+
+## 17. Deployment — systemd + install script
+
+### systemd Template Unit
+
+`systemd/okesu-agent@.service` is a template unit. One instance per agent name:
+
+```bash
+# Enable and start the "edr-agent" agent:
+systemctl enable okesu-agent@edr-agent
+systemctl start  okesu-agent@edr-agent
+
+# Follow logs:
+journalctl -fu okesu-agent@edr-agent
+
+# Hot reload config:
+systemctl kill --signal=SIGHUP okesu-agent@edr-agent
+```
+
+**Security hardening in the unit:**
+- Runs as unprivileged `okesu` system user
+- `ProtectSystem=strict` — OS directories read-only
+- `NoNewPrivileges=yes`
+- `PrivateTmp=yes`
+- `ReadWritePaths` limited to state dir, config dir, and `/tmp`
+
+**Per-agent secrets** go in `/etc/okesu/agents/<name>.env`:
+```bash
+# /etc/okesu/agents/edr-agent.env
+ANTHROPIC_API_KEY=sk-ant-...
+WEBHOOK_SECRET=hmac-signing-key
+```
+
+### Install Script
+
+```bash
+sudo ./scripts/install.sh --binary ./okesu --agent edr-agent
+```
+
+Steps performed:
+1. Creates `okesu` system user (if absent)
+2. Installs binary to `/usr/local/bin/okesu`
+3. Creates `/etc/okesu/` and `/var/lib/okesu/` directories
+4. Installs systemd template unit
+5. `systemctl daemon-reload`
+6. Enables and starts the named agent instance
+
+### Directory Layout (production)
+
+```
+/usr/local/bin/okesu              ← binary
+/etc/okesu/
+├── agent.crt / agent.key / ca.crt   ← mTLS certs
+└── agents/
+    ├── edr-agent.md                  ← agent file
+    └── edr-agent.env                 ← secrets (chmod 600)
+/var/lib/okesu/
+└── edr-agent/
+    ├── state.json                    ← dedup cache + tick count
+    ├── last_run                      ← last tick timestamp
+    └── ...
+```
+
+---
+
+## 18. End-to-End Request Flow
+
+### Task Mode — Claude
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Main as main.go
+    participant Runner as RunClaude()
+    participant SDK as BetaToolRunnerStreaming
+    participant API as Anthropic API
+
+    User->>Main: okesu claude --agent security-reviewer "audit ./src"
+    Main->>Main: ParseAgentFile → buildConfig
+    Main->>Runner: RunClaude(cfg)
+    Runner->>Runner: BuildSinks → SetGlobalSink (StdoutSink in task mode)
+    Runner->>Runner: buildBetaTools(ActiveTools, rbac)
+    loop until stop_reason = end_turn
+        Runner->>SDK: AllStreaming()
+        SDK->>API: POST /v1/messages
+        API-->>SDK: stream (text + tool_use)
+        SDK->>Runner: text deltas → Emit(EventText)
+        SDK->>SDK: parallel tool handlers
+        SDK->>SDK: CheckRBAC → ExecuteTool → Emit(EventToolCall/Result)
+    end
+    Runner->>Runner: Emit(EventDone)
+```
+
+### Daemon Mode — Full Tick
+
+```mermaid
+sequenceDiagram
+    participant Timer
+    participant Daemon as RunDaemon()
+    participant Collectors as RunCollectors()
+    participant Runner as RunClaude/OpenAI()
+    participant Sinks
+
+    Timer->>Daemon: tick fires
+    Daemon->>Daemon: tickMu.TryLock()
+    Daemon->>Daemon: state.PruneDedup()
+    Daemon->>Collectors: RunCollectors() — parallel shell cmds
+    Collectors-->>Daemon: []CollectorResult
+    Daemon->>Daemon: BuildTickContext + RenderPrompt
+    Daemon->>Daemon: touchLastRun + state.RecordTick
+    Daemon->>Runner: RunClaude(tickCfg)
+    Runner->>Sinks: Emit (stdout + file + webhook)
+    Runner-->>Daemon: done
+    Daemon->>Daemon: tickMu.Unlock()
+    Daemon->>Sinks: Emit tick_done
+```
+
+---
+
+## 19. Concurrency Model
+
+```mermaid
+graph TD
+    subgraph "Daemon goroutines"
+        ML["main event loop\n(select on timer + signals)"]
+        TG["tick goroutine\n(holds tickMu)"]
+        HB["heartbeat goroutine"]
+        CP["config poller goroutine"]
+        WH["webhook deliver goroutine"]
+        ML --> |"go func"| TG
+        ML --> |"go func (StartHeartbeat)"| HB
+        ML --> |"go func (StartConfigPoller)"| CP
+        ML --> |"go func (NewWebhookSink)"| WH
+    end
+
+    subgraph "Inside a tick goroutine"
+        TG --> Col["collector goroutines\n(one per collector, WaitGroup)"]
+        TG --> SDK["Claude SDK errgroup\n(parallel tool handlers)"]
+    end
+
+    SDK --> Sink["Sink.Write() — thread-safe\n(StdoutSink has mutex;\nFileBuffer has mutex;\nWebhookSink uses channel)"]
+```
+
+**Thread safety guarantees:**
+- `Emit()` → `emitToSink()` → `sink.Write()`: each sink implementation is mutex-protected.
+- `tickMu sync.Mutex` serializes tick execution and provides clean-shutdown wait.
+- `DaemonState.mu` protects dedup cache from concurrent reads/writes.
+- `MgmtPlane.mu sync.RWMutex` protects `remote` config from concurrent reads/writes.
+
+---
+
+## 20. Data Structures Reference
+
+### Config (full)
+
+```go
+type Config struct {
+    Name         string      // agent name (from agent file)
+    Provider     string      // "claude" | "codex"
+    Model        string
+    Prompt       string      // user task
+    SystemPrompt string      // agent file body (may contain Go template directives)
+    MaxTokens    int64
+    APIKey       string
+    Effort       string      // "low"|"medium"|"high"|"xhigh"|"max"
+    MaxTurns     int         // 0 = unlimited
+    AllowedTools []string    // empty = all tools
+    RBAC         *RBACPolicy // nil = no restrictions
+}
+```
+
+### DaemonConfig (full)
+
+```go
+type DaemonConfig struct {
+    Interval   time.Duration
+    Cron       string
+    Overlap    string         // "skip" | "queue"
+    StateDir   string
+    DedupeTTL  time.Duration
+    Collectors []CollectorDef
+    Outputs    []OutputDef
+    Mgmt       MgmtConfig
+}
+```
+
+### CollectorDef
+
+```go
+type CollectorDef struct {
+    Name       string
+    Command    string
+    Timeout    time.Duration
+    TimeoutStr string `yaml:"timeout"`
+}
+```
+
+### RBACPolicy
+
+```go
+type RBACPolicy struct {
+    Allow []RBACRule `yaml:"allow"`
+    Deny  []RBACRule `yaml:"deny"`
 }
 
-type Usage struct {
-    InputTokens  int64 `json:"input_tokens"`
-    OutputTokens int64 `json:"output_tokens"`
+type RBACRule struct {
+    Tool    string `yaml:"tool"`
+    Pattern string `yaml:"pattern,omitempty"`
+    Reason  string `yaml:"reason,omitempty"`
+}
+```
+
+### OutputDef
+
+```go
+type OutputDef struct {
+    Type      string `yaml:"type"`       // "stdout"|"file"|"webhook"
+    Path      string `yaml:"path"`
+    MaxBytes  int64  `yaml:"maxBytes"`
+    URL       string `yaml:"url"`
+    Secret    string `yaml:"secret"`
+    Retries   int    `yaml:"retries"`
+    BufferCap int    `yaml:"bufferCap"`
 }
 ```
 
 ### Provider API Mapping
 
-| Concept | Claude (`agent/claude.go`) | OpenAI (`agent/openai.go`) |
+| Concept | Claude | OpenAI |
 |---|---|---|
 | Client | `anthropic.NewClient()` | `openai.NewClient()` |
-| API endpoint | `/v1/messages` | `/v1/responses` |
+| Endpoint | `/v1/messages` | `/v1/responses` |
 | System prompt | `BetaMessageNewParams.System` | `ResponseNewParams.Instructions` |
 | Tool definition | `BetaTool` via `toolrunner.NewBetaTool` | `ToolUnionParam{OfFunction: FunctionToolParam}` |
-| Effort / reasoning | `BetaOutputConfigParam{Effort: ...}` | `shared.ReasoningParam{Effort: ...}` |
-| Loop management | SDK-managed (`BetaToolRunnerStreaming`) | Manual (`for {}` with `PreviousResponseID`) |
-| Multi-turn state | SDK accumulates messages in memory | Server-side via `previous_response_id` |
-| Text streaming | `BetaRawContentBlockDeltaEvent → BetaTextDelta` | SSE `response.output_text.delta` event |
-| Tool call detection | SDK dispatches to registered handler | Manual: `completedResp.Output[i].Type == "function_call"` |
-| Tool result submission | SDK sends `tool_result` content block | `ResponseInputItemParamOfFunctionCallOutput(callID, output)` |
-| Stop detection | `stop_reason == "end_turn"` (SDK internal) | `len(toolCalls) == 0` after stream |
+| Effort | `BetaOutputConfigParam{Effort}` | `shared.ReasoningParam{Effort}` |
+| Loop management | SDK-managed (`BetaToolRunnerStreaming`) | Manual with `PreviousResponseID` |
+| Multi-turn state | SDK in-memory | Server-side via `previous_response_id` |
+| Text streaming | `BetaRawContentBlockDeltaEvent` | SSE `response.output_text.delta` |
+| Tool call detection | SDK dispatches to handler | Manual: `item.Type == "function_call"` |
+| Tool result | `BetaToolResultBlockParamContentUnion` | `ResponseInputItemParamOfFunctionCallOutput` |
