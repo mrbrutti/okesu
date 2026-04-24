@@ -12,12 +12,19 @@ import (
 type EventType string
 
 const (
+	// Task mode events
 	EventInit       EventType = "init"        // session started
 	EventText       EventType = "text"        // text delta from model
 	EventToolCall   EventType = "tool_call"   // model is calling a tool
 	EventToolResult EventType = "tool_result" // tool execution result
 	EventDone       EventType = "done"        // session complete
 	EventError      EventType = "error"       // fatal error
+
+	// Daemon mode events
+	EventDaemonStart EventType = "daemon_start" // daemon process started
+	EventDaemonStop  EventType = "daemon_stop"  // daemon shutting down cleanly
+	EventTickStart   EventType = "tick_start"   // tick beginning
+	EventTickDone    EventType = "tick_done"    // tick complete
 )
 
 // Event is the canonical JSONL line written to stdout.
@@ -36,6 +43,12 @@ type Event struct {
 	Usage      *Usage      `json:"usage,omitempty"`
 	Turn       int         `json:"turn,omitempty"`
 	Ts         int64       `json:"ts"`
+
+	// Daemon mode fields
+	Agent  string `json:"agent,omitempty"`  // agent name
+	Host   string `json:"host,omitempty"`   // hostname running the daemon
+	Tick   int64  `json:"tick,omitempty"`   // tick sequence number
+	Result string `json:"result,omitempty"` // tick_done: completed|skipped|error
 }
 
 // Usage reports token consumption at session end.

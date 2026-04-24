@@ -267,6 +267,7 @@ func execSearch(input map[string]interface{}) string {
 
 // AgentDef holds the parsed frontmatter and body of an agent markdown file.
 type AgentDef struct {
+	// Common fields
 	Name        string   `yaml:"name"`
 	Description string   `yaml:"description"`
 	Model       string   `yaml:"model"`
@@ -274,7 +275,16 @@ type AgentDef struct {
 	Tools       []string `yaml:"tools"`     // okesu or Claude Code CLI tool names
 	MaxTurns    int      `yaml:"maxTurns"`
 	Effort      string   `yaml:"effort"`
-	Body        string   // system prompt (content after the frontmatter)
+
+	// Daemon mode fields
+	Mode      string `yaml:"mode"`      // "task" (default) | "daemon"
+	Interval  string `yaml:"interval"`  // e.g. "30s", "5m", "1h"
+	Cron      string `yaml:"cron"`      // cron expression, e.g. "*/5 * * * *"
+	Overlap   string `yaml:"overlap"`   // "skip" (default) | "queue"
+	StateDir  string `yaml:"stateDir"`  // path for state files and findings
+	DedupeTTL string `yaml:"dedupeTtl"` // e.g. "1h" — suppress duplicate findings
+
+	Body string // system prompt body (content after the frontmatter)
 }
 
 // ParseAgentFile loads and parses an agent markdown file by name.

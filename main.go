@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/section9labs/okesu/agent"
 	"github.com/spf13/cobra"
@@ -75,7 +76,7 @@ func rootCmd() *cobra.Command {
 All tool calls execute without any sandbox or approval gate.
 Output streams as JSONL to stdout.`,
 	}
-	root.AddCommand(claudeCmd(), codexCmd(), autoCmd())
+	root.AddCommand(claudeCmd(), codexCmd(), autoCmd(), daemonCmd())
 	return root
 }
 
@@ -139,17 +140,25 @@ func buildConfig(cmd *cobra.Command, args []string, provider string, def *agent.
 		}
 	}
 
+	name := ""
 	systemPrompt := ""
 	var allowedTools []string
 	if def != nil {
+		name = def.Name
 		systemPrompt = def.Body
 		allowedTools = def.Tools
 	}
 
+	prompt := ""
+	if len(args) > 0 {
+		prompt = args[0]
+	}
+
 	return agent.Config{
+		Name:         name,
 		Provider:     provider,
 		Model:        model,
-		Prompt:       args[0],
+		Prompt:       prompt,
 		SystemPrompt: systemPrompt,
 		MaxTokens:    maxTokens,
 		Effort:       effort,
@@ -346,4 +355,136 @@ API key precedence:
 	}
 	sharedFlags(cmd)
 	return cmd
+}
+
+func daemonCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "daemon",
+		Short: "Run an agent as a persistent scheduled daemon",
+		Long: `Run an agent in daemon mode: wake on schedule, execute one agentic tick,
+sleep, and repeat indefinitely. The agent file must specify mode: daemon.
+
+The prompt is assembled automatically each tick (from pre-collectors in Phase 2).
+No positional argument is accepted — use --agent to load the agent file.
+
+Signal handling:
+  SIGTERM / SIGINT — finish the current tick cleanly, then exit 0
+  SIGHUP           — hot config reload (Phase 6)
+
+Schedule precedence (highest to lowest):
+  1. --cron flag
+  2. --interval flag
+  3. cron: field in agent file
+  4. interval: field in agent file
+  5. default: 60s`,
+		Example: `  okesu daemon --agent edr-agent
+  okesu daemon --agent edr-agent --interval 30s
+  okesu daemon --agent report-builder --cron "0 8 * * 1-5"`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			agentName, _ := cmd.Flags().GetString("agent")
+			if agentName == "" {
+				return fmt.Errorf("--agent is required for daemon mode")
+			}
+
+			def, err := resolveAgent(cmd)
+			if err != nil {
+				return err
+			}
+
+			model, _ := cmd.Flags().GetString("model")
+			if model == "" && def != nil {
+				model = def.Model
+			}
+
+			provider, err := inferProvider(model, def)
+			if err != nil {
+				return err
+			}
+
+			apiKey, err := resolveAPIKey(cmd, apiKeyEnvVar(provider))
+			if err != nil {
+				return err
+			}
+
+			cfg, err := buildConfig(cmd, nil, provider, def)
+			if err != nil {
+				return err
+			}
+			cfg.APIKey = apiKey
+
+			dcfg, err := buildDaemonConfig(cmd, def)
+			if err != nil {
+				return err
+			}
+
+			return agent.RunDaemon(cfg, dcfg)
+		},
+	}
+	sharedFlags(cmd)
+	cmd.Flags().String("interval", "", "Override tick interval (e.g. 30s, 5m, 1h)")
+	cmd.Flags().String("cron", "", "Override cron schedule (e.g. '0 * * * *')")
+	return cmd
+}
+
+// buildDaemonConfig assembles a DaemonConfig from agent file frontmatter and CLI overrides.
+// CLI flags always take precedence over agent file values.
+func buildDaemonConfig(cmd *cobra.Command, def *agent.AgentDef) (agent.DaemonConfig, error) {
+	dcfg := agent.DaemonConfig{
+		Overlap:  "skip",
+		Interval: 60 * time.Second,
+	}
+
+	if def != nil {
+		if def.Interval != "" {
+			d, err := time.ParseDuration(def.Interval)
+			if err != nil {
+				return dcfg, fmt.Errorf("invalid interval %q in agent file: %w", def.Interval, err)
+			}
+			dcfg.Interval = d
+		}
+		if def.Cron != "" {
+			dcfg.Cron = def.Cron
+			dcfg.Interval = 0
+		}
+		if def.Overlap != "" {
+			dcfg.Overlap = def.Overlap
+		}
+		if def.StateDir != "" {
+			dcfg.StateDir = def.StateDir
+		} else if def.Name != "" {
+			dcfg.StateDir = "/var/lib/okesu/" + def.Name
+		}
+		if def.DedupeTTL != "" {
+			d, err := time.ParseDuration(def.DedupeTTL)
+			if err != nil {
+				return dcfg, fmt.Errorf("invalid dedupeTtl %q in agent file: %w", def.DedupeTTL, err)
+			}
+			dcfg.DedupeTTL = d
+		}
+	}
+
+	// CLI overrides — highest precedence.
+	if intervalStr, _ := cmd.Flags().GetString("interval"); intervalStr != "" {
+		d, err := time.ParseDuration(intervalStr)
+		if err != nil {
+			return dcfg, fmt.Errorf("invalid --interval %q: %w", intervalStr, err)
+		}
+		dcfg.Interval = d
+		dcfg.Cron = ""
+	}
+	if cronStr, _ := cmd.Flags().GetString("cron"); cronStr != "" {
+		dcfg.Cron = cronStr
+		dcfg.Interval = 0
+	}
+
+	return dcfg, nil
+}
+
+// apiKeyEnvVar returns the env var name for the given provider's API key.
+func apiKeyEnvVar(provider string) string {
+	if provider == "claude" {
+		return "ANTHROPIC_API_KEY"
+	}
+	return "OPENAI_API_KEY"
 }

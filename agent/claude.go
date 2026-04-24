@@ -11,6 +11,7 @@ import (
 
 // Config holds the runtime configuration passed from the CLI.
 type Config struct {
+	Name         string // agent name (from agent file; used in daemon events)
 	Provider     string
 	Model        string
 	Prompt       string
