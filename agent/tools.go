@@ -1,0 +1,338 @@
+package agent
+
+import (
+	"bytes"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+
+	"gopkg.in/yaml.v3"
+)
+
+// ToolDef describes a tool available to both providers.
+type ToolDef struct {
+	Name        string
+	Description string
+	Parameters  map[string]interface{} // JSON Schema object
+	Required    []string
+}
+
+// Tools is the full shared toolset. Use ActiveTools to get a filtered subset.
+var Tools = []ToolDef{
+	{
+		Name:        "bash",
+		Description: "Execute a shell command. Returns combined stdout and stderr. Runs in the current working directory.",
+		Parameters: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"command": map[string]interface{}{
+					"type":        "string",
+					"description": "The bash command to execute.",
+				},
+				"timeout_seconds": map[string]interface{}{
+					"type":        "integer",
+					"description": "Optional timeout in seconds (default: 120).",
+				},
+			},
+		},
+		Required: []string{"command"},
+	},
+	{
+		Name:        "read_file",
+		Description: "Read the full contents of a file at the given path.",
+		Parameters: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"path": map[string]interface{}{
+					"type":        "string",
+					"description": "Absolute or relative path to the file.",
+				},
+			},
+		},
+		Required: []string{"path"},
+	},
+	{
+		Name:        "write_file",
+		Description: "Write content to a file, creating it (and any parent directories) if it does not exist.",
+		Parameters: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"path": map[string]interface{}{
+					"type":        "string",
+					"description": "Path to write to.",
+				},
+				"content": map[string]interface{}{
+					"type":        "string",
+					"description": "Content to write.",
+				},
+			},
+		},
+		Required: []string{"path", "content"},
+	},
+	{
+		Name:        "list_files",
+		Description: "List files matching a glob pattern. Returns one path per line.",
+		Parameters: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"pattern": map[string]interface{}{
+					"type":        "string",
+					"description": "Glob pattern e.g. ./src/**/*.go or ./*.md",
+				},
+			},
+		},
+		Required: []string{"pattern"},
+	},
+	{
+		Name:        "search",
+		Description: "Search for a regex pattern in files. Returns matching lines with file:line prefix.",
+		Parameters: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"pattern": map[string]interface{}{
+					"type":        "string",
+					"description": "Regex pattern to search for.",
+				},
+				"path": map[string]interface{}{
+					"type":        "string",
+					"description": "Directory or file to search in (default: .).",
+				},
+				"file_glob": map[string]interface{}{
+					"type":        "string",
+					"description": "Optional file glob filter e.g. *.go",
+				},
+			},
+		},
+		Required: []string{"pattern"},
+	},
+}
+
+// ActiveTools returns the subset of Tools matching the given names.
+// If names is empty, all tools are returned.
+// Accepts both okesu names (bash, read_file, write_file, list_files, search)
+// and Claude Code CLI names (Bash, Read, Edit, Write, Glob, Grep).
+func ActiveTools(names []string) []ToolDef {
+	if len(names) == 0 {
+		return Tools
+	}
+	allowed := make(map[string]bool, len(names))
+	for _, n := range names {
+		if norm := normalizeToolName(n); norm != "" {
+			allowed[norm] = true
+		}
+	}
+	result := make([]ToolDef, 0, len(allowed))
+	for _, t := range Tools {
+		if allowed[t.Name] {
+			result = append(result, t)
+		}
+	}
+	return result
+}
+
+// normalizeToolName maps Claude Code CLI and okesu tool names to the canonical
+// okesu tool name. Returns "" for unknown/unsupported tools.
+func normalizeToolName(name string) string {
+	switch strings.ToLower(name) {
+	case "bash":
+		return "bash"
+	case "read", "read_file":
+		return "read_file"
+	case "write", "edit", "write_file":
+		return "write_file"
+	case "glob", "list_files":
+		return "list_files"
+	case "grep", "search":
+		return "search"
+	default:
+		return ""
+	}
+}
+
+// ExecuteTool dispatches a tool call by name with the parsed input map.
+func ExecuteTool(name string, input map[string]interface{}) string {
+	switch name {
+	case "bash":
+		return execBash(input)
+	case "read_file":
+		return execReadFile(input)
+	case "write_file":
+		return execWriteFile(input)
+	case "list_files":
+		return execListFiles(input)
+	case "search":
+		return execSearch(input)
+	default:
+		return fmt.Sprintf("error: unknown tool %q", name)
+	}
+}
+
+func execBash(input map[string]interface{}) string {
+	command, _ := input["command"].(string)
+	if command == "" {
+		return "error: missing command"
+	}
+
+	var buf bytes.Buffer
+	cmd := exec.Command("bash", "-c", command)
+	cmd.Stdout = &buf
+	cmd.Stderr = &buf
+	cmd.Run() //nolint — we always return output regardless of exit code
+
+	out := buf.String()
+	if len(out) > 64*1024 {
+		out = out[:64*1024] + "\n... (output truncated at 64KB)"
+	}
+	return out
+}
+
+func execReadFile(input map[string]interface{}) string {
+	path, _ := input["path"].(string)
+	if path == "" {
+		return "error: missing path"
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Sprintf("error: %v", err)
+	}
+	if len(content) > 128*1024 {
+		return string(content[:128*1024]) + "\n... (file truncated at 128KB)"
+	}
+	return string(content)
+}
+
+func execWriteFile(input map[string]interface{}) string {
+	path, _ := input["path"].(string)
+	content, _ := input["content"].(string)
+	if path == "" {
+		return "error: missing path"
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return fmt.Sprintf("error creating directories: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		return fmt.Sprintf("error: %v", err)
+	}
+	return fmt.Sprintf("written %d bytes to %s", len(content), path)
+}
+
+func execListFiles(input map[string]interface{}) string {
+	pattern, _ := input["pattern"].(string)
+	if pattern == "" {
+		return "error: missing pattern"
+	}
+	matches, err := filepath.Glob(pattern)
+	if err != nil {
+		return fmt.Sprintf("error: %v", err)
+	}
+	if len(matches) == 0 {
+		return "(no files matched)"
+	}
+	return strings.Join(matches, "\n")
+}
+
+func execSearch(input map[string]interface{}) string {
+	pattern, _ := input["pattern"].(string)
+	if pattern == "" {
+		return "error: missing pattern"
+	}
+	searchPath, _ := input["path"].(string)
+	if searchPath == "" {
+		searchPath = "."
+	}
+	fileGlob, _ := input["file_glob"].(string)
+
+	args := []string{"-rn", "--color=never", pattern, searchPath}
+	if fileGlob != "" {
+		args = []string{"--include=" + fileGlob, "-rn", "--color=never", pattern, searchPath}
+	}
+
+	var buf bytes.Buffer
+	cmd := exec.Command("grep", args...)
+	cmd.Stdout = &buf
+	cmd.Stderr = &buf
+	cmd.Run() //nolint
+
+	out := buf.String()
+	if out == "" {
+		return "(no matches found)"
+	}
+	if len(out) > 32*1024 {
+		out = out[:32*1024] + "\n... (truncated)"
+	}
+	return out
+}
+
+// AgentDef holds the parsed frontmatter and body of an agent markdown file.
+type AgentDef struct {
+	Name        string   `yaml:"name"`
+	Description string   `yaml:"description"`
+	Model       string   `yaml:"model"`
+	Provider    string   `yaml:"provider"`  // "claude" | "codex" — used by okesu auto
+	Tools       []string `yaml:"tools"`     // okesu or Claude Code CLI tool names
+	MaxTurns    int      `yaml:"maxTurns"`
+	Effort      string   `yaml:"effort"`
+	Body        string   // system prompt (content after the frontmatter)
+}
+
+// ParseAgentFile loads and parses an agent markdown file by name.
+// It searches these directories in order, stopping at the first match:
+//
+//  1. .claude/agents/<name>.md  (project-local, Claude CLI convention)
+//  2. .codex/agents/<name>.md   (project-local, Codex convention)
+//  3. ~/.claude/agents/<name>.md (user global)
+//  4. ~/.codex/agents/<name>.md  (user global)
+func ParseAgentFile(name string) (*AgentDef, error) {
+	home := os.Getenv("HOME")
+	candidates := []string{
+		filepath.Join(".claude", "agents", name+".md"),
+		filepath.Join(".codex", "agents", name+".md"),
+		filepath.Join(home, ".claude", "agents", name+".md"),
+		filepath.Join(home, ".codex", "agents", name+".md"),
+	}
+	for _, path := range candidates {
+		content, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		return parseAgentContent(string(content))
+	}
+	return nil, fmt.Errorf("agent %q not found in .claude/agents/, .codex/agents/, ~/.claude/agents/, or ~/.codex/agents/", name)
+}
+
+// parseAgentContent splits YAML frontmatter from body and unmarshals the YAML.
+func parseAgentContent(content string) (*AgentDef, error) {
+	def := &AgentDef{}
+
+	if !strings.HasPrefix(content, "---") {
+		def.Body = strings.TrimSpace(content)
+		return def, nil
+	}
+
+	rest := content[3:]
+	idx := strings.Index(rest, "\n---")
+	if idx == -1 {
+		def.Body = strings.TrimSpace(content)
+		return def, nil
+	}
+
+	yamlStr := rest[:idx]
+	def.Body = strings.TrimSpace(rest[idx+4:])
+
+	if err := yaml.Unmarshal([]byte(yamlStr), def); err != nil {
+		return nil, fmt.Errorf("parsing agent frontmatter: %w", err)
+	}
+
+	return def, nil
+}
+
+// LoadAgentFile is kept for compatibility. Use ParseAgentFile for full frontmatter access.
+func LoadAgentFile(name string) (string, error) {
+	def, err := ParseAgentFile(name)
+	if err != nil {
+		return "", err
+	}
+	return def.Body, nil
+}
