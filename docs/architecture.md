@@ -97,11 +97,17 @@ okesu/
 │   ├── daemon.go                  # Daemon loop, scheduler, DaemonConfig
 │   ├── collectors.go              # Pre-collector execution and template rendering
 │   ├── state.go                   # Persistent daemon state, dedup cache
-│   ├── buffer.go                  # MemoryBuffer (ring), FileBuffer (rotating)
+│   ├── buffer.go                  # MemoryBuffer (ring), FileBuffer (rotating), OutputDef
 │   ├── sinks.go                   # Sink interface, StdoutSink, JSONLFileSink,
-│   │                              #   WebhookSink, FanoutSink, global sink registry
+│   │                              #   WebhookSink, FilteredSink, FanoutSink, global sink
 │   ├── rbac.go                    # RBACPolicy, CheckRBAC, EmitActionDenied
-│   └── mgmt.go                    # Management plane: mTLS, register, heartbeat, poll
+│   ├── mgmt.go                    # Management plane: mTLS, register, heartbeat, poll
+│   ├── api_policy.go              # APIUnavailablePolicy interface (Control Plane hook)
+│   └── apierr.go                  # classifyRunError — SDK/network error detection
+│
+├── examples/
+│   └── agents/
+│       └── edr.md                 # Sample EDR daemon agent file
 │
 ├── systemd/
 │   └── okesu-agent@.service       # Systemd template unit
@@ -109,10 +115,14 @@ okesu/
 ├── scripts/
 │   └── install.sh                 # Install binary, user, dirs, and systemd unit
 │
+├── Dockerfile                     # Multi-stage build: Go builder → Debian slim runtime
+├── .dockerignore
+│
 ├── .claude/
 │   ├── settings.local.json
 │   └── agents/
-│       └── security-reviewer.md   # Example agent file
+│       ├── security-reviewer.md   # Example agent file
+│       └── edr.md                 # Symlink → examples/agents/edr.md
 │
 └── docs/
     ├── architecture.md            # This document
@@ -272,7 +282,7 @@ actions:
       - tool: search
 
 # Management plane
-mgmt:
+management:
   url: https://mgmt.example.com
   heartbeatSec: 30
   pollSec: 60
@@ -282,9 +292,15 @@ mgmt:
 You are an autonomous EDR agent. Your role is to...
 
 <!-- Go template directives are expanded before each tick: -->
-Current time: {{ .Time.Format "2006-01-02T15:04:05Z" }}
-Processes:
-{{ index .Collectors "processes" | .Output }}
+Current time: {{ .TickTime }}
+Host: {{ .HostID }} | Region: {{ .CloudRegion }}
+Last run: {{ .LastRunISO }}
+
+=== Running Processes ===
+{{ (index .Collectors "processes").Output }}
+
+=== Network Connections ===
+{{ (index .Collectors "connections").Output }}
 ```
 
 ### AgentDef Struct (full)
@@ -447,8 +463,11 @@ All activity is serialized as JSONL. `Emit()` routes every event through the act
 | `tick_start` | Tick beginning |
 | `tick_done` | Tick complete (`completed\|skipped\|error`) |
 | `collector_result` | Pre-collector command finished |
-| `finding` | Agent-reported security finding |
+| `finding` | Agent-reported finding |
+| `action_taken` | Tool executed after RBAC allow (daemon mode) |
 | `action_denied` | RBAC blocked a tool call |
+| `api_unavailable` | AI provider API unreachable or errored |
+| `config_reloaded` | Config reloaded via SIGHUP or management plane |
 
 ### Full Event Schema
 
@@ -466,16 +485,33 @@ type Event struct {
     StopReason string      `json:"stop_reason,omitempty"`
     Usage      *Usage      `json:"usage,omitempty"`
     Turn       int         `json:"turn,omitempty"`
-    Ts         int64       `json:"ts"`             // Unix ms
-    // Daemon fields
-    Agent     string `json:"agent,omitempty"`
-    Host      string `json:"host,omitempty"`
-    Tick      int64  `json:"tick,omitempty"`
-    Result    string `json:"result,omitempty"`
-    Collector string `json:"collector,omitempty"`
-    Bytes     int    `json:"bytes,omitempty"`
-    Severity  string `json:"severity,omitempty"`   // finding: critical|high|medium|low|info
-    Title     string `json:"title,omitempty"`       // finding: short title
+    Ts         int64       `json:"ts"`                      // Unix ms
+
+    // Daemon lifecycle
+    Agent        string `json:"agent,omitempty"`             // agent name
+    Host         string `json:"host,omitempty"`              // hostname
+    Tick         int64  `json:"tick,omitempty"`              // tick sequence number
+    Result       string `json:"result,omitempty"`            // tick_done: completed|skipped|error
+    Duration     string `json:"duration,omitempty"`          // tick_done: wall time e.g. "1.4s"
+    Findings     int    `json:"findings,omitempty"`          // tick_done: finding count
+    ActionsTaken int    `json:"actions_taken,omitempty"`     // tick_done: allowed tool call count
+
+    // Collector
+    Collector string `json:"collector,omitempty"`            // collector name
+    Bytes     int    `json:"bytes,omitempty"`                // output size
+
+    // Finding
+    Severity  string `json:"severity,omitempty"`             // critical|high|medium|low|info
+    Title     string `json:"title,omitempty"`                // short human-readable title
+    Evidence  string `json:"evidence,omitempty"`             // raw telemetry lines
+    Resource  string `json:"resource,omitempty"`             // affected resource (pid:N, path:...)
+    DedupKey  string `json:"dedup_key,omitempty"`            // dedup cache key
+
+    // RBAC / action
+    Reason string `json:"reason,omitempty"`                  // action_denied: why blocked
+
+    // API unavailability
+    StatusCode int `json:"status_code,omitempty"`            // HTTP status (0 = network error)
 }
 ```
 
@@ -498,9 +534,27 @@ type Sink interface {
 
 ```mermaid
 graph LR
-    FanoutSink --> StdoutSink["StdoutSink\nfmt.Printf + mutex"]
-    FanoutSink --> JSONLFileSink["JSONLFileSink\nFileBuffer\n(rotating JSONL)"]
-    FanoutSink --> WebhookSink["WebhookSink\nHMAC-SHA256\nasync queue\nexponential backoff"]
+    FanoutSink --> FS1["FilteredSink\n(optional per-sink)"]
+    FanoutSink --> FS2["FilteredSink"]
+    FanoutSink --> FS3["FilteredSink"]
+    FS1 --> StdoutSink["StdoutSink\nfmt.Printf + mutex"]
+    FS2 --> JSONLFileSink["JSONLFileSink\nFileBuffer\n(rotating JSONL)"]
+    FS3 --> WebhookSink["WebhookSink\nHMAC-SHA256\nasync queue\nexponential backoff"]
+```
+
+### FilteredSink
+
+Each sink can be wrapped in a `FilteredSink` that only forwards events whose `type` is in an allow-list. Configured via the `events:` field on an output definition. An empty or absent `events` field means all events are forwarded.
+
+```yaml
+outputs:
+  - type: stdout                           # all events
+  - type: file
+    path: /var/log/okesu/agent.jsonl
+    events: [finding, action_taken, error]  # filtered
+  - type: webhook
+    url: https://siem.example.com/events
+    events: [finding, action_denied]        # filtered — no tick noise
 ```
 
 ### WebhookSink Architecture
@@ -590,12 +644,18 @@ flowchart TD
 flowchart TD
     T["execTick()"] --> PS["state.PruneDedup()"]
     PS --> RC["RunCollectors() — parallel"]
-    RC --> BTC["BuildTickContext()"]
+    RC --> |"non-optional failure"| AbortErr["Emit error + tick_done error"]
+    RC --> |"ok"| BTC["BuildTickContext()"]
     BTC --> RP["RenderPrompt(systemPrompt, tctx)"]
     RP --> Touch["touchLastRun(stateDir)"]
-    Touch --> Rec["state.RecordTick(stateDir)"]
-    Rec --> Run["RunClaude() or RunOpenAI()"]
-    Run --> Emit["Emit tick_done"]
+    Touch --> Run["RunClaude() or RunOpenAI()"]
+    Run --> |"success"| Rec["state.RecordTick(stateDir)"]
+    Run --> |"API error"| Classify["classifyRunError()"]
+    Run --> |"local error"| LocalErr["EmitError()"]
+    Classify --> APIUnavail["Emit api_unavailable\n+ APIPolicy.OnAPIUnavailable()"]
+    APIUnavail --> Rec
+    LocalErr --> Rec
+    Rec --> Done["Emit tick_done"]
 ```
 
 ### Schedule Configuration
@@ -610,6 +670,27 @@ Priority (highest to lowest):
 ### Overlap Policy
 
 `overlap: skip` (default) — if a tick is still running when the next fires, the new tick is skipped with a `tick_done result=skipped` event. The `sync.Mutex.TryLock()` pattern serves double duty: overlap detection on the timer path and clean-shutdown wait on the signal path.
+
+### API Unavailability — `agent/apierr.go` + `agent/api_policy.go`
+
+When `RunClaude()` or `RunOpenAI()` returns an error, `classifyRunError()` inspects the error chain to distinguish provider failures from local errors:
+
+| Match | isAPIError | statusCode |
+|---|---|---|
+| `*anthropic.Error` | true | HTTP status (429, 5xx, etc.) |
+| `*openai.Error` | true | HTTP status |
+| `*url.Error` (DNS, TLS, timeout) | true | 0 |
+| anything else | false | — |
+
+When `isAPIError` is true, `execTick` emits `EventAPIUnavailable` (with `status_code` and `error` fields) and invokes `DaemonConfig.APIPolicy.OnAPIUnavailable()`. When false, the error is treated as a local error via `EmitError()`.
+
+`APIUnavailablePolicy` is the Control Plane integration hook. The default is `NoopAPIPolicy` (do nothing). A future Control Plane implementation can supply a concrete policy that buffers prompts, switches providers, or escalates.
+
+```go
+type APIUnavailablePolicy interface {
+    OnAPIUnavailable(ctx context.Context, provider, model string, statusCode int, err error)
+}
+```
 
 ---
 
@@ -636,12 +717,23 @@ flowchart LR
 
 ```go
 type TickContext struct {
-    Tick      int64
-    Time      time.Time
-    Host      string
-    Agent     string
-    LastRunAt time.Time
-    Collectors map[string]CollectorResult  // keyed by collector name
+    // Convenience string aliases (design-specified names for templates)
+    HostID      string    // hostname
+    CloudRegion string    // AWS/GCP/Azure region or "unknown"
+    AgentName   string    // from agent file frontmatter
+    TickTime    string    // RFC3339 timestamp of this tick
+    LastRunISO  string    // ISO 8601 timestamp of the previous tick
+    LastRunFile string    // absolute path to last_run sentinel file
+    StateDir    string    // state directory path
+
+    // Strongly-typed fields
+    Tick           int64
+    Time           time.Time
+    Host           string
+    Agent          string
+    LastRunAt      time.Time
+    Collectors     map[string]CollectorResult  // indexed: {{ (index .Collectors "name").Output }}
+    CollectorsList []CollectorResult           // iterable: {{ range .CollectorsList }}
 }
 ```
 
@@ -651,21 +743,23 @@ type TickContext struct {
 ---
 collectors:
   - name: processes
-    command: ps aux
-    timeout: 10s
+    command: "ps aux --no-headers"
+    timeout: 5s
   - name: connections
-    command: ss -tnp
-    timeout: 10s
+    command: "ss -tulnp"
+    timeout: 5s
 ---
-You are an EDR agent. Current time: {{ now }}
-Host: {{ .Host }} ({{ cloudRegion }})
-Last run: {{ .LastRunAt.Format "2006-01-02T15:04:05Z" }}
+You are an EDR agent on host {{ .HostID }} in {{ .CloudRegion }}.
+Tick: {{ .Tick }} | Time: {{ .TickTime }} | Last run: {{ .LastRunISO }}
 
-=== Running Processes ===
-{{ (index .Collectors "processes").Output }}
+## Telemetry
 
-=== Network Connections ===
-{{ (index .Collectors "connections").Output }}
+{{ range .CollectorsList }}
+### {{ .Name }}{{ if .Error }} — ERROR: {{ .Error }}{{ end }}{{ if .Skipped }} (skipped){{ end }}
+` ` `
+{{ .Output }}
+` ` `
+{{ end }}
 ```
 
 **Available template functions:**
@@ -683,9 +777,11 @@ Last run: {{ .LastRunAt.Format "2006-01-02T15:04:05Z" }}
 
 ```go
 type DaemonState struct {
-    Dedup      map[string]int64 `json:"dedup"`        // hash → expiry (Unix ms)
+    mu         sync.Mutex       `json:"-"`
+    Dedup      map[string]int64 `json:"dedup,omitempty"` // hash → expiry (Unix ms)
     TickCount  int64            `json:"tick_count"`
-    LastTickAt time.Time        `json:"last_tick_at"`
+    ErrorCount int64            `json:"error_count"`     // ticks that ended with an error
+    LastTickAt time.Time        `json:"last_tick_at,omitempty"`
 }
 ```
 
@@ -784,17 +880,17 @@ sequenceDiagram
 
 ```
 /etc/okesu/
-├── agent.crt    ← agent client certificate
-├── agent.key    ← agent private key
-└── ca.crt       ← CA certificate (verifies management server)
+├── client.crt    ← agent client certificate
+├── client.key    ← agent private key
+└── ca.crt        ← CA certificate (verifies management server)
 ```
 
-`NewMgmtPlane` returns `(nil, nil)` when `mgmt.url` is empty — daemons operate normally without a management plane. If cert loading fails, a warning is emitted and the daemon continues without management connectivity.
+`NewMgmtPlane` returns `(nil, nil)` when `management.url` is empty — daemons operate normally without a management plane. If cert loading fails, a warning is emitted and the daemon continues without management connectivity.
 
 ### Agent File Configuration
 
 ```yaml
-mgmt:
+management:
   url: https://mgmt.example.com
   heartbeatSec: 30
   pollSec: 60
@@ -863,16 +959,37 @@ Steps performed:
 ```
 /usr/local/bin/okesu              ← binary
 /etc/okesu/
-├── agent.crt / agent.key / ca.crt   ← mTLS certs
+├── client.crt / client.key / ca.crt ← mTLS certs
 └── agents/
-    ├── edr-agent.md                  ← agent file
-    └── edr-agent.env                 ← secrets (chmod 600)
+    ├── edr.md                        ← agent file
+    └── edr.env                       ← secrets (chmod 600)
 /var/lib/okesu/
 └── edr-agent/
     ├── state.json                    ← dedup cache + tick count
     ├── last_run                      ← last tick timestamp
     └── ...
 ```
+
+### Docker
+
+A multi-stage `Dockerfile` is provided for container-based deployment and testing. The build stage compiles a static Go binary; the runtime stage runs on `debian:bookworm-slim` with `procps`, `iproute2`, `findutils`, and `util-linux` for the pre-collectors.
+
+```bash
+# Build
+docker build -t okesu:dev .
+
+# Run the EDR agent with a 30s tick interval
+docker run --rm -it \
+  -e ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
+  okesu:dev daemon --agent edr --interval 30s
+
+# Pipe through jq for readable output
+docker run --rm -it \
+  -e ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
+  okesu:dev daemon --agent edr --interval 30s 2>/dev/null | jq .
+```
+
+The container requires only an API key at runtime. No management plane, mTLS certificates, or webhook endpoint is needed for basic testing.
 
 ---
 
@@ -920,12 +1037,17 @@ sequenceDiagram
     Daemon->>Collectors: RunCollectors() — parallel shell cmds
     Collectors-->>Daemon: []CollectorResult
     Daemon->>Daemon: BuildTickContext + RenderPrompt
-    Daemon->>Daemon: touchLastRun + state.RecordTick
-    Daemon->>Runner: RunClaude(tickCfg)
+    Daemon->>Daemon: touchLastRun()
+    Daemon->>Runner: RunClaude(tickCfg) or RunOpenAI(tickCfg)
     Runner->>Sinks: Emit (stdout + file + webhook)
-    Runner-->>Daemon: done
-    Daemon->>Daemon: tickMu.Unlock()
+    Runner-->>Daemon: done (or error)
+    alt API error
+        Daemon->>Sinks: Emit api_unavailable
+        Daemon->>Daemon: APIPolicy.OnAPIUnavailable()
+    end
+    Daemon->>Daemon: state.RecordTick()
     Daemon->>Sinks: Emit tick_done
+    Daemon->>Daemon: tickMu.Unlock()
 ```
 
 ---
@@ -979,6 +1101,7 @@ type Config struct {
     MaxTurns     int         // 0 = unlimited
     AllowedTools []string    // empty = all tools
     RBAC         *RBACPolicy // nil = no restrictions
+    IsDaemon     bool        // true when running under RunDaemon (enables action_taken events)
 }
 ```
 
@@ -988,12 +1111,13 @@ type Config struct {
 type DaemonConfig struct {
     Interval   time.Duration
     Cron       string
-    Overlap    string         // "skip" | "queue"
+    Overlap    string                // "skip" | "queue"
     StateDir   string
     DedupeTTL  time.Duration
     Collectors []CollectorDef
     Outputs    []OutputDef
     Mgmt       MgmtConfig
+    APIPolicy  APIUnavailablePolicy  // nil defaults to NoopAPIPolicy
 }
 ```
 
@@ -1001,10 +1125,11 @@ type DaemonConfig struct {
 
 ```go
 type CollectorDef struct {
-    Name       string
-    Command    string
-    Timeout    time.Duration
-    TimeoutStr string `yaml:"timeout"`
+    Name       string        `yaml:"name"`
+    Command    string        `yaml:"command"`
+    Timeout    time.Duration `yaml:"-"`                 // parsed from TimeoutStr
+    TimeoutStr string        `yaml:"timeout,omitempty"` // e.g. "30s"
+    Optional   bool          `yaml:"optional"`          // true: failure = skip; false: failure = abort tick
 }
 ```
 
@@ -1027,13 +1152,14 @@ type RBACRule struct {
 
 ```go
 type OutputDef struct {
-    Type      string `yaml:"type"`       // "stdout"|"file"|"webhook"
-    Path      string `yaml:"path"`
-    MaxBytes  int64  `yaml:"maxBytes"`
-    URL       string `yaml:"url"`
-    Secret    string `yaml:"secret"`
-    Retries   int    `yaml:"retries"`
-    BufferCap int    `yaml:"bufferCap"`
+    Type      string   `yaml:"type"`               // "stdout" | "file" | "webhook"
+    Path      string   `yaml:"path,omitempty"`     // file: JSONL log path
+    MaxBytes  int64    `yaml:"maxBytes,omitempty"` // file: rotation threshold
+    URL       string   `yaml:"url,omitempty"`      // webhook: endpoint URL
+    Secret    string   `yaml:"secret,omitempty"`   // webhook: HMAC-SHA256 signing secret
+    Retries   int      `yaml:"retries,omitempty"`  // webhook: max delivery attempts
+    BufferCap int      `yaml:"bufferCap,omitempty"`// webhook: ring buffer size
+    Events    []string `yaml:"events,omitempty"`   // event type allow-list (empty = all)
 }
 ```
 

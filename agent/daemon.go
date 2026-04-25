@@ -23,7 +23,11 @@ type DaemonConfig struct {
 	DedupeTTL  time.Duration  // window for suppressing duplicate findings
 	Collectors []CollectorDef // pre-collector commands run before each tick
 	Outputs    []OutputDef    // output sinks; defaults to stdout-only when empty
-	Mgmt       MgmtConfig     // management plane connection config
+	Mgmt       MgmtConfig          // management plane connection config
+	// APIPolicy is called when the AI provider API is unreachable or returns a
+	// server-side error. Nil defaults to NoopAPIPolicy. The Control Plane will
+	// supply a concrete implementation that can buffer, escalate, or switch providers.
+	APIPolicy  APIUnavailablePolicy
 }
 
 // RunDaemon runs the agent in daemon mode: sleeps until the next scheduled tick,
@@ -246,12 +250,34 @@ func execTick(cfg Config, dcfg DaemonConfig, hostname string, tickNum int64, las
 	}
 
 	hadError := runErr != nil
+	if hadError {
+		if isAPI, code := classifyRunError(runErr); isAPI {
+			// API-level failure: emit a dedicated event so the Control Plane and
+			// downstream consumers can distinguish provider outages from local errors.
+			Emit(Event{
+				Type:       EventAPIUnavailable,
+				Agent:      cfg.Name,
+				Host:       hostname,
+				Tick:       tickNum,
+				Provider:   cfg.Provider,
+				Model:      cfg.Model,
+				StatusCode: code,
+				Error:      runErr.Error(),
+			})
+			policy := dcfg.APIPolicy
+			if policy == nil {
+				policy = NoopAPIPolicy{}
+			}
+			policy.OnAPIUnavailable(context.Background(), cfg.Provider, cfg.Model, code, runErr)
+		} else {
+			EmitError(runErr)
+		}
+	}
 	state.RecordTick(dcfg.StateDir, cfg.Name, hadError)
 
 	result := "completed"
 	if hadError {
 		result = "error"
-		EmitError(runErr)
 	}
 
 	Emit(Event{

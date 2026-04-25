@@ -69,6 +69,9 @@ type Event struct {
 
 	// RBAC / action fields
 	Reason string `json:"reason,omitempty"` // action_denied: why the call was blocked
+
+	// API unavailability fields
+	StatusCode int `json:"status_code,omitempty"` // api_unavailable: HTTP status (0 = network error)
 }
 
 // Usage reports token consumption at session end.

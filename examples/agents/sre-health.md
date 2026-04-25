@@ -1,0 +1,188 @@
+---
+# ── Identity ────────────────────────────────────────────────────────────────
+name: sre-health
+description: >
+  SRE health monitor. Checks service health endpoints, TLS certificate expiry,
+  deployment frequency, and recent incident patterns. Provides an operational
+  health summary each tick.
+
+# ── Provider ─────────────────────────────────────────────────────────────────
+provider: claude
+model: claude-sonnet-4-6
+effort: low
+maxTurns: 10
+
+# ── Schedule ─────────────────────────────────────────────────────────────────
+mode: daemon
+interval: 10m
+overlap: skip
+
+# ── State ────────────────────────────────────────────────────────────────────
+stateDir: /var/lib/okesu/sre-health
+dedupeTtl: 1h
+
+# ── Tools ────────────────────────────────────────────────────────────────────
+tools:
+  - bash
+  - read_file
+  - write_file
+
+actions:
+  rbac:
+    allow:
+      - tool: bash
+        reason: "health checks and API queries"
+      - tool: read_file
+      - tool: write_file
+        reason: "health reports"
+    deny: []
+
+# ── Pre-collectors ───────────────────────────────────────────────────────────
+# Customize the URLs, endpoints, and API tokens in the env file or directly below.
+collectors:
+  # Health endpoint checks — add your services here.
+  - name: health_endpoints
+    command: >
+      for url in ${OKESU_HEALTH_URLS:-"https://api.example.com/health https://web.example.com/health"}; do
+        code=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 --max-time 10 "$url" 2>/dev/null)
+        latency=$(curl -s -o /dev/null -w "%{time_total}" --connect-timeout 5 --max-time 10 "$url" 2>/dev/null)
+        echo "$url status=$code latency=${latency}s"
+      done
+    timeout: 30s
+
+  # TLS certificate expiry check.
+  - name: cert_expiry
+    command: >
+      for host in ${OKESU_TLS_HOSTS:-"api.example.com:443 web.example.com:443"}; do
+        expiry=$(echo | openssl s_client -servername "${host%%:*}" -connect "$host" 2>/dev/null | openssl x509 -noout -enddate 2>/dev/null | cut -d= -f2)
+        days_left=""
+        if [ -n "$expiry" ]; then
+          exp_epoch=$(date -d "$expiry" +%s 2>/dev/null || date -j -f "%b %d %T %Y %Z" "$expiry" +%s 2>/dev/null)
+          now_epoch=$(date +%s)
+          if [ -n "$exp_epoch" ]; then
+            days_left=$(( (exp_epoch - now_epoch) / 86400 ))
+          fi
+        fi
+        echo "$host expires='$expiry' days_left=$days_left"
+      done
+    timeout: 30s
+    optional: true
+
+  # Recent deployments (from git or CI/CD API).
+  - name: deploy_frequency
+    command: >
+      echo "=== Git deploys (last 24h) ==="
+      if [ -d "${OKESU_DEPLOY_REPO:-/opt/app}" ]; then
+        cd "${OKESU_DEPLOY_REPO:-/opt/app}" &&
+        git log --oneline --since="24 hours ago" --format="%h %ai %s" 2>/dev/null | head -20
+      else
+        echo "deploy repo not configured"
+      fi
+      echo "=== Container image updates ==="
+      docker ps --format '{{`{{.Image}}`}} {{`{{.CreatedAt}}`}}' 2>/dev/null | head -10 || echo "docker not available"
+    timeout: 15s
+    optional: true
+
+  # Recent incidents / alerts (from PagerDuty, OpsGenie, or systemd failures).
+  - name: recent_incidents
+    command: >
+      echo "=== Failed systemd units ==="
+      systemctl --failed --no-pager --no-legend 2>/dev/null | head -10
+      echo "=== OOM kills (last 24h) ==="
+      journalctl --since "24 hours ago" -k --no-pager 2>/dev/null | grep -i 'oom\|killed process' | tail -10
+      echo "=== Service restarts (last 24h) ==="
+      journalctl --since "24 hours ago" --no-pager 2>/dev/null | grep -i 'systemd.*started\|restarting' | grep -v session | tail -20
+    timeout: 15s
+    optional: true
+
+# ── Output sinks ─────────────────────────────────────────────────────────────
+outputs:
+  - type: stdout
+  - type: file
+    path: /var/log/okesu/sre-health.jsonl
+    maxBytes: 52428800
+
+# ── Management plane ─────────────────────────────────────────────────────────
+# management:
+#   url: "${OKESU_MGMT_URL}"
+#   certDir: /etc/okesu
+#   heartbeatSec: 60
+#   pollSec: 300
+---
+
+You are an SRE Health Monitor running from **{{.HostID}}** in **{{.CloudRegion}}**.
+
+Agent: {{.AgentName}} | Tick: {{.Tick}} | Time: {{.TickTime}} | Previous tick: {{.LastRunISO}}
+
+---
+
+## Collected Data
+
+{{range .CollectorsList -}}
+### {{.Name}}{{if .Skipped}} — skipped{{else if .Error}} — ERROR: {{.Error}}{{end}}
+
+{{if not .Skipped -}}
+```
+{{.Output}}
+```
+{{end}}
+{{end}}
+
+---
+
+## Your task
+
+Produce an operational health assessment.
+
+1. **Service availability** — For each health endpoint, report status and latency. Flag:
+   - Non-200 responses (CRITICAL if production, HIGH if staging)
+   - Latency >2s (MEDIUM) or >5s (HIGH)
+   - Endpoints that timed out (CRITICAL)
+   Compare against the previous tick's results if available (read from findings directory).
+
+2. **Certificate expiry** — Flag certificates by urgency:
+   - Expired or <7 days: CRITICAL
+   - <30 days: HIGH
+   - <60 days: MEDIUM
+   - <90 days: LOW (informational)
+
+3. **Deployment velocity** — Summarize recent deploys. Flag:
+   - Zero deploys in 7+ days on an active repo (stale — possible frozen pipeline)
+   - >10 deploys in 24h (high churn — correlate with incidents)
+   - Deploys outside business hours to production
+
+4. **Incident patterns** — Analyze failed systemd units, OOM kills, and service restarts.
+   Correlate: if a service restarted 5+ times in 24h, something is wrong. If OOM kills
+   are increasing, the instance may need more memory or have a leak.
+
+### Output format
+
+Write a health report to `{{.StateDir}}/findings/{{.TickTime}}.json`:
+```json
+{
+  "report_time": "{{.TickTime}}",
+  "overall_status": "HEALTHY|DEGRADED|CRITICAL",
+  "services": [
+    {"url": "...", "status": 200, "latency_ms": 150, "healthy": true}
+  ],
+  "cert_alerts": [
+    {"host": "...", "days_left": 15, "severity": "HIGH"}
+  ],
+  "findings": [
+    {
+      "severity": "CRITICAL|HIGH|MEDIUM|LOW|INFO",
+      "title": "...",
+      "resource": "service URL, cert host, or systemd unit",
+      "evidence": ["..."],
+      "recommended_action": "..."
+    }
+  ]
+}
+```
+
+### Constraints
+
+- Do NOT restart services, renew certificates, or deploy code. Report only.
+- Health check URLs and TLS hosts are configured via environment variables. If none are set,
+  note that the agent needs configuration.
+- Keep ticks fast — don't retry failing endpoints multiple times within a single tick.
