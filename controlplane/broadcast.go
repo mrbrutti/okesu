@@ -1,7 +1,10 @@
 package controlplane
 
 import (
-	"sync"
+	"context"
+
+	"github.com/section9labs/okesu/controlplane/adapters/inprocess"
+	"github.com/section9labs/okesu/controlplane/ports"
 )
 
 // Broadcaster fans out raw JSONL event lines to a set of subscribers.
@@ -9,46 +12,52 @@ import (
 //
 // Subscribers receive new events on a buffered channel. Slow subscribers
 // drop messages rather than blocking the publisher.
+//
+// As of Phase 8a Broadcaster is a thin adapter over a ports.PubSub.
+// The default factory NewBroadcaster wires the in-process channel-based
+// adapter so behaviour is unchanged. Phase 8d swaps in Redis when
+// CP runs in a multi-replica deployment.
 type Broadcaster struct {
-	mu   sync.Mutex
-	subs map[chan []byte]struct{}
+	pubsub ports.PubSub
+	topic  string
 }
 
-// NewBroadcaster constructs an empty Broadcaster.
+// liveTopic is the canonical topic name for live events. Constants kept
+// stringly-typed so different PubSub adapters (especially Redis) get a
+// stable channel name.
+const liveTopic = "events.live"
+
+// NewBroadcaster constructs an empty Broadcaster backed by an in-process
+// PubSub adapter. Same behaviour as the pre-Phase-8 implementation — the
+// indirection just makes the boundary explicit.
 func NewBroadcaster() *Broadcaster {
-	return &Broadcaster{subs: make(map[chan []byte]struct{})}
+	return NewBroadcasterWith(inprocess.NewPubSub())
 }
 
-// Subscribe returns a buffered channel that receives a copy of every Publish
-// call. The returned cancel func unregisters the subscriber and closes the
-// channel; always defer it.
+// NewBroadcasterWith wraps the given PubSub. Used in Phase 8d wiring
+// when the CP needs to share fanout state across replicas via Redis.
+func NewBroadcasterWith(p ports.PubSub) *Broadcaster {
+	return &Broadcaster{pubsub: p, topic: liveTopic}
+}
+
+// Subscribe returns a buffered channel that receives a copy of every
+// Publish call. The returned cancel func unregisters the subscriber and
+// closes the channel; always defer it.
 func (b *Broadcaster) Subscribe() (<-chan []byte, func()) {
-	ch := make(chan []byte, 32)
-	b.mu.Lock()
-	b.subs[ch] = struct{}{}
-	b.mu.Unlock()
-	return ch, func() {
-		b.mu.Lock()
-		if _, ok := b.subs[ch]; ok {
-			delete(b.subs, ch)
-			close(ch)
-		}
-		b.mu.Unlock()
+	ch, cancel, err := b.pubsub.Subscribe(context.Background(), b.topic)
+	if err != nil {
+		// Adapter shutdown is the only realistic error here; fall back
+		// to a closed channel + no-op cancel so callers can keep their
+		// existing API contract.
+		closed := make(chan []byte)
+		close(closed)
+		return closed, func() {}
 	}
+	return ch, cancel
 }
 
-// Publish sends line to every subscriber. Subscribers whose buffer is full
-// drop the message (no blocking).
+// Publish sends line to every subscriber. Subscribers whose buffer is
+// full drop the message (no blocking).
 func (b *Broadcaster) Publish(line []byte) {
-	cp := make([]byte, len(line))
-	copy(cp, line)
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	for ch := range b.subs {
-		select {
-		case ch <- cp:
-		default:
-			// drop
-		}
-	}
+	_ = b.pubsub.Publish(context.Background(), b.topic, line)
 }

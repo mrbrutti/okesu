@@ -25,6 +25,12 @@ type CA struct {
 	KeyPath  string
 }
 
+// GetCAPEM returns the CA cert as PEM bytes. Exposed as a method so the
+// internalca adapter (controlplane/adapters/internalca) can satisfy the
+// ports.CertManager interface without importing controlplane.CA
+// directly (which would create an import cycle).
+func (ca *CA) GetCAPEM() []byte { return ca.CertPEM }
+
 // EnsureCA loads (or creates) the mTLS CA. If both cfg.CACertFile and
 // cfg.CAKeyFile are set, those are used. Otherwise files at <dbDir>/ca.crt
 // and <dbDir>/ca.key are loaded; if absent, a new self-signed CA is generated.
