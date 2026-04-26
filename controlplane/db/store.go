@@ -56,66 +56,147 @@ func detectDialect(dsn string) Dialect {
 	}
 }
 
-//go:embed migrations/001_init.sql
-var migration001 string
+// Migration files are embedded per-dialect. The Go-side migration
+// runner reads from sqliteMigrations or postgresMigrations based on
+// the Store's Dialect. Both lists are kept in lockstep — every SQLite
+// migration N has a Postgres counterpart at the same N — so the
+// schema_migrations version tracking works the same way regardless of
+// backend.
+//
+// Adding a new migration: drop the file in BOTH migrations/sqlite/
+// and migrations/postgres/, add an embed directive + slice entry to
+// each side, increment the bootstrap probe in applyMigrations.
 
-//go:embed migrations/002_agents.sql
-var migration002 string
+//go:embed migrations/sqlite/001_init.sql
+var sqliteM001 string
 
-//go:embed migrations/003_findings.sql
-var migration003 string
+//go:embed migrations/sqlite/002_agents.sql
+var sqliteM002 string
 
-//go:embed migrations/004_nodes.sql
-var migration004 string
+//go:embed migrations/sqlite/003_findings.sql
+var sqliteM003 string
 
-//go:embed migrations/005_audit_log.sql
-var migration005 string
+//go:embed migrations/sqlite/004_nodes.sql
+var sqliteM004 string
 
-//go:embed migrations/006_known_hosts.sql
-var migration006 string
+//go:embed migrations/sqlite/005_audit_log.sql
+var sqliteM005 string
 
-//go:embed migrations/007_daemon_binaries.sql
-var migration007 string
+//go:embed migrations/sqlite/006_known_hosts.sql
+var sqliteM006 string
 
-//go:embed migrations/008_notifications.sql
-var migration008 string
+//go:embed migrations/sqlite/007_daemon_binaries.sql
+var sqliteM007 string
 
-//go:embed migrations/009_api_tokens.sql
-var migration009 string
+//go:embed migrations/sqlite/008_notifications.sql
+var sqliteM008 string
 
-//go:embed migrations/010_runs.sql
-var migration010 string
+//go:embed migrations/sqlite/009_api_tokens.sql
+var sqliteM009 string
 
-//go:embed migrations/011_finding_attributes.sql
-var migration011 string
+//go:embed migrations/sqlite/010_runs.sql
+var sqliteM010 string
 
-//go:embed migrations/012_agents_composite_key.sql
-var migration012 string
+//go:embed migrations/sqlite/011_finding_attributes.sql
+var sqliteM011 string
 
-//go:embed migrations/013_finding_status.sql
-var migration013 string
+//go:embed migrations/sqlite/012_agents_composite_key.sql
+var sqliteM012 string
 
-//go:embed migrations/014_node_daemon_hostname.sql
-var migration014 string
+//go:embed migrations/sqlite/013_finding_status.sql
+var sqliteM013 string
 
-//go:embed migrations/015_finding_severity_override.sql
-var migration015 string
+//go:embed migrations/sqlite/014_node_daemon_hostname.sql
+var sqliteM014 string
 
-//go:embed migrations/016_run_finding_link.sql
-var migration016 string
+//go:embed migrations/sqlite/015_finding_severity_override.sql
+var sqliteM015 string
 
-//go:embed migrations/017_node_metadata.sql
-var migration017 string
+//go:embed migrations/sqlite/016_run_finding_link.sql
+var sqliteM016 string
 
-//go:embed migrations/018_agent_definition_hash.sql
-var migration018 string
+//go:embed migrations/sqlite/017_node_metadata.sql
+var sqliteM017 string
 
-var migrations = []string{
-	migration001, migration002, migration003,
-	migration004, migration005, migration006, migration007,
-	migration008, migration009, migration010, migration011, migration012,
-	migration013, migration014, migration015, migration016, migration017,
-	migration018,
+//go:embed migrations/sqlite/018_agent_definition_hash.sql
+var sqliteM018 string
+
+var sqliteMigrations = []string{
+	sqliteM001, sqliteM002, sqliteM003,
+	sqliteM004, sqliteM005, sqliteM006, sqliteM007,
+	sqliteM008, sqliteM009, sqliteM010, sqliteM011, sqliteM012,
+	sqliteM013, sqliteM014, sqliteM015, sqliteM016, sqliteM017,
+	sqliteM018,
+}
+
+//go:embed migrations/postgres/001_init.sql
+var pgM001 string
+
+//go:embed migrations/postgres/002_agents.sql
+var pgM002 string
+
+//go:embed migrations/postgres/003_findings.sql
+var pgM003 string
+
+//go:embed migrations/postgres/004_nodes.sql
+var pgM004 string
+
+//go:embed migrations/postgres/005_audit_log.sql
+var pgM005 string
+
+//go:embed migrations/postgres/006_known_hosts.sql
+var pgM006 string
+
+//go:embed migrations/postgres/007_daemon_binaries.sql
+var pgM007 string
+
+//go:embed migrations/postgres/008_notifications.sql
+var pgM008 string
+
+//go:embed migrations/postgres/009_api_tokens.sql
+var pgM009 string
+
+//go:embed migrations/postgres/010_runs.sql
+var pgM010 string
+
+//go:embed migrations/postgres/011_finding_attributes.sql
+var pgM011 string
+
+//go:embed migrations/postgres/012_agents_composite_key.sql
+var pgM012 string
+
+//go:embed migrations/postgres/013_finding_status.sql
+var pgM013 string
+
+//go:embed migrations/postgres/014_node_daemon_hostname.sql
+var pgM014 string
+
+//go:embed migrations/postgres/015_finding_severity_override.sql
+var pgM015 string
+
+//go:embed migrations/postgres/016_run_finding_link.sql
+var pgM016 string
+
+//go:embed migrations/postgres/017_node_metadata.sql
+var pgM017 string
+
+//go:embed migrations/postgres/018_agent_definition_hash.sql
+var pgM018 string
+
+var postgresMigrations = []string{
+	pgM001, pgM002, pgM003,
+	pgM004, pgM005, pgM006, pgM007,
+	pgM008, pgM009, pgM010, pgM011, pgM012,
+	pgM013, pgM014, pgM015, pgM016, pgM017,
+	pgM018,
+}
+
+// migrationsForDialect returns the embedded list matching the dialect.
+func migrationsForDialect(d Dialect) []string {
+	if d == DialectPostgres {
+		return postgresMigrations
+	}
+	return sqliteMigrations
 }
 
 // Store wraps a *sql.DB with helpers used across the controlplane package.
@@ -172,7 +253,7 @@ func openSQLite(dsn string) (*Store, error) {
 		return nil, fmt.Errorf("ping db: %w", err)
 	}
 
-	if err := applyMigrations(conn); err != nil {
+	if err := applyMigrations(conn, DialectSQLite); err != nil {
 		return nil, err
 	}
 
@@ -180,17 +261,13 @@ func openSQLite(dsn string) (*Store, error) {
 }
 
 // openPostgres dials a managed Postgres instance via the pgx stdlib
-// driver and returns a Store ready for query.
+// driver, applies the postgres-flavoured migrations, and returns a
+// Store ready for query.
 //
-// Schema migrations against Postgres are tracked separately in
-// migrations/postgres/ and are NOT applied by Open. Operators bootstrap
-// the schema using a migration tool (psql, sqlc, golang-migrate) until
-// the in-process migration runner gains Postgres support — call sites
-// won't see any difference, since the existing query layer talks
-// portable SQL once placeholders are translated. This is deliberate
-// scaffolding so the OCI deployment shape can be exercised in
-// docker-compose dev (Phase 8f) before the SQL-heavy migration port
-// lands.
+// The migration set lives in migrations/postgres/ and is the
+// per-statement Postgres equivalent of the SQLite set. Schema-history
+// version tracking in schema_migrations works identically — both
+// backends read the same migration numbers.
 func openPostgres(dsn string) (*Store, error) {
 	conn, err := sql.Open("pgx", dsn)
 	if err != nil {
@@ -205,6 +282,9 @@ func openPostgres(dsn string) (*Store, error) {
 
 	if err := conn.Ping(); err != nil {
 		return nil, fmt.Errorf("ping postgres: %w", err)
+	}
+	if err := applyMigrations(conn, DialectPostgres); err != nil {
+		return nil, fmt.Errorf("apply postgres migrations: %w", err)
 	}
 	return &Store{DB: conn, path: dsn, Dialect: DialectPostgres}, nil
 }
@@ -224,7 +304,7 @@ func (s *Store) Path() string { return s.path }
 // effect is already present. That way upgrading a CP from before this
 // commit doesn't re-run schema-altering migrations against tables that
 // already have the new shape.
-func applyMigrations(db *sql.DB) error {
+func applyMigrations(db *sql.DB, dialect Dialect) error {
 	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY)`); err != nil {
 		return fmt.Errorf("create schema_migrations: %w", err)
 	}
@@ -233,8 +313,11 @@ func applyMigrations(db *sql.DB) error {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&applied); err != nil {
 		return err
 	}
-	if applied == 0 && tableExists(db, "meta") {
-		// Pre-existing DB without tracking. Probe each migration's signature.
+	// Bootstrap probes only run against SQLite — they reference
+	// PRAGMA table_info / sqlite_master which Postgres doesn't have.
+	// Postgres deployments are new-fleet by definition (no legacy
+	// pre-tracking-era DB on the wire) so bootstrap is a no-op there.
+	if applied == 0 && dialect == DialectSQLite && tableExists(db, "meta") {
 		bootstrap := []struct {
 			version int
 			probe   func() bool
@@ -268,10 +351,11 @@ func applyMigrations(db *sql.DB) error {
 		}
 	}
 
-	for i, stmt := range migrations {
+	checkSQL, insertSQL := dialectSQL(dialect)
+	for i, stmt := range migrationsForDialect(dialect) {
 		version := i + 1
 		var n int64
-		if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE version = ?`, version).Scan(&n); err != nil {
+		if err := db.QueryRow(checkSQL, version).Scan(&n); err != nil {
 			return err
 		}
 		if n > 0 {
@@ -280,11 +364,23 @@ func applyMigrations(db *sql.DB) error {
 		if _, err := db.Exec(stmt); err != nil {
 			return fmt.Errorf("apply migration %03d: %w", version, err)
 		}
-		if _, err := db.Exec(`INSERT INTO schema_migrations (version) VALUES (?)`, version); err != nil {
+		if _, err := db.Exec(insertSQL, version); err != nil {
 			return fmt.Errorf("record migration %03d: %w", version, err)
 		}
 	}
 	return nil
+}
+
+// dialectSQL returns the SELECT-version-exists and INSERT-version SQL
+// strings that the migration runner needs, with placeholders rewritten
+// for the target dialect ($1 for postgres, ? for sqlite).
+func dialectSQL(d Dialect) (check, insert string) {
+	if d == DialectPostgres {
+		return `SELECT COUNT(*) FROM schema_migrations WHERE version = $1`,
+			`INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT DO NOTHING`
+	}
+	return `SELECT COUNT(*) FROM schema_migrations WHERE version = ?`,
+		`INSERT INTO schema_migrations (version) VALUES (?)`
 }
 
 func tableExists(db *sql.DB, name string) bool {

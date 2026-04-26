@@ -109,12 +109,15 @@ func (s *Store) ListAudit(f AuditFilter) ([]*AuditRow, error) {
 		clauses = append(clauses, "result = ?")
 		args = append(args, f.Result)
 	}
+	// `ts` in audit_log is a wall-clock TIMESTAMP (DEFAULT
+	// CURRENT_TIMESTAMP). Operators filter by unix-ms via the API; we
+	// translate that to a ts comparison using the dialect's epoch-extract.
 	if f.SinceMs > 0 {
-		clauses = append(clauses, "strftime('%s', ts) * 1000 >= ?")
+		clauses = append(clauses, tsToMillisExpr(s.Dialect)+" >= ?")
 		args = append(args, f.SinceMs)
 	}
 	if f.UntilMs > 0 {
-		clauses = append(clauses, "strftime('%s', ts) * 1000 < ?")
+		clauses = append(clauses, tsToMillisExpr(s.Dialect)+" < ?")
 		args = append(args, f.UntilMs)
 	}
 

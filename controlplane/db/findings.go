@@ -620,32 +620,45 @@ type KnownIssue struct {
 // KnownIssuesForAgent returns every NON-OPEN fingerprint the named agent has
 // emitted across the fleet within the lookback window. Drives the daemon's
 // pull-cache so triage decisions propagate to every host running this agent.
+//
+// The query uses portable SQL — `MAX(boolean_expr)` is SQLite-specific
+// because SQLite treats booleans as ints; we use SUM(CASE...) > 0 which
+// works on both backends. tsToMillisExpr handles the unix-ms conversion
+// per dialect.
 func (s *Store) KnownIssuesForAgent(agentName string, sinceMs int64, limit int) ([]KnownIssue, error) {
 	if limit <= 0 || limit > 5000 {
 		limit = 1000
 	}
+	tsExpr := tsToMillisExpr(s.Dialect, "triaged_at")
 	rows, err := s.Query(`
 		SELECT
 		  COALESCE(NULLIF(dedup_key, ''),
 		           COALESCE(title,'') || '|' || COALESCE(severity,'') || '|' || COALESCE(agent,'')) AS fp,
 		  -- pick the most-severe status: false_positive / wontfix dominate ack/investigating
 		  CASE
-		    WHEN MAX(status = 'false_positive') = 1 THEN 'false_positive'
-		    WHEN MAX(status = 'wontfix')        = 1 THEN 'wontfix'
-		    WHEN MAX(status = 'resolved')       = 1 THEN 'resolved'
-		    WHEN MAX(status = 'acknowledged')   = 1 THEN 'acknowledged'
-		    WHEN MAX(status = 'investigating')  = 1 THEN 'investigating'
+		    WHEN SUM(CASE WHEN status = 'false_positive' THEN 1 ELSE 0 END) > 0 THEN 'false_positive'
+		    WHEN SUM(CASE WHEN status = 'wontfix'        THEN 1 ELSE 0 END) > 0 THEN 'wontfix'
+		    WHEN SUM(CASE WHEN status = 'resolved'       THEN 1 ELSE 0 END) > 0 THEN 'resolved'
+		    WHEN SUM(CASE WHEN status = 'acknowledged'   THEN 1 ELSE 0 END) > 0 THEN 'acknowledged'
+		    WHEN SUM(CASE WHEN status = 'investigating'  THEN 1 ELSE 0 END) > 0 THEN 'investigating'
 		    ELSE 'open'
 		  END AS effective_status,
 		  COALESCE(MAX(triage_note), '')                  AS note,
-		  COALESCE(MAX(strftime('%s', triaged_at) * 1000), 0) AS updated_ms,
+		  COALESCE(MAX(`+tsExpr+`), 0) AS updated_ms,
 		  COUNT(*)                                        AS n
 		FROM findings
 		WHERE agent = ?
 		  AND ts >= ?
 		  AND status != 'open'
 		GROUP BY fp
-		HAVING effective_status != 'open'
+		HAVING (CASE
+		    WHEN SUM(CASE WHEN status = 'false_positive' THEN 1 ELSE 0 END) > 0 THEN 'false_positive'
+		    WHEN SUM(CASE WHEN status = 'wontfix'        THEN 1 ELSE 0 END) > 0 THEN 'wontfix'
+		    WHEN SUM(CASE WHEN status = 'resolved'       THEN 1 ELSE 0 END) > 0 THEN 'resolved'
+		    WHEN SUM(CASE WHEN status = 'acknowledged'   THEN 1 ELSE 0 END) > 0 THEN 'acknowledged'
+		    WHEN SUM(CASE WHEN status = 'investigating'  THEN 1 ELSE 0 END) > 0 THEN 'investigating'
+		    ELSE 'open'
+		  END) != 'open'
 		ORDER BY updated_ms DESC
 		LIMIT ?
 	`, agentName, sinceMs, limit)
@@ -766,11 +779,11 @@ func (s *Store) LookupFindings(agentName, query string, limit int) ([]LookupFind
 		       -- explicit per-fingerprint rule (separate from individual overrides)
 		       COALESCE((SELECT severity FROM finding_severity_rules WHERE fingerprint = m.fp), '') AS rule_severity,
 		       CASE
-		         WHEN MAX(m.status = 'false_positive') = 1 THEN 'false_positive'
-		         WHEN MAX(m.status = 'wontfix')        = 1 THEN 'wontfix'
-		         WHEN MAX(m.status = 'resolved')       = 1 THEN 'resolved'
-		         WHEN MAX(m.status = 'acknowledged')   = 1 THEN 'acknowledged'
-		         WHEN MAX(m.status = 'investigating')  = 1 THEN 'investigating'
+		         WHEN SUM(CASE WHEN m.status = 'false_positive' THEN 1 ELSE 0 END) > 0 THEN 'false_positive'
+		         WHEN SUM(CASE WHEN m.status = 'wontfix'        THEN 1 ELSE 0 END) > 0 THEN 'wontfix'
+		         WHEN SUM(CASE WHEN m.status = 'resolved'       THEN 1 ELSE 0 END) > 0 THEN 'resolved'
+		         WHEN SUM(CASE WHEN m.status = 'acknowledged'   THEN 1 ELSE 0 END) > 0 THEN 'acknowledged'
+		         WHEN SUM(CASE WHEN m.status = 'investigating'  THEN 1 ELSE 0 END) > 0 THEN 'investigating'
 		         ELSE 'open'
 		       END                                                                        AS status,
 		       COALESCE(MAX(m.host),'')                                                    AS host,
