@@ -4,8 +4,12 @@ import {
   Activity,
   ArrowLeft,
   Clock,
+  Cpu,
   Hash,
+  HardDrive,
   Info,
+  Loader2,
+  RefreshCw,
   Server,
   Wifi,
   WifiOff,
@@ -22,6 +26,21 @@ export default function NodeDetailPage() {
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>('events');
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
+
+  async function refreshMetadata() {
+    if (!node) return;
+    setRefreshing(true); setRefreshError(null);
+    try {
+      const updated = await api.refreshNodeMetadata(node.id);
+      setNode(updated);
+    } catch (e) {
+      setRefreshError(String(e));
+    } finally {
+      setRefreshing(false);
+    }
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -88,7 +107,23 @@ export default function NodeDetailPage() {
             />
             <Stat label="Created" value={formatAgo(node.created_at)} icon={Hash} />
           </div>
+
+          <button
+            onClick={refreshMetadata}
+            disabled={refreshing || !connected}
+            title={connected ? 'Probe the node over the tunnel and refresh telemetry' : 'Tunnel offline — wait for reconnect'}
+            className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-md border border-border bg-panel hover:bg-slate-50 disabled:opacity-50"
+          >
+            {refreshing ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
+            {refreshing ? 'Probing…' : 'Refresh metadata'}
+          </button>
         </div>
+
+        {refreshError && (
+          <div className="mt-2 text-xs text-red-700 bg-red-50 border border-red-200 px-3 py-1.5 rounded-md">
+            {refreshError}
+          </div>
+        )}
 
         <nav className="mt-4 -mb-px flex gap-1">
           {([
@@ -181,6 +216,36 @@ function OverviewTab({ node }: { node: NodeItem }) {
         <Row label="Created" mono>{node.created_at}</Row>
         <Row label="Last status" mono>{node.last_status_at ?? '—'}</Row>
         <Row label="Last deploy" mono>{node.last_deployed_at ?? 'never'}</Row>
+      </Card>
+      <Card title="Telemetry" wide>
+        {node.metadata_at ? (
+          <>
+            <Row label="Daemon hostname" mono>{node.daemon_hostname || '—'}</Row>
+            <Row label="OS" mono>{node.os_release || '—'}</Row>
+            <Row label="Kernel" mono>{node.kernel_release || '—'}</Row>
+            <Row label="Arch" mono>
+              <span className="inline-flex items-center gap-1">
+                <Cpu size={11} className="text-ink-mute" /> {node.arch || '—'}
+              </span>
+            </Row>
+            <Row label="CPU / RAM" mono>
+              {node.cpu_count ? `${node.cpu_count} cores` : '—'}
+              {node.memory_mb ? ` · ${(node.memory_mb / 1024).toFixed(1)} GB RAM` : ''}
+            </Row>
+            <Row label="Disk free" mono>
+              <span className="inline-flex items-center gap-1">
+                <HardDrive size={11} className="text-ink-mute" />
+                {node.disk_free_mb ? `${(node.disk_free_mb / 1024).toFixed(1)} GB` : '—'}
+              </span>
+            </Row>
+            <Row label="okesu version" mono>{node.okesu_version || '—'}</Row>
+            <Row label="Last refreshed" mono>{node.metadata_at}</Row>
+          </>
+        ) : (
+          <p className="text-xs text-ink-mute">
+            No telemetry yet. Click <strong>Refresh metadata</strong> above to probe over the tunnel.
+          </p>
+        )}
       </Card>
       <Card title="Daimons installed" wide>
         {node.agents_installed.length === 0 ? (

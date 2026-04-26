@@ -414,6 +414,8 @@ export const api = {
     request<NodeItem>('/api/nodes', { method: 'POST', body: JSON.stringify(req) }),
   deleteNode: (id: number) =>
     request<void>(`/api/nodes/${id}`, { method: 'DELETE' }),
+  refreshNodeMetadata: (id: number) =>
+    request<NodeItem>(`/api/nodes/${id}/refresh-metadata`, { method: 'POST' }),
   deployNode: (id: number, req: NodeDeployReq) =>
     request<{ job_id: string; node_id: number }>(`/api/nodes/${id}/deploy`, {
       method: 'POST',
@@ -728,6 +730,17 @@ export interface NodeItem {
   agents_installed: string[];
   notes?: string;
   created_at: string;
+
+  // Phase 7a — refreshable telemetry. Populated by the "Refresh
+  // metadata" probe over the tunnel.
+  kernel_release?: string;
+  os_release?: string;
+  arch?: string;
+  cpu_count?: number;
+  memory_mb?: number;
+  disk_free_mb?: number;
+  okesu_version?: string;
+  metadata_at?: string;
 }
 
 export interface NodeCreateReq {

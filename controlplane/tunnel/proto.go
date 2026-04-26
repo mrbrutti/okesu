@@ -18,23 +18,49 @@ const (
 	MsgRun    MsgType = "run"
 	MsgCancel MsgType = "cancel"
 	MsgPing   MsgType = "ping"
+	MsgProbe  MsgType = "probe" // request node metadata
 
 	// Node → CP
-	MsgHello MsgType = "hello"
-	MsgLine  MsgType = "line"
-	MsgExit  MsgType = "exit"
-	MsgPong  MsgType = "pong"
+	MsgHello      MsgType = "hello"
+	MsgLine       MsgType = "line"
+	MsgExit       MsgType = "exit"
+	MsgPong       MsgType = "pong"
+	MsgProbeReply MsgType = "probe_reply" // response to MsgProbe
 )
 
 // Frame is the union envelope carried over the WebSocket. Exactly one of the
 // payload fields is set per frame, picked by Type.
 type Frame struct {
-	Type   MsgType         `json:"type"`
-	Hello  *HelloPayload   `json:"hello,omitempty"`
-	Run    *RunPayload     `json:"run,omitempty"`
-	Cancel *CancelPayload  `json:"cancel,omitempty"`
-	Line   *LinePayload    `json:"line,omitempty"`
-	Exit   *ExitPayload    `json:"exit,omitempty"`
+	Type       MsgType             `json:"type"`
+	Hello      *HelloPayload       `json:"hello,omitempty"`
+	Run        *RunPayload         `json:"run,omitempty"`
+	Cancel     *CancelPayload      `json:"cancel,omitempty"`
+	Line       *LinePayload        `json:"line,omitempty"`
+	Exit       *ExitPayload        `json:"exit,omitempty"`
+	Probe      *ProbePayload       `json:"probe,omitempty"`
+	ProbeReply *ProbeReplyPayload  `json:"probe_reply,omitempty"`
+}
+
+// ProbePayload — CP asks the Node for fresh metadata. ProbeID is echoed
+// back in the reply so the CP can correlate concurrent probes.
+type ProbePayload struct {
+	ProbeID string `json:"probe_id"`
+}
+
+// ProbeReplyPayload — Node reports its current OS/hardware/runtime metadata.
+// All fields best-effort; missing fields stay empty rather than failing
+// the whole probe.
+type ProbeReplyPayload struct {
+	ProbeID        string `json:"probe_id"`
+	Hostname       string `json:"hostname,omitempty"`
+	KernelRelease  string `json:"kernel_release,omitempty"`  // uname -r
+	OSRelease      string `json:"os_release,omitempty"`      // PRETTY_NAME from /etc/os-release
+	Arch           string `json:"arch,omitempty"`            // uname -m
+	CPUCount       int    `json:"cpu_count,omitempty"`       // logical cores
+	MemoryMB       int64  `json:"memory_mb,omitempty"`       // total
+	DiskFreeMB     int64  `json:"disk_free_mb,omitempty"`    // /var/lib/okesu fs
+	OkesuVersion   string `json:"okesu_version,omitempty"`   // self-reported
+	Error          string `json:"error,omitempty"`           // non-fatal — partial fields can still be set
 }
 
 // HelloPayload — first message from Node after connect. Identifies the node

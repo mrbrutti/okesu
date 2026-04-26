@@ -1,0 +1,13 @@
+okesu
+okesu-cp
+okesu-linux-*
+*.test
+.git
+.claude/MEMORY.md
+.claude/projects
+test/stack/run
+test/stack/certs
+node_modules
+web/node_modules
+web/dist
+controlplane/ui/dist

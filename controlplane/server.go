@@ -283,6 +283,7 @@ func (s *Server) routes() http.Handler {
 			r.Delete("/api/findings/severity-rules", api.SeverityRuleDelete(s.store))
 			r.Post("/api/nodes", api.NodeCreate(s.store))
 			r.Delete("/api/nodes/{id}", api.NodeDelete(s.store))
+			r.Post("/api/nodes/{id}/refresh-metadata", api.NodeRefreshMetadata(s.store, s.tunReg))
 			r.Post("/api/nodes/{id}/deploy", api.NodeDeploy(s.store, s.jobs, s, api.NodesConfig{
 				DaemonBinaryPath:  s.cfg.DaemonBinaryPath,
 				DaemonBinariesDir: s.cfg.DaemonBinariesDir,

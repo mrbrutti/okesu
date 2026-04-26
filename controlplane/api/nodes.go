@@ -20,6 +20,7 @@ import (
 	"github.com/section9labs/okesu/controlplane/db"
 	"github.com/section9labs/okesu/controlplane/jobs"
 	"github.com/section9labs/okesu/controlplane/sshdeploy"
+	"github.com/section9labs/okesu/controlplane/tunnel"
 )
 
 // NodeDeployer is the subset of controlplane.Server functionality that the
@@ -77,6 +78,18 @@ type nodeJSON struct {
 	AgentsInstalled  []string `json:"agents_installed"`
 	Notes            string   `json:"notes,omitempty"`
 	CreatedAt        string   `json:"created_at"`
+
+	// Phase 7a — refreshable telemetry. Populated by the tunnel-based
+	// "Refresh metadata" probe; null for nodes that haven't been
+	// refreshed since the column was added.
+	KernelRelease string `json:"kernel_release,omitempty"`
+	OSRelease     string `json:"os_release,omitempty"`
+	Arch          string `json:"arch,omitempty"`
+	CPUCount      int64  `json:"cpu_count,omitempty"`
+	MemoryMB      int64  `json:"memory_mb,omitempty"`
+	DiskFreeMB    int64  `json:"disk_free_mb,omitempty"`
+	OkesuVersion  string `json:"okesu_version,omitempty"`
+	MetadataAt    string `json:"metadata_at,omitempty"`
 }
 
 func toNodeJSON(n *db.Node) nodeJSON {
@@ -104,6 +117,30 @@ func toNodeJSON(n *db.Node) nodeJSON {
 		out.AgentsInstalled = strings.Split(n.AgentsInstalled.String, ",")
 	} else {
 		out.AgentsInstalled = []string{}
+	}
+	if n.KernelRelease.Valid {
+		out.KernelRelease = n.KernelRelease.String
+	}
+	if n.OSRelease.Valid {
+		out.OSRelease = n.OSRelease.String
+	}
+	if n.Arch.Valid {
+		out.Arch = n.Arch.String
+	}
+	if n.CPUCount.Valid {
+		out.CPUCount = n.CPUCount.Int64
+	}
+	if n.MemoryMB.Valid {
+		out.MemoryMB = n.MemoryMB.Int64
+	}
+	if n.DiskFreeMB.Valid {
+		out.DiskFreeMB = n.DiskFreeMB.Int64
+	}
+	if n.OkesuVersion.Valid {
+		out.OkesuVersion = n.OkesuVersion.String
+	}
+	if n.MetadataAt.Valid {
+		out.MetadataAt = n.MetadataAt.Time.UTC().Format(time.RFC3339)
 	}
 	return out
 }
@@ -188,6 +225,73 @@ func NodeDetail(store *db.Store) http.HandlerFunc {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(toNodeJSON(n))
+	}
+}
+
+// NodeRefreshMetadata sends a probe over the existing tunnel to collect
+// fresh OS/hardware/runtime metadata for a node and stores it. No SSH
+// credentials needed; sub-second per node when the tunnel is connected.
+//
+// 503 when the node has no live tunnel — operator should wait for it to
+// reconnect (queue-on-reconnect could come later).
+func NodeRefreshMetadata(store *db.Store, tunReg *tunnel.Registry) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+		if err != nil {
+			http.Error(w, "bad id", http.StatusBadRequest)
+			return
+		}
+		n, err := store.NodeByID(id)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				http.Error(w, "not found", http.StatusNotFound)
+				return
+			}
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		conn := tunReg.Get(n.Name)
+		if conn == nil {
+			http.Error(w, fmt.Sprintf("node %q has no live tunnel — wait for reconnect", n.Name), http.StatusServiceUnavailable)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
+		defer cancel()
+		reply, err := conn.SendProbe(ctx, 10*time.Second)
+		if err != nil {
+			http.Error(w, "probe: "+err.Error(), http.StatusBadGateway)
+			return
+		}
+		if err := store.UpdateNodeMetadata(id, db.NodeMetadataUpdate{
+			DaemonHostname: reply.Hostname,
+			KernelRelease:  reply.KernelRelease,
+			OSRelease:      reply.OSRelease,
+			Arch:           reply.Arch,
+			CPUCount:       reply.CPUCount,
+			MemoryMB:       reply.MemoryMB,
+			DiskFreeMB:     reply.DiskFreeMB,
+			OkesuVersion:   reply.OkesuVersion,
+		}); err != nil {
+			http.Error(w, "persist: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		audit.Emit(r, store, db.AuditEntry{
+			Action: "node.refresh_metadata",
+			Target: fmt.Sprintf("node:%d", id),
+			Metadata: map[string]any{
+				"hostname":       reply.Hostname,
+				"kernel_release": reply.KernelRelease,
+				"os_release":     reply.OSRelease,
+				"probe_error":    reply.Error,
+			},
+		})
+		updated, err := store.NodeByID(id)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(toNodeJSON(updated))
 	}
 }
 

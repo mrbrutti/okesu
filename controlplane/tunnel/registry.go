@@ -19,7 +19,8 @@ type Conn struct {
 	send func(*Frame) error
 
 	mu        sync.Mutex
-	runs      map[string]*runSubscriber // active runs we're forwarding output for
+	runs      map[string]*runSubscriber          // active runs we're forwarding output for
+	probes    map[string]chan *ProbeReplyPayload // pending metadata probes by ProbeID
 	closed    bool
 	closeOnce sync.Once
 }
@@ -76,6 +77,56 @@ func (c *Conn) Cancel(runID string) error {
 	return c.send(&Frame{Type: MsgCancel, Cancel: &CancelPayload{RunID: runID}})
 }
 
+// SendProbe asks the node for fresh metadata and waits up to `timeout` for
+// a reply. Used by the "Refresh metadata" action on the Nodes page —
+// avoids the SSH-credential roundtrip and is sub-second on a connected
+// node. Returns ctx.Err() if the context fires first, ErrProbeTimeout
+// otherwise.
+func (c *Conn) SendProbe(ctx context.Context, timeout time.Duration) (*ProbeReplyPayload, error) {
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return nil, errors.New("tunnel closed")
+	}
+	if c.probes == nil {
+		c.probes = make(map[string]chan *ProbeReplyPayload)
+	}
+	id := newProbeID()
+	ch := make(chan *ProbeReplyPayload, 1)
+	c.probes[id] = ch
+	c.mu.Unlock()
+
+	cleanup := func() {
+		c.mu.Lock()
+		delete(c.probes, id)
+		c.mu.Unlock()
+	}
+	defer cleanup()
+
+	if err := c.send(&Frame{Type: MsgProbe, Probe: &ProbePayload{ProbeID: id}}); err != nil {
+		return nil, fmt.Errorf("send probe: %w", err)
+	}
+	if timeout <= 0 {
+		timeout = 10 * time.Second
+	}
+	select {
+	case reply := <-ch:
+		return reply, nil
+	case <-time.After(timeout):
+		return nil, ErrProbeTimeout
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// ErrProbeTimeout is returned by SendProbe when the node didn't reply in time.
+var ErrProbeTimeout = errors.New("probe timed out")
+
+func newProbeID() string {
+	// Tiny ID — collision-resistant within a short-lived in-flight set.
+	return fmt.Sprintf("p-%d", time.Now().UnixNano())
+}
+
 // Ping sends a keepalive.
 func (c *Conn) Ping() error {
 	return c.send(&Frame{Type: MsgPing})
@@ -112,6 +163,22 @@ func (c *Conn) dispatch(f *Frame) {
 			default:
 			}
 			safeClose(sub.lines, sub.exit)
+		}
+	case MsgProbeReply:
+		if f.ProbeReply == nil {
+			return
+		}
+		c.mu.Lock()
+		ch, ok := c.probes[f.ProbeReply.ProbeID]
+		if ok {
+			delete(c.probes, f.ProbeReply.ProbeID)
+		}
+		c.mu.Unlock()
+		if ok {
+			select {
+			case ch <- f.ProbeReply:
+			default:
+			}
 		}
 	}
 }

@@ -20,8 +20,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
+	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/coder/websocket"
@@ -191,6 +194,12 @@ func connectAndServe(ctx context.Context, cfg Config, wsURL string, tlsCfg *tls.
 			if h != nil {
 				h.cancel()
 			}
+		case tunnel.MsgProbe:
+			if f.Probe == nil {
+				continue
+			}
+			reply := collectMetadata(cfg, f.Probe.ProbeID)
+			_ = send(&tunnel.Frame{Type: tunnel.MsgProbeReply, ProbeReply: reply})
 		}
 	}
 }
@@ -343,4 +352,71 @@ func buildWSURL(base, path string) (string, error) {
 	}
 	u.Path = path
 	return u.String(), nil
+}
+
+// collectMetadata gathers a snapshot of the node's OS / hardware /
+// runtime info for the CP's "Refresh metadata" action. Each field is
+// best-effort: failures populate `Error` but don't stop the rest. Reads
+// /proc files directly where possible (cheaper than shelling out).
+func collectMetadata(cfg Config, probeID string) *tunnel.ProbeReplyPayload {
+	r := &tunnel.ProbeReplyPayload{ProbeID: probeID}
+	var errs []string
+
+	if h, err := os.Hostname(); err == nil {
+		r.Hostname = h
+	} else {
+		errs = append(errs, "hostname: "+err.Error())
+	}
+
+	if out, err := exec.Command("uname", "-r").Output(); err == nil {
+		r.KernelRelease = strings.TrimSpace(string(out))
+	}
+	if out, err := exec.Command("uname", "-m").Output(); err == nil {
+		r.Arch = strings.TrimSpace(string(out))
+	}
+
+	if b, err := os.ReadFile("/etc/os-release"); err == nil {
+		// Pluck PRETTY_NAME from key=value lines.
+		for _, line := range strings.Split(string(b), "\n") {
+			if strings.HasPrefix(line, "PRETTY_NAME=") {
+				v := strings.TrimPrefix(line, "PRETTY_NAME=")
+				r.OSRelease = strings.Trim(v, `"`)
+				break
+			}
+		}
+	}
+
+	r.CPUCount = runtime.NumCPU()
+
+	// /proc/meminfo first line is "MemTotal:       16384 kB"
+	if b, err := os.ReadFile("/proc/meminfo"); err == nil {
+		for _, line := range strings.Split(string(b), "\n") {
+			if strings.HasPrefix(line, "MemTotal:") {
+				fields := strings.Fields(line)
+				if len(fields) >= 2 {
+					if kb, err := strconv.ParseInt(fields[1], 10, 64); err == nil {
+						r.MemoryMB = kb / 1024
+					}
+				}
+				break
+			}
+		}
+	}
+
+	// Disk free for the okesu state dir if it exists, otherwise /var.
+	target := "/var/lib/okesu"
+	if _, err := os.Stat(target); err != nil {
+		target = "/var"
+	}
+	var stat syscall.Statfs_t
+	if err := syscall.Statfs(target, &stat); err == nil {
+		r.DiskFreeMB = int64(stat.Bavail) * int64(stat.Bsize) / (1024 * 1024)
+	}
+
+	r.OkesuVersion = cfg.Version
+
+	if len(errs) > 0 {
+		r.Error = strings.Join(errs, "; ")
+	}
+	return r
 }
