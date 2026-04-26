@@ -4,7 +4,6 @@ package api
 import (
 	"crypto/hmac"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"io"
@@ -15,6 +14,7 @@ import (
 
 	"github.com/section9labs/okesu/agent"
 	"github.com/section9labs/okesu/controlplane/db"
+	"github.com/section9labs/okesu/controlplane/ports"
 )
 
 // Broadcaster is the subset of controlplane.Broadcaster needed by webhook.
@@ -24,8 +24,14 @@ type Broadcaster interface {
 
 // WebhookHandler returns an http.HandlerFunc that accepts daemon webhook
 // events. It verifies HMAC-SHA256 signatures (matching agent/sinks.go),
-// persists each event, and re-broadcasts it to live subscribers.
-func WebhookHandler(store *db.Store, secret string, bcast Broadcaster) http.HandlerFunc {
+// persists each event through the EventStore port, projects finding
+// events into the relational state Store, and re-broadcasts to live
+// subscribers via PubSub.
+//
+// `eventStore` is the abstraction in front of the events firehose —
+// sqlite in dev, ClickHouse in production. `store` remains the
+// relational state Store because finding projection mutates rows.
+func WebhookHandler(store *db.Store, eventStore ports.EventStore, secret string, bcast Broadcaster) http.HandlerFunc {
 	const maxBodyBytes = 1 << 20 // 1 MiB
 	const maxClockSkew = 5 * time.Minute
 
@@ -80,16 +86,15 @@ func WebhookHandler(store *db.Store, secret string, bcast Broadcaster) http.Hand
 			if ev.Host == "" {
 				ev.Host = host
 			}
-			row := &db.Event{
+			eventID, err := eventStore.Insert(r.Context(), ports.EventRecord{
 				Ts:       ev.Ts,
 				Type:     ev.Type,
-				Agent:    sql.NullString{String: ev.Agent, Valid: ev.Agent != ""},
-				Host:     sql.NullString{String: ev.Host, Valid: ev.Host != ""},
-				Severity: sql.NullString{String: ev.Severity, Valid: ev.Severity != ""},
-				Title:    sql.NullString{String: ev.Title, Valid: ev.Title != ""},
+				Agent:    ev.Agent,
+				Host:     ev.Host,
+				Severity: ev.Severity,
+				Title:    ev.Title,
 				RawJSON:  string(line),
-			}
-			eventID, err := store.InsertEvent(row)
+			})
 			if err != nil {
 				http.Error(w, "store: "+err.Error(), http.StatusInternalServerError)
 				return

@@ -1,7 +1,6 @@
 package api
 
 import (
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,6 +12,7 @@ import (
 	"github.com/section9labs/okesu/controlplane/audit"
 	"github.com/section9labs/okesu/controlplane/auth"
 	"github.com/section9labs/okesu/controlplane/db"
+	"github.com/section9labs/okesu/controlplane/ports"
 )
 
 // FindingIngestRequest is the body shape for /api/findings/ingest. Mirrors
@@ -47,7 +47,7 @@ type FindingIngestRequest struct {
 // both the events and findings tables, and re-broadcast on the SSE stream
 // — so the rest of the system (notifications, dashboard, drill-down) treats
 // it identically to a daemon-emitted finding.
-func FindingIngest(store *db.Store, bcast Broadcaster) http.HandlerFunc {
+func FindingIngest(store *db.Store, eventStore ports.EventStore, bcast Broadcaster) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(io.LimitReader(r.Body, 256<<10))
 		if err != nil {
@@ -106,14 +106,14 @@ func FindingIngest(store *db.Store, bcast Broadcaster) http.HandlerFunc {
 			return
 		}
 
-		// Persist to events.
-		eventID, err := store.InsertEvent(&db.Event{
+		// Persist to events via the EventStore port (Phase 8c).
+		eventID, err := eventStore.Insert(r.Context(), ports.EventRecord{
 			Ts:       req.Ts,
 			Type:     "finding",
-			Agent:    sql.NullString{String: req.Agent, Valid: true},
-			Host:     sql.NullString{String: req.Host, Valid: req.Host != ""},
-			Severity: sql.NullString{String: req.Severity, Valid: true},
-			Title:    sql.NullString{String: req.Title, Valid: true},
+			Agent:    req.Agent,
+			Host:     req.Host,
+			Severity: req.Severity,
+			Title:    req.Title,
 			RawJSON:  string(raw),
 		})
 		if err != nil {

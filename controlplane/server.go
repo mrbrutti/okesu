@@ -20,28 +20,31 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
+	"github.com/section9labs/okesu/controlplane/adapters/sqliteevents"
 	"github.com/section9labs/okesu/controlplane/api"
 	"github.com/section9labs/okesu/controlplane/auth"
 	"github.com/section9labs/okesu/controlplane/db"
 	"github.com/section9labs/okesu/controlplane/jobs"
 	"github.com/section9labs/okesu/controlplane/notify"
+	"github.com/section9labs/okesu/controlplane/ports"
 	"github.com/section9labs/okesu/controlplane/tunnel"
 	"github.com/section9labs/okesu/controlplane/ui"
 )
 
 // Server holds all the long-lived state for the Control Plane HTTP server.
 type Server struct {
-	cfg      Config
-	store    *db.Store
-	mgr      *auth.Manager
-	bcast    *Broadcaster
-	ca       *CA
-	oidc     *auth.OIDCProvider // nil when OIDC not configured
-	jobs     *jobs.Registry
-	tunReg   *tunnel.Registry
-	runs     *api.RunRegistry
-	notify   *notify.Worker
-	http     *http.Server
+	cfg        Config
+	store      *db.Store
+	eventStore ports.EventStore
+	mgr        *auth.Manager
+	bcast      *Broadcaster
+	ca         *CA
+	oidc       *auth.OIDCProvider // nil when OIDC not configured
+	jobs       *jobs.Registry
+	tunReg     *tunnel.Registry
+	runs       *api.RunRegistry
+	notify     *notify.Worker
+	http       *http.Server
 	mgmtHTTP *http.Server       // mTLS-protected management plane
 }
 
@@ -84,15 +87,22 @@ func New(cfg Config) (*Server, error) {
 		return nil, fmt.Errorf("ensure ca: %w", err)
 	}
 
+	// Phase 8c: events flow through the EventStore port. Default
+	// adapter wraps the same SQLite database — same on-disk layout, no
+	// migration. Phase 8c.next swaps in the ClickHouse adapter when
+	// --events-store=clickhouse is configured.
+	eventStore := sqliteevents.New(store)
+
 	srv := &Server{
-		cfg:    cfg,
-		store:  store,
-		mgr:    mgr,
-		bcast:  bcast,
-		ca:     ca,
-		jobs:   jobs.New(500),
-		tunReg: tunnel.NewRegistry(),
-		runs:   api.NewRunRegistry(),
+		cfg:        cfg,
+		store:      store,
+		eventStore: eventStore,
+		mgr:        mgr,
+		bcast:      bcast,
+		ca:         ca,
+		jobs:       jobs.New(500),
+		tunReg:     tunnel.NewRegistry(),
+		runs:       api.NewRunRegistry(),
 	}
 	srv.notify = &notify.Worker{
 		Store:      store,
@@ -159,12 +169,12 @@ func (s *Server) routes() http.Handler {
 	r.Use(middleware.Recoverer)
 
 	// Public webhook endpoint — auth via HMAC, not cookies.
-	r.Post("/api/webhooks/events", api.WebhookHandler(s.store, s.cfg.WebhookSecret, s.bcast))
+	r.Post("/api/webhooks/events", api.WebhookHandler(s.store, s.eventStore, s.cfg.WebhookSecret, s.bcast))
 
 	// External findings ingest — auth via Bearer API token, scope=findings:write.
 	r.Group(func(r chi.Router) {
 		r.Use(auth.RequireToken(s.store, auth.ScopeFindingsWrite))
-		r.Post("/api/findings/ingest", api.FindingIngest(s.store, s.bcast))
+		r.Post("/api/findings/ingest", api.FindingIngest(s.store, s.eventStore, s.bcast))
 	})
 
 	// Public auth endpoints.
@@ -196,7 +206,7 @@ func (s *Server) routes() http.Handler {
 		}))
 
 		// Read endpoints — viewer+
-		r.Get("/api/events", api.EventsList(s.store))
+		r.Get("/api/events", api.EventsList(s.eventStore))
 		r.Get("/api/events/stream", api.EventsStream(s.bcast))
 		r.Get("/api/agents", api.AgentsList(s.store))
 		r.Get("/api/agents/{name}", api.AgentDetail(s.store))

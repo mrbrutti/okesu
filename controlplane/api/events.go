@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/section9labs/okesu/controlplane/db"
+	"github.com/section9labs/okesu/controlplane/ports"
 )
 
 // EventsList returns recent events as a JSON array.
@@ -17,14 +17,18 @@ import (
 // timestamp come back. Used by the UI's infinite-scroll pagination so
 // that new events arriving via the SSE stream don't shift the offset
 // window during scroll-down.
-func EventsList(store *db.Store) http.HandlerFunc {
+//
+// Read-side counterpart of WebhookHandler — both go through the
+// EventStore port so swapping the events firehose between SQLite (dev)
+// and ClickHouse (production) is a config decision, not a code change.
+func EventsList(store ports.EventStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 		if limit <= 0 {
 			limit = 100
 		}
 		beforeTs, _ := strconv.ParseInt(r.URL.Query().Get("before_ts"), 10, 64)
-		events, err := store.RecentEvents(limit, beforeTs)
+		events, err := store.Recent(r.Context(), limit, beforeTs)
 		if err != nil {
 			http.Error(w, "query: "+err.Error(), http.StatusInternalServerError)
 			return
@@ -47,10 +51,10 @@ func EventsList(store *db.Store) http.HandlerFunc {
 				ID:       e.ID,
 				Ts:       e.Ts,
 				Type:     e.Type,
-				Agent:    e.Agent.String,
-				Host:     e.Host.String,
-				Severity: e.Severity.String,
-				Title:    e.Title.String,
+				Agent:    e.Agent,
+				Host:     e.Host,
+				Severity: e.Severity,
+				Title:    e.Title,
 				Raw:      json.RawMessage(e.RawJSON),
 			})
 		}
