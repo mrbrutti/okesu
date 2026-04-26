@@ -358,8 +358,13 @@ type AgentDef struct {
 	Body string // system prompt body (content after the frontmatter)
 }
 
-// ParseAgentFile loads and parses an agent markdown file by name.
-// It searches these directories in order, stopping at the first match:
+// ParseAgentFile loads and parses an agent markdown file.
+//
+// If `name` is an absolute path or contains a path separator, it's
+// treated as a literal file path (used by the tunnel run flow, where
+// the CP ships the agent file content to a temp file on the node).
+// Otherwise it searches these directories in order, stopping at the
+// first match:
 //
 //  1. .claude/agents/<name>.md       (project-local, Claude CLI convention)
 //  2. .codex/agents/<name>.md        (project-local, Codex convention)
@@ -367,6 +372,13 @@ type AgentDef struct {
 //  4. ~/.codex/agents/<name>.md      (user-global)
 //  5. /etc/okesu/agents/<name>.md    (system-wide, production deploy convention)
 func ParseAgentFile(name string) (*AgentDef, error) {
+	if filepath.IsAbs(name) || strings.ContainsRune(name, filepath.Separator) {
+		content, err := os.ReadFile(name)
+		if err != nil {
+			return nil, fmt.Errorf("read agent file %q: %w", name, err)
+		}
+		return parseAgentContent(string(content))
+	}
 	home := os.Getenv("HOME")
 	candidates := []string{
 		filepath.Join(".claude", "agents", name+".md"),

@@ -58,7 +58,15 @@ type RunPayload struct {
 	Effort   string `json:"effort,omitempty"`
 	MaxTurns int    `json:"max_turns,omitempty"`
 	Agent    string `json:"agent,omitempty"`    // optional --agent flag
-	Prompt   string `json:"prompt"`
+	// AgentContent, when non-empty, carries the full *.md file body for
+	// the named agent. Set by the CP when the operator picks an agent
+	// from the Agent Library — the node writes the content to a temp
+	// file and passes its path via --agent so the run uses the
+	// CP-managed definition without requiring it to be pre-staged on
+	// the node. Empty means "look up Agent by name from the node's
+	// local search paths" (legacy behaviour).
+	AgentContent string `json:"agent_content,omitempty"`
+	Prompt       string `json:"prompt"`
 }
 
 // CancelPayload — CP asks the Node to terminate an in-flight run.

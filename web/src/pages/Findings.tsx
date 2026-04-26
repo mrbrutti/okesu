@@ -15,15 +15,17 @@ import {
   Repeat,
   Server,
   ShieldAlert,
+  Sparkles,
   Tag,
   X,
 } from 'lucide-react';
-import { api, type Finding, type FindingGroup, type FindingsSummary, type FindingStatus } from '../api';
+import { api, type Finding, type FindingGroup, type FindingsSummary, type FindingStatus, type RunListItem } from '../api';
 import { cn } from '../lib/cn';
 import { SectionHeader, type SectionTone } from '../components/lists/SectionHeader';
 import { ListCard } from '../components/lists/ListCard';
 import { StatusMenu } from '../components/StatusMenu';
 import { SeverityMenu, type SeverityChange } from '../components/SeverityMenu';
+import { InvestigateDialog } from '../components/InvestigateDialog';
 import { StatusPill } from '../components/StatusPill';
 import { useInfiniteScroll } from '../lib/useInfiniteScroll';
 
@@ -693,13 +695,20 @@ export function FindingDrawer({ id, onClose, onChanged }: DrawerProps) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showRaw, setShowRaw] = useState(false);
+  const [investigations, setInvestigations] = useState<RunListItem[]>([]);
+  const [investigateOpen, setInvestigateOpen] = useState(false);
 
   useEffect(() => {
     setF(null);
     setRelated([]);
     setShowRaw(false);
     api.finding(id).then(setF).catch((e) => setError(String(e)));
+    api.runsForFinding(id).then(setInvestigations).catch(() => setInvestigations([]));
   }, [id]);
+
+  function refreshInvestigations() {
+    api.runsForFinding(id).then(setInvestigations).catch(() => { /* ignore */ });
+  }
 
   // Look up related findings (same dedup_key) once we have the finding.
   useEffect(() => {
@@ -814,7 +823,7 @@ export function FindingDrawer({ id, onClose, onChanged }: DrawerProps) {
         {/* Identity strip */}
         <div className="grid grid-cols-2 gap-3 text-xs">
           <DetailTile icon={Cpu} label="Agent">
-            <Link to={`/agents/${encodeURIComponent(f.agent || '')}`} className="text-ink hover:text-brand-600 inline-flex items-center gap-1">
+            <Link to={`/daimons/${encodeURIComponent(f.agent || '')}`} className="text-ink hover:text-brand-600 inline-flex items-center gap-1">
               {f.agent || '—'}
               {f.agent && <ExternalLink size={9} />}
             </Link>
@@ -933,6 +942,38 @@ export function FindingDrawer({ id, onClose, onChanged }: DrawerProps) {
           </Section>
         )}
 
+        {/* Investigations attached to this finding */}
+        {investigations.length > 0 && (
+          <Section icon={Sparkles} title="Investigations" count={investigations.length}>
+            <ul className="space-y-1.5">
+              {investigations.map((r) => (
+                <li key={r.id}>
+                  <Link
+                    to={`/runs?run=${encodeURIComponent(r.id)}`}
+                    className={cn(
+                      'block px-2.5 py-2 rounded-md ring-1 hover:bg-slate-50/60',
+                      r.status === 'running'   && 'ring-brand-200 bg-brand-50/30',
+                      r.status === 'succeeded' && 'ring-green-200 bg-green-50/30',
+                      r.status === 'failed'    && 'ring-red-200 bg-red-50/30',
+                      r.status === 'cancelled' && 'ring-slate-200 bg-slate-50/30',
+                    )}
+                  >
+                    <div className="flex items-center gap-2">
+                      <code className="text-[11px] text-ink-dim font-mono">{r.id.slice(-8)}</code>
+                      <span className="text-[10px] uppercase tracking-wide text-ink-mute">{r.status}</span>
+                      {r.agent && <span className="text-xs">· {r.agent}</span>}
+                      <span className="ml-auto text-[10px] text-ink-mute">{fmtAge(r.started_at)}</span>
+                    </div>
+                    {r.prompt && (
+                      <p className="text-[11px] text-ink-dim mt-0.5 line-clamp-2">{r.prompt}</p>
+                    )}
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          </Section>
+        )}
+
         {/* Raw event — collapsible since it duplicates the above */}
         <Section icon={ArrowUpRight} title="Raw event">
           <button
@@ -950,13 +991,22 @@ export function FindingDrawer({ id, onClose, onChanged }: DrawerProps) {
       </div>
 
       <footer className="border-t border-border p-3 flex items-center justify-between gap-2">
-        <Link
-          to={`/events?agent=${encodeURIComponent(f.agent || '')}`}
-          className="text-xs text-ink-dim hover:text-ink inline-flex items-center gap-1"
-        >
-          See agent timeline
-          <ArrowUpRight size={11} />
-        </Link>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setInvestigateOpen(true)}
+            className="inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded-md bg-brand-50 text-brand-700 ring-1 ring-brand-100 hover:bg-brand-100"
+            title="Run an agent on the affected host with this finding's context"
+          >
+            <Sparkles size={11} /> Investigate
+          </button>
+          <Link
+            to={`/events?agent=${encodeURIComponent(f.agent || '')}`}
+            className="text-xs text-ink-dim hover:text-ink inline-flex items-center gap-1"
+          >
+            See agent timeline
+            <ArrowUpRight size={11} />
+          </Link>
+        </div>
         <div className="flex items-center gap-2">
           {error && <span className="text-[11px] text-red-700">{error}</span>}
           <span className="text-[11px] text-ink-mute">Triage:</span>
@@ -968,6 +1018,13 @@ export function FindingDrawer({ id, onClose, onChanged }: DrawerProps) {
           />
         </div>
       </footer>
+      {investigateOpen && (
+        <InvestigateDialog
+          finding={f}
+          onClose={() => setInvestigateOpen(false)}
+          onLaunched={() => { setInvestigateOpen(false); refreshInvestigations(); }}
+        />
+      )}
     </aside>
   );
 }
@@ -1081,4 +1138,13 @@ function fmtTime(ms: number): string {
     month: 'short', day: '2-digit',
     hour: '2-digit', minute: '2-digit',
   });
+}
+
+function fmtAge(iso: string): string {
+  if (!iso) return '';
+  const sec = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+  if (sec < 60) return `${Math.floor(sec)}s ago`;
+  if (sec < 3600) return `${Math.floor(sec / 60)}m ago`;
+  if (sec < 86400) return `${Math.floor(sec / 3600)}h ago`;
+  return `${Math.floor(sec / 86400)}d ago`;
 }

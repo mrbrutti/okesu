@@ -65,8 +65,15 @@ export default function RunsPage() {
     },
   });
 
+  // Source the picker from the short-form Agent Library — these are the
+  // one-shot Claude/Codex agents (sourced from ~/.claude/agents,
+  // ~/.codex/agents, --agent-files-dir). Daimons (long-form, scheduled)
+  // are NOT shown here on purpose — to trigger a daimon ad-hoc, use
+  // the daimon detail page instead.
   useEffect(() => {
-    api.nodeLibrary().then((lib) => setAgentLib(lib.agents)).catch(() => { /* ignore */ });
+    api.agentLibrary()
+      .then((items) => setAgentLib(items.map((a) => a.name)))
+      .catch(() => { /* ignore — page works without a picker */ });
   }, []);
 
   // Auto-scroll the console as new lines arrive.

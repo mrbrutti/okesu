@@ -191,7 +191,7 @@ func (s *Server) routes() http.Handler {
 			OIDC:          s.oidc != nil,
 			MgmtPlane:     s.mgmtHTTP != nil,
 			Tunnel:        s.mgmtHTTP != nil,
-			Deploy:        s.cfg.DaemonBinaryPath != "" && s.cfg.AgentFilesDir != "",
+			Deploy:        s.cfg.DaemonBinaryPath != "" && s.cfg.DaimonFilesDir != "",
 			WebhookIngest: s.cfg.WebhookSecret != "",
 		}))
 
@@ -204,6 +204,7 @@ func (s *Server) routes() http.Handler {
 		r.Get("/api/findings/summary", api.FindingsSummary(s.store))
 		r.Get("/api/findings/grouped", api.FindingsGrouped(s.store))
 		r.Get("/api/findings/{id}", api.FindingDetail(s.store))
+			r.Get("/api/findings/{id}/runs", api.RunsForFinding(s.store))
 
 		// Read endpoints (continued)
 		r.Get("/api/nodes", api.NodesList(s.store))
@@ -211,9 +212,13 @@ func (s *Server) routes() http.Handler {
 		r.Get("/api/nodes/library", api.AgentLibrary(api.NodesConfig{
 			DaemonBinaryPath:  s.cfg.DaemonBinaryPath,
 			DaemonBinariesDir: s.cfg.DaemonBinariesDir,
-			AgentFilesDir:     s.cfg.AgentFilesDir,
+			DaimonFilesDir:     s.cfg.DaimonFilesDir,
 		}))
-		r.Get("/api/deploy/binaries", api.BinariesList(s.store, s.cfg.DaemonBinariesDir))
+		r.Get("/api/daimons/library", api.DaimonLibraryList(s.cfg.DaimonFilesDir))
+			r.Get("/api/daimons/library/{name}", api.DaimonLibraryGet(s.cfg.DaimonFilesDir))
+			r.Get("/api/agent-library", api.AgentLibraryList(s.cfg.AgentFilesDirs))
+			r.Get("/api/agent-library/{name}", api.AgentLibraryGet(s.cfg.AgentFilesDirs))
+			r.Get("/api/deploy/binaries", api.BinariesList(s.store, s.cfg.DaemonBinariesDir))
 		r.Get("/api/deploy/known-hosts", api.KnownHostsList(s.store))
 		r.Get("/api/nodes/{id}/known-host", api.NodeKnownHost(s.store))
 
@@ -269,6 +274,10 @@ func (s *Server) routes() http.Handler {
 			r.Post("/api/findings/group/acknowledge", api.FindingsGroupAcknowledge(s.store))
 			r.Post("/api/findings/{id}/status", api.FindingSetStatus(s.store))
 			r.Post("/api/findings/group/status", api.FindingsGroupSetStatus(s.store))
+			r.Put("/api/daimons/library/{name}", api.DaimonLibraryPut(s.store, s.cfg.DaimonFilesDir))
+			r.Delete("/api/daimons/library/{name}", api.DaimonLibraryDelete(s.store, s.cfg.DaimonFilesDir))
+			r.Put("/api/agent-library/{name}", api.AgentLibraryPut(s.store, s.cfg.AgentFilesDirs))
+			r.Delete("/api/agent-library/{name}", api.AgentLibraryDelete(s.store, s.cfg.AgentFilesDirs))
 			r.Post("/api/findings/{id}/severity", api.FindingSetSeverity(s.store))
 			r.Get("/api/findings/severity-rules", api.SeverityRulesList(s.store))
 			r.Delete("/api/findings/severity-rules", api.SeverityRuleDelete(s.store))
@@ -277,12 +286,12 @@ func (s *Server) routes() http.Handler {
 			r.Post("/api/nodes/{id}/deploy", api.NodeDeploy(s.store, s.jobs, s, api.NodesConfig{
 				DaemonBinaryPath:  s.cfg.DaemonBinaryPath,
 				DaemonBinariesDir: s.cfg.DaemonBinariesDir,
-				AgentFilesDir:     s.cfg.AgentFilesDir,
+				DaimonFilesDir:     s.cfg.DaimonFilesDir,
 				WebhookSecret:     s.cfg.WebhookSecret,
 				WebhookURL:        s.cfg.EffectiveWebhookURL(),
 				MgmtURL:           s.cfg.EffectiveMgmtURL(),
 			}))
-			r.Post("/api/runs", api.CreateRun(s.runs, s.tunReg, s.store))
+			r.Post("/api/runs", api.CreateRun(s.runs, s.tunReg, s.store, s.cfg.AgentFilesDirs))
 			r.Post("/api/runs/{id}/cancel", api.CancelRun(s.runs, s.tunReg, s.store))
 		})
 	})

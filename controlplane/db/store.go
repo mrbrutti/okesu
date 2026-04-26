@@ -57,11 +57,14 @@ var migration014 string
 //go:embed migrations/015_finding_severity_override.sql
 var migration015 string
 
+//go:embed migrations/016_run_finding_link.sql
+var migration016 string
+
 var migrations = []string{
 	migration001, migration002, migration003,
 	migration004, migration005, migration006, migration007,
 	migration008, migration009, migration010, migration011, migration012,
-	migration013, migration014, migration015,
+	migration013, migration014, migration015, migration016,
 }
 
 // Store wraps a *sql.DB with helpers used across the controlplane package.
@@ -141,6 +144,7 @@ func applyMigrations(db *sql.DB) error {
 			{13, func() bool { return columnExists(db, "findings", "status") }},
 			{14, func() bool { return columnExists(db, "nodes", "daemon_hostname") }},
 			{15, func() bool { return columnExists(db, "findings", "operator_severity") && tableExists(db, "finding_severity_rules") }},
+			{16, func() bool { return columnExists(db, "runs", "finding_id") }},
 		}
 		for _, m := range bootstrap {
 			if !m.probe() {

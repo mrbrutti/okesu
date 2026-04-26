@@ -217,7 +217,23 @@ func startRun(cfg Config, p tunnel.RunPayload, send func(*tunnel.Frame) error) *
 			provider = "auto"
 		}
 		args := []string{provider}
-		if p.Agent != "" {
+
+		// If the CP shipped agent file content alongside the run request,
+		// write it to a temp file and reference it via --agent <path>.
+		// This makes one-shot runs work even when the node has never seen
+		// the agent before — the CP's library is the source of truth.
+		var agentTempPath string
+		if p.AgentContent != "" {
+			tmp, err := os.CreateTemp("", "okesu-agent-*.md")
+			if err == nil {
+				_, _ = tmp.WriteString(p.AgentContent)
+				_ = tmp.Close()
+				agentTempPath = tmp.Name()
+				defer os.Remove(agentTempPath)
+				args = append(args, "--agent", agentTempPath)
+			}
+		}
+		if agentTempPath == "" && p.Agent != "" {
 			args = append(args, "--agent", p.Agent)
 		}
 		if p.Model != "" {

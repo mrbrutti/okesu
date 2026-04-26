@@ -6,7 +6,9 @@ package controlplane
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 )
 
 // Config holds the runtime configuration for the Control Plane server.
@@ -100,9 +102,19 @@ type Config struct {
 	// also tracked in the daemon_binaries DB table.
 	DaemonBinariesDir string
 
-	// AgentFilesDir is the directory on the CP host that holds *.md agent
-	// files available for deploy. Required to deploy.
-	AgentFilesDir string
+	// DaimonFilesDir is the directory on the CP host that holds long-form
+	// *.md daimon definitions (with full frontmatter — schedule, mgmt,
+	// outputs, RBAC). These are what gets installed when an operator
+	// deploys to a node. Required to deploy.
+	DaimonFilesDir string
+
+	// AgentFilesDirs is the list of search directories for short-form
+	// Claude/Codex agent definitions (the same .md format Claude Code +
+	// Codex use natively — small frontmatter, used for one-shot runs).
+	// Multiple directories are searched in order, and the first match
+	// wins. By default we look in ~/.claude/agents and ~/.codex/agents;
+	// operators can extend with --agent-files-dir <path> (repeatable).
+	AgentFilesDirs []string
 
 	// WebhookPublicURL is the absolute URL the deployed daemon should POST
 	// webhook events to. Defaults to derived from Listen ("https://localhost<port>")
@@ -167,7 +179,8 @@ func FromEnv() Config {
 
 		DaemonBinaryPath:  os.Getenv("OKESU_CP_DAEMON_BINARY"),
 		DaemonBinariesDir: os.Getenv("OKESU_CP_DAEMON_BINARIES_DIR"),
-		AgentFilesDir:     os.Getenv("OKESU_CP_AGENT_FILES_DIR"),
+		DaimonFilesDir:    envAny("OKESU_CP_DAIMON_FILES_DIR", "OKESU_CP_AGENT_FILES_DIR"),
+		AgentFilesDirs:    defaultAgentSearchDirs(envSplitNonEmpty("OKESU_CP_AGENT_FILES_DIRS", ":")),
 		WebhookPublicURL:  os.Getenv("OKESU_CP_WEBHOOK_PUBLIC_URL"),
 		MgmtPublicURL:     os.Getenv("OKESU_CP_MGMT_PUBLIC_URL"),
 
@@ -209,4 +222,53 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// envAny returns the first non-empty value among the listed env vars, or "".
+// Used to support a primary env var name + a legacy alias during a rename.
+func envAny(keys ...string) string {
+	for _, k := range keys {
+		if v := os.Getenv(k); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// envSplitNonEmpty reads an env var and splits on sep, dropping empty entries.
+func envSplitNonEmpty(key, sep string) []string {
+	v := os.Getenv(key)
+	if v == "" {
+		return nil
+	}
+	parts := strings.Split(v, sep)
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// defaultAgentSearchDirs returns the canonical list of search directories
+// for short-form agent definitions: ~/.claude/agents, ~/.codex/agents, plus
+// any extras (typically passed in via --agent-files-dir flags). Missing
+// directories are kept in the list — the library page reports each one's
+// status (found/missing) so operators see what's contributing.
+func defaultAgentSearchDirs(extra []string) []string {
+	out := []string{}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		out = append(out, filepath.Join(home, ".claude", "agents"))
+		out = append(out, filepath.Join(home, ".codex", "agents"))
+	}
+	for _, e := range extra {
+		e = strings.TrimSpace(e)
+		if e == "" {
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
 }

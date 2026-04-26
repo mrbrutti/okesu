@@ -33,7 +33,7 @@ type NodeDeployer interface {
 type NodesConfig struct {
 	DaemonBinaryPath  string                          // single-arch fallback
 	DaemonBinariesDir string                          // multi-arch directory
-	AgentFilesDir     string
+	DaimonFilesDir     string
 	WebhookSecret     string
 	// WebhookURL and MgmtURL are the absolute URLs the deployed daemon
 	// will use to reach the CP. These get templated into the agent file
@@ -215,8 +215,8 @@ func NodeDelete(store *db.Store) http.HandlerFunc {
 func AgentLibrary(cfg NodesConfig) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		names := []string{}
-		if cfg.AgentFilesDir != "" {
-			entries, err := os.ReadDir(cfg.AgentFilesDir)
+		if cfg.DaimonFilesDir != "" {
+			entries, err := os.ReadDir(cfg.DaimonFilesDir)
 			if err == nil {
 				for _, e := range entries {
 					n := e.Name()
@@ -230,7 +230,7 @@ func AgentLibrary(cfg NodesConfig) http.HandlerFunc {
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"agents":             names,
 			"daemon_binary_path": cfg.DaemonBinaryPath,
-			"agent_files_dir":    cfg.AgentFilesDir,
+			"agent_files_dir":    cfg.DaimonFilesDir,
 		})
 	}
 }
@@ -276,7 +276,7 @@ func NodeDeploy(store *db.Store, reg *jobs.Registry, deployer NodeDeployer, cfg 
 
 		// Validate the requested agents exist in the library.
 		for _, a := range req.Agents {
-			path := filepath.Join(cfg.AgentFilesDir, a+".md")
+			path := filepath.Join(cfg.DaimonFilesDir, a+".md")
 			if _, err := os.Stat(path); err != nil {
 				http.Error(w, fmt.Sprintf("agent file not found: %s", a), http.StatusBadRequest)
 				return
@@ -355,7 +355,7 @@ func NodeDeploy(store *db.Store, reg *jobs.Registry, deployer NodeDeployer, cfg 
 			AgentsToInstall:      req.Agents,
 			DaemonBinaryPath:     cfg.DaemonBinaryPath,
 			DaemonBinaryResolver: binResolver,
-			AgentFilesDir:        cfg.AgentFilesDir,
+			DaimonFilesDir:        cfg.DaimonFilesDir,
 			MgmtCerts:            certs,
 			WebhookSecret:        webhookSecret,
 			WebhookURL:           cfg.WebhookURL,

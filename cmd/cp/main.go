@@ -81,7 +81,14 @@ func serveCmd() *cobra.Command {
 	// Node deploy
 	cmd.Flags().StringVar(&cfg.DaemonBinaryPath, "daemon-binary", cfg.DaemonBinaryPath, "Single-arch fallback daemon binary path (used when --daemon-binaries-dir is empty)")
 	cmd.Flags().StringVar(&cfg.DaemonBinariesDir, "daemon-binaries-dir", cfg.DaemonBinariesDir, "Directory of per-arch daemon binaries (admins upload via Settings → Deploy)")
-	cmd.Flags().StringVar(&cfg.AgentFilesDir, "agent-files-dir", cfg.AgentFilesDir, "Directory holding *.md agent files available to deploy")
+	// Daimon library — long-form *.md daimon definitions (with full
+	// frontmatter — schedule, mgmt, outputs). What gets deployed to nodes.
+	cmd.Flags().StringVar(&cfg.DaimonFilesDir, "daimon-files-dir", cfg.DaimonFilesDir, "Directory holding *.md daimon files available to deploy")
+
+	// Agent library — short-form Claude/Codex agent definitions, used for
+	// one-off Runs. Repeat the flag to add more search paths; ~/.claude/agents
+	// and ~/.codex/agents are always searched in addition to these.
+	cmd.Flags().StringSliceVar(&cfg.AgentFilesDirs, "agent-files-dir", cfg.AgentFilesDirs, "Extra directories to search for short-form agent files (repeatable; ~/.claude/agents and ~/.codex/agents are always included)")
 	cmd.Flags().StringVar(&cfg.WebhookPublicURL, "webhook-public-url", cfg.WebhookPublicURL, "URL deployed daemons should post webhook events to (default: derive from --listen)")
 	cmd.Flags().StringVar(&cfg.MgmtPublicURL, "mgmt-public-url", cfg.MgmtPublicURL, "URL deployed daemons should reach the mgmt plane at (default: derive from --mgmt-listen)")
 

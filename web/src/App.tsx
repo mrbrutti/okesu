@@ -3,8 +3,9 @@ import { Navigate, Route, Routes } from 'react-router-dom';
 import { api, ApiError, type User } from './api';
 import LoginPage from './pages/Login';
 import EventsPage from './pages/Events';
+import DaimonsPage from './pages/Daimons';
+import DaimonDetailPage from './pages/DaimonDetail';
 import AgentsPage from './pages/Agents';
-import AgentDetailPage from './pages/AgentDetail';
 import FindingsPage from './pages/Findings';
 import NodesPage from './pages/Nodes';
 import NodeDetailPage from './pages/NodeDetail';
@@ -47,8 +48,9 @@ export default function App() {
         <Route index element={<FindingsPage />} />
         <Route path="/findings" element={<FindingsPage />} />
         <Route path="/events" element={<EventsPage />} />
+        <Route path="/daimons" element={<DaimonsPage />} />
+        <Route path="/daimons/:name" element={<DaimonDetailPage />} />
         <Route path="/agents" element={<AgentsPage />} />
-        <Route path="/agents/:name" element={<AgentDetailPage />} />
         <Route path="/nodes" element={<NodesPage />} />
         <Route path="/nodes/:id" element={<NodeDetailPage />} />
         <Route path="/runs" element={<RunsPage />} />

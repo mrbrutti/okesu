@@ -37,7 +37,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json();
 }
 
-export interface AgentItem {
+// DaimonItem describes a registered long-running agent (a "daimon") as
+// returned by /api/agents. Backend types/routes still use "agent" — this
+// is the UI-side rename; backend renames are a slower follow-up.
+export interface DaimonItem {
   name: string;
   host: string;
   provider?: string;
@@ -54,7 +57,40 @@ export interface AgentItem {
   config_updated_at?: string;
 }
 
-export interface AgentConfigPatch {
+export interface DaimonLibraryItem {
+  name: string;
+  description?: string;
+  provider?: string;
+  model?: string;
+  mode?: string;
+  interval?: string;
+  modified_at: string;
+  size_bytes: number;
+}
+
+export interface DaimonLibraryDetail extends DaimonLibraryItem {
+  content: string;
+}
+
+export interface AgentLibraryItem {
+  name: string;
+  description?: string;
+  provider?: string;
+  model?: string;
+  max_turns?: number;
+  effort?: string;
+  // Filesystem dir the file lives in. Surfaces which search-path entry
+  // a given agent came from when multiple are configured.
+  dir: string;
+  modified_at: string;
+  size_bytes: number;
+}
+
+export interface AgentLibraryDetail extends AgentLibraryItem {
+  content: string;
+}
+
+export interface DaimonConfigPatch {
   max_turns?: number;
   effort?: string;
   suspended?: boolean;
@@ -216,21 +252,59 @@ export const api = {
     return request<EventItem[]>(`/api/events?${p.toString()}`);
   },
 
-  agents: (limit?: number, offset?: number) => {
+  // Daimon (registered long-running agent) listing/detail/config-patch.
+  // Backend routes still use the legacy "/api/agents" path — UI-only rename.
+  daimons: (limit?: number, offset?: number) => {
     const p = new URLSearchParams();
     if (limit) p.set('limit', String(limit));
     if (offset) p.set('offset', String(offset));
     const qs = p.toString();
-    return request<AgentItem[]>(qs ? `/api/agents?${qs}` : '/api/agents');
+    return request<DaimonItem[]>(qs ? `/api/agents?${qs}` : '/api/agents');
   },
 
-  agent: (name: string) => request<AgentItem>(`/api/agents/${encodeURIComponent(name)}`),
+  daimon: (name: string) => request<DaimonItem>(`/api/agents/${encodeURIComponent(name)}`),
 
-  patchAgent: (name: string, patch: AgentConfigPatch) =>
-    request<AgentItem>(`/api/agents/${encodeURIComponent(name)}/config`, {
+  patchDaimon: (name: string, patch: DaimonConfigPatch) =>
+    request<DaimonItem>(`/api/agents/${encodeURIComponent(name)}/config`, {
       method: 'PATCH',
       body: JSON.stringify(patch),
     }),
+
+  // Daimon Library — long-form daimon definitions stored in
+  // --daimon-files-dir on the CP host. Operators author/edit these
+  // through the UI; deploys read from the same dir.
+  daimonLibrary: () => request<DaimonLibraryItem[]>('/api/daimons/library'),
+  daimonLibraryGet: (name: string) =>
+    request<DaimonLibraryDetail>(`/api/daimons/library/${encodeURIComponent(name)}`),
+  daimonLibrarySave: (name: string, content: string) =>
+    request<DaimonLibraryDetail>(`/api/daimons/library/${encodeURIComponent(name)}`, {
+      method: 'PUT',
+      body: JSON.stringify({ content }),
+    }),
+  daimonLibraryDelete: (name: string) =>
+    request<void>(`/api/daimons/library/${encodeURIComponent(name)}`, {
+      method: 'DELETE',
+    }),
+
+  // Agent Library — short-form Claude/Codex agent definitions sourced
+  // from ~/.claude/agents, ~/.codex/agents, and any --agent-files-dir
+  // overrides the operator passed at startup.
+  agentLibrary: () => request<AgentLibraryItem[]>('/api/agent-library'),
+  agentLibraryGet: (name: string) =>
+    request<AgentLibraryDetail>(`/api/agent-library/${encodeURIComponent(name)}`),
+  agentLibrarySave: (name: string, content: string) =>
+    request<AgentLibraryDetail>(`/api/agent-library/${encodeURIComponent(name)}`, {
+      method: 'PUT',
+      body: JSON.stringify({ content }),
+    }),
+  agentLibraryDelete: (name: string) =>
+    request<void>(`/api/agent-library/${encodeURIComponent(name)}`, {
+      method: 'DELETE',
+    }),
+
+  // Investigations attached to a finding — runs whose finding_id == id.
+  runsForFinding: (id: number) =>
+    request<RunListItem[]>(`/api/findings/${id}/runs`),
 
   findings: (filter: FindingsFilter = {}) => {
     const p = new URLSearchParams();
@@ -580,18 +654,24 @@ export interface CreateRunReq {
   effort?: string;
   agent?: string;
   max_turns?: number;
+  /** Optional. Links the run to a finding so the FindingDrawer surfaces
+   *  it as an "investigation" attached to that finding. */
+  finding_id?: number;
 }
 
 export interface RunListItem {
   id: string;
   node: string;
   provider: string;
+  agent?: string;
   prompt: string;
   started_at: string;
   finished_at?: string;
   status: 'running' | 'succeeded' | 'failed' | 'cancelled';
   exit_code: number;
   started_by?: string;
+  /** Set when the run was launched via "Investigate this finding". */
+  finding_id?: number;
 }
 
 export interface DBStatsResponse {

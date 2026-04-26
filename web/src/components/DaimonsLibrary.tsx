@@ -1,53 +1,70 @@
-// Agents page — the *short-form* Claude/Codex agent library. Agents are
-// one-off invocation definitions (Run picker reads from here). They are
-// distinct from Daimons (long-form, scheduled, deployed via Nodes).
+// Daimon Library — manage long-form daimon definitions stored on the CP
+// host filesystem (--daimon-files-dir). List on the left, raw markdown
+// editor on the right. Save writes back to disk; delete removes the file
+// (server blocks if the daimon name is still registered).
 //
-// Sourced from ~/.claude/agents, ~/.codex/agents, and any
-// --agent-files-dir overrides; the table shows which directory each
-// file lives in so operators can tell apart shipped templates from
-// CP-managed ones.
+// MVP design: the editor is a textarea over the full markdown file
+// (frontmatter + body). A structured form for the frontmatter could be a
+// follow-up — for now operators familiar with the existing files prefer
+// editing them directly.
 
 import { useEffect, useState } from 'react';
 import {
   AlertCircle,
   Clock,
+  FileEdit,
   FilePlus,
-  Folder,
   Loader2,
   RefreshCw,
   Save,
-  Sparkles,
   Trash2,
   X,
 } from 'lucide-react';
-import {
-  api,
-  ApiError,
-  type AgentLibraryDetail,
-  type AgentLibraryItem,
-} from '../api';
+import { api, ApiError, type DaimonLibraryDetail, type DaimonLibraryItem } from '../api';
 
 const TEMPLATE = `---
+# ── Identity ────────────────────────────────────────────────────────────────
 name: NAME
-description: One-line description.
-model: claude-haiku-4-5-20251001
+description: >
+  Short description of what this daimon does and how often it runs.
+
+# ── Provider ─────────────────────────────────────────────────────────────────
 provider: claude
-tools: [bash, read_file, write_file, list_files, search]
-maxTurns: 50
-effort: medium
+model: claude-haiku-4-5-20251001
+effort: low
+maxTurns: 20
+
+# ── Schedule ─────────────────────────────────────────────────────────────────
+mode: daemon
+interval: 5m
+overlap: skip
+
+# ── State ────────────────────────────────────────────────────────────────────
+stateDir: /var/lib/okesu/NAME
+dedupeTtl: 1h
+
+# ── Tools ────────────────────────────────────────────────────────────────────
+tools:
+  - read_file
+  - list_files
+  - search
+
+# ── Outputs ──────────────────────────────────────────────────────────────────
+outputs:
+  - kind: stdout
 ---
 
 You are an agent that ...
 `;
 
-export default function AgentsPage() {
-  const [items, setItems] = useState<AgentLibraryItem[] | null>(null);
+export default function DaimonsLibrary() {
+  const [items, setItems] = useState<DaimonLibraryItem[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState<{ name: string; isNew: boolean } | null>(null);
 
   function refresh() {
     setError(null);
-    api.agentLibrary()
+    api.daimonLibrary()
       .then(setItems)
       .catch((e) => setError(formatError(e)));
   }
@@ -60,16 +77,13 @@ export default function AgentsPage() {
     <div className="h-full flex flex-col">
       <header className="px-6 py-4 border-b border-border bg-panel flex items-center justify-between">
         <div>
-          <h1 className="text-lg font-semibold flex items-center gap-2">
-            <Sparkles size={18} className="text-brand-500" />
-            Agents
-          </h1>
+          <h2 className="text-base font-semibold flex items-center gap-2">
+            <FileEdit size={16} className="text-brand-500" />
+            Daimon Library
+          </h2>
           <p className="text-xs text-ink-dim">
-            Short-form agent definitions used for one-off Runs (Claude
-            Code / Codex format). Sourced from{' '}
-            <code className="bg-slate-100 px-1 rounded">~/.claude/agents</code>,{' '}
-            <code className="bg-slate-100 px-1 rounded">~/.codex/agents</code>, and any{' '}
-            <code className="bg-slate-100 px-1 rounded">--agent-files-dir</code> override.
+            Long-form definitions deployed to nodes. Edits land on disk in
+            the configured <code className="bg-slate-100 px-1 rounded">--daimon-files-dir</code>.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -83,7 +97,7 @@ export default function AgentsPage() {
             onClick={() => setEditing({ name: '', isNew: true })}
             className="inline-flex items-center gap-1.5 bg-brand-500 hover:bg-brand-600 text-white text-sm font-medium px-3 py-1.5 rounded-md"
           >
-            <FilePlus size={14} /> New agent
+            <FilePlus size={14} /> New daimon
           </button>
         </div>
       </header>
@@ -100,11 +114,11 @@ export default function AgentsPage() {
 
         {items && items.length === 0 && !error && (
           <div className="text-center py-16 text-ink-mute bg-panel border border-border rounded-xl shadow-card">
-            <Sparkles size={32} className="mx-auto mb-2 opacity-40" />
-            <p className="mb-1">No agents found in any search dir.</p>
+            <FileEdit size={32} className="mx-auto mb-2 opacity-40" />
+            <p className="mb-1">No daimons defined yet.</p>
             <p className="text-xs">
-              Click <strong>New agent</strong> to create one — it'll be
-              written to the first writable search dir.
+              Click <strong>New daimon</strong> to author one — it'll be
+              available to deploy on the Nodes page.
             </p>
           </div>
         )}
@@ -117,15 +131,15 @@ export default function AgentsPage() {
                 onClick={() => setEditing({ name: it.name, isNew: false })}
                 className="px-4 py-3 hover:bg-slate-50/60 cursor-pointer flex items-start gap-3"
               >
-                <div className="w-10 h-10 shrink-0 rounded-lg bg-gradient-to-br from-brand-500 to-brand-700 flex items-center justify-center text-white text-xs font-semibold">
+                <div className="w-10 h-10 shrink-0 rounded-lg bg-gradient-to-br from-slate-700 to-slate-900 flex items-center justify-center text-white text-xs font-semibold">
                   {it.name.slice(0, 2).toUpperCase()}
                 </div>
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="text-sm font-medium text-ink truncate">{it.name}</span>
-                    {it.provider && (
+                    {it.mode && (
                       <span className="text-[10px] uppercase tracking-wide text-brand-700 bg-brand-50 ring-1 ring-brand-100 px-1.5 py-0.5 rounded">
-                        {it.provider}
+                        {it.mode}
                       </span>
                     )}
                   </div>
@@ -133,14 +147,8 @@ export default function AgentsPage() {
                     <p className="text-xs text-ink-dim mt-0.5 line-clamp-2">{it.description}</p>
                   )}
                   <div className="text-[11px] text-ink-mute font-mono mt-1 flex items-center gap-3 flex-wrap">
-                    {it.model && <span>{it.model}</span>}
-                    {it.max_turns !== undefined && it.max_turns > 0 && (
-                      <span>max {it.max_turns} turns</span>
-                    )}
-                    {it.effort && <span>effort {it.effort}</span>}
-                    <span className="inline-flex items-center gap-1">
-                      <Folder size={10} /> {it.dir}
-                    </span>
+                    {it.provider && <span>{it.provider}{it.model ? ` · ${it.model}` : ''}</span>}
+                    {it.interval && <span>every {it.interval}</span>}
                     <span className="ml-auto inline-flex items-center gap-1">
                       <Clock size={10} /> {fmtRel(it.modified_at)}
                     </span>
@@ -153,7 +161,7 @@ export default function AgentsPage() {
       </div>
 
       {editing && (
-        <AgentEditor
+        <DaimonEditor
           name={editing.name}
           isNew={editing.isNew}
           onClose={() => setEditing(null)}
@@ -165,7 +173,7 @@ export default function AgentsPage() {
   );
 }
 
-function AgentEditor({
+function DaimonEditor({
   name, isNew, onClose, onSaved, onDeleted,
 }: {
   name: string;
@@ -176,14 +184,14 @@ function AgentEditor({
 }) {
   const [draftName, setDraftName] = useState(isNew ? '' : name);
   const [content, setContent] = useState<string | null>(isNew ? TEMPLATE : null);
-  const [meta, setMeta] = useState<AgentLibraryDetail | null>(null);
+  const [meta, setMeta] = useState<DaimonLibraryDetail | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (isNew) return;
     setError(null);
-    api.agentLibraryGet(name)
+    api.daimonLibraryGet(name)
       .then((d) => { setContent(d.content); setMeta(d); })
       .catch((e) => setError(formatError(e)));
   }, [name, isNew]);
@@ -197,7 +205,7 @@ function AgentEditor({
     }
     setBusy(true); setError(null);
     try {
-      await api.agentLibrarySave(targetName, content);
+      await api.daimonLibrarySave(targetName, content);
       onSaved();
     } catch (e) {
       setError(formatError(e));
@@ -208,10 +216,10 @@ function AgentEditor({
 
   async function del() {
     if (isNew) return;
-    if (!confirm(`Delete agent "${name}"? Removes the .md file from its source dir.`)) return;
+    if (!confirm(`Delete daimon "${name}"? The .md file is removed from --daimon-files-dir. Already-deployed daimons keep running until uninstalled.`)) return;
     setBusy(true); setError(null);
     try {
-      await api.agentLibraryDelete(name);
+      await api.daimonLibraryDelete(name);
       onDeleted();
     } catch (e) {
       setError(formatError(e));
@@ -226,7 +234,7 @@ function AgentEditor({
         <div className="min-w-0 flex-1">
           {isNew ? (
             <div className="flex items-center gap-2">
-              <span className="text-sm font-semibold">New agent</span>
+              <span className="text-sm font-semibold">New daimon</span>
               <input
                 value={draftName}
                 onChange={(e) => setDraftName(e.target.value)}
@@ -239,7 +247,7 @@ function AgentEditor({
               <h2 className="text-sm font-semibold">{name}</h2>
               {meta && (
                 <p className="text-[11px] text-ink-mute font-mono mt-0.5">
-                  {meta.dir} · {meta.size_bytes}B · last modified {fmtRel(meta.modified_at)}
+                  {meta.size_bytes}B · last modified {fmtRel(meta.modified_at)}
                 </p>
               )}
             </>

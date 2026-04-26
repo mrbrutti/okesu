@@ -80,7 +80,7 @@ export default function NodeDetailPage() {
           </div>
 
           <div className="hidden md:flex items-stretch gap-3">
-            <Stat label="Agents" value={String(node.agents_installed.length)} icon={Activity} />
+            <Stat label="Daimons" value={String(node.agents_installed.length)} icon={Activity} />
             <Stat
               label="Last deploy"
               value={node.last_deployed_at ? formatAgo(node.last_deployed_at) : '—'}
@@ -182,7 +182,7 @@ function OverviewTab({ node }: { node: NodeItem }) {
         <Row label="Last status" mono>{node.last_status_at ?? '—'}</Row>
         <Row label="Last deploy" mono>{node.last_deployed_at ?? 'never'}</Row>
       </Card>
-      <Card title="Agents installed" wide>
+      <Card title="Daimons installed" wide>
         {node.agents_installed.length === 0 ? (
           <p className="text-xs text-ink-mute">None yet — click <strong>Deploy</strong> on the Nodes page to install one.</p>
         ) : (
@@ -190,7 +190,7 @@ function OverviewTab({ node }: { node: NodeItem }) {
             {node.agents_installed.map((a) => (
               <Link
                 key={a}
-                to={`/agents/${encodeURIComponent(a)}`}
+                to={`/daimons/${encodeURIComponent(a)}`}
                 className="text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 px-2 py-0.5 rounded transition-colors"
               >
                 {a}

@@ -30,6 +30,7 @@ type Run struct {
 	FinishedAt      sql.NullTime
 	StartedByUserID sql.NullInt64
 	StartedByEmail  sql.NullString
+	FindingID       sql.NullInt64
 }
 
 // RunInsert is the input shape for CreateRun.
@@ -43,6 +44,10 @@ type RunInsert struct {
 	Prompt          string
 	StartedByUserID int64
 	StartedByEmail  string
+	// FindingID, when > 0, links the run to a finding so the
+	// FindingDrawer can show the resulting transcript as an
+	// "investigation" attached to that finding.
+	FindingID int64
 }
 
 // RunLine is one captured stdout/stderr line.
@@ -59,13 +64,14 @@ type RunLine struct {
 func (s *Store) CreateRun(in RunInsert) error {
 	_, err := s.Exec(`
 		INSERT INTO runs (id, node_name, provider, model, effort, agent_name, prompt,
-		                  status, started_by_user_id, started_by_email)
-		VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?, ?)
+		                  status, started_by_user_id, started_by_email, finding_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?)
 	`,
 		in.ID, in.NodeName,
 		nullable(in.Provider), nullable(in.Model), nullable(in.Effort),
 		nullable(in.AgentName), in.Prompt,
 		nullableInt64(in.StartedByUserID), nullable(in.StartedByEmail),
+		nullableInt64(in.FindingID),
 	)
 	return err
 }
@@ -116,14 +122,14 @@ func (s *Store) GetRun(id string) (*Run, error) {
 	row := s.QueryRow(`
 		SELECT id, node_name, provider, model, effort, agent_name, prompt,
 		       status, exit_code, error, started_at, finished_at,
-		       started_by_user_id, started_by_email
+		       started_by_user_id, started_by_email, finding_id
 		  FROM runs WHERE id = ?
 	`, id)
 	r := &Run{}
 	err := row.Scan(
 		&r.ID, &r.NodeName, &r.Provider, &r.Model, &r.Effort, &r.AgentName, &r.Prompt,
 		&r.Status, &r.ExitCode, &r.Error, &r.StartedAt, &r.FinishedAt,
-		&r.StartedByUserID, &r.StartedByEmail,
+		&r.StartedByUserID, &r.StartedByEmail, &r.FindingID,
 	)
 	if err != nil {
 		return nil, err
@@ -144,7 +150,7 @@ func (s *Store) ListRuns(limit, offset int) ([]*Run, error) {
 	rows, err := s.Query(`
 		SELECT id, node_name, provider, model, effort, agent_name, prompt,
 		       status, exit_code, error, started_at, finished_at,
-		       started_by_user_id, started_by_email
+		       started_by_user_id, started_by_email, finding_id
 		  FROM runs
 		 ORDER BY started_at DESC, id DESC
 		 LIMIT ? OFFSET ?
@@ -159,7 +165,37 @@ func (s *Store) ListRuns(limit, offset int) ([]*Run, error) {
 		if err := rows.Scan(
 			&r.ID, &r.NodeName, &r.Provider, &r.Model, &r.Effort, &r.AgentName, &r.Prompt,
 			&r.Status, &r.ExitCode, &r.Error, &r.StartedAt, &r.FinishedAt,
-			&r.StartedByUserID, &r.StartedByEmail,
+			&r.StartedByUserID, &r.StartedByEmail, &r.FindingID,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// ListRunsForFinding returns the runs whose finding_id matches, newest first.
+// Used by the FindingDrawer's "Investigations" section.
+func (s *Store) ListRunsForFinding(findingID int64) ([]*Run, error) {
+	rows, err := s.Query(`
+		SELECT id, node_name, provider, model, effort, agent_name, prompt,
+		       status, exit_code, error, started_at, finished_at,
+		       started_by_user_id, started_by_email, finding_id
+		  FROM runs
+		 WHERE finding_id = ?
+		 ORDER BY started_at DESC, id DESC
+	`, findingID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*Run
+	for rows.Next() {
+		r := &Run{}
+		if err := rows.Scan(
+			&r.ID, &r.NodeName, &r.Provider, &r.Model, &r.Effort, &r.AgentName, &r.Prompt,
+			&r.Status, &r.ExitCode, &r.Error, &r.StartedAt, &r.FinishedAt,
+			&r.StartedByUserID, &r.StartedByEmail, &r.FindingID,
 		); err != nil {
 			return nil, err
 		}

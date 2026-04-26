@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"strconv"
 	"sync"
 	"time"
@@ -77,10 +78,21 @@ type runRequest struct {
 	MaxTurns int    `json:"max_turns,omitempty"`
 	Agent    string `json:"agent,omitempty"`
 	Prompt   string `json:"prompt"`
+	// FindingID, when > 0, links this run to a finding so the FindingDrawer
+	// can show the resulting transcript as part of its "Investigations"
+	// section. Set by the "Investigate this finding" button.
+	FindingID int64 `json:"finding_id,omitempty"`
 }
 
 // CreateRun handles POST /api/runs — start a new ad-hoc agent run on a node.
-func CreateRun(reg *RunRegistry, tunReg *tunnel.Registry, store *db.Store) http.HandlerFunc {
+//
+// agentSearchDirs is the list of directories on the CP host that hold
+// short-form agent definitions (Claude/Codex format). When the request
+// names an agent, we ship the matching file's content to the node so the
+// run uses the CP-managed definition even if the node doesn't have a
+// local copy. Daimons (long-form, scheduled) are not selectable here —
+// trigger them ad-hoc from the daimon detail page instead.
+func CreateRun(reg *RunRegistry, tunReg *tunnel.Registry, store *db.Store, agentSearchDirs []string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req runRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -90,6 +102,24 @@ func CreateRun(reg *RunRegistry, tunReg *tunnel.Registry, store *db.Store) http.
 		if req.Node == "" || req.Prompt == "" {
 			http.Error(w, "node and prompt are required", http.StatusBadRequest)
 			return
+		}
+
+		// Look up agent content from the library so the node doesn't need
+		// the file pre-staged. If the lookup fails (e.g. agent removed
+		// between picker fetch and submit), surface a clear 400 — the
+		// daemon would otherwise get an obscure file-not-found error.
+		var agentContent string
+		if req.Agent != "" {
+			path, err := findAgentFile(agentSearchDirs, req.Agent)
+			if err == nil {
+				if content, rerr := os.ReadFile(path); rerr == nil {
+					agentContent = string(content)
+				}
+			}
+			if agentContent == "" {
+				http.Error(w, fmt.Sprintf("agent %q not found in library", req.Agent), http.StatusBadRequest)
+				return
+			}
 		}
 		conn := tunReg.Get(req.Node)
 		if conn == nil {
@@ -114,6 +144,7 @@ func CreateRun(reg *RunRegistry, tunReg *tunnel.Registry, store *db.Store) http.
 			Prompt:          req.Prompt,
 			StartedByUserID: startedByID,
 			StartedByEmail:  startedByEmail,
+			FindingID:       req.FindingID,
 		}); err != nil {
 			http.Error(w, "persist run: "+err.Error(), http.StatusInternalServerError)
 			return
@@ -129,13 +160,14 @@ func CreateRun(reg *RunRegistry, tunReg *tunnel.Registry, store *db.Store) http.
 		reg.put(run)
 
 		lines, exit, cleanup, err := conn.SendRun(tunnel.RunPayload{
-			RunID:    runID,
-			Provider: req.Provider,
-			Model:    req.Model,
-			Effort:   req.Effort,
-			MaxTurns: req.MaxTurns,
-			Agent:    req.Agent,
-			Prompt:   req.Prompt,
+			RunID:        runID,
+			Provider:     req.Provider,
+			Model:        req.Model,
+			Effort:       req.Effort,
+			MaxTurns:     req.MaxTurns,
+			Agent:        req.Agent,
+			AgentContent: agentContent,
+			Prompt:       req.Prompt,
 		})
 		if err != nil {
 			_ = store.FinishRun(runID, db.RunStatusFailed, -1, err.Error())
@@ -337,12 +369,14 @@ type runListItem struct {
 	ID         string `json:"id"`
 	Node       string `json:"node"`
 	Provider   string `json:"provider,omitempty"`
+	Agent      string `json:"agent,omitempty"`
 	Prompt     string `json:"prompt"`
 	StartedAt  string `json:"started_at"`
 	FinishedAt string `json:"finished_at,omitempty"`
 	Status     string `json:"status"`
 	ExitCode   int    `json:"exit_code"`
 	StartedBy  string `json:"started_by,omitempty"`
+	FindingID  int64  `json:"finding_id,omitempty"`
 }
 
 // RunsList handles GET /api/runs?limit=&offset= — DB-backed history.
@@ -490,6 +524,7 @@ func projectRun(row *db.Run, truncatePrompt bool) runListItem {
 		ID:        row.ID,
 		Node:      row.NodeName,
 		Provider:  row.Provider.String,
+		Agent:     row.AgentName.String,
 		Prompt:    prompt,
 		StartedAt: row.StartedAt.UTC().Format(time.RFC3339),
 		Status:    row.Status,
@@ -499,7 +534,35 @@ func projectRun(row *db.Run, truncatePrompt bool) runListItem {
 	if row.FinishedAt.Valid {
 		item.FinishedAt = row.FinishedAt.Time.UTC().Format(time.RFC3339)
 	}
+	if row.FindingID.Valid {
+		item.FindingID = row.FindingID.Int64
+	}
 	return item
+}
+
+// RunsForFinding handles GET /api/findings/{id}/runs — every run linked
+// to the finding, newest first. Drives the "Investigations" section on
+// the FindingDrawer.
+func RunsForFinding(store *db.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		idStr := chi.URLParam(r, "id")
+		id, err := strconv.ParseInt(idStr, 10, 64)
+		if err != nil {
+			http.Error(w, "bad id", http.StatusBadRequest)
+			return
+		}
+		rows, err := store.ListRunsForFinding(id)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		out := make([]runListItem, 0, len(rows))
+		for _, row := range rows {
+			out = append(out, projectRun(row, true))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(out)
+	}
 }
 
 // ConnectedNodes handles GET /api/nodes/connected.

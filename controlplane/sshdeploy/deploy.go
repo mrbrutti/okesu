@@ -11,7 +11,7 @@ import (
 type DeployRequest struct {
 	Cred Credential
 
-	// AgentsToInstall lists agent names whose files exist in AgentFilesDir.
+	// AgentsToInstall lists agent names whose files exist in DaimonFilesDir.
 	AgentsToInstall []string
 
 	// DaemonBinaryPath is the FALLBACK single-arch daemon binary path on the
@@ -25,8 +25,8 @@ type DeployRequest struct {
 	// If the resolver returns an error the deploy aborts with a clear message.
 	DaemonBinaryResolver DaemonBinaryResolver
 
-	// AgentFilesDir on the CP host — *.md files matching AgentsToInstall are uploaded.
-	AgentFilesDir string
+	// DaimonFilesDir on the CP host — *.md files matching AgentsToInstall are uploaded.
+	DaimonFilesDir string
 
 	// SystemdUnitPath on the CP host — uploaded to /etc/systemd/system/okesu-agent@.service.
 	// If empty, a sane built-in template is used.
@@ -125,7 +125,7 @@ func Deploy(ctx context.Context, req DeployRequest, logFn LogFn) (DeployResult, 
 	if req.DaemonBinaryPath == "" {
 		return result, fmt.Errorf("daemon binary path is required")
 	}
-	if req.AgentFilesDir == "" {
+	if req.DaimonFilesDir == "" {
 		return result, fmt.Errorf("agent files dir is required")
 	}
 
@@ -231,7 +231,7 @@ install -d -m 0755 -o okesu -g okesu /etc/okesu/agents /var/lib/okesu /var/log/o
 		// the mgmt plane, inject those YAML stanzas before the closing `---`
 		// — yaml.v3 last-key-wins semantics mean these override any commented
 		// or stub blocks earlier in the file.
-		src := req.AgentFilesDir + "/" + agent + ".md"
+		src := req.DaimonFilesDir + "/" + agent + ".md"
 		body, err := os.ReadFile(src)
 		if err != nil {
 			return result, fmt.Errorf("read agent %s: %w", agent, err)

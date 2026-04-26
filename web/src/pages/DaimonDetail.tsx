@@ -13,7 +13,7 @@ import {
   ShieldAlert,
   Tag,
 } from 'lucide-react';
-import { api, type AgentItem } from '../api';
+import { api, type DaimonItem } from '../api';
 import { cn } from '../lib/cn';
 import EventTimeline from '../components/EventTimeline';
 import AgentMessages from '../components/AgentMessages';
@@ -22,9 +22,9 @@ import { useLiveEventsPrefs } from '../lib/preferences';
 
 type Tab = 'overview' | 'events' | 'messages' | 'findings' | 'config';
 
-export default function AgentDetailPage() {
+export default function DaimonDetailPage() {
   const { name = '' } = useParams<{ name: string }>();
-  const [agent, setAgent] = useState<AgentItem | null>(null);
+  const [daimon, setDaimon] = useState<DaimonItem | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>('messages');
   const [livePrefs] = useLiveEventsPrefs();
@@ -32,8 +32,8 @@ export default function AgentDetailPage() {
   useEffect(() => {
     let cancelled = false;
     const refresh = () => {
-      api.agent(name)
-        .then((a) => { if (!cancelled) setAgent(a); })
+      api.daimon(name)
+        .then((d) => { if (!cancelled) setDaimon(d); })
         .catch((err) => { if (!cancelled) setError(String(err)); });
     };
     refresh();
@@ -41,7 +41,7 @@ export default function AgentDetailPage() {
     return () => { cancelled = true; clearInterval(t); };
   }, [name]);
 
-  if (error && !agent) {
+  if (error && !daimon) {
     return (
       <div className="p-6">
         <BackLink />
@@ -52,7 +52,7 @@ export default function AgentDetailPage() {
     );
   }
 
-  if (!agent) {
+  if (!daimon) {
     return <div className="p-6 text-ink-mute">Loading…</div>;
   }
 
@@ -62,42 +62,42 @@ export default function AgentDetailPage() {
         <BackLink />
         <div className="mt-2 flex items-center gap-4">
           <div className="w-12 h-12 shrink-0 rounded-xl bg-gradient-to-br from-brand-500 to-brand-700 flex items-center justify-center text-white font-semibold shadow-sm">
-            {agent.name.slice(0, 2).toUpperCase()}
+            {daimon.name.slice(0, 2).toUpperCase()}
           </div>
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2 flex-wrap">
-              <h1 className="text-lg font-semibold">{agent.name}</h1>
-              {agent.healthy && agent.last_heartbeat_at && (
+              <h1 className="text-lg font-semibold">{daimon.name}</h1>
+              {daimon.healthy && daimon.last_heartbeat_at && (
                 <span className="inline-flex items-center gap-1 text-[11px] text-green-700 bg-green-50 ring-1 ring-green-200 px-1.5 py-0.5 rounded">
                   <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
                   healthy
                 </span>
               )}
-              {!agent.healthy && agent.last_heartbeat_at && (
+              {!daimon.healthy && daimon.last_heartbeat_at && (
                 <span className="inline-flex items-center gap-1 text-[11px] text-yellow-700 bg-yellow-50 ring-1 ring-yellow-200 px-1.5 py-0.5 rounded">
                   stale heartbeat
                 </span>
               )}
-              {agent.desired_suspended && (
+              {daimon.desired_suspended && (
                 <span className="inline-flex items-center gap-1 text-[11px] text-yellow-700 bg-yellow-50 ring-1 ring-yellow-200 px-1.5 py-0.5 rounded">
                   <Pause size={9} /> suspended
                 </span>
               )}
             </div>
             <p className="text-xs text-ink-dim font-mono mt-0.5">
-              {agent.host || 'unknown host'} · {agent.provider || '—'} {agent.model || ''}
+              {daimon.host || 'unknown host'} · {daimon.provider || '—'} {daimon.model || ''}
             </p>
           </div>
 
           {/* Quick stat tiles */}
           <div className="hidden md:flex items-stretch gap-3">
-            <Stat label="Ticks" value={String(agent.last_tick_count)} icon={Activity} />
+            <Stat label="Ticks" value={String(daimon.last_tick_count)} icon={Activity} />
             <Stat
               label="Heartbeat"
-              value={agent.last_heartbeat_at ? formatAge(agent.heartbeat_age_sec) : 'never'}
+              value={daimon.last_heartbeat_at ? formatAge(daimon.heartbeat_age_sec) : 'never'}
               icon={Clock}
             />
-            <Stat label="Version" value={agent.version || '—'} icon={Hash} />
+            <Stat label="Version" value={daimon.version || '—'} icon={Hash} />
           </div>
         </div>
 
@@ -128,20 +128,20 @@ export default function AgentDetailPage() {
       </header>
 
       <main className="flex-1 overflow-hidden">
-        {tab === 'messages' && <AgentMessages agentName={agent.name} />}
-        {tab === 'findings' && <AgentFindings agentName={agent.name} />}
+        {tab === 'messages' && <AgentMessages agentName={daimon.name} />}
+        {tab === 'findings' && <AgentFindings agentName={daimon.name} />}
         {tab === 'events' && (
           <EventTimeline
-            agentFilter={agent.name}
+            agentFilter={daimon.name}
             showHeader={false}
             compact
             defaultMode="all"
             enableGrouping={livePrefs.applyToAgentDetail}
-            emptyHint={`No events from ${agent.name} yet. Heartbeats and tick lifecycle events will appear here as they arrive.`}
+            emptyHint={`No events from ${daimon.name} yet. Heartbeats and tick lifecycle events will appear here as they arrive.`}
           />
         )}
-        {tab === 'overview' && <OverviewTab agent={agent} />}
-        {tab === 'config' && <ConfigTab agent={agent} onChanged={setAgent} />}
+        {tab === 'overview' && <OverviewTab daimon={daimon} />}
+        {tab === 'config' && <ConfigTab daimon={daimon} onChanged={setDaimon} />}
       </main>
     </div>
   );
@@ -149,8 +149,8 @@ export default function AgentDetailPage() {
 
 function BackLink() {
   return (
-    <Link to="/agents" className="inline-flex items-center text-xs text-ink-dim hover:text-ink">
-      <ArrowLeft size={12} className="mr-1" /> Agents
+    <Link to="/daimons" className="inline-flex items-center text-xs text-ink-dim hover:text-ink">
+      <ArrowLeft size={12} className="mr-1" /> Daimons
     </Link>
   );
 }
@@ -167,38 +167,38 @@ function Stat({ label, value, icon: Icon }: { label: string; value: string; icon
   );
 }
 
-function OverviewTab({ agent }: { agent: AgentItem }) {
+function OverviewTab({ daimon }: { daimon: DaimonItem }) {
   return (
     <div className="p-6 grid grid-cols-1 lg:grid-cols-2 gap-4">
       <Card title="Identity">
-        <Row label="Name" mono>{agent.name}</Row>
-        <Row label="Host" mono>{agent.host}</Row>
-        <Row label="Provider">{agent.provider || '—'}</Row>
-        <Row label="Model" mono>{agent.model || '—'}</Row>
-        <Row label="Version" mono>{agent.version || '—'}</Row>
+        <Row label="Name" mono>{daimon.name}</Row>
+        <Row label="Host" mono>{daimon.host}</Row>
+        <Row label="Provider">{daimon.provider || '—'}</Row>
+        <Row label="Model" mono>{daimon.model || '—'}</Row>
+        <Row label="Version" mono>{daimon.version || '—'}</Row>
       </Card>
       <Card title="Lifecycle">
-        <Row label="Registered" mono>{agent.registered_at}</Row>
-        <Row label="Last heartbeat" mono>{agent.last_heartbeat_at ?? 'never'}</Row>
-        <Row label="Tick count">{agent.last_tick_count}</Row>
-        <Row label="Healthy">{agent.healthy ? 'yes' : 'no'}</Row>
+        <Row label="Registered" mono>{daimon.registered_at}</Row>
+        <Row label="Last heartbeat" mono>{daimon.last_heartbeat_at ?? 'never'}</Row>
+        <Row label="Tick count">{daimon.last_tick_count}</Row>
+        <Row label="Healthy">{daimon.healthy ? 'yes' : 'no'}</Row>
       </Card>
       <Card title="Desired Configuration" wide>
-        <Row label="Max turns">{agent.desired_max_turns ?? <span className="text-ink-mute italic">no override</span>}</Row>
-        <Row label="Effort">{agent.desired_effort || <span className="text-ink-mute italic">no override</span>}</Row>
-        <Row label="Suspended">{agent.desired_suspended ? 'yes' : 'no'}</Row>
-        {agent.config_updated_at && (
-          <Row label="Updated" mono>{agent.config_updated_at}</Row>
+        <Row label="Max turns">{daimon.desired_max_turns ?? <span className="text-ink-mute italic">no override</span>}</Row>
+        <Row label="Effort">{daimon.desired_effort || <span className="text-ink-mute italic">no override</span>}</Row>
+        <Row label="Suspended">{daimon.desired_suspended ? 'yes' : 'no'}</Row>
+        {daimon.config_updated_at && (
+          <Row label="Updated" mono>{daimon.config_updated_at}</Row>
         )}
       </Card>
     </div>
   );
 }
 
-function ConfigTab({ agent, onChanged }: { agent: AgentItem; onChanged: (a: AgentItem) => void }) {
-  const [maxTurns, setMaxTurns] = useState<string>(agent.desired_max_turns?.toString() ?? '');
-  const [effort, setEffort] = useState<string>(agent.desired_effort ?? '');
-  const [suspended, setSuspended] = useState<boolean>(agent.desired_suspended);
+function ConfigTab({ daimon, onChanged }: { daimon: DaimonItem; onChanged: (d: DaimonItem) => void }) {
+  const [maxTurns, setMaxTurns] = useState<string>(daimon.desired_max_turns?.toString() ?? '');
+  const [effort, setEffort] = useState<string>(daimon.desired_effort ?? '');
+  const [suspended, setSuspended] = useState<boolean>(daimon.desired_suspended);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
@@ -207,7 +207,7 @@ function ConfigTab({ agent, onChanged }: { agent: AgentItem; onChanged: (a: Agen
     e.preventDefault();
     setBusy(true); setError(null); setSaved(false);
     try {
-      const updated = await api.patchAgent(agent.name, {
+      const updated = await api.patchDaimon(daimon.name, {
         max_turns: maxTurns === '' ? 0 : parseInt(maxTurns, 10),
         effort,
         suspended,
@@ -284,9 +284,9 @@ function ConfigTab({ agent, onChanged }: { agent: AgentItem; onChanged: (a: Agen
               {busy ? 'Saving…' : 'Save'}
             </button>
             {saved && <span className="text-xs text-green-700">✓ Saved</span>}
-            {agent.config_updated_at && !saved && (
+            {daimon.config_updated_at && !saved && (
               <span className="text-xs text-ink-mute">
-                Last updated {agent.config_updated_at}
+                Last updated {daimon.config_updated_at}
               </span>
             )}
           </div>
