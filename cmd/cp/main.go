@@ -98,6 +98,20 @@ func serveCmd() *cobra.Command {
 	// Pub/sub (SSE fan-out, run subscribers)
 	cmd.Flags().StringVar(&cfg.PubSubURL, "pubsub-url", cfg.PubSubURL, "PubSub URL — empty=inprocess (single CP); redis://host:6379/0 for multi-replica deployments")
 
+	// Events store + queue (async event ingest pipeline)
+	cmd.Flags().StringVar(&cfg.EventsStore, "events-store", cfg.EventsStore, "Events backend — empty/sqlite (default) or clickhouse")
+	cmd.Flags().StringSliceVar(&cfg.ClickHouseAddrs, "clickhouse-addr", cfg.ClickHouseAddrs, "ClickHouse host:port (repeatable for cluster)")
+	cmd.Flags().StringVar(&cfg.ClickHouseDatabase, "clickhouse-database", cfg.ClickHouseDatabase, "ClickHouse database name")
+	cmd.Flags().StringVar(&cfg.ClickHouseUsername, "clickhouse-username", cfg.ClickHouseUsername, "ClickHouse username")
+	cmd.Flags().StringVar(&cfg.ClickHousePassword, "clickhouse-password", cfg.ClickHousePassword, "ClickHouse password")
+	cmd.Flags().BoolVar(&cfg.ClickHouseSecure, "clickhouse-secure", cfg.ClickHouseSecure, "Enable TLS for ClickHouse")
+
+	cmd.Flags().StringVar(&cfg.Queue, "queue", cfg.Queue, "Queue backend — empty/inprocess (default) or kafka")
+	cmd.Flags().StringSliceVar(&cfg.KafkaBrokers, "kafka-broker", cfg.KafkaBrokers, "Kafka broker host:port (repeatable for cluster)")
+	cmd.Flags().StringVar(&cfg.KafkaSASLUsername, "kafka-sasl-username", cfg.KafkaSASLUsername, "Kafka SASL username (for OCI Streaming: tenancy/username/stream-pool-ocid)")
+	cmd.Flags().StringVar(&cfg.KafkaSASLPassword, "kafka-sasl-password", cfg.KafkaSASLPassword, "Kafka SASL password / auth token")
+	cmd.Flags().BoolVar(&cfg.KafkaUseTLS, "kafka-tls", cfg.KafkaUseTLS, "Enable TLS for Kafka")
+
 	// Blob store (binaries, exports, cold-tier event archives)
 	cmd.Flags().StringVar(&cfg.BlobStoreURL, "blob-url", cfg.BlobStoreURL, "Blob store URL — empty=local filesystem; s3://endpoint or https://<namespace>.compat.objectstorage.<region>.oraclecloud.com for OCI/S3")
 	cmd.Flags().StringVar(&cfg.BlobAccessKey, "blob-access-key", cfg.BlobAccessKey, "S3 access key (OCI customer secret key, AWS access-key-id, MinIO root user)")

@@ -152,6 +152,25 @@ type Config struct {
 	BlobSecretKey   string
 	BlobBucket      string
 	BlobRegion      string
+
+	// EventsStore selects the ports.EventStore adapter:
+	//   "" or "sqlite" — wrap the existing SQLite db.Store (default)
+	//   "clickhouse"   — connect to the configured ClickHouse cluster
+	EventsStore         string
+	ClickHouseAddrs     []string // host:port pairs
+	ClickHouseDatabase  string
+	ClickHouseUsername  string
+	ClickHousePassword  string
+	ClickHouseSecure    bool
+
+	// Queue selects the ports.Queue adapter:
+	//   "" or "inprocess" — channel-backed; sync ingest stays in-CP (default)
+	//   "kafka"           — async ingest via Kafka / OCI Streaming
+	Queue              string
+	KafkaBrokers       []string
+	KafkaSASLUsername  string
+	KafkaSASLPassword  string
+	KafkaUseTLS        bool
 }
 
 // OIDCEnabled reports whether OIDC is configured.
@@ -212,7 +231,33 @@ func FromEnv() Config {
 		BlobSecretKey: os.Getenv("OKESU_CP_BLOB_SECRET_KEY"),
 		BlobBucket:    os.Getenv("OKESU_CP_BLOB_BUCKET"),
 		BlobRegion:    os.Getenv("OKESU_CP_BLOB_REGION"),
+
+		EventsStore:        os.Getenv("OKESU_CP_EVENTS_STORE"),
+		ClickHouseAddrs:    envSplitNonEmpty("OKESU_CP_CLICKHOUSE_ADDRS", ","),
+		ClickHouseDatabase: envOr("OKESU_CP_CLICKHOUSE_DATABASE", "okesu_events"),
+		ClickHouseUsername: os.Getenv("OKESU_CP_CLICKHOUSE_USERNAME"),
+		ClickHousePassword: os.Getenv("OKESU_CP_CLICKHOUSE_PASSWORD"),
+		ClickHouseSecure:   envBool("OKESU_CP_CLICKHOUSE_SECURE", false),
+
+		Queue:             os.Getenv("OKESU_CP_QUEUE"),
+		KafkaBrokers:      envSplitNonEmpty("OKESU_CP_KAFKA_BROKERS", ","),
+		KafkaSASLUsername: os.Getenv("OKESU_CP_KAFKA_SASL_USERNAME"),
+		KafkaSASLPassword: os.Getenv("OKESU_CP_KAFKA_SASL_PASSWORD"),
+		KafkaUseTLS:       envBool("OKESU_CP_KAFKA_USE_TLS", false),
 	}
+}
+
+// envBool reads "1"/"true"/"yes" as true; anything else as false; empty as `def`.
+func envBool(key string, def bool) bool {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	switch strings.ToLower(v) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
 }
 
 // envInt returns the env var as int, falling back to def if unset/invalid.

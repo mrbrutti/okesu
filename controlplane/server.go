@@ -20,10 +20,13 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
+	"github.com/section9labs/okesu/controlplane/adapters/clickhouseevents"
 	"github.com/section9labs/okesu/controlplane/adapters/inprocess"
+	"github.com/section9labs/okesu/controlplane/adapters/kafka"
 	"github.com/section9labs/okesu/controlplane/adapters/redispubsub"
 	"github.com/section9labs/okesu/controlplane/adapters/sqliteevents"
 	"github.com/section9labs/okesu/controlplane/api"
+	"github.com/section9labs/okesu/controlplane/eventpipeline"
 	"github.com/section9labs/okesu/controlplane/auth"
 	"github.com/section9labs/okesu/controlplane/db"
 	"github.com/section9labs/okesu/controlplane/jobs"
@@ -107,11 +110,64 @@ func New(cfg Config) (*Server, error) {
 		return nil, fmt.Errorf("ensure ca: %w", err)
 	}
 
-	// Phase 8c: events flow through the EventStore port. Default
-	// adapter wraps the same SQLite database — same on-disk layout, no
-	// migration. Phase 8c.next swaps in the ClickHouse adapter when
-	// --events-store=clickhouse is configured.
-	eventStore := sqliteevents.New(store)
+	// Phase 8c.next: events flow through the EventStore port. Adapter
+	// selection is config: --events-store=clickhouse swaps the SQLite
+	// wrapper for a real ClickHouse cluster. The webhook handler is
+	// adapter-blind — same Insert call against either.
+	var eventStore ports.EventStore
+	switch strings.ToLower(cfg.EventsStore) {
+	case "clickhouse":
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		ch, cherr := clickhouseevents.New(ctx, clickhouseevents.Config{
+			Addr:     cfg.ClickHouseAddrs,
+			Database: cfg.ClickHouseDatabase,
+			Username: cfg.ClickHouseUsername,
+			Password: cfg.ClickHousePassword,
+			Secure:   cfg.ClickHouseSecure,
+		})
+		cancel()
+		if cherr != nil {
+			return nil, fmt.Errorf("clickhouse events: %w", cherr)
+		}
+		eventStore = ch
+		log.Printf("events store: clickhouse (%s)", cfg.ClickHouseAddrs)
+	default:
+		eventStore = sqliteevents.New(store)
+		log.Printf("events store: sqlite (single-CP default)")
+	}
+
+	// Queue selection. The eventpipeline worker bridges queue → events
+	// store; both halves are pluggable. Default is inprocess for dev.
+	var queue ports.Queue
+	switch strings.ToLower(cfg.Queue) {
+	case "kafka":
+		kq, kerr := kafka.New(kafka.Config{
+			Brokers:      cfg.KafkaBrokers,
+			SASLUsername: cfg.KafkaSASLUsername,
+			SASLPassword: cfg.KafkaSASLPassword,
+			UseTLS:       cfg.KafkaUseTLS,
+		})
+		if kerr != nil {
+			return nil, fmt.Errorf("kafka queue: %w", kerr)
+		}
+		queue = kq
+		log.Printf("queue: kafka (%s)", cfg.KafkaBrokers)
+	default:
+		queue = inprocess.NewQueue()
+		log.Printf("queue: in-process (single-CP default)")
+	}
+
+	// Start the worker that drains the queue into the events store.
+	// One per CP replica; consumer-group coordination handles fanout
+	// when multiple replicas run.
+	pipelineCtx, pipelineCancel := context.WithCancel(context.Background())
+	go func() {
+		w := eventpipeline.NewWorker(queue, eventStore, eventpipeline.Config{})
+		if err := w.Run(pipelineCtx); err != nil && pipelineCtx.Err() == nil {
+			log.Printf("eventpipeline worker exited: %v", err)
+		}
+	}()
+	_ = pipelineCancel // wired into Server.Stop in a follow-up
 
 	srv := &Server{
 		cfg:        cfg,
