@@ -134,6 +134,12 @@ type Config struct {
 	// the configured age. Findings are kept independently and are never
 	// auto-pruned by this knob.
 	EventTTLDays int
+
+	// PubSubURL selects the ports.PubSub adapter. Empty (default) uses
+	// the in-process adapter — fine for single-CP deployments. Set to a
+	// Redis URL ("redis://host:6379/0") to switch to the redis adapter
+	// so SSE fan-out works across multiple CP replicas.
+	PubSubURL string
 }
 
 // OIDCEnabled reports whether OIDC is configured.
@@ -187,6 +193,7 @@ func FromEnv() Config {
 		MgmtPublicURL:     os.Getenv("OKESU_CP_MGMT_PUBLIC_URL"),
 
 		EventTTLDays: envInt("OKESU_CP_EVENT_TTL_DAYS", 0),
+		PubSubURL:    os.Getenv("OKESU_CP_PUBSUB_URL"),
 	}
 }
 

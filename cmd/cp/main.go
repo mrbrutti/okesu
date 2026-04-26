@@ -95,6 +95,9 @@ func serveCmd() *cobra.Command {
 	// Persistence + retention
 	cmd.Flags().IntVar(&cfg.EventTTLDays, "event-ttl-days", cfg.EventTTLDays, "Days of event history to keep (0 disables pruning)")
 
+	// Pub/sub (SSE fan-out, run subscribers)
+	cmd.Flags().StringVar(&cfg.PubSubURL, "pubsub-url", cfg.PubSubURL, "PubSub URL — empty=inprocess (single CP); redis://host:6379/0 for multi-replica deployments")
+
 	return cmd
 }
 

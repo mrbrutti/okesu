@@ -20,6 +20,8 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
+	"github.com/section9labs/okesu/controlplane/adapters/inprocess"
+	"github.com/section9labs/okesu/controlplane/adapters/redispubsub"
 	"github.com/section9labs/okesu/controlplane/adapters/sqliteevents"
 	"github.com/section9labs/okesu/controlplane/api"
 	"github.com/section9labs/okesu/controlplane/auth"
@@ -80,7 +82,25 @@ func New(cfg Config) (*Server, error) {
 		return nil, fmt.Errorf("session manager: %w", err)
 	}
 
-	bcast := NewBroadcaster()
+	// Phase 8d: pick the PubSub adapter for SSE fan-out + run-subscriber
+	// notifications. Empty URL keeps the in-process adapter (single-CP
+	// dev default); a Redis URL switches to the redis adapter so fan-out
+	// works across CP replicas.
+	var pubsub ports.PubSub
+	if cfg.PubSubURL != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		rps, perr := redispubsub.New(ctx, cfg.PubSubURL)
+		cancel()
+		if perr != nil {
+			return nil, fmt.Errorf("redis pubsub: %w", perr)
+		}
+		pubsub = rps
+		log.Printf("pubsub: redis (%s)", cfg.PubSubURL)
+	} else {
+		pubsub = inprocess.NewPubSub()
+		log.Printf("pubsub: in-process (single-CP)")
+	}
+	bcast := NewBroadcasterWith(pubsub)
 
 	ca, err := EnsureCA(cfg)
 	if err != nil {
