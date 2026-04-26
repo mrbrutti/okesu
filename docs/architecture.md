@@ -26,6 +26,7 @@ Okesu is a fully autonomous AI agent runner written in Go. It exposes a single b
 18. [End-to-End Request Flow](#18-end-to-end-request-flow)
 19. [Concurrency Model](#19-concurrency-model)
 20. [Data Structures Reference](#20-data-structures-reference)
+21. [Control Plane Data Architecture](#21-control-plane-data-architecture)
 
 ---
 
@@ -906,6 +907,59 @@ On `SIGHUP`, the daemon re-parses the agent file from disk and hot-applies `maxT
 systemctl kill --signal=SIGHUP okesu-agent@edr-agent
 ```
 
+### Known-Issues Pull Cache (Phase 13)
+
+`MgmtPlane.StartKnownIssuesPoller` runs alongside the config poller (60s
+default). On each tick it calls
+`GET /api/v1/agents/{name}/known-issues` and caches a fingerprint →
+`{status, triage_note, updated_at}` map in memory. The harvester
+consults this cache before emitting any finding:
+
+| Cached status | Harvester behaviour |
+|---|---|
+| not present, or `open` | fall through to the local fingerprint dedup |
+| `false_positive` | suppress silently forever (until reopened) |
+| `acknowledged` / `investigating` / `resolved` / `wontfix` | suppress until reopened |
+
+A suppression hit does **not** add the fingerprint to the local
+`state.Dedup` cache, so an un-triage by the operator takes effect on
+the very next tick rather than after `dedupeTtl` expires.
+
+### `lookup_findings` LLM Tool (Phase 13)
+
+When a management plane is configured, the daemon registers a built-in
+tool the model can call when investigating:
+
+```
+lookup_findings(query: string, limit: int = 5)
+  → [{ fingerprint, title, severity, status, host,
+       resource, triage_note, last_seen, occurrence_count }]
+```
+
+The handler is `MgmtPlane.LookupFindings`, which calls
+`GET /api/v1/agents/{name}/findings/search?q=...&limit=N` over the
+existing mTLS client. Server-side it's a `LIKE` search across title,
+resource, network endpoint, path, process name, and dedup_key, scoped
+to the calling agent across all hosts. Triaged matches surface above
+untriaged so the LLM sees the operator's classification first.
+
+The tool is auto-included in the per-tick `cfg.AllowedTools` list when
+mgmt is wired (operators don't need to edit each agent file). System
+prompts include a small instruction block teaching the model to call
+it before reporting and to honour the `status` field on results.
+
+This forms the third dedup layer:
+
+| Layer | When it runs | Catches |
+|---|---|---|
+| Local fingerprint cache | every harvested finding | repeats within `dedupeTtl` |
+| Pulled known-issues cache | every harvested finding | operator-triaged, fleet-wide |
+| `lookup_findings` tool | only when LLM asks | semantic neighbours, related context |
+
+Triage notes are **not** auto-injected into the system prompt — they
+surface only when the LLM explicitly looks them up, keeping daemon
+prompts compact regardless of triage history size.
+
 ---
 
 ## 17. Deployment — systemd + install script
@@ -1177,3 +1231,190 @@ type OutputDef struct {
 | Text streaming | `BetaRawContentBlockDeltaEvent` | SSE `response.output_text.delta` |
 | Tool call detection | SDK dispatches to handler | Manual: `item.Type == "function_call"` |
 | Tool result | `BetaToolResultBlockParamContentUnion` | `ResponseInputItemParamOfFunctionCallOutput` |
+
+---
+
+## 21. Control Plane Data Architecture
+
+Sections 1–20 describe the daemon. The **Control Plane** is a separate
+Go service (`cmd/cp/`) that ingests JSONL events from daemon webhooks,
+projects them into structured tables, and serves the operator UI plus
+the agent-facing management plane. This section focuses on the
+non-obvious data-layer choices.
+
+### 21.1 Findings: from event to indexed issue
+
+A finding flows through the system in three shapes:
+
+```
+┌────────────────────┐    ┌──────────────────┐    ┌────────────────────┐
+│ LLM-written file   │ →  │ JSONL event line │ →  │ findings row       │
+│ {stateDir}/        │    │ on the wire      │    │ + structured cols  │
+│  findings/<ts>.json│    │                  │    │                    │
+└────────────────────┘    └──────────────────┘    └────────────────────┘
+       harvester          webhook receiver          insert + index
+       (daemon)           (CP)                      (CP)
+```
+
+The harvester (Phase 12) is responsible for two kinds of normalization
+before the event leaves the daemon:
+
+1. **Title volatility stripping.** `agent.NormalizeFindingTitle()`
+   removes prefixes/suffixes like `PERSISTENT (TICK 87): `,
+   `[5+ ticks] `, `— 7th Consecutive Tick`. The same regex runs
+   server-side as defense-in-depth for events from external producers
+   via `/api/findings/ingest`.
+
+2. **Stable fingerprint computation.** A SHA-256 prefix of:
+   ```
+   severity | normalized_title | resource_root |
+   process_pid | path | network_endpoint | dedup_key
+   ```
+   where `resource_root` extracts the first stable token of `resource`
+   (e.g. `host:api.example.com:443` → `host:api.example.com`, port
+   stripped). This fingerprint is wired as the outbound `dedup_key`,
+   so the CP's grouping query collapses LLM variants automatically.
+
+The `findings` table after Phase 12 has eight indexed enrichment
+columns (`category`, `process_pid`, `process_name`, `path`,
+`network_endpoint`, `cve`, `tags`, `attributes`) plus the Phase 13
+triage columns (`status`, `triage_note`, `triaged_at`, `triaged_by_*`).
+Most are nullable; agents fill what they extract, the harvester infers
+the rest from `resource` shapes (`pid:N` → process, `path:/...` →
+file, etc.).
+
+### 21.2 Three-layer dedup architecture
+
+The dedup layers compose: each catches a different category of repeat,
+escalating in cost.
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│ Layer 1: Local fingerprint cache (state.Dedup)                   │
+│   in-memory map of fingerprint → expiry_ms                       │
+│   keyed by the same fingerprint that goes on the wire            │
+│   PruneDedup at tick start drops entries past expiry             │
+│   pure CPU, no API cost                                          │
+└──────────────────────────────────────────────────────────────────┘
+                            ↓ miss
+┌──────────────────────────────────────────────────────────────────┐
+│ Layer 2: Pulled known-issues cache                               │
+│   GET /api/v1/agents/{name}/known-issues every 60s               │
+│   in-memory map of fingerprint → {status, triage_note}           │
+│   suppress on any non-open status                                │
+│   ~one tiny GET per minute, regardless of fleet size             │
+└──────────────────────────────────────────────────────────────────┘
+                            ↓ miss (or LLM curiosity)
+┌──────────────────────────────────────────────────────────────────┐
+│ Layer 3: lookup_findings tool                                    │
+│   GET /api/v1/agents/{name}/findings/search?q=...                │
+│   LIKE search across title/resource/path/endpoint/process/key    │
+│   one tool call per LLM-driven look-up; on-demand                │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+A subtle invariant: when Layer 2 suppresses a finding, the harvester
+does **not** add the fingerprint to Layer 1's local cache. This means
+an un-triage by the operator (status → open) takes effect on the very
+next tick, instead of being shadowed by a stale Layer-1 entry until
+`dedupeTtl` expires.
+
+Triage notes are stored in the DB and surfaced via the
+`lookup_findings` tool — they are intentionally **not** injected into
+the LLM system prompt, which keeps the prompt compact regardless of
+how many findings have been triaged. The LLM pulls notes only when it
+asks.
+
+### 21.3 Agents identity: (name, host) composite key
+
+Pre-Phase-12, the `agents` table had `name` as the sole primary key.
+Real fleets routinely run the same agent (e.g. `edr`) on dozens of
+hosts; under the old schema they collapsed into one row and only the
+most-recent heartbeat survived.
+
+Migration 012 rebuilds the table with `PRIMARY KEY (name, host)`. The
+existing single-name lookup path (`AgentByName`) is preserved for
+code that only has the cert CN — it returns the most-recently-active
+row. New code uses `AgentByNameHost(name, host)` for an exact match.
+
+`SetDesiredConfig` is intentionally still keyed by `name` only —
+operators tune *the agent*, not a specific host instance, so a
+`MaxTurns` change rolls out to every host running that agent on the
+next config poll.
+
+### 21.4 Schema migration policy
+
+Migrations are SQL files embedded via `go:embed` and applied in numeric
+order. Pre-Phase-12 they were all idempotent (`CREATE TABLE IF NOT
+EXISTS`, `CREATE INDEX IF NOT EXISTS`), which let the runner re-apply
+them on every boot without harm.
+
+Phase 12 introduced the first `ALTER TABLE` and `DROP TABLE`
+migrations, which are NOT safely re-runnable. The runner now uses a
+`schema_migrations(version PK)` table to track what's applied:
+
+```
+1. CREATE TABLE IF NOT EXISTS schema_migrations
+2. If the table is empty AND `meta` exists (a pre-tracker DB):
+     bootstrap by probing each migration's signature (e.g. table
+     exists, column exists, agents PK is composite) and INSERT
+     OR IGNORE its version. This avoids re-running schema-altering
+     migrations against tables that already have the new shape.
+3. For each embedded migration:
+     skip if its version is in schema_migrations
+     otherwise: Exec the SQL, then INSERT the version
+```
+
+Probes used during bootstrap (one per migration version):
+
+| Version | Probe |
+|---|---|
+| 1–10 | `table_exists(<expected table>)` |
+| 11 | `column_exists(findings, category)` |
+| 12 | `agents_has_composite_pk()` (counts pk-flagged columns in `pragma_table_info('agents')`) |
+| 13 | `column_exists(findings, status)` |
+
+Going forward: any new migration is free to use destructive DDL.
+Operators upgrading from older builds get the bootstrap probe; new
+deployments start with empty `schema_migrations` and apply every
+version in order.
+
+### 21.5 Triage feedback loop (Phase 13)
+
+The mgmt-plane `known-issues` endpoint is what closes the operator →
+daemon feedback loop:
+
+```mermaid
+sequenceDiagram
+    participant Op as Operator (UI)
+    participant CP as Control Plane
+    participant Daemon as Daemon
+    participant LLM as LLM
+
+    Op->>CP: POST /findings/{id}/status<br/>{status:false_positive, note}
+    Note over CP: findings.status updated;<br/>audit-logged
+
+    loop every 60s (mTLS)
+        Daemon->>CP: GET /api/v1/agents/{name}/known-issues
+        CP-->>Daemon: [{fingerprint, status, note, ...}]
+        Note over Daemon: updates in-memory cache
+    end
+
+    Note over LLM: tick begins
+    LLM->>LLM: write findings/<ts>.json
+    Daemon->>Daemon: harvest + compute fingerprint
+    Note over Daemon: cache hit on false_positive →<br/>silently drop, do NOT add to local dedup
+    Daemon-->>CP: (no event emitted)
+
+    Note over LLM: optionally
+    LLM->>Daemon: lookup_findings(query="...")
+    Daemon->>CP: GET /findings/search?q=...
+    CP-->>Daemon: [{fingerprint, status, triage_note, ...}]
+    Daemon-->>LLM: tool result (compact JSON)
+    Note over LLM: skips emitting based on triage_note
+```
+
+The pull cache (top loop) handles the bulk-suppression case at
+near-zero token cost. The tool (bottom path) handles the cases the
+LLM wants nuance for — related issues, cross-host context, "is this
+what we think it is?".
