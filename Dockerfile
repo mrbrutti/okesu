@@ -4,7 +4,7 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -o /okesu .
+RUN CGO_ENABLED=0 go build -o /okesu ./cmd/okesu
 
 # ─── Runtime ────────────────────────────────────────────────────────────────
 FROM debian:bookworm-slim

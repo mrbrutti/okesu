@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -110,11 +112,28 @@ type WebhookSink struct {
 	stopCh     chan struct{}
 }
 
+// WebhookTLSOptions tunes the TLS verification behavior of a webhook sink.
+type WebhookTLSOptions struct {
+	// CACertPEM is an additional CA bundle (PEM-encoded) to trust for the
+	// webhook URL. Empty means "system roots only".
+	CACertPEM []byte
+	// InsecureSkipVerify disables TLS verification entirely. Dev-only.
+	InsecureSkipVerify bool
+}
+
 // NewWebhookSink starts the background delivery goroutine.
 // agentName and host are included in every request as identity headers.
 func NewWebhookSink(url, secret, agentName, host string, maxRetries, bufCap int) *WebhookSink {
+	return NewWebhookSinkWithTLS(url, secret, agentName, host, maxRetries, bufCap, WebhookTLSOptions{})
+}
+
+// NewWebhookSinkWithTLS is NewWebhookSink with explicit TLS configuration.
+func NewWebhookSinkWithTLS(url, secret, agentName, host string, maxRetries, bufCap int, opts WebhookTLSOptions) *WebhookSink {
 	if maxRetries <= 0 {
 		maxRetries = 3
+	}
+	tr := &http.Transport{
+		TLSClientConfig: buildWebhookTLSConfig(opts),
 	}
 	s := &WebhookSink{
 		url:        url,
@@ -124,12 +143,26 @@ func NewWebhookSink(url, secret, agentName, host string, maxRetries, bufCap int)
 		maxRetries: maxRetries,
 		buf:        NewMemoryBuffer(bufCap),
 		queue:      make(chan []byte, 512),
-		client:     &http.Client{Timeout: 10 * time.Second},
+		client:     &http.Client{Timeout: 10 * time.Second, Transport: tr},
 		stopCh:     make(chan struct{}),
 	}
 	s.wg.Add(1)
 	go s.deliver()
 	return s
+}
+
+func buildWebhookTLSConfig(opts WebhookTLSOptions) *tls.Config {
+	cfg := &tls.Config{MinVersion: tls.VersionTLS12}
+	if opts.InsecureSkipVerify {
+		cfg.InsecureSkipVerify = true //nolint:gosec — explicitly opted-in by config
+	}
+	if len(opts.CACertPEM) > 0 {
+		pool := x509.NewCertPool()
+		if pool.AppendCertsFromPEM(opts.CACertPEM) {
+			cfg.RootCAs = pool
+		}
+	}
+	return cfg
 }
 
 func (s *WebhookSink) Write(line []byte) error {
@@ -299,7 +332,17 @@ func BuildSinks(outputs []OutputDef, agentName, host string) (Sink, error) {
 			}
 			raw = fs
 		case "webhook":
-			raw = NewWebhookSink(o.URL, o.Secret, agentName, host, o.Retries, o.BufferCap)
+			tlsOpts := WebhookTLSOptions{
+				InsecureSkipVerify: o.InsecureSkipVerify,
+			}
+			if o.CACertFile != "" {
+				if pem, err := os.ReadFile(o.CACertFile); err == nil {
+					tlsOpts.CACertPEM = pem
+				} else {
+					return nil, fmt.Errorf("webhook ca cert %q: %w", o.CACertFile, err)
+				}
+			}
+			raw = NewWebhookSinkWithTLS(o.URL, o.Secret, agentName, host, o.Retries, o.BufferCap, tlsOpts)
 		default:
 			return nil, fmt.Errorf("unknown sink type %q", o.Type)
 		}

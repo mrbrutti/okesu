@@ -1,0 +1,36 @@
+{{ .Chart.Name }} {{ .Chart.AppVersion }} installed.
+
+Wait for the pod to become ready:
+
+  kubectl rollout status deploy/{{ include "okesu-cp.fullname" . }}
+
+{{- if .Values.ingress.enabled }}
+
+Reach the UI at:
+
+  https://{{ .Values.ingress.hostname }}/
+
+{{- else }}
+
+Port-forward the UI:
+
+  kubectl port-forward svc/{{ include "okesu-cp.fullname" . }} 8443:{{ .Values.service.uiPort }}
+  open https://localhost:8443
+
+{{- end }}
+
+Login as admin@local with the password supplied via --set adminPassword=...
+Change it via Settings → Users immediately, then either:
+
+  helm upgrade okesu-cp deploy/helm/okesu-cp --set adminPassword=ignored
+
+or remove the unused adminPassword from your values file. Subsequent admin
+password changes happen in the UI; this Helm value is only consulted on
+first boot when the user table is empty.
+
+{{- if not .Values.persistence.enabled }}
+
+⚠  persistence.enabled=false — losing the pod loses all user accounts,
+   findings, runs, and audit history. Re-deploy with --set persistence.enabled=true
+   for anything beyond a quick test.
+{{- end }}

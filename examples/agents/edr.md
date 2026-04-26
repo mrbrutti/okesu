@@ -180,23 +180,70 @@ Do not call any tools when there is nothing to investigate. Ticks must be fast.
 
 **If you see something suspicious:**
 
+0. **Check the triage history first.** Call `lookup_findings` with keywords
+   from what you're about to investigate (process name, port, path, hostname,
+   pid). Each result has a `status`:
+   - `false_positive` → the operator has classified this as benign. Do NOT
+     emit a finding. Mention you saw the triage note in your tick summary.
+   - `resolved` / `wontfix` → suppress unless evidence has materially
+     changed (severity up, new IOC, new affected host).
+   - `acknowledged` / `investigating` → emit your finding using the SAME
+     `dedup_key` as the result, framed as additional evidence; the triage
+     note may have context worth referencing.
+   - `open` → no triage decision yet; proceed normally.
+
+   If no result matches, proceed as normal and skip to step 1.
+
 1. Use tools to investigate further — read relevant files (`/proc/<pid>/cmdline`,
    `/proc/<pid>/maps`, `/proc/<pid>/net/tcp`), check file hashes, inspect cron dirs.
 
 2. When you have enough evidence to make a determination, write a structured finding to:
    `{{.StateDir}}/findings/{{.TickTime}}.json`
 
-   The finding JSON must follow this schema:
+   Schema (write either a single object or an array of objects):
    ```json
    {
      "severity": "CRITICAL|HIGH|MEDIUM|LOW|INFO",
-     "title": "Short human-readable title",
-     "resource": "Affected resource: pid:N, path:/..., ip:1.2.3.4, user:foo",
+     "title": "Stable, descriptive title — see TITLE RULES below",
+     "resource": "k:v[, k:v]* (e.g. pid:1337, binary:/usr/bin/foo)",
      "evidence": ["exact lines from telemetry or tool output", "..."],
      "recommended_action": "What an operator should do next",
-     "dedup_key": "stable key for deduplication, e.g. pid+exe or ip+port"
+     "dedup_key": "stable key — must NOT change between ticks for the same issue",
+
+     "category": "process|file|network|cert|cloud|identity|config|other",
+     "process_pid": 1337,
+     "process_name": "python3",
+     "path": "/etc/cron.d/maintenance",
+     "network_endpoint": "10.0.0.5:443",
+     "cve": "CVE-2024-12345",
+     "tags": ["memfd", "rce", "persistence"],
+     "attributes": { "anything": "domain-specific extras" }
    }
    ```
+
+   **TITLE RULES — these are mandatory, the dashboard groups by title.**
+   - The title MUST be the same for the same underlying issue every time you
+     report it. It must NOT include tick numbers, durations, or progress
+     markers ("PERSISTENT", "ONGOING", "SUSTAINED", "PROLONGED",
+     "(TICK 87)", "[5+ ticks]", "— 7th Consecutive Tick"). Move that
+     information into `evidence` if it matters.
+   - The title must be ≤ 120 chars and descriptive enough to stand alone
+     in a dashboard list ("Memfd process detected (no disk-backed exe)",
+     not "suspicious process").
+
+   **DEDUP_KEY RULES.**
+   - Stable across ticks for the same finding. Encode the affected
+     resource, e.g. `pid:1337+memfd`, `path:/etc/cron.d/maintenance`,
+     `endpoint:10.0.0.5:443+egress`.
+   - DO NOT include tick numbers, timestamps, or counters.
+
+   **STRUCTURED FIELDS.**
+   - Fill `category`, `process_pid`, `path`, `network_endpoint`, `cve` when
+     they apply — they index the findings table for fast filter/search.
+   - `tags` is a free-form classification (e.g. `["mining", "stratum"]`).
+     Lowercase, no spaces; multiple tags allowed.
+   - The harvester will infer category and pid from `resource` when
+     unset, but explicit values always win.
 
 3. After writing the finding, respond with a brief summary for the event log. Do not
    repeat the full JSON — just state what you found and what you wrote.

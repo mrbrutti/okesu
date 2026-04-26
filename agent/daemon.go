@@ -80,6 +80,7 @@ func RunDaemon(cfg Config, dcfg DaemonConfig) error {
 			})
 		}
 		mgmt.StartHeartbeat(mgmtCtx, state)
+		mgmt.StartKnownIssuesPoller(mgmtCtx)
 		mgmt.StartConfigPoller(mgmtCtx, func(rc remoteConfig) {
 			// Hot-apply non-destructive config changes.
 			if rc.MaxTurns > 0 {
@@ -97,9 +98,12 @@ func RunDaemon(cfg Config, dcfg DaemonConfig) error {
 		})
 	}
 
-	// Create findings directory under stateDir so the AI can write structured findings.
-	if dcfg.StateDir != "" && cfg.Name != "" {
-		findingsDir := filepath.Join(dcfg.StateDir, cfg.Name, "findings")
+	// Create findings directory under stateDir so the AI can write structured
+	// findings. The LLM's system prompt resolves `{{.StateDir}}/findings/...`
+	// against the raw stateDir, so the path here MUST match — don't add an
+	// extra cfg.Name segment or HarvestFindings will look in the wrong place.
+	if dcfg.StateDir != "" {
+		findingsDir := filepath.Join(dcfg.StateDir, "findings")
 		_ = os.MkdirAll(findingsDir, 0755)
 	}
 
@@ -147,7 +151,7 @@ func RunDaemon(cfg Config, dcfg DaemonConfig) error {
 			// Run the tick in a goroutine so the main loop can still handle signals.
 			go func(t int64, lr time.Time) {
 				defer tickMu.Unlock()
-				execTick(cfg, dcfg, hostname, t, lr, state)
+				execTick(cfg, dcfg, hostname, t, lr, state, mgmt)
 				lastRunAt = time.Now()
 			}(n, lastRun)
 
@@ -191,7 +195,7 @@ func RunDaemon(cfg Config, dcfg DaemonConfig) error {
 
 // execTick runs one complete tick: emits tick_start, runs pre-collectors,
 // renders the system prompt template, runs the agentic loop, emits tick_done.
-func execTick(cfg Config, dcfg DaemonConfig, hostname string, tickNum int64, lastRunAt time.Time, state *DaemonState) {
+func execTick(cfg Config, dcfg DaemonConfig, hostname string, tickNum int64, lastRunAt time.Time, state *DaemonState, mgmt *MgmtPlane) {
 	start := time.Now()
 
 	Emit(Event{
@@ -230,6 +234,9 @@ func execTick(cfg Config, dcfg DaemonConfig, hostname string, tickNum int64, las
 	}
 
 	// Build a per-tick copy of cfg with rendered system prompt and default user prompt.
+	// Tick + Host propagate down so RunClaude/RunOpenAI can stamp them onto every
+	// emitted text/tool_call/tool_result/init/done event — required for the UI
+	// to group conversation events under the right tick card.
 	tickCfg := cfg
 	tickCfg.SystemPrompt = rendered
 	tickCfg.Prompt = fmt.Sprintf(
@@ -237,6 +244,28 @@ func execTick(cfg Config, dcfg DaemonConfig, hostname string, tickNum int64, las
 		tickNum,
 		tctx.TickTime,
 	)
+	tickCfg.Tick = tickNum
+	tickCfg.Host = hostname
+	if mgmt != nil {
+		// Wire the lookup_findings tool. Without a CP this stays nil and
+		// the dispatcher returns "not configured" if the LLM tries it.
+		tickCfg.LookupFindings = mgmt.LookupFindings
+		// Auto-include lookup_findings in the allowed tools when a CP is
+		// configured. The agent file's `tools:` list is for restricting
+		// expensive / state-mutating tools — `lookup_findings` is
+		// read-only RAG-style context the LLM should always have access
+		// to. Skip if the operator has explicitly listed it (avoid dup).
+		hasLookup := false
+		for _, t := range tickCfg.AllowedTools {
+			if t == "lookup_findings" {
+				hasLookup = true
+				break
+			}
+		}
+		if !hasLookup {
+			tickCfg.AllowedTools = append(append([]string(nil), tickCfg.AllowedTools...), "lookup_findings")
+		}
+	}
 
 	// Touch last-run marker so next tick can calculate elapsed time.
 	touchLastRun(dcfg.StateDir, cfg.Name)
@@ -275,6 +304,25 @@ func execTick(cfg Config, dcfg DaemonConfig, hostname string, tickNum int64, las
 	}
 	state.RecordTick(dcfg.StateDir, cfg.Name, hadError)
 
+	// Harvest any finding JSON files the LLM wrote during this tick. The
+	// agent files instruct the LLM to write findings to {stateDir}/findings/
+	// — without this step they'd sit on disk forever and never reach the CP.
+	// Pass the mgmt-plane known-issues cache so the harvester can suppress
+	// fingerprints the operator has triaged (false_positive / wontfix /
+	// resolved). Daemons without a management plane pass nil and behave
+	// the same as before.
+	var known KnownIssuesLookup
+	if mgmt != nil {
+		known = mgmt
+	}
+	findingsEmitted := HarvestFindings(state, dcfg.StateDir, cfg.Name, hostname, tickNum, dcfg.DedupeTTL, known)
+	if findingsEmitted > 0 {
+		// Persist the dedup-cache updates the harvester just made so they
+		// survive a daemon restart for the rest of the TTL window.
+		// RecordTick already saved the rest of the state above.
+		_ = SaveState(dcfg.StateDir, cfg.Name, state)
+	}
+
 	result := "completed"
 	if hadError {
 		result = "error"
@@ -287,6 +335,7 @@ func execTick(cfg Config, dcfg DaemonConfig, hostname string, tickNum int64, las
 		Tick:     tickNum,
 		Result:   result,
 		Duration: time.Since(start).Round(time.Millisecond).String(),
+		Findings: findingsEmitted,
 	})
 }
 

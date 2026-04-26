@@ -168,19 +168,40 @@ Detect unauthorized modifications to this host's configuration, software, and se
 
 **If you detect changes:**
 
+0. **Check the triage history first** with `lookup_findings` (e.g. by file
+   path, module name, or pid). `false_positive` results mean the change is
+   expected — don't re-report. `acknowledged`/`investigating` results
+   share their dedup_key.
+
 1. Investigate with tools — read the actual files that changed, check process lineage.
 
-2. Write a finding to `{{.StateDir}}/findings/{{.TickTime}}.json`:
+2. Write a finding (or array of findings) to `{{.StateDir}}/findings/{{.TickTime}}.json`:
    ```json
    {
      "severity": "CRITICAL|HIGH|MEDIUM|LOW|INFO",
-     "title": "What changed and why it matters",
-     "resource": "path:/etc/passwd, module:suspicious_mod, pid:N",
+     "title": "Stable, descriptive — see TITLE RULES",
+     "resource": "k:v[, k:v]* (e.g. path:/etc/passwd, module:foo, pid:N)",
      "evidence": ["hash diff", "module name", "rule change"],
      "recommended_action": "Steps for the operator",
-     "dedup_key": "resource+change_type"
+     "dedup_key": "resource+change_type — STABLE across ticks",
+
+     "category": "process|file|network|cert|cloud|identity|config|other",
+     "path": "/etc/passwd",
+     "process_pid": 1337,
+     "tags": ["fim", "kernel-module", "firewall"],
+     "attributes": { "old_hash": "...", "new_hash": "..." }
    }
    ```
+
+   **TITLE RULES (mandatory):** stable across ticks. NO tick numbers,
+   durations, or markers (`PERSISTENT`, `ONGOING`, `(TICK 87)`,
+   `[5+ ticks]`). Move that into `evidence`. ≤ 120 chars.
+
+   **DEDUP_KEY RULES:** stable. Encode the resource — e.g.
+   `passwd_modified+/etc/passwd`, `kmod_loaded+suspicious_mod`. No timestamps.
+
+   **STRUCTURED FIELDS:** fill `path`/`process_pid`/`category`/`tags` when
+   relevant — operators filter and search by these.
 
 ### Constraints
 

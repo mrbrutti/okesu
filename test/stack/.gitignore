@@ -1,0 +1,4 @@
+# Generated runtime state — never check in.
+run/
+certs/
+.claude/

@@ -1,0 +1,595 @@
+package controlplane
+
+import (
+	"context"
+	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
+
+	"github.com/section9labs/okesu/controlplane/api"
+	"github.com/section9labs/okesu/controlplane/auth"
+	"github.com/section9labs/okesu/controlplane/db"
+	"github.com/section9labs/okesu/controlplane/jobs"
+	"github.com/section9labs/okesu/controlplane/notify"
+	"github.com/section9labs/okesu/controlplane/tunnel"
+	"github.com/section9labs/okesu/controlplane/ui"
+)
+
+// Server holds all the long-lived state for the Control Plane HTTP server.
+type Server struct {
+	cfg      Config
+	store    *db.Store
+	mgr      *auth.Manager
+	bcast    *Broadcaster
+	ca       *CA
+	oidc     *auth.OIDCProvider // nil when OIDC not configured
+	jobs     *jobs.Registry
+	tunReg   *tunnel.Registry
+	runs     *api.RunRegistry
+	notify   *notify.Worker
+	http     *http.Server
+	mgmtHTTP *http.Server       // mTLS-protected management plane
+}
+
+// IssueClientCert satisfies api.NodeDeployer. Used by the deploy flow to
+// generate per-agent mTLS client cert bundles on demand.
+func (s *Server) IssueClientCert(agent string) (cert, key, ca []byte, err error) {
+	c, k, err := s.ca.IssueClientCert(agent)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return c, k, s.ca.CertPEM, nil
+}
+
+// New constructs a Server. It opens (and migrates) the SQLite DB, ensures the
+// admin user exists, generates a self-signed TLS cert if needed, and wires
+// the HTTP routes.
+func New(cfg Config) (*Server, error) {
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+
+	store, err := db.Open(cfg.DBPath)
+	if err != nil {
+		return nil, fmt.Errorf("open db: %w", err)
+	}
+
+	if _, err := auth.SeedAdmin(store, cfg.AdminEmail, cfg.AdminPassword); err != nil {
+		return nil, fmt.Errorf("seed admin: %w", err)
+	}
+
+	mgr, err := auth.NewManager(store, cfg.SessionKey)
+	if err != nil {
+		return nil, fmt.Errorf("session manager: %w", err)
+	}
+
+	bcast := NewBroadcaster()
+
+	ca, err := EnsureCA(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("ensure ca: %w", err)
+	}
+
+	srv := &Server{
+		cfg:    cfg,
+		store:  store,
+		mgr:    mgr,
+		bcast:  bcast,
+		ca:     ca,
+		jobs:   jobs.New(500),
+		tunReg: tunnel.NewRegistry(),
+		runs:   api.NewRunRegistry(),
+	}
+	srv.notify = &notify.Worker{
+		Store:      store,
+		Subscriber: bcast,
+		MaxRetries: 3,
+	}
+
+	// Phase 4: OIDC. Optional — boot continues if discovery fails so the CP
+	// stays available with password auth even when the IDP is unreachable.
+	if cfg.OIDCEnabled() {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		oidcProv, oerr := auth.NewOIDC(ctx, store, mgr, auth.OIDCConfig{
+			Issuer:       cfg.OIDCIssuer,
+			ClientID:     cfg.OIDCClientID,
+			ClientSecret: cfg.OIDCClientSecret,
+			RedirectURL:  cfg.OIDCRedirectURL,
+			GroupsClaim:  cfg.OIDCGroupsClaim,
+			RoleMap:      cfg.OIDCRoleMap,
+		})
+		if oerr != nil {
+			log.Printf("oidc: disabled — %v", oerr)
+		} else {
+			srv.oidc = oidcProv
+			log.Printf("oidc: enabled (issuer=%s)", cfg.OIDCIssuer)
+		}
+	}
+	// Auto-import any okesu-<os>-<arch> files already in the binaries dir so
+	// existing setups (tests, scripts that pre-stage binaries) don't have to
+	// upload through the UI just to get a row in the inventory.
+	if cfg.DaemonBinariesDir != "" {
+		if err := importDaemonBinaries(store, cfg.DaemonBinariesDir); err != nil {
+			log.Printf("daemon binaries import: %v (continuing)", err)
+		}
+	}
+
+	// Initialize the mgmt-plane server FIRST so srv.mgmtHTTP is set when
+	// srv.routes() captures the AboutFeatures snapshot.
+	if cfg.MgmtListen != "" {
+		srv.mgmtHTTP = &http.Server{
+			Addr:              cfg.MgmtListen,
+			Handler:           srv.mgmtRoutes(),
+			ReadHeaderTimeout: 10 * time.Second,
+			ReadTimeout:       30 * time.Second,
+			WriteTimeout:      30 * time.Second,
+			IdleTimeout:       90 * time.Second,
+		}
+	}
+	srv.http = &http.Server{
+		Addr:              cfg.Listen,
+		Handler:           srv.routes(),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      0, // SSE needs unbounded write timeout
+		IdleTimeout:       90 * time.Second,
+	}
+	return srv, nil
+}
+
+func (s *Server) routes() http.Handler {
+	r := chi.NewRouter()
+	r.Use(middleware.RequestID)
+	r.Use(middleware.RealIP)
+	r.Use(middleware.Recoverer)
+
+	// Public webhook endpoint — auth via HMAC, not cookies.
+	r.Post("/api/webhooks/events", api.WebhookHandler(s.store, s.cfg.WebhookSecret, s.bcast))
+
+	// External findings ingest — auth via Bearer API token, scope=findings:write.
+	r.Group(func(r chi.Router) {
+		r.Use(auth.RequireToken(s.store, auth.ScopeFindingsWrite))
+		r.Post("/api/findings/ingest", api.FindingIngest(s.store, s.bcast))
+	})
+
+	// Public auth endpoints.
+	r.Post("/api/auth/login", api.LoginHandler(s.store, s.mgr))
+	r.Get("/api/auth/config", api.AuthConfigHandler(s.oidc != nil, s.cfg.OIDCLabel))
+
+	// OIDC sign-in (only registered when configured).
+	if s.oidc != nil {
+		r.Get("/auth/oidc/login", s.oidc.LoginHandler)
+		r.Get("/auth/oidc/callback", s.oidc.CallbackHandler)
+	}
+
+	// Authenticated API — read paths require any logged-in user (viewer+).
+	r.Group(func(r chi.Router) {
+		r.Use(s.mgr.Middleware)
+		r.Post("/api/auth/logout", api.LogoutHandler(s.store, s.mgr))
+		r.Get("/api/auth/me", api.MeHandler())
+
+		// Self-service endpoints — every authenticated user
+		r.Post("/api/users/me/password", api.MyPasswordChange(s.store))
+		r.Get("/api/users/me/sessions", api.MySessions(s.store, s.mgr))
+		r.Delete("/api/users/me/sessions", api.MyRevokeOtherSessions(s.store, s.mgr))
+		r.Get("/api/system/about", api.AboutHandler(api.AboutFeatures{
+			OIDC:          s.oidc != nil,
+			MgmtPlane:     s.mgmtHTTP != nil,
+			Tunnel:        s.mgmtHTTP != nil,
+			Deploy:        s.cfg.DaemonBinaryPath != "" && s.cfg.AgentFilesDir != "",
+			WebhookIngest: s.cfg.WebhookSecret != "",
+		}))
+
+		// Read endpoints — viewer+
+		r.Get("/api/events", api.EventsList(s.store))
+		r.Get("/api/events/stream", api.EventsStream(s.bcast))
+		r.Get("/api/agents", api.AgentsList(s.store))
+		r.Get("/api/agents/{name}", api.AgentDetail(s.store))
+		r.Get("/api/findings", api.FindingsList(s.store))
+		r.Get("/api/findings/summary", api.FindingsSummary(s.store))
+		r.Get("/api/findings/grouped", api.FindingsGrouped(s.store))
+		r.Get("/api/findings/{id}", api.FindingDetail(s.store))
+
+		// Read endpoints (continued)
+		r.Get("/api/nodes", api.NodesList(s.store))
+		r.Get("/api/nodes/{id}", api.NodeDetail(s.store))
+		r.Get("/api/nodes/library", api.AgentLibrary(api.NodesConfig{
+			DaemonBinaryPath:  s.cfg.DaemonBinaryPath,
+			DaemonBinariesDir: s.cfg.DaemonBinariesDir,
+			AgentFilesDir:     s.cfg.AgentFilesDir,
+		}))
+		r.Get("/api/deploy/binaries", api.BinariesList(s.store, s.cfg.DaemonBinariesDir))
+		r.Get("/api/deploy/known-hosts", api.KnownHostsList(s.store))
+		r.Get("/api/nodes/{id}/known-host", api.NodeKnownHost(s.store))
+
+		// Notifications: deliveries log is viewer+; channels/rules are admin-only.
+		r.Get("/api/notifications/deliveries", api.DeliveriesList(s.store))
+		r.Get("/api/nodes/connected", api.ConnectedNodes(s.tunReg))
+		r.Get("/api/jobs/{id}", api.JobStatus(s.jobs))
+		r.Get("/api/jobs/{id}/log", api.JobLogStream(s.jobs))
+		r.Get("/api/runs", api.RunsList(s.store))
+		r.Get("/api/runs/{id}", api.RunStatus(s.runs, s.store))
+		r.Get("/api/runs/{id}/log", api.RunLogStream(s.runs, s.store))
+
+		// Admin-only endpoints
+		r.Group(func(r chi.Router) {
+			r.Use(auth.RequireRole(auth.RoleAdmin))
+			r.Get("/api/users", api.UsersList(s.store))
+			r.Post("/api/users", api.UserCreate(s.store))
+			r.Get("/api/users/{id}", api.UserDetail(s.store))
+			r.Patch("/api/users/{id}", api.UserPatch(s.store))
+			r.Delete("/api/users/{id}", api.UserDelete(s.store))
+			r.Get("/api/audit", api.AuditList(s.store))
+			r.Post("/api/deploy/binaries", api.BinaryUpload(s.store, s.cfg.DaemonBinariesDir))
+			r.Delete("/api/deploy/binaries/{name}", api.BinaryDelete(s.store))
+			r.Delete("/api/nodes/{id}/known-host", api.NodeKnownHostDelete(s.store))
+
+			r.Get("/api/notifications/channels", api.ChannelsList(s.store))
+			r.Post("/api/notifications/channels", api.ChannelCreate(s.store))
+			r.Patch("/api/notifications/channels/{id}", api.ChannelPatch(s.store))
+			r.Delete("/api/notifications/channels/{id}", api.ChannelDelete(s.store))
+			r.Post("/api/notifications/channels/{id}/test", api.ChannelTest(s.store, s.notify))
+			r.Get("/api/notifications/rules", api.RulesList(s.store))
+			r.Post("/api/notifications/rules", api.RuleCreate(s.store))
+			r.Patch("/api/notifications/rules/{id}", api.RulePatch(s.store))
+			r.Delete("/api/notifications/rules/{id}", api.RuleDelete(s.store))
+
+			r.Get("/api/tokens", api.TokensList(s.store))
+			r.Post("/api/tokens", api.TokenCreate(s.store))
+			r.Delete("/api/tokens/{id}", api.TokenRevoke(s.store))
+
+			// System / database (admin)
+			r.Get("/api/system/db/stats", api.DBStats(s.store, api.SystemDBConfig{
+				EventTTLDays: s.cfg.EventTTLDays,
+			}))
+			r.Post("/api/system/db/vacuum", api.DBVacuum(s.store))
+			r.Post("/api/system/db/prune-events", api.DBPruneEvents(s.store))
+		})
+
+		// Mutation endpoints — operator+
+		r.Group(func(r chi.Router) {
+			r.Use(auth.RequireRole(auth.RoleOperator))
+			r.Patch("/api/agents/{name}/config", api.AgentConfigUpdate(s.store))
+			r.Post("/api/findings/{id}/acknowledge", api.FindingAcknowledge(s.store))
+			r.Post("/api/findings/group/acknowledge", api.FindingsGroupAcknowledge(s.store))
+			r.Post("/api/findings/{id}/status", api.FindingSetStatus(s.store))
+			r.Post("/api/findings/group/status", api.FindingsGroupSetStatus(s.store))
+			r.Post("/api/findings/{id}/severity", api.FindingSetSeverity(s.store))
+			r.Get("/api/findings/severity-rules", api.SeverityRulesList(s.store))
+			r.Delete("/api/findings/severity-rules", api.SeverityRuleDelete(s.store))
+			r.Post("/api/nodes", api.NodeCreate(s.store))
+			r.Delete("/api/nodes/{id}", api.NodeDelete(s.store))
+			r.Post("/api/nodes/{id}/deploy", api.NodeDeploy(s.store, s.jobs, s, api.NodesConfig{
+				DaemonBinaryPath:  s.cfg.DaemonBinaryPath,
+				DaemonBinariesDir: s.cfg.DaemonBinariesDir,
+				AgentFilesDir:     s.cfg.AgentFilesDir,
+				WebhookSecret:     s.cfg.WebhookSecret,
+				WebhookURL:        s.cfg.EffectiveWebhookURL(),
+				MgmtURL:           s.cfg.EffectiveMgmtURL(),
+			}))
+			r.Post("/api/runs", api.CreateRun(s.runs, s.tunReg, s.store))
+			r.Post("/api/runs/{id}/cancel", api.CancelRun(s.runs, s.tunReg, s.store))
+		})
+	})
+
+	// UI: serve the embedded React build (or placeholder) for everything else.
+	r.NotFound(ui.Handler().ServeHTTP)
+
+	return r
+}
+
+// mgmtRoutes wires the mTLS-protected agent management plane.
+// All routes require a verified client cert; the agent's name is taken from
+// the cert CN so URL/body fields cannot impersonate another agent.
+func (s *Server) mgmtRoutes() http.Handler {
+	r := chi.NewRouter()
+	r.Use(middleware.RequestID)
+	r.Use(middleware.Recoverer)
+	r.Use(api.MTLSAccessLog)
+	r.Post("/api/v1/agents/register", api.MgmtRegister(s.store))
+	r.Post("/api/v1/agents/{name}/heartbeat", api.MgmtHeartbeat(s.store))
+	r.Get("/api/v1/agents/{name}/config", api.MgmtConfig(s.store))
+	r.Get("/api/v1/agents/{name}/known-issues", api.MgmtKnownIssues(s.store))
+	r.Get("/api/v1/agents/{name}/findings/search", api.MgmtFindingsLookup(s.store))
+
+	// Reverse mTLS tunnel from `okesu node` clients (Phase 6).
+	tunSrv := tunnel.NewServer(s.tunReg)
+	r.Mount("/api/tunnel/connect", tunSrv.Handler())
+	return r
+}
+
+// Run starts the HTTPS server(s) and blocks until ctx is cancelled.
+func (s *Server) Run(ctx context.Context) error {
+	certFile, keyFile, err := EnsureTLSCert(s.cfg)
+	if err != nil {
+		return fmt.Errorf("tls cert: %w", err)
+	}
+
+	s.http.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+
+	go s.sessionGC(ctx)
+	go s.notify.Run(ctx)
+
+	// Reconcile any runs left in 'running' state from a previous CP process —
+	// the child on the node may have finished while we were down, or be
+	// orphaned. Either way, the row should not stay 'running' forever.
+	if n, err := s.store.MarkInflightCancelled(); err != nil {
+		log.Printf("runs: reconcile in-flight: %v", err)
+	} else if n > 0 {
+		log.Printf("runs: reconciled %d in-flight run(s) → cancelled", n)
+	}
+
+	// Retention: prune events older than EventTTLDays every 6 hours. Findings
+	// are kept independently — operators want to keep the curated finding
+	// table for trend analysis even after the raw event stream is rotated.
+	if s.cfg.EventTTLDays > 0 {
+		go s.retentionLoop(ctx)
+	}
+
+	errCh := make(chan error, 2)
+	go func() {
+		log.Printf("okesu-cp UI/webhook listening on https://%s (db=%s)", s.cfg.Listen, s.cfg.DBPath)
+		err := s.http.ListenAndServeTLS(certFile, keyFile)
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errCh <- fmt.Errorf("ui server: %w", err)
+			return
+		}
+		errCh <- nil
+	}()
+
+	if s.mgmtHTTP != nil {
+		mgmtCert, mgmtKey, err := s.ensureMgmtCert()
+		if err != nil {
+			return fmt.Errorf("mgmt cert: %w", err)
+		}
+		caPool := x509.NewCertPool()
+		caPool.AppendCertsFromPEM(s.ca.CertPEM)
+		s.mgmtHTTP.TLSConfig = &tls.Config{
+			MinVersion:   tls.VersionTLS13,
+			ClientAuth:   tls.RequireAndVerifyClientCert,
+			ClientCAs:    caPool,
+			Certificates: []tls.Certificate{{}}, // populated below by ListenAndServeTLS
+		}
+		// Stdlib's ListenAndServeTLS reads cert/key from disk, but we want the
+		// in-memory CA-signed pair. Build the cert here and clear Certificates
+		// is filled by stdlib when files are passed; instead use the tls cert directly.
+		s.mgmtHTTP.TLSConfig.Certificates = nil
+		mgmtTLSCert, err := tls.X509KeyPair(mgmtCert, mgmtKey)
+		if err != nil {
+			return fmt.Errorf("parse mgmt cert: %w", err)
+		}
+		s.mgmtHTTP.TLSConfig.Certificates = []tls.Certificate{mgmtTLSCert}
+
+		go func() {
+			log.Printf("okesu-cp mgmt plane listening on https://%s (mTLS, ca=%s)", s.cfg.MgmtListen, s.ca.CertPath)
+			// Empty cert/key paths — TLSConfig.Certificates is used instead.
+			err := s.mgmtHTTP.ListenAndServeTLS("", "")
+			if err != nil && !errors.Is(err, http.ErrServerClosed) {
+				errCh <- fmt.Errorf("mgmt server: %w", err)
+				return
+			}
+			errCh <- nil
+		}()
+	}
+
+	select {
+	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = s.http.Shutdown(shutdownCtx)
+		if s.mgmtHTTP != nil {
+			_ = s.mgmtHTTP.Shutdown(shutdownCtx)
+		}
+		return s.store.Close()
+	case err := <-errCh:
+		_ = s.store.Close()
+		return err
+	}
+}
+
+// ensureMgmtCert returns the cert/key bytes used by the mgmt-plane TLS server.
+// Uses cfg paths if provided, else generates a CA-signed cert next to the DB.
+func (s *Server) ensureMgmtCert() (certPEM, keyPEM []byte, err error) {
+	if s.cfg.MgmtCertFile != "" && s.cfg.MgmtKeyFile != "" {
+		c, err1 := os.ReadFile(s.cfg.MgmtCertFile)
+		k, err2 := os.ReadFile(s.cfg.MgmtKeyFile)
+		if err1 == nil && err2 == nil {
+			return c, k, nil
+		}
+	}
+	dir := filepath.Dir(s.cfg.DBPath)
+	certPath := filepath.Join(dir, "mgmt-server.crt")
+	keyPath := filepath.Join(dir, "mgmt-server.key")
+	if c, err1 := os.ReadFile(certPath); err1 == nil {
+		if k, err2 := os.ReadFile(keyPath); err2 == nil {
+			return c, k, nil
+		}
+	}
+	// Include the configured public host (e.g. host.lima.internal) so daemons
+	// dialing the CP via that hostname can verify the cert. Operators can add
+	// more via OKESU_CP_MGMT_CERT_HOSTS (comma-separated).
+	hosts := []string{"localhost", "okesu-cp", "okesu-cp.local"}
+	for _, extra := range []string{
+		extractHost(s.cfg.MgmtPublicURL),
+		extractHost(s.cfg.WebhookPublicURL),
+	} {
+		if extra != "" && !contains(hosts, extra) {
+			hosts = append(hosts, extra)
+		}
+	}
+	if more := os.Getenv("OKESU_CP_MGMT_CERT_HOSTS"); more != "" {
+		for _, h := range strings.Split(more, ",") {
+			h = strings.TrimSpace(h)
+			if h != "" && !contains(hosts, h) {
+				hosts = append(hosts, h)
+			}
+		}
+	}
+	c, k, err := s.ca.IssueServerCert(hosts)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := os.WriteFile(certPath, c, 0644); err != nil {
+		return nil, nil, err
+	}
+	if err := os.WriteFile(keyPath, k, 0600); err != nil {
+		return nil, nil, err
+	}
+	return c, k, nil
+}
+
+// CA exposes the in-memory CA so the issue-cert subcommand can sign
+// client certs.
+func (s *Server) CA() *CA { return s.ca }
+
+// importDaemonBinaries scans dir for files named "okesu-<os>-<arch>" and
+// upserts a row in the daemon_binaries table for each. Existing rows with
+// the same name get refreshed (sha256 + size + path). Files that already
+// have an up-to-date row are skipped.
+func importDaemonBinaries(store *db.Store, dir string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if !strings.HasPrefix(name, "okesu-") {
+			continue
+		}
+		parts := strings.Split(name, "-")
+		if len(parts) < 3 {
+			continue
+		}
+		osName := parts[1]
+		arch := strings.Join(parts[2:], "-")
+
+		full := filepath.Join(dir, name)
+		fi, err := os.Stat(full)
+		if err != nil {
+			continue
+		}
+		// If a row already exists with the same size, assume it's current.
+		// (sha-checking every binary on every boot is wasteful; admins who
+		// hand-replace files can still re-upload through the UI to refresh.)
+		if existing, err := store.DaemonBinaryByName(name); err == nil &&
+			existing.SizeBytes == fi.Size() && existing.Path == full {
+			continue
+		}
+		// Compute sha256 lazily.
+		sum, err := sha256File(full)
+		if err != nil {
+			log.Printf("import binary %s: hash failed: %v", name, err)
+			continue
+		}
+		if err := store.UpsertDaemonBinary(&db.DaemonBinary{
+			Name:      name,
+			OS:        osName,
+			Arch:      arch,
+			Path:      full,
+			SHA256:    sum,
+			SizeBytes: fi.Size(),
+		}, ""); err != nil {
+			log.Printf("import binary %s: upsert failed: %v", name, err)
+			continue
+		}
+		log.Printf("imported daemon binary %s (%s/%s, %d bytes)", name, osName, arch, fi.Size())
+	}
+	return nil
+}
+
+func sha256File(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// extractHost returns the hostname portion of a URL, or "" if parsing fails
+// or the URL is empty. Used to populate TLS SANs from public-URL config.
+func extractHost(u string) string {
+	if u == "" {
+		return ""
+	}
+	parsed, err := url.Parse(u)
+	if err != nil {
+		return ""
+	}
+	return parsed.Hostname()
+}
+
+func contains(haystack []string, needle string) bool {
+	for _, h := range haystack {
+		if h == needle {
+			return true
+		}
+	}
+	return false
+}
+
+// sessionGC periodically prunes expired sessions.
+func (s *Server) sessionGC(ctx context.Context) {
+	t := time.NewTicker(15 * time.Minute)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			_ = s.store.PruneSessions()
+		}
+	}
+}
+
+// retentionLoop trims the events table on a schedule. Runs an immediate prune
+// on start so a freshly-configured TTL takes effect without waiting 6h.
+func (s *Server) retentionLoop(ctx context.Context) {
+	prune := func() {
+		cutoff := time.Now().Add(-time.Duration(s.cfg.EventTTLDays) * 24 * time.Hour).UnixMilli()
+		n, err := s.store.PruneEventsOlderThan(cutoff)
+		if err != nil {
+			log.Printf("retention: prune events: %v", err)
+			return
+		}
+		if n > 0 {
+			log.Printf("retention: pruned %d events older than %d days", n, s.cfg.EventTTLDays)
+		}
+	}
+	prune()
+	t := time.NewTicker(6 * time.Hour)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			prune()
+		}
+	}
+}

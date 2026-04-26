@@ -1,0 +1,493 @@
+// Package db provides the SQLite store for the Control Plane.
+package db
+
+import (
+	"database/sql"
+	_ "embed"
+	"fmt"
+	"os"
+	"path/filepath"
+	"time"
+
+	_ "modernc.org/sqlite"
+)
+
+//go:embed migrations/001_init.sql
+var migration001 string
+
+//go:embed migrations/002_agents.sql
+var migration002 string
+
+//go:embed migrations/003_findings.sql
+var migration003 string
+
+//go:embed migrations/004_nodes.sql
+var migration004 string
+
+//go:embed migrations/005_audit_log.sql
+var migration005 string
+
+//go:embed migrations/006_known_hosts.sql
+var migration006 string
+
+//go:embed migrations/007_daemon_binaries.sql
+var migration007 string
+
+//go:embed migrations/008_notifications.sql
+var migration008 string
+
+//go:embed migrations/009_api_tokens.sql
+var migration009 string
+
+//go:embed migrations/010_runs.sql
+var migration010 string
+
+//go:embed migrations/011_finding_attributes.sql
+var migration011 string
+
+//go:embed migrations/012_agents_composite_key.sql
+var migration012 string
+
+//go:embed migrations/013_finding_status.sql
+var migration013 string
+
+//go:embed migrations/014_node_daemon_hostname.sql
+var migration014 string
+
+//go:embed migrations/015_finding_severity_override.sql
+var migration015 string
+
+var migrations = []string{
+	migration001, migration002, migration003,
+	migration004, migration005, migration006, migration007,
+	migration008, migration009, migration010, migration011, migration012,
+	migration013, migration014, migration015,
+}
+
+// Store wraps a *sql.DB with helpers used across the controlplane package.
+type Store struct {
+	*sql.DB
+	path string
+}
+
+// Open creates (or opens) the SQLite DB at path, applies migrations, and
+// returns a ready-to-use Store. The parent directory is created if missing.
+func Open(path string) (*Store, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return nil, fmt.Errorf("mkdir db parent: %w", err)
+	}
+
+	dsn := path + "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)"
+	conn, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("open db: %w", err)
+	}
+
+	conn.SetMaxOpenConns(1) // SQLite serializes writes anyway; keep it simple.
+	conn.SetConnMaxLifetime(0)
+
+	if err := conn.Ping(); err != nil {
+		return nil, fmt.Errorf("ping db: %w", err)
+	}
+
+	if err := applyMigrations(conn); err != nil {
+		return nil, err
+	}
+
+	return &Store{DB: conn, path: path}, nil
+}
+
+// Path returns the file path the DB was opened at.
+func (s *Store) Path() string { return s.path }
+
+// applyMigrations runs each numbered migration once, tracking applied
+// versions in `schema_migrations`. Idempotent across restarts: skipping an
+// already-applied migration is what makes ALTER TABLE / DROP TABLE-style
+// migrations safe to ship.
+//
+// Bootstrap for pre-tracking-era databases: if `schema_migrations` is
+// brand new but the `meta` table exists (created by migration 001), we
+// probe for each migration's signature object and mark it applied if its
+// effect is already present. That way upgrading a CP from before this
+// commit doesn't re-run schema-altering migrations against tables that
+// already have the new shape.
+func applyMigrations(db *sql.DB) error {
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY)`); err != nil {
+		return fmt.Errorf("create schema_migrations: %w", err)
+	}
+
+	var applied int64
+	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&applied); err != nil {
+		return err
+	}
+	if applied == 0 && tableExists(db, "meta") {
+		// Pre-existing DB without tracking. Probe each migration's signature.
+		bootstrap := []struct {
+			version int
+			probe   func() bool
+		}{
+			{1,  func() bool { return tableExists(db, "meta") }},
+			{2,  func() bool { return tableExists(db, "agents") }},
+			{3,  func() bool { return tableExists(db, "findings") }},
+			{4,  func() bool { return tableExists(db, "nodes") }},
+			{5,  func() bool { return tableExists(db, "audit_log") }},
+			{6,  func() bool { return tableExists(db, "known_hosts") }},
+			{7,  func() bool { return tableExists(db, "daemon_binaries") }},
+			{8,  func() bool { return tableExists(db, "notification_channels") }},
+			{9,  func() bool { return tableExists(db, "api_tokens") }},
+			{10, func() bool { return tableExists(db, "runs") }},
+			{11, func() bool { return columnExists(db, "findings", "category") }},
+			{12, func() bool { return agentsHasCompositePK(db) }},
+			{13, func() bool { return columnExists(db, "findings", "status") }},
+			{14, func() bool { return columnExists(db, "nodes", "daemon_hostname") }},
+			{15, func() bool { return columnExists(db, "findings", "operator_severity") && tableExists(db, "finding_severity_rules") }},
+		}
+		for _, m := range bootstrap {
+			if !m.probe() {
+				continue
+			}
+			if _, err := db.Exec(`INSERT OR IGNORE INTO schema_migrations (version) VALUES (?)`, m.version); err != nil {
+				return fmt.Errorf("bootstrap migration tracking: %w", err)
+			}
+		}
+	}
+
+	for i, stmt := range migrations {
+		version := i + 1
+		var n int64
+		if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE version = ?`, version).Scan(&n); err != nil {
+			return err
+		}
+		if n > 0 {
+			continue
+		}
+		if _, err := db.Exec(stmt); err != nil {
+			return fmt.Errorf("apply migration %03d: %w", version, err)
+		}
+		if _, err := db.Exec(`INSERT INTO schema_migrations (version) VALUES (?)`, version); err != nil {
+			return fmt.Errorf("record migration %03d: %w", version, err)
+		}
+	}
+	return nil
+}
+
+func tableExists(db *sql.DB, name string) bool {
+	var n int64
+	_ = db.QueryRow(
+		`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name = ?`, name,
+	).Scan(&n)
+	return n > 0
+}
+
+func columnExists(db *sql.DB, table, col string) bool {
+	rows, err := db.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		return false
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notnull, pk int
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			return false
+		}
+		if name == col {
+			return true
+		}
+	}
+	return false
+}
+
+// agentsHasCompositePK detects whether migration 012 has been applied —
+// the rebuilt table makes both `name` and `host` part of the primary key.
+func agentsHasCompositePK(db *sql.DB) bool {
+	rows, err := db.Query(`PRAGMA table_info(agents)`)
+	if err != nil {
+		return false
+	}
+	defer rows.Close()
+	pkCount := 0
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notnull, pk int
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			return false
+		}
+		if pk > 0 {
+			pkCount++
+		}
+	}
+	return pkCount >= 2
+}
+
+// MetaGet reads a value from the meta table. Returns "" if absent.
+func (s *Store) MetaGet(key string) (string, error) {
+	var v string
+	err := s.QueryRow("SELECT value FROM meta WHERE key = ?", key).Scan(&v)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return v, err
+}
+
+// MetaSet writes a key/value pair, replacing any prior value for the key.
+func (s *Store) MetaSet(key, value string) error {
+	_, err := s.Exec(`
+		INSERT INTO meta (key, value) VALUES (?, ?)
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value
+	`, key, value)
+	return err
+}
+
+// User is the persisted user row.
+type User struct {
+	ID           int64
+	Email        string
+	PasswordHash sql.NullString
+	Role         string
+	CreatedAt    time.Time
+}
+
+// UserByEmail returns the user with the given email, or sql.ErrNoRows.
+func (s *Store) UserByEmail(email string) (*User, error) {
+	u := &User{}
+	err := s.QueryRow(
+		`SELECT id, email, password_hash, role, created_at FROM users WHERE email = ?`,
+		email,
+	).Scan(&u.ID, &u.Email, &u.PasswordHash, &u.Role, &u.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return u, nil
+}
+
+// UserByID returns the user with the given id.
+func (s *Store) UserByID(id int64) (*User, error) {
+	u := &User{}
+	err := s.QueryRow(
+		`SELECT id, email, password_hash, role, created_at FROM users WHERE id = ?`,
+		id,
+	).Scan(&u.ID, &u.Email, &u.PasswordHash, &u.Role, &u.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return u, nil
+}
+
+// CreateUser inserts a new user and returns its id.
+func (s *Store) CreateUser(email, passwordHash, role string) (int64, error) {
+	res, err := s.Exec(
+		`INSERT INTO users (email, password_hash, role) VALUES (?, ?, ?)`,
+		email, passwordHash, role,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+// UpsertSSOUser creates a user with the given email if absent, or updates
+// the user's role to match the IDP. password_hash stays NULL — SSO users
+// cannot log in with a password. Returns the (possibly updated) user.
+func (s *Store) UpsertSSOUser(email, role string) (*User, error) {
+	_, err := s.Exec(`
+		INSERT INTO users (email, password_hash, role)
+		VALUES (?, NULL, ?)
+		ON CONFLICT(email) DO UPDATE SET role = excluded.role
+	`, email, role)
+	if err != nil {
+		return nil, err
+	}
+	return s.UserByEmail(email)
+}
+
+// ListUsers returns every user, ordered by created_at descending.
+func (s *Store) ListUsers() ([]*User, error) {
+	rows, err := s.Query(`
+		SELECT id, email, password_hash, role, created_at
+		FROM users ORDER BY created_at DESC, id DESC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*User
+	for rows.Next() {
+		u := &User{}
+		if err := rows.Scan(&u.ID, &u.Email, &u.PasswordHash, &u.Role, &u.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, u)
+	}
+	return out, rows.Err()
+}
+
+// UpdateUserRole sets the role on a user.
+func (s *Store) UpdateUserRole(id int64, role string) error {
+	_, err := s.Exec(`UPDATE users SET role = ? WHERE id = ?`, role, id)
+	return err
+}
+
+// UpdateUserPassword sets a new bcrypt hash on a user.
+func (s *Store) UpdateUserPassword(id int64, passwordHash string) error {
+	_, err := s.Exec(`UPDATE users SET password_hash = ? WHERE id = ?`, passwordHash, id)
+	return err
+}
+
+// DeleteUser removes a user. Cascades to sessions via FK; audit rows have
+// actor_id ON DELETE SET NULL, so history is preserved.
+func (s *Store) DeleteUser(id int64) error {
+	_, err := s.Exec(`DELETE FROM users WHERE id = ?`, id)
+	return err
+}
+
+// CountUsersByRole returns the number of users with the given role. Used
+// to prevent removing the last admin.
+func (s *Store) CountUsersByRole(role string) (int, error) {
+	var n int
+	err := s.QueryRow(`SELECT COUNT(*) FROM users WHERE role = ?`, role).Scan(&n)
+	return n, err
+}
+
+// ── Sessions ─────────────────────────────────────────────────────────────────
+
+// SessionInfo is a session row enriched with relative metadata for the UI.
+type SessionInfo struct {
+	ID        string
+	ExpiresAt time.Time
+	CreatedAt time.Time
+}
+
+// ListUserSessions returns every active (non-expired) session for a user,
+// most recent first.
+func (s *Store) ListUserSessions(userID int64) ([]*SessionInfo, error) {
+	rows, err := s.Query(`
+		SELECT id, expires_at, created_at FROM sessions
+		WHERE user_id = ? AND expires_at > CURRENT_TIMESTAMP
+		ORDER BY created_at DESC
+	`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*SessionInfo
+	for rows.Next() {
+		si := &SessionInfo{}
+		if err := rows.Scan(&si.ID, &si.ExpiresAt, &si.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, si)
+	}
+	return out, rows.Err()
+}
+
+// DeleteUserSessionsExcept revokes every session for a user except the one
+// passed in (typically the current session). Used for "sign out everywhere
+// else".
+func (s *Store) DeleteUserSessionsExcept(userID int64, keepID string) error {
+	_, err := s.Exec(`DELETE FROM sessions WHERE user_id = ? AND id != ?`, userID, keepID)
+	return err
+}
+
+// CreateSession inserts a session row.
+func (s *Store) CreateSession(id string, userID int64, expiresAt time.Time) error {
+	_, err := s.Exec(
+		`INSERT INTO sessions (id, user_id, expires_at) VALUES (?, ?, ?)`,
+		id, userID, expiresAt,
+	)
+	return err
+}
+
+// SessionUser returns the user associated with a non-expired session, or
+// sql.ErrNoRows if the session is missing or expired.
+func (s *Store) SessionUser(sessionID string) (*User, error) {
+	u := &User{}
+	err := s.QueryRow(`
+		SELECT u.id, u.email, u.password_hash, u.role, u.created_at
+		FROM sessions s
+		JOIN users u ON u.id = s.user_id
+		WHERE s.id = ? AND s.expires_at > CURRENT_TIMESTAMP
+	`, sessionID).Scan(&u.ID, &u.Email, &u.PasswordHash, &u.Role, &u.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return u, nil
+}
+
+// DeleteSession removes a session row.
+func (s *Store) DeleteSession(id string) error {
+	_, err := s.Exec(`DELETE FROM sessions WHERE id = ?`, id)
+	return err
+}
+
+// PruneSessions deletes expired sessions. Call periodically.
+func (s *Store) PruneSessions() error {
+	_, err := s.Exec(`DELETE FROM sessions WHERE expires_at <= CURRENT_TIMESTAMP`)
+	return err
+}
+
+// Event is the persisted event row.
+type Event struct {
+	ID         int64
+	Ts         int64
+	Type       string
+	Agent      sql.NullString
+	Host       sql.NullString
+	Severity   sql.NullString
+	Title      sql.NullString
+	RawJSON    string
+	ReceivedAt time.Time
+}
+
+// InsertEvent stores an event and returns its id.
+func (s *Store) InsertEvent(e *Event) (int64, error) {
+	res, err := s.Exec(`
+		INSERT INTO events (ts, type, agent, host, severity, title, raw_json)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, e.Ts, e.Type, e.Agent, e.Host, e.Severity, e.Title, e.RawJSON)
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+// RecentEvents returns up to limit events ordered by timestamp descending.
+// When beforeTs > 0, only events strictly older than that timestamp are
+// returned — used as a cursor for the UI's infinite-scroll pagination.
+// (Cursor by ts is more robust than offset against the SSE stream
+// prepending new events at the top during pagination.)
+func (s *Store) RecentEvents(limit int, beforeTs int64) ([]*Event, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 100
+	}
+	q := `SELECT id, ts, type, agent, host, severity, title, raw_json, received_at
+		  FROM events`
+	args := []any{}
+	if beforeTs > 0 {
+		q += ` WHERE ts < ?`
+		args = append(args, beforeTs)
+	}
+	q += ` ORDER BY ts DESC LIMIT ?`
+	args = append(args, limit)
+	rows, err := s.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*Event
+	for rows.Next() {
+		e := &Event{}
+		if err := rows.Scan(
+			&e.ID, &e.Ts, &e.Type, &e.Agent, &e.Host,
+			&e.Severity, &e.Title, &e.RawJSON, &e.ReceivedAt,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}

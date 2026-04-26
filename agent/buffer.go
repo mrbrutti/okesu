@@ -126,6 +126,13 @@ type OutputDef struct {
 	Secret    string   `yaml:"secret,omitempty"`   // webhook sink: HMAC-SHA256 signing secret
 	Retries   int      `yaml:"retries,omitempty"`  // webhook sink: max delivery attempts
 	BufferCap int      `yaml:"bufferCap,omitempty"` // webhook sink: in-memory ring buffer size
+	// CACertFile is the path to a PEM CA cert to trust for the webhook URL's
+	// TLS server. Useful when the CP serves a self-signed cert. Optional.
+	CACertFile string `yaml:"caCertFile,omitempty"`
+	// InsecureSkipVerify disables TLS verification on the webhook URL.
+	// Use ONLY for local development against a self-signed CP. Never set true
+	// in production — it disables MITM protection.
+	InsecureSkipVerify bool `yaml:"insecureSkipVerify,omitempty"`
 	// Events filters which event types this sink receives.
 	// Empty (default) means all events. Example: [finding, action_taken, action_denied]
 	Events    []string `yaml:"events,omitempty"`

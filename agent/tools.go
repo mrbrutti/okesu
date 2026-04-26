@@ -2,6 +2,8 @@ package agent
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -107,6 +109,29 @@ var Tools = []ToolDef{
 		},
 		Required: []string{"pattern"},
 	},
+	{
+		// Daemon-mode RAG: query the Control Plane for findings this agent
+		// has emitted across the fleet. Use BEFORE writing a new finding to
+		// avoid re-reporting issues the operator has already triaged
+		// (false_positive, wontfix, resolved, acknowledged, investigating)
+		// and to enrich your own report with related history.
+		Name: "lookup_findings",
+		Description: "Search past findings emitted by this agent across the fleet. Use BEFORE writing a finding to (1) avoid duplicating something already triaged (status field — false_positive/wontfix/resolved/acknowledged/investigating means do NOT re-emit) and (2) calibrate severity. Each result includes `severity` (effective), `original_severity` (what the LLM previously assigned), and `suggested_severity` (server hint when operators have repeatedly overridden the LLM or set an explicit rule). When `suggested_severity` is set, prefer it over your own first instinct — it represents accumulated operator judgment for this exact fingerprint. When `original_severity` differs from `severity` across multiple results, treat that gap as a signal that your default severity calibration for this kind of finding is off and adjust accordingly.",
+		Parameters: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"query": map[string]interface{}{
+					"type":        "string",
+					"description": "Keywords describing the issue (process name, port, path, host, CVE, etc.). Match is case-insensitive substring across title, resource, network endpoint, path, process name, and dedup_key.",
+				},
+				"limit": map[string]interface{}{
+					"type":        "integer",
+					"description": "Max results to return (1..15, default 5).",
+				},
+			},
+		},
+		Required: []string{"query"},
+	},
 }
 
 // ActiveTools returns the subset of Tools matching the given names.
@@ -152,6 +177,12 @@ func normalizeToolName(name string) string {
 }
 
 // ExecuteTool dispatches a tool call by name with the parsed input map.
+//
+// `lookup_findings` is intentionally NOT here — it needs the management-plane
+// client which is per-Config state. Callers (claude.go / openai.go) detect
+// the name and route through invokeLookupFindings instead. If we end up
+// here with that name, the LLM is calling a tool the daemon doesn't have a
+// CP for; we return a structured error so the model stops trying.
 func ExecuteTool(name string, input map[string]interface{}) string {
 	switch name {
 	case "bash":
@@ -164,9 +195,45 @@ func ExecuteTool(name string, input map[string]interface{}) string {
 		return execListFiles(input)
 	case "search":
 		return execSearch(input)
+	case "lookup_findings":
+		return "error: lookup_findings is unavailable — this daemon is not connected to a Control Plane"
 	default:
 		return fmt.Sprintf("error: unknown tool %q", name)
 	}
+}
+
+// invokeLookupFindings is the per-Config dispatch for the lookup_findings
+// tool. It's a thin wrapper around the supplied callback (typically
+// MgmtPlane.LookupFindings) plus result-shape massaging so the LLM gets a
+// compact, indented JSON list rather than Go structs.
+func invokeLookupFindings(
+	ctx context.Context,
+	input map[string]interface{},
+	fn func(ctx context.Context, query string, limit int) ([]LookupResult, error),
+) string {
+	query, _ := input["query"].(string)
+	if query == "" {
+		return "error: missing 'query'"
+	}
+	limit := 0
+	switch v := input["limit"].(type) {
+	case float64:
+		limit = int(v)
+	case int:
+		limit = v
+	}
+	results, err := fn(ctx, query, limit)
+	if err != nil {
+		return fmt.Sprintf("error: %v", err)
+	}
+	if len(results) == 0 {
+		return "no matching findings"
+	}
+	b, err := json.MarshalIndent(results, "", "  ")
+	if err != nil {
+		return fmt.Sprintf("error marshalling results: %v", err)
+	}
+	return string(b)
 }
 
 func execBash(input map[string]interface{}) string {
@@ -294,10 +361,11 @@ type AgentDef struct {
 // ParseAgentFile loads and parses an agent markdown file by name.
 // It searches these directories in order, stopping at the first match:
 //
-//  1. .claude/agents/<name>.md  (project-local, Claude CLI convention)
-//  2. .codex/agents/<name>.md   (project-local, Codex convention)
-//  3. ~/.claude/agents/<name>.md (user global)
-//  4. ~/.codex/agents/<name>.md  (user global)
+//  1. .claude/agents/<name>.md       (project-local, Claude CLI convention)
+//  2. .codex/agents/<name>.md        (project-local, Codex convention)
+//  3. ~/.claude/agents/<name>.md     (user-global)
+//  4. ~/.codex/agents/<name>.md      (user-global)
+//  5. /etc/okesu/agents/<name>.md    (system-wide, production deploy convention)
 func ParseAgentFile(name string) (*AgentDef, error) {
 	home := os.Getenv("HOME")
 	candidates := []string{
@@ -305,6 +373,7 @@ func ParseAgentFile(name string) (*AgentDef, error) {
 		filepath.Join(".codex", "agents", name+".md"),
 		filepath.Join(home, ".claude", "agents", name+".md"),
 		filepath.Join(home, ".codex", "agents", name+".md"),
+		filepath.Join("/etc", "okesu", "agents", name+".md"),
 	}
 	for _, path := range candidates {
 		content, err := os.ReadFile(path)
@@ -313,7 +382,7 @@ func ParseAgentFile(name string) (*AgentDef, error) {
 		}
 		return parseAgentContent(string(content))
 	}
-	return nil, fmt.Errorf("agent %q not found in .claude/agents/, .codex/agents/, ~/.claude/agents/, or ~/.codex/agents/", name)
+	return nil, fmt.Errorf("agent %q not found in .claude/agents/, .codex/agents/, ~/.claude/agents/, ~/.codex/agents/, or /etc/okesu/agents/", name)
 }
 
 // parseAgentContent splits YAML frontmatter from body and unmarshals the YAML.

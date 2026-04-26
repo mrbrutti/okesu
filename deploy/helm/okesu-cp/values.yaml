@@ -1,0 +1,93 @@
+# Default values for the okesu-cp chart.
+#
+# Override the secrets at minimum:
+#   helm install okesu-cp deploy/helm/okesu-cp \
+#     --set adminPassword=changeme \
+#     --set webhookSecret=shared-secret-1
+#
+# For a real deployment also set:
+#   --set image.tag=v1.0.0
+#   --set ingress.enabled=true --set ingress.hostname=cp.example.com
+#   --set persistence.size=10Gi
+
+image:
+  repository: ghcr.io/section9labs/okesu-cp
+  tag: ""              # falls back to Chart.appVersion when blank
+  pullPolicy: IfNotPresent
+
+# REQUIRED on first install. Stored in a Secret.
+adminPassword: ""
+
+# REQUIRED if any daemon agent will POST to the CP. Stored in a Secret.
+webhookSecret: ""
+
+# Optional: bring your own session signing key (32+ bytes). Auto-generated
+# in-cluster if blank — but rotates on every helm upgrade unless pinned.
+sessionKey: ""
+
+# Optional event retention. 0 = keep forever. Findings are kept independently.
+eventTTLDays: 0
+
+# OIDC / Oracle Identity Domains SSO (optional). Leave issuer blank to disable.
+oidc:
+  issuer: ""
+  clientID: ""
+  clientSecret: ""
+  redirectURL: ""
+  groupsClaim: groups
+  # Comma-separated mapping like "okesu-admins:admin,okesu-ops:operator".
+  roleMap: ""
+  label: "Sign in with Oracle"
+
+# Persistent SQLite volume — losing this loses user accounts + audit history.
+persistence:
+  enabled: true
+  size: 5Gi
+  # Specify a pre-bound PVC name to skip dynamic provisioning. When blank,
+  # the chart creates a PVC using the cluster default StorageClass.
+  existingClaim: ""
+  storageClass: ""
+
+service:
+  type: ClusterIP
+  uiPort: 8443
+  mgmtPort: 8444
+
+# Ingress for the UI/webhook port (8443). The mgmt plane (8444) is mTLS and
+# typically NOT exposed via Ingress — daemons connect to it directly via a
+# Service or NodePort. Set ingress.mgmtHostname to expose it.
+ingress:
+  enabled: false
+  className: ""
+  hostname: cp.example.com
+  mgmtHostname: ""
+  annotations: {}
+  # nginx.ingress.kubernetes.io/backend-protocol: HTTPS
+  tls:
+    enabled: true
+    # When secretName is blank cert-manager / ingress controller is expected
+    # to issue + manage the cert.
+    secretName: ""
+
+resources:
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+  requests:
+    cpu: 100m
+    memory: 256Mi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+podAnnotations: {}
+podSecurityContext:
+  fsGroup: 65532
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+containerSecurityContext:
+  readOnlyRootFilesystem: true
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: ["ALL"]

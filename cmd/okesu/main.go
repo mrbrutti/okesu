@@ -1,13 +1,17 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/section9labs/okesu/agent"
+	"github.com/section9labs/okesu/node"
 	"github.com/spf13/cobra"
 )
 
@@ -76,8 +80,54 @@ func rootCmd() *cobra.Command {
 All tool calls execute without any sandbox or approval gate.
 Output streams as JSONL to stdout.`,
 	}
-	root.AddCommand(claudeCmd(), codexCmd(), autoCmd(), daemonCmd())
+	root.AddCommand(claudeCmd(), codexCmd(), autoCmd(), daemonCmd(), nodeCmd())
 	return root
+}
+
+// nodeCmd runs the reverse-tunnel client (Phase 6). Connects to the CP via
+// mTLS WebSocket and waits for ad-hoc agent run requests; spawns
+// `okesu claude|codex|auto` for each request and streams output back.
+func nodeCmd() *cobra.Command {
+	var (
+		cpURL    string
+		certDir  string
+		nodeName string
+	)
+	cmd := &cobra.Command{
+		Use:   "node",
+		Short: "Run the reverse-tunnel client to a Control Plane",
+		Long: `Connects to the Control Plane's mgmt-plane endpoint over mTLS and holds
+a long-lived WebSocket open. The CP can then spawn ad-hoc claude/codex/auto
+runs on this host and stream the JSONL output back to the operator's browser.
+
+Provision the cert bundle on the CP host with:
+
+  okesu-cp issue-node-cert --node <name> --out <dir>
+
+Then drop the three files (client.crt, client.key, ca.crt) onto this host
+and run:
+
+  okesu node --cp-url https://cp.example.com:8444 --cert-dir /etc/okesu/node-certs --name prod-web-01`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if nodeName == "" {
+				h, _ := os.Hostname()
+				nodeName = h
+			}
+			ctx, cancel := signal.NotifyContext(context.Background(),
+				syscall.SIGTERM, syscall.SIGINT)
+			defer cancel()
+			return node.Run(ctx, node.Config{
+				CPURL:    cpURL,
+				CertDir:  certDir,
+				NodeName: nodeName,
+				Version:  agent.Version(),
+			})
+		},
+	}
+	cmd.Flags().StringVar(&cpURL, "cp-url", "", "Control Plane mgmt-plane URL (https://cp.example.com:8444)")
+	cmd.Flags().StringVar(&certDir, "cert-dir", "/etc/okesu/node-certs", "Directory holding client.crt, client.key, ca.crt")
+	cmd.Flags().StringVar(&nodeName, "name", "", "Node name reported in Hello (defaults to hostname)")
+	return cmd
 }
 
 // sharedFlags adds the flags that all subcommands accept.
@@ -408,9 +458,15 @@ Schedule precedence (highest to lowest):
 				return err
 			}
 
-			apiKey, err := resolveAPIKey(cmd, apiKeyEnvVar(provider))
-			if err != nil {
-				return err
+			// In daemon mode a missing API key is non-fatal: we still want to
+			// connect to the management plane and emit heartbeats so the
+			// operator can see the agent on the Agents page. Each tick that
+			// tries to call the LLM will just emit an api_unavailable event.
+			apiKey, _ := resolveAPIKey(cmd, apiKeyEnvVar(provider))
+			if apiKey == "" {
+				fmt.Fprintf(os.Stderr,
+					"warning: no %s set — daemon will register but LLM calls will fail until the key is provided\n",
+					apiKeyEnvVar(provider))
 			}
 
 			cfg, err := buildConfig(cmd, nil, provider, def)

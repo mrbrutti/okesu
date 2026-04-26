@@ -24,6 +24,9 @@ func RunOpenAI(cfg Config) error {
 		Type:     EventInit,
 		Provider: "codex",
 		Model:    cfg.Model,
+		Agent:    cfg.Name,
+		Host:     cfg.Host,
+		Tick:     cfg.Tick,
 	})
 
 	tools := buildResponsesTools(ActiveTools(cfg.AllowedTools))
@@ -71,7 +74,10 @@ func RunOpenAI(cfg Config) error {
 			case "response.output_text.delta":
 				delta := event.AsResponseOutputTextDelta()
 				if delta.Delta != "" {
-					Emit(Event{Type: EventText, Text: delta.Delta, Turn: turn})
+					Emit(Event{
+						Type: EventText, Text: delta.Delta, Turn: turn,
+						Agent: cfg.Name, Host: cfg.Host, Tick: cfg.Tick,
+					})
 				}
 			case "response.completed":
 				completedResp = event.AsResponseCompleted().Response
@@ -119,14 +125,19 @@ func RunOpenAI(cfg Config) error {
 				ToolName: tc.Name,
 				Input:    input,
 				Turn:     turn,
+				Agent:    cfg.Name, Host: cfg.Host, Tick: cfg.Tick,
 			})
 
 			var output string
 			if ok, reason := CheckRBAC(cfg.RBAC, tc.Name, input); !ok {
-				EmitActionDenied(tc.Name, input, reason)
+				EmitActionDenied(tc.Name, input, reason, cfg.Name, cfg.Host, cfg.Tick)
 				output = fmt.Sprintf("action denied: %s", reason)
 			} else {
-				output = ExecuteTool(tc.Name, input)
+				if tc.Name == "lookup_findings" && cfg.LookupFindings != nil {
+					output = invokeLookupFindings(context.Background(), input, cfg.LookupFindings)
+				} else {
+					output = ExecuteTool(tc.Name, input)
+				}
 				// In daemon mode, also emit action_taken for downstream alerting.
 				if cfg.IsDaemon {
 					Emit(Event{
@@ -135,6 +146,7 @@ func RunOpenAI(cfg Config) error {
 						Input:    input,
 						Output:   output,
 						Turn:     turn,
+						Agent:    cfg.Name, Host: cfg.Host, Tick: cfg.Tick,
 					})
 				}
 			}
@@ -145,6 +157,7 @@ func RunOpenAI(cfg Config) error {
 				ToolName: tc.Name,
 				Output:   output,
 				Turn:     turn,
+				Agent:    cfg.Name, Host: cfg.Host, Tick: cfg.Tick,
 			})
 
 			resultItems = append(resultItems, responses.ResponseInputItemParamOfFunctionCallOutput(
@@ -169,6 +182,10 @@ func RunOpenAI(cfg Config) error {
 		Model:      cfg.Model,
 		StopReason: stopReason,
 		Usage:      &Usage{InputTokens: totalInput, OutputTokens: totalOutput},
+		Agent:      cfg.Name,
+		Host:       cfg.Host,
+		Tick:       cfg.Tick,
+		Turn:       turn,
 	})
 
 	return nil

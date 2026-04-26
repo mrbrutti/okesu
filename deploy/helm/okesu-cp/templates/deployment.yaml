@@ -1,0 +1,123 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "okesu-cp.fullname" . }}
+  labels:
+    {{- include "okesu-cp.labels" . | nindent 4 }}
+spec:
+  # SQLite — single writer. Do NOT scale beyond 1 replica.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "okesu-cp.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "okesu-cp.selectorLabels" . | nindent 8 }}
+      annotations:
+        {{- with .Values.podAnnotations }}
+          {{- toYaml . | nindent 8 }}
+        {{- end }}
+        # Roll the pod when secret content changes.
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+    spec:
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: okesu-cp
+          image: {{ include "okesu-cp.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          ports:
+            - name: ui
+              containerPort: 8443
+              protocol: TCP
+            - name: mgmt
+              containerPort: 8444
+              protocol: TCP
+          env:
+            - name: OKESU_CP_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "okesu-cp.fullname" . }}
+                  key: admin-password
+            - name: OKESU_CP_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "okesu-cp.fullname" . }}
+                  key: webhook-secret
+            {{- if .Values.sessionKey }}
+            - name: OKESU_CP_SESSION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "okesu-cp.fullname" . }}
+                  key: session-key
+            {{- end }}
+            {{- if .Values.eventTTLDays }}
+            - name: OKESU_CP_EVENT_TTL_DAYS
+              value: {{ .Values.eventTTLDays | quote }}
+            {{- end }}
+            {{- if .Values.oidc.issuer }}
+            - name: OKESU_CP_OIDC_ISSUER
+              value: {{ .Values.oidc.issuer | quote }}
+            - name: OKESU_CP_OIDC_CLIENT_ID
+              value: {{ .Values.oidc.clientID | quote }}
+            - name: OKESU_CP_OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "okesu-cp.fullname" . }}
+                  key: oidc-client-secret
+            - name: OKESU_CP_OIDC_REDIRECT_URL
+              value: {{ .Values.oidc.redirectURL | quote }}
+            - name: OKESU_CP_OIDC_GROUPS_CLAIM
+              value: {{ .Values.oidc.groupsClaim | quote }}
+            - name: OKESU_CP_OIDC_ROLE_MAP
+              value: {{ .Values.oidc.roleMap | quote }}
+            - name: OKESU_CP_OIDC_LABEL
+              value: {{ .Values.oidc.label | quote }}
+            {{- end }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/okesu
+            - name: tmp
+              mountPath: /tmp
+          # We can't HTTP-probe the UI without trusting the self-signed cert,
+          # so a simple TCP probe is enough for liveness on a single-replica
+          # SQLite deployment.
+          livenessProbe:
+            tcpSocket:
+              port: ui
+            initialDelaySeconds: 5
+            periodSeconds: 30
+          readinessProbe:
+            tcpSocket:
+              port: ui
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        - name: data
+          {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ default (include "okesu-cp.fullname" .) .Values.persistence.existingClaim }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: tmp
+          emptyDir: {}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

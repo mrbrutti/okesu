@@ -1,0 +1,198 @@
+// Package sshdeploy bootstraps okesu daemons on remote hosts via one-shot SSH.
+//
+// Design notes:
+//
+//   - The operator-supplied SSH credential (private key) is used immediately
+//     and never persisted. Long-term node management runs over the daemon's
+//     own mTLS management plane (controlplane/api/mgmt.go).
+//   - All steps are idempotent — a deploy can be re-run after a partial failure.
+//   - The orchestrator streams progress as line-oriented log entries through
+//     a channel so the UI can show live deploy logs.
+package sshdeploy
+
+import (
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"os"
+	"strconv"
+	"time"
+
+	"github.com/pkg/sftp"
+	"golang.org/x/crypto/ssh"
+)
+
+// Credential carries the SSH authentication material for a deploy.
+// PrivateKey is required (PEM-encoded). Passphrase is optional.
+type Credential struct {
+	User       string
+	Host       string
+	Port       int
+	PrivateKey []byte
+	Passphrase string
+
+	// HostKeyCallback receives the target's offered host key. The deploy
+	// orchestrator wraps a TOFU/known-hosts policy here. If nil, the SSH
+	// client uses InsecureIgnoreHostKey() (only acceptable for tests).
+	HostKeyCallback ssh.HostKeyCallback
+}
+
+// Client is a simple wrapper around an SSH session + SFTP client.
+type Client struct {
+	ssh  *ssh.Client
+	sftp *sftp.Client
+}
+
+// Dial opens an SSH connection using the supplied credential.
+func Dial(cred Credential) (*Client, error) {
+	if cred.User == "" {
+		cred.User = "root"
+	}
+	if cred.Port == 0 {
+		cred.Port = 22
+	}
+
+	signer, err := parseSigner(cred.PrivateKey, cred.Passphrase)
+	if err != nil {
+		return nil, fmt.Errorf("parse private key: %w", err)
+	}
+
+	hostKeyCallback := cred.HostKeyCallback
+	if hostKeyCallback == nil {
+		hostKeyCallback = ssh.InsecureIgnoreHostKey() //nolint:gosec
+	}
+
+	cfg := &ssh.ClientConfig{
+		User:            cred.User,
+		Auth:            []ssh.AuthMethod{ssh.PublicKeys(signer)},
+		HostKeyCallback: hostKeyCallback,
+		Timeout:         15 * time.Second,
+	}
+
+	addr := net.JoinHostPort(cred.Host, strconv.Itoa(cred.Port))
+	sshConn, err := ssh.Dial("tcp", addr, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("ssh dial %s: %w", addr, err)
+	}
+
+	sftpConn, err := sftp.NewClient(sshConn)
+	if err != nil {
+		_ = sshConn.Close()
+		return nil, fmt.Errorf("sftp: %w", err)
+	}
+	return &Client{ssh: sshConn, sftp: sftpConn}, nil
+}
+
+// Close releases the SFTP and SSH resources.
+func (c *Client) Close() error {
+	var firstErr error
+	if c.sftp != nil {
+		if err := c.sftp.Close(); err != nil {
+			firstErr = err
+		}
+	}
+	if c.ssh != nil {
+		if err := c.ssh.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+// Run executes a command and returns combined stdout+stderr along with
+// the remote exit status. A non-zero exit status is returned via err
+// (typed *ssh.ExitError) but the output is always returned.
+func (c *Client) Run(cmd string) (string, error) {
+	sess, err := c.ssh.NewSession()
+	if err != nil {
+		return "", fmt.Errorf("new session: %w", err)
+	}
+	defer sess.Close()
+	out, err := sess.CombinedOutput(cmd)
+	return string(out), err
+}
+
+// WriteFile uploads content to the remote path with the given mode.
+// Parent directories are created via SFTP MkdirAll.
+func (c *Client) WriteFile(path string, content []byte, mode os.FileMode) error {
+	if dir := dirOf(path); dir != "" {
+		if err := c.sftp.MkdirAll(dir); err != nil {
+			return fmt.Errorf("mkdir %s: %w", dir, err)
+		}
+	}
+	tmp := path + ".okesu-tmp"
+	f, err := c.sftp.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", tmp, err)
+	}
+	if _, err := f.Write(content); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("write %s: %w", tmp, err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("close %s: %w", tmp, err)
+	}
+	if err := c.sftp.Chmod(tmp, mode); err != nil {
+		return fmt.Errorf("chmod %s: %w", tmp, err)
+	}
+	if err := c.sftp.PosixRename(tmp, path); err != nil {
+		// Some SFTP servers don't support posix-rename@openssh.com; fall back.
+		_ = c.sftp.Remove(path)
+		if rErr := c.sftp.Rename(tmp, path); rErr != nil {
+			return fmt.Errorf("rename %s -> %s: %w", tmp, path, rErr)
+		}
+	}
+	return nil
+}
+
+// UploadFromReader streams a reader into a remote file.
+// Used for the okesu binary, which can be tens of MB.
+func (c *Client) UploadFromReader(path string, r io.Reader, mode os.FileMode) error {
+	if dir := dirOf(path); dir != "" {
+		if err := c.sftp.MkdirAll(dir); err != nil {
+			return fmt.Errorf("mkdir %s: %w", dir, err)
+		}
+	}
+	tmp := path + ".okesu-tmp"
+	f, err := c.sftp.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", tmp, err)
+	}
+	if _, err := io.Copy(f, r); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("copy %s: %w", tmp, err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("close %s: %w", tmp, err)
+	}
+	if err := c.sftp.Chmod(tmp, mode); err != nil {
+		return fmt.Errorf("chmod %s: %w", tmp, err)
+	}
+	if err := c.sftp.PosixRename(tmp, path); err != nil {
+		_ = c.sftp.Remove(path)
+		if rErr := c.sftp.Rename(tmp, path); rErr != nil {
+			return fmt.Errorf("rename %s -> %s: %w", tmp, path, rErr)
+		}
+	}
+	return nil
+}
+
+func parseSigner(pem []byte, passphrase string) (ssh.Signer, error) {
+	if len(pem) == 0 {
+		return nil, errors.New("private key is empty")
+	}
+	if passphrase == "" {
+		return ssh.ParsePrivateKey(pem)
+	}
+	return ssh.ParsePrivateKeyWithPassphrase(pem, []byte(passphrase))
+}
+
+func dirOf(path string) string {
+	for i := len(path) - 1; i >= 0; i-- {
+		if path[i] == '/' {
+			return path[:i]
+		}
+	}
+	return ""
+}

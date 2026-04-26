@@ -33,6 +33,22 @@ type Config struct {
 	// IsDaemon is true when running under RunDaemon. Enables daemon-specific
 	// events such as EventActionTaken.
 	IsDaemon bool
+
+	// Tick is the daemon tick sequence number this invocation belongs to.
+	// Stamped onto every conversation event (text/tool_call/tool_result/init/done)
+	// so consumers can group them under the right tick. 0 in non-daemon mode.
+	Tick int64
+
+	// Host is the daemon hostname, copied onto every conversation event for
+	// the same reason as Tick. Empty in non-daemon mode.
+	Host string
+
+	// LookupFindings, when non-nil, backs the `lookup_findings` LLM tool —
+	// daemons connected to a Control Plane wire this to MgmtPlane.LookupFindings
+	// so the model can ask the CP about prior findings before reporting.
+	// Nil disables the tool (handler returns a tool-not-configured error,
+	// the LLM learns to stop calling it).
+	LookupFindings func(ctx context.Context, query string, limit int) ([]LookupResult, error)
 }
 
 // RunClaude runs a fully autonomous agentic loop against the Anthropic API using
@@ -47,9 +63,12 @@ func RunClaude(cfg Config) error {
 		Type:     EventInit,
 		Provider: "claude",
 		Model:    cfg.Model,
+		Agent:    cfg.Name,
+		Host:     cfg.Host,
+		Tick:     cfg.Tick,
 	})
 
-	tools, err := buildBetaTools(ActiveTools(cfg.AllowedTools), cfg.RBAC, cfg.IsDaemon)
+	tools, err := buildBetaTools(ActiveTools(cfg.AllowedTools), cfg.RBAC, cfg.IsDaemon, cfg.Name, cfg.Host, cfg.Tick, cfg.LookupFindings)
 	if err != nil {
 		return fmt.Errorf("building tools: %w", err)
 	}
@@ -94,7 +113,14 @@ func RunClaude(cfg Config) error {
 			// Emit text deltas as they arrive.
 			if delta, ok := event.AsAny().(anthropic.BetaRawContentBlockDeltaEvent); ok {
 				if text, ok := delta.Delta.AsAny().(anthropic.BetaTextDelta); ok && text.Text != "" {
-					Emit(Event{Type: EventText, Text: text.Text, Turn: turn})
+					Emit(Event{
+						Type:  EventText,
+						Text:  text.Text,
+						Turn:  turn,
+						Agent: cfg.Name,
+						Host:  cfg.Host,
+						Tick:  cfg.Tick,
+					})
 				}
 			}
 		}
@@ -125,6 +151,10 @@ func RunClaude(cfg Config) error {
 		Model:      cfg.Model,
 		StopReason: stopReason,
 		Usage:      &Usage{InputTokens: totalInput, OutputTokens: totalOutput},
+		Agent:      cfg.Name,
+		Host:       cfg.Host,
+		Tick:       cfg.Tick,
+		Turn:       turn,
 	})
 
 	return nil
@@ -134,7 +164,16 @@ func RunClaude(cfg Config) error {
 // Each handler emits tool_call / tool_result JSONL events and delegates execution
 // to ExecuteTool. Handlers run concurrently when the model issues parallel tool
 // calls, so Emit uses a mutex internally.
-func buildBetaTools(toolDefs []ToolDef, rbac *RBACPolicy, isDaemon bool) ([]anthropic.BetaTool, error) {
+//
+// agent / host / tick are stamped onto every emitted event so the Control
+// Plane can group conversation events under the right tick. They are
+// captured by the closure rather than re-read from a shared cfg so tests
+// that build tools without a Config still work.
+func buildBetaTools(
+	toolDefs []ToolDef, rbac *RBACPolicy, isDaemon bool,
+	agentName, host string, tick int64,
+	lookupFn func(ctx context.Context, query string, limit int) ([]LookupResult, error),
+) ([]anthropic.BetaTool, error) {
 	result := make([]anthropic.BetaTool, 0, len(toolDefs))
 	for _, t := range toolDefs {
 		schema := anthropic.BetaToolInputSchemaParam{
@@ -152,24 +191,40 @@ func buildBetaTools(toolDefs []ToolDef, rbac *RBACPolicy, isDaemon bool) ([]anth
 					Type:     EventToolCall,
 					ToolName: td.Name,
 					Input:    input,
+					Agent:    agentName, Host: host, Tick: tick,
 				})
 
 				// RBAC check before execution.
 				if ok, reason := CheckRBAC(rbac, td.Name, input); !ok {
-					EmitActionDenied(td.Name, input, reason)
+					EmitActionDenied(td.Name, input, reason, agentName, host, tick)
 					denied := fmt.Sprintf("action denied: %s", reason)
-					Emit(Event{Type: EventToolResult, ToolName: td.Name, Output: denied})
+					Emit(Event{
+						Type: EventToolResult, ToolName: td.Name, Output: denied,
+						Agent: agentName, Host: host, Tick: tick,
+					})
 					return anthropic.BetaToolResultBlockParamContentUnion{
 						OfText: &anthropic.BetaTextBlockParam{Text: denied},
 					}, nil
 				}
 
-				output := ExecuteTool(td.Name, input)
+				// Special-case lookup_findings: it talks to the management
+				// plane, which the static dispatcher doesn't have access
+				// to. Falls through to ExecuteTool (which returns "tool
+				// not configured") when lookupFn is nil — daemons without
+				// a CP shouldn't have this tool in their allowed set, but
+				// we degrade gracefully if they do.
+				var output string
+				if td.Name == "lookup_findings" && lookupFn != nil {
+					output = invokeLookupFindings(ctx, input, lookupFn)
+				} else {
+					output = ExecuteTool(td.Name, input)
+				}
 
 				Emit(Event{
 					Type:     EventToolResult,
 					ToolName: td.Name,
 					Output:   output,
+					Agent:    agentName, Host: host, Tick: tick,
 				})
 
 				// In daemon mode, also emit action_taken for downstream alerting.
@@ -179,6 +234,7 @@ func buildBetaTools(toolDefs []ToolDef, rbac *RBACPolicy, isDaemon bool) ([]anth
 						ToolName: td.Name,
 						Input:    input,
 						Output:   output,
+						Agent:    agentName, Host: host, Tick: tick,
 					})
 				}
 

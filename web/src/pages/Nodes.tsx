@@ -1,0 +1,535 @@
+import { useEffect, useMemo, useState } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
+import {
+  AlertCircle,
+  CheckCircle2,
+  ChevronRight,
+  Circle,
+  Loader2,
+  Play,
+  Plus,
+  Server,
+  Trash2,
+  Wifi,
+  X,
+} from 'lucide-react';
+import { api, subscribeJobLog, type NodeItem } from '../api';
+import { cn } from '../lib/cn';
+import { SectionHeader, type SectionTone } from '../components/lists/SectionHeader';
+import { ListCard } from '../components/lists/ListCard';
+import { useInfiniteScroll } from '../lib/useInfiniteScroll';
+
+const NODES_PAGE_SIZE = 500;
+
+type Bucket = 'ready' | 'deploying' | 'failed' | 'pending';
+
+const BUCKET_ORDER: Bucket[] = ['ready', 'deploying', 'failed', 'pending'];
+const BUCKET_LABEL: Record<Bucket, string> = {
+  ready:     'Ready',
+  deploying: 'Deploying',
+  failed:    'Failed',
+  pending:   'Pending',
+};
+const BUCKET_TONE: Record<Bucket, SectionTone> = {
+  ready:     'good',
+  deploying: 'progress',
+  failed:    'bad',
+  pending:   'muted',
+};
+
+export default function NodesPage() {
+  const [nodes, setNodes] = useState<NodeItem[] | null>(null);
+  const [connected, setConnected] = useState<Set<string>>(new Set());
+  const [error, setError] = useState<string | null>(null);
+  const [showAdd, setShowAdd] = useState(false);
+  const [deployingNode, setDeployingNode] = useState<NodeItem | null>(null);
+  const [hasMore, setHasMore] = useState(true);
+
+  // Refresh the first page; merge by id so already-loaded older pages stay
+  // visible. Newest entries overwrite tail dups.
+  const refresh = () => {
+    api.nodes(NODES_PAGE_SIZE, 0).then((list) => {
+      setNodes((prev) => {
+        const newest = list;
+        const seen = new Set(newest.map((n) => n.id));
+        const tail = (prev ?? []).filter((n) => !seen.has(n.id));
+        return [...newest, ...tail];
+      });
+      setHasMore(list.length >= NODES_PAGE_SIZE);
+    }).catch((e) => setError(String(e)));
+    api.connectedNodes().then((arr) => setConnected(new Set(arr))).catch(() => { /* ignore */ });
+  };
+
+  useEffect(() => {
+    refresh();
+    const t = setInterval(refresh, 6_000);
+    return () => clearInterval(t);
+  }, []);
+
+  const scroll = useInfiniteScroll({
+    hasMore,
+    loadMore: async () => {
+      if (!nodes) return;
+      const next = await api.nodes(NODES_PAGE_SIZE, nodes.length);
+      if (next.length === 0) {
+        setHasMore(false);
+        return;
+      }
+      setNodes((prev) => [...(prev ?? []), ...next]);
+      if (next.length < NODES_PAGE_SIZE) setHasMore(false);
+    },
+  });
+
+  const buckets = useMemo(() => groupNodes(nodes ?? []), [nodes]);
+
+  return (
+    <div className="h-full flex flex-col">
+      <header className="px-6 py-4 border-b border-border bg-panel flex items-center justify-between">
+        <div>
+          <h1 className="text-lg font-semibold flex items-center gap-2">
+            <Server size={18} className="text-brand-500" />
+            Nodes
+          </h1>
+          <p className="text-xs text-ink-dim">
+            Remote hosts the Control Plane can deploy daemons to and run ad-hoc agents on.
+          </p>
+        </div>
+        <div className="flex items-center gap-3">
+          {connected.size > 0 && (
+            <span className="text-xs text-green-700 inline-flex items-center gap-1">
+              <Wifi size={12} /> {connected.size} live tunnel{connected.size === 1 ? '' : 's'}
+            </span>
+          )}
+          <button
+            onClick={() => setShowAdd(true)}
+            className="inline-flex items-center gap-1.5 bg-brand-500 hover:bg-brand-600 text-white text-sm font-medium px-3 py-1.5 rounded-md"
+          >
+            <Plus size={14} />
+            Add Node
+          </button>
+        </div>
+      </header>
+
+      <div className="flex-1 overflow-auto p-6 space-y-6">
+        {error && (
+          <div className="text-sm text-red-700 bg-red-50 border border-red-200 px-3 py-2 rounded-md">
+            {error}
+          </div>
+        )}
+
+        {nodes === null && <div className="text-ink-mute">Loading…</div>}
+
+        {nodes && nodes.length === 0 && (
+          <div className="text-center py-16 text-ink-mute bg-panel border border-border rounded-xl shadow-card">
+            <Server size={32} className="mx-auto mb-2 opacity-40" />
+            <p className="mb-1">No nodes registered.</p>
+            <p className="text-xs">Click <span className="text-ink">Add Node</span> to register a remote host.</p>
+          </div>
+        )}
+
+        {BUCKET_ORDER.map((bucket) => {
+          const list = buckets[bucket];
+          if (list.length === 0) return null;
+          return (
+            <section key={bucket}>
+              <SectionHeader tone={BUCKET_TONE[bucket]} label={BUCKET_LABEL[bucket]} count={list.length} />
+              <ListCard>
+                {list.map((n) => (
+                  <NodeRow
+                    key={n.id}
+                    node={n}
+                    connected={connected.has(n.name)}
+                    onDeploy={() => setDeployingNode(n)}
+                    onDelete={async () => {
+                      if (confirm(`Remove node "${n.name}"?`)) {
+                        await api.deleteNode(n.id);
+                        refresh();
+                      }
+                    }}
+                  />
+                ))}
+              </ListCard>
+            </section>
+          );
+        })}
+
+        {nodes && nodes.length > 0 && (
+          <div ref={scroll.sentinelRef} className="text-[11px] text-ink-mute text-center py-2">
+            {scroll.loading
+              ? 'loading more nodes…'
+              : hasMore
+                ? 'scroll for more'
+                : `— end of ${nodes.length} nodes —`}
+          </div>
+        )}
+      </div>
+
+      {showAdd && (
+        <AddNodeModal
+          onClose={() => setShowAdd(false)}
+          onCreated={(n) => { setShowAdd(false); refresh(); setDeployingNode(n); }}
+        />
+      )}
+      {deployingNode && (
+        <DeployDrawer
+          node={deployingNode}
+          onClose={() => { setDeployingNode(null); refresh(); }}
+        />
+      )}
+    </div>
+  );
+}
+
+function NodeRow({
+  node,
+  connected,
+  onDeploy,
+  onDelete,
+}: {
+  node: NodeItem;
+  connected: boolean;
+  onDeploy: () => void;
+  onDelete: () => void;
+}) {
+  // Click anywhere on the row navigates to /nodes/:id, matching the Agents
+  // page pattern. Inline action buttons stop propagation so they don't
+  // hijack navigation.
+  const navigate = useNavigate();
+  const stop = (e: React.MouseEvent) => { e.stopPropagation(); e.preventDefault(); };
+  return (
+    <Link
+      to={`/nodes/${node.id}`}
+      onClick={(e) => {
+        // Keep modifier-clicks (cmd/ctrl/shift/middle) for new-tab behavior.
+        if (e.defaultPrevented) navigate(`/nodes/${node.id}`);
+      }}
+      className="block px-4 py-3 hover:bg-slate-50/60 transition-colors"
+    >
+      <div className="flex items-center gap-4">
+        {/* avatar */}
+        <div className="w-10 h-10 shrink-0 rounded-lg bg-gradient-to-br from-slate-700 to-slate-900 flex items-center justify-center text-white shadow-sm">
+          <Server size={16} />
+        </div>
+
+        {/* identity */}
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-medium text-ink truncate">{node.name}</span>
+            {connected && (
+              <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wide text-green-700 bg-green-50 ring-1 ring-green-200 px-1.5 py-0.5 rounded">
+                <Wifi size={9} className="-mt-px" />
+                tunnel live
+              </span>
+            )}
+          </div>
+          <div className="text-xs text-ink-dim font-mono truncate">
+            {node.ssh_user}@{node.hostname}{node.ssh_port !== 22 ? ':' + node.ssh_port : ''}
+          </div>
+        </div>
+
+        {/* status */}
+        <StatusPill status={node.status} message={node.status_message} />
+
+        {/* agents installed */}
+        <div className="hidden md:block w-44 shrink-0">
+          {node.agents_installed.length > 0 ? (
+            <div className="flex flex-wrap gap-1">
+              {node.agents_installed.slice(0, 3).map((a) => (
+                <span key={a} className="text-[10px] bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded">
+                  {a}
+                </span>
+              ))}
+              {node.agents_installed.length > 3 && (
+                <span className="text-[10px] text-ink-mute">+{node.agents_installed.length - 3}</span>
+              )}
+            </div>
+          ) : (
+            <span className="text-[11px] text-ink-mute">no agents</span>
+          )}
+        </div>
+
+        {/* last deployed */}
+        <div className="hidden lg:block w-32 shrink-0 text-[11px] text-ink-mute">
+          {node.last_deployed_at ? new Date(node.last_deployed_at).toLocaleString(undefined, {
+            month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+          }) : '—'}
+        </div>
+
+        {/* actions — icon-only with stopPropagation so they don't hijack the row click */}
+        <div className="flex items-center gap-0.5 shrink-0">
+          <button
+            onClick={(e) => { stop(e); onDeploy(); }}
+            className="p-1.5 text-ink-mute hover:text-brand-700 hover:bg-brand-50 rounded-md inline-flex items-center"
+            title="Deploy a daemon to this node"
+          >
+            <Play size={13} />
+          </button>
+          <button
+            onClick={(e) => { stop(e); onDelete(); }}
+            className="p-1.5 text-ink-mute hover:text-red-600 hover:bg-red-50 rounded-md inline-flex items-center"
+            title="Remove node"
+          >
+            <Trash2 size={13} />
+          </button>
+          <ChevronRight size={14} className="text-ink-mute mx-0.5" />
+        </div>
+      </div>
+    </Link>
+  );
+}
+
+function StatusPill({ status, message }: { status: NodeItem['status']; message?: string }) {
+  const config = {
+    pending:   { label: 'pending',   icon: Circle,        cls: 'text-ink-mute bg-slate-50 ring-slate-200' },
+    deploying: { label: 'deploying', icon: Loader2,       cls: 'text-brand-700 bg-brand-50 ring-brand-100' },
+    ready:     { label: 'ready',     icon: CheckCircle2,  cls: 'text-green-700 bg-green-50 ring-green-200' },
+    failed:    { label: 'failed',    icon: AlertCircle,   cls: 'text-red-700 bg-red-50 ring-red-200' },
+  };
+  const c = config[status];
+  return (
+    <span title={message}
+      className={cn(
+        'inline-flex items-center gap-1 text-[11px] uppercase tracking-wide font-medium px-2 py-0.5 rounded-md ring-1 w-24 shrink-0 justify-center',
+        c.cls,
+      )}
+    >
+      <c.icon size={10} className={status === 'deploying' ? 'animate-spin' : ''} />
+      {c.label}
+    </span>
+  );
+}
+
+function groupNodes(list: NodeItem[]): Record<Bucket, NodeItem[]> {
+  const out: Record<Bucket, NodeItem[]> = { ready: [], deploying: [], failed: [], pending: [] };
+  for (const n of list) {
+    out[n.status as Bucket].push(n);
+  }
+  return out;
+}
+
+// ── Add Node modal ──────────────────────────────────────────────────────────
+
+function AddNodeModal({ onClose, onCreated }: { onClose: () => void; onCreated: (n: NodeItem) => void }) {
+  const [name, setName] = useState('');
+  const [hostname, setHostname] = useState('');
+  const [sshUser, setSshUser] = useState('root');
+  const [sshPort, setSshPort] = useState(22);
+  const [notes, setNotes] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function handleSubmit() {
+    setBusy(true); setError(null);
+    try {
+      const node = await api.createNode({ name, hostname, ssh_user: sshUser, ssh_port: sshPort, notes });
+      onCreated(node);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/30 flex items-center justify-center p-4 z-50">
+      <div className="bg-panel border border-border rounded-xl shadow-card w-full max-w-md">
+        <header className="px-5 py-3 border-b border-border flex items-center justify-between">
+          <h2 className="text-sm font-semibold">Register Node</h2>
+          <button onClick={onClose} className="p-1 text-ink-dim hover:text-ink rounded-md"><X size={16} /></button>
+        </header>
+        <div className="p-5 space-y-3 text-sm">
+          <Field label="Name">
+            <input value={name} onChange={(e) => setName(e.target.value)} placeholder="prod-web-01" className={inputCls} required />
+          </Field>
+          <Field label="Hostname or IP">
+            <input value={hostname} onChange={(e) => setHostname(e.target.value)} placeholder="10.0.1.42" className={inputCls} required />
+          </Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="SSH user">
+              <input value={sshUser} onChange={(e) => setSshUser(e.target.value)} className={inputCls} />
+            </Field>
+            <Field label="SSH port">
+              <input type="number" value={sshPort} onChange={(e) => setSshPort(Number(e.target.value))} className={inputCls} />
+            </Field>
+          </div>
+          <Field label="Notes (optional)">
+            <input value={notes} onChange={(e) => setNotes(e.target.value)} className={inputCls} />
+          </Field>
+          {error && (
+            <div className="text-xs text-red-700 bg-red-50 border border-red-200 px-2.5 py-1.5 rounded-md">{error}</div>
+          )}
+        </div>
+        <footer className="px-5 py-3 border-t border-border flex justify-end gap-2">
+          <button onClick={onClose} className="text-xs px-3 py-1.5 border border-border rounded-md">Cancel</button>
+          <button
+            onClick={handleSubmit}
+            disabled={busy || !name || !hostname}
+            className="text-xs px-3 py-1.5 bg-brand-500 hover:bg-brand-600 disabled:opacity-50 text-white rounded-md font-medium"
+          >
+            {busy ? 'Creating…' : 'Create & Deploy'}
+          </button>
+        </footer>
+      </div>
+    </div>
+  );
+}
+
+// ── Deploy drawer ───────────────────────────────────────────────────────────
+
+function DeployDrawer({ node, onClose }: { node: NodeItem; onClose: () => void }) {
+  const [agentLib, setAgentLib] = useState<string[]>([]);
+  const [agents, setAgents] = useState<string[]>([]);
+  const [privateKey, setPrivateKey] = useState('');
+  const [passphrase, setPassphrase] = useState('');
+  const [anthropicKey, setAnthropicKey] = useState('');
+  const [openaiKey, setOpenaiKey] = useState('');
+  const [includeWebhook, setIncludeWebhook] = useState(true);
+  const [includeMgmtCert, setIncludeMgmtCert] = useState(true);
+  const [logs, setLogs] = useState<string[]>([]);
+  const [running, setRunning] = useState(false);
+  const [doneStatus, setDoneStatus] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    api.nodeLibrary().then((lib) => setAgentLib(lib.agents)).catch(() => { /* ignore */ });
+  }, []);
+
+  function toggleAgent(a: string) {
+    setAgents((prev) => prev.includes(a) ? prev.filter((x) => x !== a) : [...prev, a]);
+  }
+
+  async function startDeploy() {
+    if (running) return;
+    setLogs([]); setDoneStatus(null); setError(null);
+    setRunning(true);
+    try {
+      const { job_id } = await api.deployNode(node.id, {
+        agents,
+        private_key: privateKey,
+        passphrase: passphrase || undefined,
+        anthropic_api_key: anthropicKey || undefined,
+        openai_api_key: openaiKey || undefined,
+        include_webhook: includeWebhook,
+        include_mgmt_cert: includeMgmtCert,
+      });
+      const unsubscribe = subscribeJobLog(
+        job_id,
+        (line) => setLogs((prev) => [...prev, line]),
+        (status) => { setDoneStatus(status); setRunning(false); unsubscribe(); },
+      );
+    } catch (e) {
+      setError(String(e));
+      setRunning(false);
+    }
+  }
+
+  return (
+    <aside className="fixed inset-y-0 right-0 w-[640px] bg-panel border-l border-border shadow-card flex flex-col z-40">
+      <header className="px-5 py-3 border-b border-border flex items-start justify-between">
+        <div>
+          <h2 className="text-sm font-semibold">Deploy to {node.name}</h2>
+          <p className="text-xs text-ink-dim font-mono">{node.ssh_user}@{node.hostname}:{node.ssh_port}</p>
+        </div>
+        <button onClick={onClose} className="p-1 text-ink-dim hover:text-ink rounded-md"><X size={16} /></button>
+      </header>
+
+      <div className="flex-1 overflow-auto p-5 space-y-4 text-sm">
+        <Field label="Agents to install">
+          {agentLib.length === 0 ? (
+            <p className="text-xs text-ink-mute">
+              No agent files found. Configure <code className="bg-slate-100 px-1 rounded">--agent-files-dir</code> on the CP.
+            </p>
+          ) : (
+            <div className="grid grid-cols-2 gap-1.5">
+              {agentLib.map((a) => (
+                <label key={a} className="flex items-center gap-2 px-2 py-1.5 border border-border rounded-md hover:bg-slate-50 cursor-pointer">
+                  <input type="checkbox" checked={agents.includes(a)} onChange={() => toggleAgent(a)} />
+                  <span className="text-xs">{a}</span>
+                </label>
+              ))}
+            </div>
+          )}
+        </Field>
+
+        <Field label="SSH private key (PEM)">
+          <textarea
+            value={privateKey}
+            onChange={(e) => setPrivateKey(e.target.value)}
+            rows={5}
+            placeholder="-----BEGIN OPENSSH PRIVATE KEY-----&#10;...&#10;-----END OPENSSH PRIVATE KEY-----"
+            className={`${inputCls} font-mono text-xs`}
+          />
+          <p className="text-[11px] text-ink-mute mt-1">Used once for this deploy. Not stored.</p>
+        </Field>
+
+        <Field label="Passphrase (optional)">
+          <input type="password" value={passphrase} onChange={(e) => setPassphrase(e.target.value)} className={inputCls} />
+        </Field>
+
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Anthropic API key">
+            <input type="password" value={anthropicKey} onChange={(e) => setAnthropicKey(e.target.value)} className={inputCls} placeholder="sk-ant-..." />
+          </Field>
+          <Field label="OpenAI API key">
+            <input type="password" value={openaiKey} onChange={(e) => setOpenaiKey(e.target.value)} className={inputCls} placeholder="sk-..." />
+          </Field>
+        </div>
+
+        <div className="space-y-2">
+          <label className="flex items-center gap-2 text-xs">
+            <input type="checkbox" checked={includeWebhook} onChange={(e) => setIncludeWebhook(e.target.checked)} />
+            Wire up webhook output (uses CP&apos;s webhook secret)
+          </label>
+          <label className="flex items-center gap-2 text-xs">
+            <input type="checkbox" checked={includeMgmtCert} onChange={(e) => setIncludeMgmtCert(e.target.checked)} />
+            Issue mTLS client certs (per agent) for the management plane
+          </label>
+        </div>
+
+        {error && (
+          <div className="text-xs text-red-700 bg-red-50 border border-red-200 px-3 py-2 rounded-md">{error}</div>
+        )}
+
+        {(running || logs.length > 0 || doneStatus) && (
+          <div className="bg-slate-900 text-slate-100 rounded-md p-3 text-xs font-mono max-h-64 overflow-auto">
+            {logs.map((line, i) => (
+              <div key={i} className="whitespace-pre-wrap">{line}</div>
+            ))}
+            {doneStatus && (
+              <div className={cn('mt-1 font-medium', doneStatus === 'succeeded' ? 'text-green-300' : 'text-red-300')}>
+                ── {doneStatus.toUpperCase()} ──
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      <footer className="px-5 py-3 border-t border-border flex justify-end gap-2">
+        <button onClick={onClose} className="text-xs px-3 py-1.5 border border-border rounded-md">
+          {doneStatus ? 'Close' : 'Cancel'}
+        </button>
+        {!doneStatus && (
+          <button
+            onClick={startDeploy}
+            disabled={running || !privateKey || agents.length === 0}
+            className="text-xs px-3 py-1.5 bg-brand-500 hover:bg-brand-600 disabled:opacity-50 text-white rounded-md font-medium inline-flex items-center gap-1.5"
+          >
+            {running ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} />}
+            {running ? 'Deploying…' : 'Start Deploy'}
+          </button>
+        )}
+      </footer>
+    </aside>
+  );
+}
+
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div>
+      <div className="text-[11px] uppercase tracking-wide text-ink-mute font-medium mb-1">{label}</div>
+      {children}
+    </div>
+  );
+}
+
+const inputCls = "w-full px-2.5 py-1.5 text-sm border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500/30";

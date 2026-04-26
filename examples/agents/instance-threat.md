@@ -174,20 +174,46 @@ Detect active exploitation and abuse on this host.
 
 **If you detect active exploitation:**
 
+0. **Check the triage history first** with `lookup_findings`. If the same
+   threat has been triaged `false_positive` (e.g. a known internal service
+   on a suspicious-looking port), do NOT re-report. If `acknowledged` or
+   `investigating`, emit additional evidence with the SAME dedup_key.
+
 1. Investigate with tools — read `/proc/<pid>/cmdline`, `/proc/<pid>/maps`, check process
    lineage with `ps -eo pid,ppid,comm --forest`, examine network connections.
 
-2. Write a finding to `{{.StateDir}}/findings/{{.TickTime}}.json`:
+2. Write a finding (or array of findings) to `{{.StateDir}}/findings/{{.TickTime}}.json`:
    ```json
    {
      "severity": "CRITICAL|HIGH|MEDIUM|LOW|INFO",
-     "title": "What is being exploited and how",
-     "resource": "pid:N, container:name, user:foo",
+     "title": "Stable, descriptive — see TITLE RULES",
+     "resource": "k:v[, k:v]* (e.g. pid:1337, container:web, user:root)",
      "evidence": ["process details", "connection info", "log entries"],
      "recommended_action": "Immediate response steps",
-     "dedup_key": "threat_type+resource"
+     "dedup_key": "threat_type+resource — STABLE across ticks",
+
+     "category": "process|file|network|cert|cloud|identity|config|other",
+     "process_pid": 1337,
+     "process_name": "python3",
+     "network_endpoint": "10.0.0.5:8444",
+     "cve": "CVE-2024-XXXX",
+     "tags": ["imds-abuse", "container-escape"],
+     "attributes": { "container_id": "abc123", "namespace": "..." }
    }
    ```
+
+   **TITLE RULES (mandatory):** the title MUST be stable for the same
+   issue across ticks. NO tick numbers, durations, or markers like
+   `PERSISTENT`/`ONGOING`/`SUSTAINED`/`PROLONGED`/`(TICK 87)`/`[5+ ticks]`
+   /`— Nth Consecutive Tick`. Encode that in `evidence`. Aim for ≤ 120 chars.
+
+   **DEDUP_KEY RULES (mandatory):** stable across ticks. Encode the
+   resource, never tick numbers or timestamps:
+   `imds-abuse+pid:1337`, `escape+container:web`, `mining_pool+10.0.0.5:8444`.
+
+   **STRUCTURED FIELDS:** fill `process_pid`/`process_name`/`network_endpoint`
+   /`cve`/`category`/`tags` when they apply — they index the findings
+   table for fast operator search.
 
 ### Constraints
 

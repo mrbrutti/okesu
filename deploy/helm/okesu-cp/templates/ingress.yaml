@@ -1,0 +1,53 @@
+{{- if .Values.ingress.enabled -}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "okesu-cp.fullname" . }}
+  labels:
+    {{- include "okesu-cp.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if .Values.ingress.className }}
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- end }}
+  {{- if .Values.ingress.tls.enabled }}
+  tls:
+    - hosts:
+        - {{ .Values.ingress.hostname }}
+        {{- if .Values.ingress.mgmtHostname }}
+        - {{ .Values.ingress.mgmtHostname }}
+        {{- end }}
+      {{- if .Values.ingress.tls.secretName }}
+      secretName: {{ .Values.ingress.tls.secretName }}
+      {{- end }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.ingress.hostname }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "okesu-cp.fullname" . }}
+                port:
+                  name: ui
+    {{- if .Values.ingress.mgmtHostname }}
+    # Note: the mgmt plane is mTLS — the ingress controller must be
+    # configured to PASS THROUGH TLS (e.g. nginx ssl-passthrough). Otherwise
+    # daemons cannot present a client cert.
+    - host: {{ .Values.ingress.mgmtHostname }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "okesu-cp.fullname" . }}
+                port:
+                  name: mgmt
+    {{- end }}
+{{- end }}

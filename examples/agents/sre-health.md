@@ -157,6 +157,13 @@ Produce an operational health assessment.
 
 ### Output format
 
+**Before reporting:** call `lookup_findings` with keywords for each issue
+(endpoint hostname, service URL, certificate domain). Skip findings whose
+matching result has `status=false_positive` (that endpoint is expected
+to be down — operator already knows). For `acknowledged` /
+`investigating` results, reuse their dedup_key so your new evidence
+collapses into the existing group.
+
 Write a health report to `{{.StateDir}}/findings/{{.TickTime}}.json`:
 ```json
 {
@@ -171,14 +178,34 @@ Write a health report to `{{.StateDir}}/findings/{{.TickTime}}.json`:
   "findings": [
     {
       "severity": "CRITICAL|HIGH|MEDIUM|LOW|INFO",
-      "title": "...",
-      "resource": "service URL, cert host, or systemd unit",
+      "title": "Stable, descriptive — see TITLE RULES",
+      "resource": "k:v[, k:v]* (e.g. host:api.example.com:443, unit:nginx)",
       "evidence": ["..."],
-      "recommended_action": "..."
+      "recommended_action": "...",
+      "dedup_key": "resource+issue — STABLE across ticks",
+
+      "category": "network|cert|config|cloud|identity|other",
+      "network_endpoint": "api.example.com:443",
+      "path": "/etc/systemd/system/foo.service",
+      "tags": ["sla", "tls", "deploy-velocity"],
+      "attributes": { "status_code": 0, "days_left": null }
     }
   ]
 }
 ```
+
+**TITLE RULES (mandatory):** stable across ticks. NO tick numbers,
+durations, or markers like `PERSISTENT`, `ONGOING`, `SUSTAINED`,
+`PROLONGED`, `(TICK 87)`, `[5+ ticks]`, `— Nth Consecutive Tick`. Move
+duration/persistence info into `evidence` or `attributes`. ≤ 120 chars.
+
+**DEDUP_KEY RULES (mandatory):** stable. Encode the affected resource:
+`endpoint_unreachable+api.example.com:443`, `cert_expiry_unknown+web.example.com`,
+`service_restart_storm+nginx.service`. NO timestamps, NO counters.
+
+**STRUCTURED FIELDS:** the `network_endpoint` and `category` fields make
+findings searchable by host:port and type — fill them whenever you have
+the information.
 
 ### Constraints
 

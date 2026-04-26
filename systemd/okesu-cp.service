@@ -1,0 +1,55 @@
+[Unit]
+Description=Okesu Control Plane
+Documentation=https://github.com/section9labs/okesu
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/okesu-cp serve
+Restart=on-failure
+RestartSec=10s
+
+# Run as a dedicated low-privilege user (created by scripts/install-cp.sh).
+User=okesu-cp
+Group=okesu-cp
+
+# All persistent state lives under /var/lib/okesu-cp (DB, CA, certs, binaries).
+# Override individual paths via /etc/default/okesu-cp.
+Environment=OKESU_CP_LISTEN=:8443
+Environment=OKESU_CP_MGMT_LISTEN=:8444
+Environment=OKESU_CP_DB=/var/lib/okesu-cp/cp.db
+Environment=OKESU_CP_DAEMON_BINARIES_DIR=/var/lib/okesu-cp/binaries
+Environment=OKESU_CP_AGENT_FILES_DIR=/var/lib/okesu-cp/agents
+Environment=OKESU_CP_CA_CERT=/var/lib/okesu-cp/certs/ca.crt
+Environment=OKESU_CP_CA_KEY=/var/lib/okesu-cp/certs/ca.key
+Environment=OKESU_CP_MGMT_CERT=/var/lib/okesu-cp/certs/mgmt-server.crt
+Environment=OKESU_CP_MGMT_KEY=/var/lib/okesu-cp/certs/mgmt-server.key
+EnvironmentFile=-/etc/default/okesu-cp
+
+WorkingDirectory=/var/lib/okesu-cp
+
+# Filesystem hardening.
+ReadWritePaths=/var/lib/okesu-cp /var/log/okesu-cp
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+# The CP binds to privileged ports only when configured to (e.g. :443). Keep
+# the boundary tight by default; operators who want :443 can either grant
+# CAP_NET_BIND_SERVICE here or front the CP with a reverse proxy.
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+
+# Log to journald.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=okesu-cp
+
+KillSignal=SIGTERM
+TimeoutStopSec=15s
+
+[Install]
+WantedBy=multi-user.target

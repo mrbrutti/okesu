@@ -74,11 +74,14 @@ func matchRule(rule RBACRule, toolName string) bool {
 }
 
 // EmitActionDenied writes an action_denied event to the active sink.
-func EmitActionDenied(toolName string, input map[string]interface{}, reason string) {
+func EmitActionDenied(toolName string, input map[string]interface{}, reason, agent, host string, tick int64) {
 	Emit(Event{
 		Type:     EventActionDenied,
 		ToolName: toolName,
 		Input:    input,
 		Reason:   reason,
+		Agent:    agent,
+		Host:     host,
+		Tick:     tick,
 	})
 }

@@ -55,6 +55,7 @@ type Event struct {
 	Duration   string `json:"duration,omitempty"`    // tick_done: wall time e.g. "1.4s"
 	Findings   int    `json:"findings,omitempty"`    // tick_done: count of findings emitted
 	ActionsTaken int  `json:"actions_taken,omitempty"` // tick_done: count of allowed tool calls
+	Turns      int    `json:"turns,omitempty"`       // tick_done: number of agentic-loop turns the model used
 
 	// Collector fields
 	Collector string `json:"collector,omitempty"` // collector_result: collector name
@@ -66,6 +67,16 @@ type Event struct {
 	Evidence  string `json:"evidence,omitempty"`  // finding: raw lines from telemetry
 	Resource  string `json:"resource,omitempty"`  // finding: affected resource (pid:N, path:/...)
 	DedupKey  string `json:"dedup_key,omitempty"` // finding: dedup cache key
+
+	// Phase 12 finding enrichment — structured indexed fields.
+	Category        string `json:"category,omitempty"`         // process|file|network|cert|cloud|identity|config|other
+	ProcessPID      int64  `json:"process_pid,omitempty"`
+	ProcessName     string `json:"process_name,omitempty"`
+	Path            string `json:"path,omitempty"`
+	NetworkEndpoint string `json:"network_endpoint,omitempty"`
+	CVE             string `json:"cve,omitempty"`
+	Tags            string `json:"tags,omitempty"`             // comma-separated, lowercased
+	Attributes      string `json:"attributes,omitempty"`       // JSON object as string
 
 	// RBAC / action fields
 	Reason string `json:"reason,omitempty"` // action_denied: why the call was blocked
