@@ -10,13 +10,16 @@ import {
   Info,
   Loader2,
   RefreshCw,
+  RotateCcw,
   Server,
+  Upload,
   Wifi,
   WifiOff,
 } from 'lucide-react';
 import { api, type NodeItem } from '../api';
 import { cn } from '../lib/cn';
 import EventTimeline from '../components/EventTimeline';
+import { BinaryUpdateDialog, type BinaryAction } from '../components/BinaryUpdateDialog';
 
 type Tab = 'events' | 'overview';
 
@@ -28,6 +31,7 @@ export default function NodeDetailPage() {
   const [tab, setTab] = useState<Tab>('events');
   const [refreshing, setRefreshing] = useState(false);
   const [refreshError, setRefreshError] = useState<string | null>(null);
+  const [binaryAction, setBinaryAction] = useState<BinaryAction | null>(null);
 
   async function refreshMetadata() {
     if (!node) return;
@@ -108,15 +112,33 @@ export default function NodeDetailPage() {
             <Stat label="Created" value={formatAgo(node.created_at)} icon={Hash} />
           </div>
 
-          <button
-            onClick={refreshMetadata}
-            disabled={refreshing || !connected}
-            title={connected ? 'Probe the node over the tunnel and refresh telemetry' : 'Tunnel offline — wait for reconnect'}
-            className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-md border border-border bg-panel hover:bg-slate-50 disabled:opacity-50"
-          >
-            {refreshing ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
-            {refreshing ? 'Probing…' : 'Refresh metadata'}
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={refreshMetadata}
+              disabled={refreshing || !connected}
+              title={connected ? 'Probe the node over the tunnel and refresh telemetry' : 'Tunnel offline — wait for reconnect'}
+              className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-md border border-border bg-panel hover:bg-slate-50 disabled:opacity-50"
+            >
+              {refreshing ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
+              {refreshing ? 'Probing…' : 'Refresh metadata'}
+            </button>
+            <button
+              onClick={() => setBinaryAction('update')}
+              title="Upload the CP's current daemon binary; saves the prior version for rollback"
+              className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-md border border-border bg-panel hover:bg-slate-50"
+            >
+              <Upload size={12} />
+              Update binary
+            </button>
+            <button
+              onClick={() => setBinaryAction('rollback')}
+              title="Restore the previous binary saved during the last update"
+              className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-md border border-yellow-300 bg-yellow-50 text-yellow-800 hover:bg-yellow-100"
+            >
+              <RotateCcw size={12} />
+              Roll back
+            </button>
+          </div>
         </div>
 
         {refreshError && (
@@ -163,6 +185,14 @@ export default function NodeDetailPage() {
         )}
         {tab === 'overview' && <OverviewTab node={node} />}
       </main>
+      {binaryAction && (
+        <BinaryUpdateDialog
+          node={node}
+          action={binaryAction}
+          onClose={() => setBinaryAction(null)}
+          onDone={() => setBinaryAction(null)}
+        />
+      )}
     </div>
   );
 }

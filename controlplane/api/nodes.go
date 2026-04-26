@@ -339,6 +339,227 @@ func AgentLibrary(cfg NodesConfig) http.HandlerFunc {
 	}
 }
 
+// nodeBinaryReq is the body for POST /api/nodes/{id}/update-binary
+// and /rollback-binary. The SSH key is operator-supplied per request
+// (same UX as the deploy form) — never stored.
+type nodeBinaryReq struct {
+	PrivateKey string `json:"private_key"`
+	Passphrase string `json:"passphrase,omitempty"`
+}
+
+// NodeUpdateBinary swaps the okesu binary on a node with the version
+// from the CP's --daemon-binaries-dir, restarting agent services. The
+// previous binary is preserved at /usr/local/bin/okesu.previous so a
+// rollback action can flip it back.
+//
+// Returns the job_id immediately; progress is observable via the
+// existing /api/jobs/{job}/log SSE stream that deploys already use.
+func NodeUpdateBinary(store *db.Store, reg *jobs.Registry, cfg NodesConfig) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+		if err != nil {
+			http.Error(w, "bad id", http.StatusBadRequest)
+			return
+		}
+		var req nodeBinaryReq
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "bad json", http.StatusBadRequest)
+			return
+		}
+		if strings.TrimSpace(req.PrivateKey) == "" {
+			http.Error(w, "private_key is required", http.StatusBadRequest)
+			return
+		}
+		n, err := store.NodeByID(id)
+		if err != nil {
+			http.Error(w, "node not found", http.StatusNotFound)
+			return
+		}
+
+		// Resolve the binary just like the deploy flow does — multi-arch
+		// resolver wins, falls back to the single-arch path.
+		var binResolver sshdeploy.DaemonBinaryResolver
+		if cfg.DaemonBinariesDir != "" {
+			binResolver = &dbBinaryResolver{store: store}
+		}
+		if binResolver == nil {
+			if _, err := os.Stat(cfg.DaemonBinaryPath); err != nil {
+				http.Error(w, "daemon binary not found at "+cfg.DaemonBinaryPath, http.StatusInternalServerError)
+				return
+			}
+		}
+
+		uploader := ""
+		if u := auth.UserFromContext(r.Context()); u != nil {
+			uploader = u.Email
+		}
+		hostKeyCallback := sshdeploy.VerifyingHostKeyCallback(
+			sshdeploy.PinPolicyAdapter{
+				LookupFn: func() (string, error) {
+					kh, err := store.GetKnownHost(id)
+					if err != nil {
+						if errors.Is(err, sql.ErrNoRows) {
+							return "", nil
+						}
+						return "", err
+					}
+					return kh.Fingerprint, nil
+				},
+				PinFn: func(keyType, fingerprint, publicKey string) error {
+					return store.UpsertKnownHost(id, keyType, fingerprint, publicKey, uploader)
+				},
+			},
+			n.Name,
+			id,
+		)
+
+		ureq := sshdeploy.UpdateBinaryRequest{
+			Cred: sshdeploy.Credential{
+				User:            n.SSHUser,
+				Host:            n.Hostname,
+				Port:            n.SSHPort,
+				PrivateKey:      []byte(req.PrivateKey),
+				Passphrase:      req.Passphrase,
+				HostKeyCallback: hostKeyCallback,
+			},
+			DaemonBinaryPath:     cfg.DaemonBinaryPath,
+			DaemonBinaryResolver: binResolver,
+			AgentNames:           splitAgentsInstalled(n.AgentsInstalled.String),
+		}
+
+		job := reg.Create("update-binary", id)
+		audit.Emit(r, store, db.AuditEntry{
+			Action: "node.update_binary",
+			Target: fmt.Sprintf("node:%d", id),
+			Metadata: map[string]any{"job_id": job.ID, "agents": ureq.AgentNames},
+		})
+
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			defer cancel()
+			err := sshdeploy.UpdateBinary(ctx, ureq, func(line string) { job.Append(line) })
+			if err != nil {
+				job.Append("✗ " + err.Error())
+				job.Complete(err)
+				return
+			}
+			job.Complete(nil)
+		}()
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"job_id":  job.ID,
+			"node_id": id,
+		})
+	}
+}
+
+// NodeRollbackBinary reverts the binary swap performed by the most
+// recent NodeUpdateBinary call: rename /usr/local/bin/okesu.previous
+// back to /usr/local/bin/okesu and bounce the agents.
+func NodeRollbackBinary(store *db.Store, reg *jobs.Registry) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+		if err != nil {
+			http.Error(w, "bad id", http.StatusBadRequest)
+			return
+		}
+		var req nodeBinaryReq
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "bad json", http.StatusBadRequest)
+			return
+		}
+		if strings.TrimSpace(req.PrivateKey) == "" {
+			http.Error(w, "private_key is required", http.StatusBadRequest)
+			return
+		}
+		n, err := store.NodeByID(id)
+		if err != nil {
+			http.Error(w, "node not found", http.StatusNotFound)
+			return
+		}
+
+		uploader := ""
+		if u := auth.UserFromContext(r.Context()); u != nil {
+			uploader = u.Email
+		}
+		hostKeyCallback := sshdeploy.VerifyingHostKeyCallback(
+			sshdeploy.PinPolicyAdapter{
+				LookupFn: func() (string, error) {
+					kh, err := store.GetKnownHost(id)
+					if err != nil {
+						if errors.Is(err, sql.ErrNoRows) {
+							return "", nil
+						}
+						return "", err
+					}
+					return kh.Fingerprint, nil
+				},
+				PinFn: func(keyType, fingerprint, publicKey string) error {
+					return store.UpsertKnownHost(id, keyType, fingerprint, publicKey, uploader)
+				},
+			},
+			n.Name,
+			id,
+		)
+
+		rreq := sshdeploy.RollbackBinaryRequest{
+			Cred: sshdeploy.Credential{
+				User:            n.SSHUser,
+				Host:            n.Hostname,
+				Port:            n.SSHPort,
+				PrivateKey:      []byte(req.PrivateKey),
+				Passphrase:      req.Passphrase,
+				HostKeyCallback: hostKeyCallback,
+			},
+			AgentNames: splitAgentsInstalled(n.AgentsInstalled.String),
+		}
+
+		job := reg.Create("rollback-binary", id)
+		audit.Emit(r, store, db.AuditEntry{
+			Action: "node.rollback_binary",
+			Target: fmt.Sprintf("node:%d", id),
+			Metadata: map[string]any{"job_id": job.ID, "agents": rreq.AgentNames},
+		})
+
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			defer cancel()
+			err := sshdeploy.RollbackBinary(ctx, rreq, func(line string) { job.Append(line) })
+			if err != nil {
+				job.Append("✗ " + err.Error())
+				job.Complete(err)
+				return
+			}
+			job.Complete(nil)
+		}()
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"job_id":  job.ID,
+			"node_id": id,
+		})
+	}
+}
+
+// splitAgentsInstalled converts the comma-separated `agents_installed`
+// column into a list, trimming whitespace and dropping empties.
+func splitAgentsInstalled(s string) []string {
+	if s == "" {
+		return nil
+	}
+	out := []string{}
+	for _, p := range strings.Split(s, ",") {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 // nodeDeployReq is the body for POST /api/nodes/{id}/deploy.
 type nodeDeployReq struct {
 	Agents          []string `json:"agents"`

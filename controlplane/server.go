@@ -284,6 +284,11 @@ func (s *Server) routes() http.Handler {
 			r.Post("/api/nodes", api.NodeCreate(s.store))
 			r.Delete("/api/nodes/{id}", api.NodeDelete(s.store))
 			r.Post("/api/nodes/{id}/refresh-metadata", api.NodeRefreshMetadata(s.store, s.tunReg))
+			r.Post("/api/nodes/{id}/update-binary", api.NodeUpdateBinary(s.store, s.jobs, api.NodesConfig{
+				DaemonBinaryPath:  s.cfg.DaemonBinaryPath,
+				DaemonBinariesDir: s.cfg.DaemonBinariesDir,
+			}))
+			r.Post("/api/nodes/{id}/rollback-binary", api.NodeRollbackBinary(s.store, s.jobs))
 			r.Post("/api/nodes/{id}/deploy", api.NodeDeploy(s.store, s.jobs, s, api.NodesConfig{
 				DaemonBinaryPath:  s.cfg.DaemonBinaryPath,
 				DaemonBinariesDir: s.cfg.DaemonBinariesDir,
