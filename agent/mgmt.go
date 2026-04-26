@@ -3,15 +3,27 @@ package agent
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"sync"
 	"time"
 )
+
+// HashDefinition returns the sha256 of the daemon definition body,
+// hex-encoded. The same hash space as the CP — both compute hex(sha256)
+// over the raw file bytes so they can compare. Exported because daemon.go
+// reads the file at startup.
+func HashDefinition(content []byte) string {
+	sum := sha256.Sum256(content)
+	return hex.EncodeToString(sum[:])
+}
 
 const (
 	defaultCertDir       = "/etc/okesu"
@@ -38,18 +50,25 @@ type registrationPayload struct {
 }
 
 // heartbeatPayload is sent to <mgmt>/api/v1/agents/<name>/heartbeat.
+// DefinitionHash is the sha256 of the daemon's currently-loaded
+// definition; the CP records it so the Daimon Library page can show
+// drift across the fleet.
 type heartbeatPayload struct {
-	Host      string `json:"host"`
-	Ts        int64  `json:"ts"`
-	TickCount int64  `json:"tick_count,omitempty"`
+	Host           string `json:"host"`
+	Ts             int64  `json:"ts"`
+	TickCount      int64  `json:"tick_count,omitempty"`
+	DefinitionHash string `json:"definition_hash,omitempty"`
 }
 
 // remoteConfig is the config returned by the polling endpoint.
-// Additional fields can be added as the management plane evolves.
+// DefinitionHash, when non-empty, is the sha256 of the canonical
+// daimon definition the CP has on disk. When the daemon's locally-loaded
+// hash differs, it should fetch /definition and hot-reload.
 type remoteConfig struct {
-	MaxTurns  int    `json:"max_turns,omitempty"`
-	Effort    string `json:"effort,omitempty"`
-	Suspended bool   `json:"suspended,omitempty"`
+	MaxTurns       int    `json:"max_turns,omitempty"`
+	Effort         string `json:"effort,omitempty"`
+	Suspended      bool   `json:"suspended,omitempty"`
+	DefinitionHash string `json:"definition_hash,omitempty"`
 }
 
 // KnownIssue is the wire shape of one entry from
@@ -98,6 +117,27 @@ type MgmtPlane struct {
 	// known-issues poller. Lookups happen on every harvested finding so
 	// keep them O(1).
 	knownIssues map[string]KnownIssue
+
+	// localDefinitionHash is the sha256 of the agent file content the
+	// daemon currently has loaded. Sent with every heartbeat so the CP
+	// can detect drift; updated when StartConfigPoller hot-reloads.
+	localDefinitionHash string
+}
+
+// SetLocalDefinitionHash records the daemon's currently-loaded definition
+// hash. Called once at startup with the hash of the file the daemon
+// loaded, and again after each successful hot-reload. Concurrent-safe.
+func (m *MgmtPlane) SetLocalDefinitionHash(h string) {
+	m.mu.Lock()
+	m.localDefinitionHash = h
+	m.mu.Unlock()
+}
+
+// LocalDefinitionHash returns the daemon's currently-loaded hash.
+func (m *MgmtPlane) LocalDefinitionHash() string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.localDefinitionHash
 }
 
 // NewMgmtPlane constructs a MgmtPlane.
@@ -159,9 +199,10 @@ func (m *MgmtPlane) StartHeartbeat(ctx context.Context, state *DaemonState) {
 				tc := state.TickCount
 				state.mu.Unlock()
 				payload := heartbeatPayload{
-					Host:      m.host,
-					Ts:        time.Now().UnixMilli(),
-					TickCount: tc,
+					Host:           m.host,
+					Ts:             time.Now().UnixMilli(),
+					TickCount:      tc,
+					DefinitionHash: m.LocalDefinitionHash(),
 				}
 				if err := m.post("/api/v1/agents/"+m.agent.Name+"/heartbeat", payload); err != nil {
 					Emit(Event{
@@ -179,14 +220,24 @@ func (m *MgmtPlane) StartHeartbeat(ctx context.Context, state *DaemonState) {
 }
 
 // StartConfigPoller polls the management plane for config updates and applies
-// them via the provided reload callback. Runs until ctx is cancelled.
+// them via the provided reload callbacks. Runs until ctx is cancelled.
 //
 // onReload is only invoked when the polled config actually differs from the
 // last-applied config. Polls that come back unchanged are silent — without
 // this guard, a 60s poll cycle would emit a `config_reloaded` event every
 // minute even when no operator touched the config, drowning the Live Events
 // feed in noise.
-func (m *MgmtPlane) StartConfigPoller(ctx context.Context, onReload func(remoteConfig)) {
+//
+// onDefinitionChange is invoked when the polled DefinitionHash differs from
+// the daemon's currently-loaded hash. The callback is responsible for
+// fetching the new definition (via FetchDefinition), parsing it, and
+// applying the new fields to the live daemon Config. nil disables the
+// hot-reload feature.
+func (m *MgmtPlane) StartConfigPoller(
+	ctx context.Context,
+	onReload func(remoteConfig),
+	onDefinitionChange func(newHash string),
+) {
 	interval := time.Duration(m.cfg.PollSec) * time.Second
 	if interval <= 0 {
 		interval = defaultPollSec * time.Second
@@ -212,16 +263,60 @@ func (m *MgmtPlane) StartConfigPoller(ctx context.Context, onReload func(remoteC
 				m.mu.Lock()
 				m.remote = rc
 				m.mu.Unlock()
-				if !hasApplied || rc != lastApplied {
+
+				// Compare config fields without DefinitionHash so the hot-
+				// reload callback only fires when the operator-tunable
+				// fields (max_turns / effort / suspended) actually change.
+				rcConfigOnly := rc
+				rcConfigOnly.DefinitionHash = ""
+				lastConfigOnly := lastApplied
+				lastConfigOnly.DefinitionHash = ""
+				if !hasApplied || rcConfigOnly != lastConfigOnly {
 					lastApplied = rc
 					hasApplied = true
-					onReload(rc)
+					onReload(rcConfigOnly)
+				}
+
+				// Definition-hash drift is checked separately so a daemon
+				// can hot-reload a new definition without re-firing the
+				// config-change callback (and vice versa).
+				if onDefinitionChange != nil && rc.DefinitionHash != "" {
+					local := m.LocalDefinitionHash()
+					if local != "" && rc.DefinitionHash != local {
+						onDefinitionChange(rc.DefinitionHash)
+					}
 				}
 			case <-ctx.Done():
 				return
 			}
 		}
 	}()
+}
+
+// FetchDefinition retrieves the canonical *.md content for this daemon
+// from the CP. Used by the hot-reload callback when a hash mismatch is
+// detected. Returns the body bytes and the X-Definition-Hash header so
+// the caller can verify the file didn't change between /config and
+// /definition (rare race; protects against a half-written reload).
+func (m *MgmtPlane) FetchDefinition(ctx context.Context) ([]byte, string, error) {
+	url := m.cfg.URL + "/api/v1/agents/" + m.agent.Name + "/definition"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	resp, err := m.client.Do(req)
+	if err != nil {
+		return nil, "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, "", fmt.Errorf("fetch definition: HTTP %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, "", err
+	}
+	return body, resp.Header.Get("X-Definition-Hash"), nil
 }
 
 // Remote returns the latest config received from the management plane.

@@ -20,6 +20,10 @@ type Agent struct {
 	DesiredEffort    sql.NullString
 	DesiredSuspended bool
 	ConfigUpdatedAt  sql.NullTime
+	// CurrentDefinitionHash is the sha256 the daemon reports it has
+	// loaded. Compared against the CP's canonical hash to surface drift
+	// on the Daimon Library page.
+	CurrentDefinitionHash sql.NullString
 }
 
 // UpsertAgentRegistration creates or updates an agent on registration.
@@ -45,28 +49,57 @@ func (s *Store) UpsertAgentRegistration(name, host, provider, model, version str
 // agent identified by (name, host). Auto-creates the row if the agent
 // hasn't registered yet — common for daemons whose first poll arrives
 // before their registration round-trip completes.
-func (s *Store) RecordHeartbeat(name, host string, tickCount int64) error {
+//
+// definitionHash is the sha256 the daemon reports it has loaded. Empty
+// string skips the column (preserves existing value).
+func (s *Store) RecordHeartbeat(name, host string, tickCount int64, definitionHash string) error {
 	if host == "" {
 		host = "(unknown)"
 	}
+	if definitionHash == "" {
+		// Legacy path — don't touch current_definition_hash.
+		res, err := s.Exec(`
+			UPDATE agents
+			SET last_heartbeat_at = CURRENT_TIMESTAMP,
+			    last_tick_count = ?
+			WHERE name = ? AND host = ?
+		`, tickCount, name, host)
+		if err != nil {
+			return err
+		}
+		rows, _ := res.RowsAffected()
+		if rows == 0 {
+			_, err := s.Exec(`
+				INSERT INTO agents (name, host, last_heartbeat_at, last_tick_count)
+				VALUES (?, ?, CURRENT_TIMESTAMP, ?)
+				ON CONFLICT(name, host) DO UPDATE SET
+					last_heartbeat_at = CURRENT_TIMESTAMP,
+					last_tick_count   = excluded.last_tick_count
+			`, name, host, tickCount)
+			return err
+		}
+		return nil
+	}
 	res, err := s.Exec(`
 		UPDATE agents
-		SET last_heartbeat_at = CURRENT_TIMESTAMP,
-		    last_tick_count = ?
+		SET last_heartbeat_at        = CURRENT_TIMESTAMP,
+		    last_tick_count          = ?,
+		    current_definition_hash  = ?
 		WHERE name = ? AND host = ?
-	`, tickCount, name, host)
+	`, tickCount, definitionHash, name, host)
 	if err != nil {
 		return err
 	}
 	rows, _ := res.RowsAffected()
 	if rows == 0 {
 		_, err := s.Exec(`
-			INSERT INTO agents (name, host, last_heartbeat_at, last_tick_count)
-			VALUES (?, ?, CURRENT_TIMESTAMP, ?)
+			INSERT INTO agents (name, host, last_heartbeat_at, last_tick_count, current_definition_hash)
+			VALUES (?, ?, CURRENT_TIMESTAMP, ?, ?)
 			ON CONFLICT(name, host) DO UPDATE SET
-				last_heartbeat_at = CURRENT_TIMESTAMP,
-				last_tick_count   = excluded.last_tick_count
-		`, name, host, tickCount)
+				last_heartbeat_at       = CURRENT_TIMESTAMP,
+				last_tick_count         = excluded.last_tick_count,
+				current_definition_hash = excluded.current_definition_hash
+		`, name, host, tickCount, definitionHash)
 		return err
 	}
 	return nil
@@ -79,13 +112,13 @@ func (s *Store) AgentByNameHost(name, host string) (*Agent, error) {
 		SELECT name, host, provider, model, version,
 		       registered_at, last_heartbeat_at, last_tick_count,
 		       desired_max_turns, desired_effort, desired_suspended,
-		       config_updated_at
+		       config_updated_at, current_definition_hash
 		FROM agents WHERE name = ? AND host = ?
 	`, name, host).Scan(
 		&a.Name, &a.Host, &a.Provider, &a.Model, &a.Version,
 		&a.RegisteredAt, &a.LastHeartbeatAt, &a.LastTickCount,
 		&a.DesiredMaxTurns, &a.DesiredEffort, &a.DesiredSuspended,
-		&a.ConfigUpdatedAt,
+		&a.ConfigUpdatedAt, &a.CurrentDefinitionHash,
 	)
 	if err != nil {
 		return nil, err
@@ -105,7 +138,7 @@ func (s *Store) AgentByName(name string) (*Agent, error) {
 		SELECT name, host, provider, model, version,
 		       registered_at, last_heartbeat_at, last_tick_count,
 		       desired_max_turns, desired_effort, desired_suspended,
-		       config_updated_at
+		       config_updated_at, current_definition_hash
 		FROM agents
 		WHERE name = ?
 		ORDER BY (last_heartbeat_at IS NULL), last_heartbeat_at DESC
@@ -114,7 +147,7 @@ func (s *Store) AgentByName(name string) (*Agent, error) {
 		&a.Name, &a.Host, &a.Provider, &a.Model, &a.Version,
 		&a.RegisteredAt, &a.LastHeartbeatAt, &a.LastTickCount,
 		&a.DesiredMaxTurns, &a.DesiredEffort, &a.DesiredSuspended,
-		&a.ConfigUpdatedAt,
+		&a.ConfigUpdatedAt, &a.CurrentDefinitionHash,
 	)
 	if err != nil {
 		return nil, err
@@ -138,7 +171,7 @@ func (s *Store) ListAgents(limit, offset int) ([]*Agent, error) {
 		SELECT name, host, provider, model, version,
 		       registered_at, last_heartbeat_at, last_tick_count,
 		       desired_max_turns, desired_effort, desired_suspended,
-		       config_updated_at
+		       config_updated_at, current_definition_hash
 		FROM agents
 		ORDER BY (last_heartbeat_at IS NULL), last_heartbeat_at DESC, name, host
 		LIMIT ? OFFSET ?

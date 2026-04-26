@@ -11,6 +11,8 @@
 package api
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -41,6 +43,10 @@ type daimonSummary struct {
 	Interval    string `json:"interval,omitempty"`
 	ModifiedAt  string `json:"modified_at"`
 	SizeBytes   int64  `json:"size_bytes"`
+	// Hash is the canonical sha256 of the file content. Daimon Library
+	// rows compare this against each registered daemon's
+	// current_definition_hash to compute drift ("8 of 10 on current").
+	Hash string `json:"hash,omitempty"`
 }
 
 // daimonDetail extends daimonSummary with the raw file content. Saved
@@ -116,6 +122,7 @@ func readDaimonFile(dir, name string) (daimonDetail, error) {
 	if fm.Name == "" {
 		fm.Name = name
 	}
+	hash := computeContentHash(content)
 	return daimonDetail{
 		daimonSummary: daimonSummary{
 			Name:        fm.Name,
@@ -126,9 +133,17 @@ func readDaimonFile(dir, name string) (daimonDetail, error) {
 			Interval:    fm.Interval,
 			ModifiedAt:  st.ModTime().UTC().Format(time.RFC3339),
 			SizeBytes:   st.Size(),
+			Hash:        hash,
 		},
 		Content: string(content),
 	}, nil
+}
+
+// computeContentHash returns hex(sha256(content)) — same convention used
+// by the daemon and the mgmt-plane /config endpoint so all three agree.
+func computeContentHash(content []byte) string {
+	sum := sha256.Sum256(content)
+	return hex.EncodeToString(sum[:])
 }
 
 // DaimonLibraryList handles GET /api/daimons/library.

@@ -1,12 +1,16 @@
 package api
 
 import (
+	"crypto/sha256"
 	"crypto/x509"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -31,12 +35,23 @@ type heartbeatPayload struct {
 	Host      string `json:"host"`
 	Ts        int64  `json:"ts"`
 	TickCount int64  `json:"tick_count,omitempty"`
+	// DefinitionHash, when set, is the sha256 of the daimon definition
+	// the daemon currently has loaded. The CP records it so the Daimon
+	// Library page can show "X of Y instances on current version".
+	DefinitionHash string `json:"definition_hash,omitempty"`
 }
 
 type remoteConfigResponse struct {
 	MaxTurns  int    `json:"max_turns,omitempty"`
 	Effort    string `json:"effort,omitempty"`
 	Suspended bool   `json:"suspended,omitempty"`
+	// DefinitionHash is the sha256 of the canonical daimon definition the
+	// CP has on disk. When the daemon's locally-loaded hash differs from
+	// this value, it should fetch /definition and hot-reload. Absence of
+	// the field means "no daimon library file for this name" (e.g. a
+	// standalone daemon outside the deploy flow); daemons treat that as
+	// "no remote definition source — keep what you have".
+	DefinitionHash string `json:"definition_hash,omitempty"`
 }
 
 // agentNameFromCert returns the CN of the verified TLS client cert.
@@ -101,7 +116,7 @@ func MgmtHeartbeat(store *db.Store) http.HandlerFunc {
 			http.Error(w, "bad json", http.StatusBadRequest)
 			return
 		}
-		if err := store.RecordHeartbeat(certName, p.Host, p.TickCount); err != nil {
+		if err := store.RecordHeartbeat(certName, p.Host, p.TickCount, p.DefinitionHash); err != nil {
 			http.Error(w, "store: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -111,9 +126,13 @@ func MgmtHeartbeat(store *db.Store) http.HandlerFunc {
 }
 
 // MgmtConfig handles GET /api/v1/agents/{name}/config.
-// Returns the desired remote config (max_turns, effort, suspended).
-// Empty/zero values mean "no override".
-func MgmtConfig(store *db.Store) http.HandlerFunc {
+// Returns the desired remote config (max_turns, effort, suspended) plus
+// the canonical daimon definition hash so the daemon can detect drift
+// and hot-reload. Empty/zero values mean "no override".
+//
+// daimonFilesDir is the source of truth for definition_hash; passing ""
+// disables the hash field (legacy single-CP-no-library deployments).
+func MgmtConfig(store *db.Store, daimonFilesDir string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		certName := agentNameFromCert(r)
 		urlName := chi.URLParam(r, "name")
@@ -129,9 +148,16 @@ func MgmtConfig(store *db.Store) http.HandlerFunc {
 		agent, err := store.AgentByName(certName)
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
-				// Unknown agent — return empty config.
+				// Unknown agent — return empty config plus the current
+				// definition hash if we have it; the daemon may have
+				// registered concurrently and want to bootstrap from
+				// the library.
+				resp := remoteConfigResponse{}
+				if h, herr := computeDefinitionHash(daimonFilesDir, certName); herr == nil {
+					resp.DefinitionHash = h
+				}
 				w.Header().Set("Content-Type", "application/json")
-				_, _ = w.Write([]byte("{}"))
+				_ = json.NewEncoder(w).Encode(resp)
 				return
 			}
 			http.Error(w, "store: "+err.Error(), http.StatusInternalServerError)
@@ -145,8 +171,70 @@ func MgmtConfig(store *db.Store) http.HandlerFunc {
 		if agent.DesiredEffort.Valid {
 			resp.Effort = agent.DesiredEffort.String
 		}
+		if h, herr := computeDefinitionHash(daimonFilesDir, certName); herr == nil {
+			resp.DefinitionHash = h
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(resp)
+	}
+}
+
+// computeDefinitionHash returns the sha256 of the daimon's *.md file in
+// the library, hex-encoded. Returns os.ErrNotExist when the file is
+// missing — caller treats that as "no remote definition" rather than
+// surfacing as an HTTP error.
+func computeDefinitionHash(daimonFilesDir, name string) (string, error) {
+	if daimonFilesDir == "" || name == "" {
+		return "", os.ErrNotExist
+	}
+	path := filepath.Join(daimonFilesDir, name+".md")
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+// MgmtDefinition handles GET /api/v1/agents/{name}/definition.
+// Returns the raw .md file content the CP has on disk for the named
+// daimon. The daemon fetches this when its local DefinitionHash differs
+// from what /config reports, then hot-reloads.
+//
+// Always sends Content-Type: text/markdown so daemons can plug straight
+// into ParseAgentFile-style parsing.
+func MgmtDefinition(daimonFilesDir string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		certName := agentNameFromCert(r)
+		urlName := chi.URLParam(r, "name")
+		if certName == "" {
+			http.Error(w, "client cert required", http.StatusUnauthorized)
+			return
+		}
+		if certName != urlName {
+			http.Error(w, "url name mismatch with cert CN", http.StatusForbidden)
+			return
+		}
+		if daimonFilesDir == "" {
+			http.Error(w, "daimon library disabled", http.StatusServiceUnavailable)
+			return
+		}
+		path := filepath.Join(daimonFilesDir, certName+".md")
+		b, err := os.ReadFile(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				http.Error(w, "no definition for this daimon", http.StatusNotFound)
+				return
+			}
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		// Echo the hash so the daemon can sanity-check after fetch (in
+		// the rare race where the file changed between /config and /definition).
+		sum := sha256.Sum256(b)
+		w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+		w.Header().Set("X-Definition-Hash", hex.EncodeToString(sum[:]))
+		_, _ = w.Write(b)
 	}
 }
 

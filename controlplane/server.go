@@ -313,7 +313,8 @@ func (s *Server) mgmtRoutes() http.Handler {
 	r.Use(api.MTLSAccessLog)
 	r.Post("/api/v1/agents/register", api.MgmtRegister(s.store))
 	r.Post("/api/v1/agents/{name}/heartbeat", api.MgmtHeartbeat(s.store))
-	r.Get("/api/v1/agents/{name}/config", api.MgmtConfig(s.store))
+	r.Get("/api/v1/agents/{name}/config", api.MgmtConfig(s.store, s.cfg.DaimonFilesDir))
+	r.Get("/api/v1/agents/{name}/definition", api.MgmtDefinition(s.cfg.DaimonFilesDir))
 	r.Get("/api/v1/agents/{name}/known-issues", api.MgmtKnownIssues(s.store))
 	r.Get("/api/v1/agents/{name}/findings/search", api.MgmtFindingsLookup(s.store))
 

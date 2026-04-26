@@ -55,6 +55,9 @@ export interface DaimonItem {
   desired_effort?: string;
   desired_suspended: boolean;
   config_updated_at?: string;
+  /** sha256 of the definition the daemon currently has loaded.
+   *  Compared client-side against the library hash to flag drift. */
+  current_definition_hash?: string;
 }
 
 export interface DaimonLibraryItem {
@@ -66,6 +69,9 @@ export interface DaimonLibraryItem {
   interval?: string;
   modified_at: string;
   size_bytes: number;
+  /** Canonical sha256 of the file content. UI compares against each
+   *  registered daimon's current_definition_hash to flag drift. */
+  hash?: string;
 }
 
 export interface DaimonLibraryDetail extends DaimonLibraryItem {

@@ -20,7 +20,8 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
-import { api, ApiError, type DaimonLibraryDetail, type DaimonLibraryItem } from '../api';
+import { api, ApiError, type DaimonItem, type DaimonLibraryDetail, type DaimonLibraryItem } from '../api';
+import { cn } from '../lib/cn';
 
 const TEMPLATE = `---
 # ── Identity ────────────────────────────────────────────────────────────────
@@ -59,6 +60,7 @@ You are an agent that ...
 
 export default function DaimonsLibrary() {
   const [items, setItems] = useState<DaimonLibraryItem[] | null>(null);
+  const [registered, setRegistered] = useState<DaimonItem[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState<{ name: string; isNew: boolean } | null>(null);
 
@@ -67,10 +69,17 @@ export default function DaimonsLibrary() {
     api.daimonLibrary()
       .then(setItems)
       .catch((e) => setError(formatError(e)));
+    // Pull the registered-daimon list in parallel so we can show
+    // rollout drift ("8 of 10 on current") next to each library entry.
+    api.daimons(1000, 0).then(setRegistered).catch(() => setRegistered([]));
   }
 
   useEffect(() => {
     refresh();
+    // Poll moderately so a hot-reload propagation shows up as the daemons
+    // update their reported hash.
+    const t = setInterval(refresh, 15_000);
+    return () => clearInterval(t);
   }, []);
 
   return (
@@ -125,7 +134,9 @@ export default function DaimonsLibrary() {
 
         {items && items.length > 0 && (
           <ul className="bg-panel border border-border rounded-xl shadow-card divide-y divide-border">
-            {items.map((it) => (
+            {items.map((it) => {
+              const rollout = computeRollout(it, registered);
+              return (
               <li
                 key={it.name}
                 onClick={() => setEditing({ name: it.name, isNew: false })}
@@ -142,6 +153,25 @@ export default function DaimonsLibrary() {
                         {it.mode}
                       </span>
                     )}
+                    {rollout && (
+                      <span
+                        title={
+                          rollout.drifted > 0
+                            ? `${rollout.drifted} daemon${rollout.drifted === 1 ? '' : 's'} still on a stale definition — they will hot-reload within ~60s`
+                            : 'all running daemons are on the current definition'
+                        }
+                        className={cn(
+                          'text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded ring-1 inline-flex items-center gap-1',
+                          rollout.drifted === 0
+                            ? 'text-green-700 bg-green-50 ring-green-200'
+                            : 'text-yellow-700 bg-yellow-50 ring-yellow-200',
+                        )}
+                      >
+                        {rollout.drifted === 0 ? '✓' : '⟳'}
+                        {' '}
+                        {rollout.synced}/{rollout.total} on current
+                      </span>
+                    )}
                   </div>
                   {it.description && (
                     <p className="text-xs text-ink-dim mt-0.5 line-clamp-2">{it.description}</p>
@@ -155,7 +185,8 @@ export default function DaimonsLibrary() {
                   </div>
                 </div>
               </li>
-            ))}
+              );
+            })}
           </ul>
         )}
       </div>
@@ -304,6 +335,25 @@ function DaimonEditor({
       </footer>
     </aside>
   );
+}
+
+// computeRollout returns synced/total counts for a library entry.
+// "synced" = registered daimons whose hash matches the library hash
+// AND whose heartbeat is fresh. Stale daemons (no recent heartbeat)
+// don't count toward total — they're not actively running, so the
+// rollout indicator shouldn't penalise the operator for their drift.
+function computeRollout(
+  lib: DaimonLibraryItem,
+  registered: DaimonItem[],
+): { total: number; synced: number; drifted: number } | null {
+  if (!lib.hash) return null;
+  const live = registered.filter((d) => d.name === lib.name && d.healthy);
+  if (live.length === 0) return null;
+  let synced = 0;
+  for (const d of live) {
+    if (d.current_definition_hash === lib.hash) synced++;
+  }
+  return { total: live.length, synced, drifted: live.length - synced };
 }
 
 function fmtRel(iso: string): string {

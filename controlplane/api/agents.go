@@ -31,6 +31,9 @@ type agentJSON struct {
 	DesiredEffort    string `json:"desired_effort,omitempty"`
 	DesiredSuspended bool   `json:"desired_suspended"`
 	ConfigUpdatedAt  string `json:"config_updated_at,omitempty"`
+	// CurrentDefinitionHash is the daemon-reported hash of its loaded
+	// definition; the UI compares against the library hash to flag drift.
+	CurrentDefinitionHash string `json:"current_definition_hash,omitempty"`
 }
 
 // AgentsList returns registered agents, paginated.
@@ -137,6 +140,9 @@ func toAgentJSON(a *db.Agent) agentJSON {
 	}
 	if a.ConfigUpdatedAt.Valid {
 		out.ConfigUpdatedAt = a.ConfigUpdatedAt.Time.UTC().Format(time.RFC3339)
+	}
+	if a.CurrentDefinitionHash.Valid {
+		out.CurrentDefinitionHash = a.CurrentDefinitionHash.String
 	}
 	return out
 }

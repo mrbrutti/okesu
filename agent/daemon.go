@@ -79,6 +79,18 @@ func RunDaemon(cfg Config, dcfg DaemonConfig) error {
 				Text:  fmt.Sprintf("mgmt registration error: %v", err),
 			})
 		}
+		// Seed the daemon's local definition hash so the heartbeat can
+		// report "what I have loaded" and the CP can detect drift. We
+		// re-read the agent file from disk at startup (deploys put it at
+		// /etc/okesu/agents/<name>.md). Failure here is non-fatal — the
+		// daemon just won't be able to participate in the drift signal.
+		if cfg.Name != "" {
+			if path, content, err := readDaimonFile(cfg.Name); err == nil {
+				mgmt.SetLocalDefinitionHash(HashDefinition(content))
+				_ = path // path may surface in future audit events
+			}
+		}
+
 		mgmt.StartHeartbeat(mgmtCtx, state)
 		mgmt.StartKnownIssuesPoller(mgmtCtx)
 		mgmt.StartConfigPoller(mgmtCtx, func(rc remoteConfig) {
@@ -94,6 +106,71 @@ func RunDaemon(cfg Config, dcfg DaemonConfig) error {
 				Agent: cfg.Name,
 				Host:  hostname,
 				Text:  "remote config applied via management plane",
+			})
+		}, func(newHash string) {
+			// Definition drift detected — fetch the new file from the CP
+			// and apply the hot-reloadable subset of frontmatter fields
+			// to the live cfg. Verify the post-fetch hash matches what
+			// /config reported; if not, skip and retry next poll (the
+			// operator may be in the middle of saving).
+			ctx, cancel := context.WithTimeout(mgmtCtx, 15*time.Second)
+			defer cancel()
+			body, gotHash, err := mgmt.FetchDefinition(ctx)
+			if err != nil {
+				Emit(Event{
+					Type:  EventText,
+					Agent: cfg.Name,
+					Host:  hostname,
+					Text:  fmt.Sprintf("definition fetch failed: %v", err),
+				})
+				return
+			}
+			actualHash := HashDefinition(body)
+			if gotHash != "" && gotHash != actualHash {
+				// Server-reported header doesn't match content we got.
+				// Likely a network corruption; skip.
+				return
+			}
+			if newHash != actualHash {
+				// File changed between /config and /definition. Skip; we'll
+				// pick up the new hash on the next poll.
+				return
+			}
+			def, perr := parseAgentContent(string(body))
+			if perr != nil {
+				Emit(Event{
+					Type:  EventText,
+					Agent: cfg.Name,
+					Host:  hostname,
+					Text:  fmt.Sprintf("definition parse failed: %v", perr),
+				})
+				return
+			}
+			// Apply the hot-reloadable subset. Schedule (interval) and
+			// stateDir are NOT reloaded here — those drive the tick loop
+			// and require a process restart. Operators are warned about
+			// this at save time.
+			if def.Model != "" {
+				cfg.Model = def.Model
+			}
+			if def.Effort != "" {
+				cfg.Effort = def.Effort
+			}
+			if def.MaxTurns > 0 {
+				cfg.MaxTurns = def.MaxTurns
+			}
+			if def.Body != "" {
+				cfg.SystemPrompt = def.Body
+			}
+			if len(def.Tools) > 0 {
+				cfg.AllowedTools = def.Tools
+			}
+			mgmt.SetLocalDefinitionHash(actualHash)
+			Emit(Event{
+				Type:  EventConfigReloaded,
+				Agent: cfg.Name,
+				Host:  hostname,
+				Text:  "definition hot-reloaded via management plane (hash=" + actualHash[:12] + ")",
 			})
 		})
 	}

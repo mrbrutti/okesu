@@ -358,6 +358,31 @@ type AgentDef struct {
 	Body string // system prompt body (content after the frontmatter)
 }
 
+// readDaimonFile locates the *.md for the named daimon and returns its
+// path + raw bytes. Search order matches ParseAgentFile (project-local,
+// home-global, /etc/okesu/agents). Used at daemon startup to seed the
+// definition-hash for the management-plane drift signal.
+func readDaimonFile(name string) (string, []byte, error) {
+	if filepath.IsAbs(name) || strings.ContainsRune(name, filepath.Separator) {
+		b, err := os.ReadFile(name)
+		return name, b, err
+	}
+	home := os.Getenv("HOME")
+	candidates := []string{
+		filepath.Join(".claude", "agents", name+".md"),
+		filepath.Join(".codex", "agents", name+".md"),
+		filepath.Join(home, ".claude", "agents", name+".md"),
+		filepath.Join(home, ".codex", "agents", name+".md"),
+		filepath.Join("/etc", "okesu", "agents", name+".md"),
+	}
+	for _, p := range candidates {
+		if b, err := os.ReadFile(p); err == nil {
+			return p, b, nil
+		}
+	}
+	return "", nil, fmt.Errorf("daimon %q not found in any standard location", name)
+}
+
 // ParseAgentFile loads and parses an agent markdown file.
 //
 // If `name` is an absolute path or contains a path separator, it's
