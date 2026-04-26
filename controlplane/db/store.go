@@ -1,4 +1,20 @@
-// Package db provides the SQLite store for the Control Plane.
+// Package db provides the relational state store for the Control Plane.
+//
+// Two backends are supported, selected by the DSN passed to Open:
+//   - sqlite — file path (e.g. "./cp.db") or "sqlite://..."
+//   - postgres — "postgres://user:pass@host:port/db?sslmode=..."
+//
+// Phase 8b lands the connection-time foundation: dialect detection,
+// driver selection, and a Store that knows which backend it's running
+// against. The schema migration port is incremental — sqlite remains
+// the production-ready backend, postgres is wired up but its
+// migrations are tracked in a separate migrations/postgres/ directory
+// that is filled in as we exercise the queries. Running against
+// postgres today connects cleanly but applying migrations beyond the
+// init blocks will fail until that directory is populated. Operators
+// stick with sqlite until the port is complete; the abstraction lets
+// us land the OCI Database PostgreSQL deployment shape in a series of
+// small, reviewable commits rather than one giant SQL drop.
 package db
 
 import (
@@ -7,10 +23,38 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
-	_ "modernc.org/sqlite"
+	_ "github.com/jackc/pgx/v5/stdlib" // postgres
+	_ "modernc.org/sqlite"             // sqlite
 )
+
+// Dialect identifies the SQL flavour the Store is running against.
+// Drives placeholder rewriting, autoincrement syntax, and migration
+// directory selection.
+type Dialect string
+
+const (
+	DialectSQLite   Dialect = "sqlite"
+	DialectPostgres Dialect = "postgres"
+)
+
+// detectDialect classifies the DSN. SQLite is the default for anything
+// that doesn't have a recognised URL scheme; matches the historical
+// "the DSN is a file path" behaviour.
+func detectDialect(dsn string) Dialect {
+	switch {
+	case strings.HasPrefix(dsn, "postgres://"),
+		strings.HasPrefix(dsn, "postgresql://"):
+		return DialectPostgres
+	case strings.HasPrefix(dsn, "sqlite://"):
+		return DialectSQLite
+	default:
+		// File path → sqlite (legacy default).
+		return DialectSQLite
+	}
+}
 
 //go:embed migrations/001_init.sql
 var migration001 string
@@ -75,20 +119,48 @@ var migrations = []string{
 }
 
 // Store wraps a *sql.DB with helpers used across the controlplane package.
+//
+// Dialect records which backend we're running against so call sites that
+// need dialect-specific SQL (rare — most queries are portable) can branch.
 type Store struct {
 	*sql.DB
-	path string
+	path    string
+	Dialect Dialect
 }
 
-// Open creates (or opens) the SQLite DB at path, applies migrations, and
-// returns a ready-to-use Store. The parent directory is created if missing.
-func Open(path string) (*Store, error) {
+// Open creates (or opens) the database at the given DSN, applies
+// migrations, and returns a ready-to-use Store.
+//
+// DSN forms:
+//   - "./cp.db"                              — sqlite file path (legacy, default)
+//   - "sqlite:///abs/path.db"                — explicit sqlite scheme
+//   - "postgres://user:pass@host:5432/cpdb"  — managed Postgres
+//
+// For SQLite, the parent directory is created if missing — matches the
+// legacy "you can point this at any path" UX. For Postgres we only
+// connect; provisioning is the operator's responsibility.
+func Open(dsn string) (*Store, error) {
+	dialect := detectDialect(dsn)
+	switch dialect {
+	case DialectSQLite:
+		return openSQLite(dsn)
+	case DialectPostgres:
+		return openPostgres(dsn)
+	default:
+		return nil, fmt.Errorf("unrecognised db dialect for dsn %q", dsn)
+	}
+}
+
+func openSQLite(dsn string) (*Store, error) {
+	// sqlite:// → file path (strip scheme); plain path → use as-is.
+	path := dsn
+	path = strings.TrimPrefix(path, "sqlite://")
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return nil, fmt.Errorf("mkdir db parent: %w", err)
 	}
 
-	dsn := path + "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)"
-	conn, err := sql.Open("sqlite", dsn)
+	connDSN := path + "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)"
+	conn, err := sql.Open("sqlite", connDSN)
 	if err != nil {
 		return nil, fmt.Errorf("open db: %w", err)
 	}
@@ -104,10 +176,41 @@ func Open(path string) (*Store, error) {
 		return nil, err
 	}
 
-	return &Store{DB: conn, path: path}, nil
+	return &Store{DB: conn, path: path, Dialect: DialectSQLite}, nil
 }
 
-// Path returns the file path the DB was opened at.
+// openPostgres dials a managed Postgres instance via the pgx stdlib
+// driver and returns a Store ready for query.
+//
+// Schema migrations against Postgres are tracked separately in
+// migrations/postgres/ and are NOT applied by Open. Operators bootstrap
+// the schema using a migration tool (psql, sqlc, golang-migrate) until
+// the in-process migration runner gains Postgres support — call sites
+// won't see any difference, since the existing query layer talks
+// portable SQL once placeholders are translated. This is deliberate
+// scaffolding so the OCI deployment shape can be exercised in
+// docker-compose dev (Phase 8f) before the SQL-heavy migration port
+// lands.
+func openPostgres(dsn string) (*Store, error) {
+	conn, err := sql.Open("pgx", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("open postgres: %w", err)
+	}
+	// Generous pool — Postgres handles many writers concurrently, unlike
+	// SQLite. Operators tune via DSN params (`pool_max_conns=...`); we
+	// just set safe defaults.
+	conn.SetMaxOpenConns(20)
+	conn.SetMaxIdleConns(4)
+	conn.SetConnMaxLifetime(30 * time.Minute)
+
+	if err := conn.Ping(); err != nil {
+		return nil, fmt.Errorf("ping postgres: %w", err)
+	}
+	return &Store{DB: conn, path: dsn, Dialect: DialectPostgres}, nil
+}
+
+// Path returns the DSN the Store was opened at. The name is historical —
+// "path" only made sense for the SQLite-only era.
 func (s *Store) Path() string { return s.path }
 
 // applyMigrations runs each numbered migration once, tracking applied

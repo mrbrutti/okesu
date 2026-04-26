@@ -17,7 +17,9 @@ type Config struct {
 	// Listen is the HTTPS bind address (e.g. ":8443").
 	Listen string
 
-	// DBPath is the SQLite file path. Created on first run if absent.
+	// DBPath is the database DSN. Either a SQLite file path (legacy
+	// default — created on first run if absent) or a Postgres DSN
+	// (postgres://...). The store auto-detects from the prefix.
 	DBPath string
 
 	// CertFile / KeyFile are the TLS server cert and key. If both are empty,

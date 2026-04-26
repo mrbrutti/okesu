@@ -58,7 +58,7 @@ func serveCmd() *cobra.Command {
 
 	cmd.Flags().StringVar(&cfg.Listen, "listen", cfg.Listen, "User-facing HTTPS bind (UI + webhooks)")
 	cmd.Flags().StringVar(&cfg.MgmtListen, "mgmt-listen", cfg.MgmtListen, "Management plane HTTPS bind (mTLS, agent traffic)")
-	cmd.Flags().StringVar(&cfg.DBPath, "db", cfg.DBPath, "SQLite database file")
+	cmd.Flags().StringVar(&cfg.DBPath, "db", cfg.DBPath, "Database DSN — sqlite path (./cp.db) or postgres://user:pass@host:port/db")
 	cmd.Flags().StringVar(&cfg.CertFile, "cert", cfg.CertFile, "User-facing TLS cert (auto-generated if empty)")
 	cmd.Flags().StringVar(&cfg.KeyFile, "key", cfg.KeyFile, "User-facing TLS key (auto-generated if empty)")
 	cmd.Flags().StringVar(&cfg.CACertFile, "ca-cert", cfg.CACertFile, "mTLS CA cert (auto-generated if empty)")
