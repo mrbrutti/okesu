@@ -140,6 +140,18 @@ type Config struct {
 	// Redis URL ("redis://host:6379/0") to switch to the redis adapter
 	// so SSE fan-out works across multiple CP replicas.
 	PubSubURL string
+
+	// BlobStoreURL selects the ports.BlobStore adapter. Empty (default)
+	// keeps storage on the local filesystem at <db dir>/blobs/. Set to
+	// an s3:// URL to use S3-compatible object storage (OCI Object
+	// Storage, AWS S3, MinIO, R2). The CP will lazily initialise the
+	// blob store when a feature first needs one (binary uploads, cold-
+	// tier event archives, exports).
+	BlobStoreURL    string
+	BlobAccessKey   string
+	BlobSecretKey   string
+	BlobBucket      string
+	BlobRegion      string
 }
 
 // OIDCEnabled reports whether OIDC is configured.
@@ -194,6 +206,12 @@ func FromEnv() Config {
 
 		EventTTLDays: envInt("OKESU_CP_EVENT_TTL_DAYS", 0),
 		PubSubURL:    os.Getenv("OKESU_CP_PUBSUB_URL"),
+
+		BlobStoreURL:  os.Getenv("OKESU_CP_BLOB_URL"),
+		BlobAccessKey: os.Getenv("OKESU_CP_BLOB_ACCESS_KEY"),
+		BlobSecretKey: os.Getenv("OKESU_CP_BLOB_SECRET_KEY"),
+		BlobBucket:    os.Getenv("OKESU_CP_BLOB_BUCKET"),
+		BlobRegion:    os.Getenv("OKESU_CP_BLOB_REGION"),
 	}
 }
 

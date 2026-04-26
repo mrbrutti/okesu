@@ -98,6 +98,13 @@ func serveCmd() *cobra.Command {
 	// Pub/sub (SSE fan-out, run subscribers)
 	cmd.Flags().StringVar(&cfg.PubSubURL, "pubsub-url", cfg.PubSubURL, "PubSub URL — empty=inprocess (single CP); redis://host:6379/0 for multi-replica deployments")
 
+	// Blob store (binaries, exports, cold-tier event archives)
+	cmd.Flags().StringVar(&cfg.BlobStoreURL, "blob-url", cfg.BlobStoreURL, "Blob store URL — empty=local filesystem; s3://endpoint or https://<namespace>.compat.objectstorage.<region>.oraclecloud.com for OCI/S3")
+	cmd.Flags().StringVar(&cfg.BlobAccessKey, "blob-access-key", cfg.BlobAccessKey, "S3 access key (OCI customer secret key, AWS access-key-id, MinIO root user)")
+	cmd.Flags().StringVar(&cfg.BlobSecretKey, "blob-secret-key", cfg.BlobSecretKey, "S3 secret key — paste from OCI Profile → Customer Secret Keys")
+	cmd.Flags().StringVar(&cfg.BlobBucket, "blob-bucket", cfg.BlobBucket, "S3 bucket name")
+	cmd.Flags().StringVar(&cfg.BlobRegion, "blob-region", cfg.BlobRegion, "S3 region (e.g. us-ashburn-1 for OCI, us-east-1 for AWS)")
+
 	return cmd
 }
 
