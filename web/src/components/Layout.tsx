@@ -2,6 +2,7 @@ import { Link, NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { Activity, AlertTriangle, LayoutDashboard, Server, Layers, Settings, LogOut, Sparkles } from 'lucide-react';
 import { api, type User } from '../api';
 import { cn } from '../lib/cn';
+import CommandPalette from './CommandPalette';
 
 interface Props {
   user: User;
@@ -87,6 +88,10 @@ export default function Layout({ user, onLogout }: Props) {
       <main className="flex-1 overflow-auto">
         <Outlet />
       </main>
+
+      {/* Cmd-K / Ctrl-K palette. Mounted once at the layout level so the
+       *  global hotkey is live on every authenticated route. */}
+      <CommandPalette />
     </div>
   );
 }
