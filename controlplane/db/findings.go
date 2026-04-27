@@ -1325,3 +1325,43 @@ func (s *Store) FindingsTimeSeries(sinceMs, bucketMs int64, dimCol string, topN 
 	}
 	return out, seriesOrdered, nil
 }
+
+// HostFindingCount is one row of the dashboard's top-hosts bar chart:
+// for a host, how many open findings + how many of those are CRITICAL.
+type HostFindingCount struct {
+	Host     string
+	Open     int64
+	Critical int64
+}
+
+// OpenFindingsByHost returns the top-`limit` hosts by open finding
+// count, descending. Hosts with no findings are excluded. Empty
+// host strings collapse into "(unknown)".
+func (s *Store) OpenFindingsByHost(limit int) ([]HostFindingCount, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 10
+	}
+	rows, err := s.Query(`
+		SELECT COALESCE(NULLIF(host, ''), '(unknown)') AS h,
+		       COUNT(*) AS open_n,
+		       SUM(CASE WHEN UPPER(severity) = 'CRITICAL' THEN 1 ELSE 0 END) AS crit_n
+		FROM findings
+		WHERE status = 'open'
+		GROUP BY h
+		ORDER BY open_n DESC
+		LIMIT ?
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []HostFindingCount
+	for rows.Next() {
+		var r HostFindingCount
+		if err := rows.Scan(&r.Host, &r.Open, &r.Critical); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}

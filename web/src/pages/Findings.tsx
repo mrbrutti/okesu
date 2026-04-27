@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import {
   ArrowUpRight,
   Check,
@@ -55,7 +55,18 @@ export default function FindingsPage() {
   const [agentFilter, setAgentFilter] = useState('');
   const [hostFilter, setHostFilter] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('');
-  const [selectedId, setSelectedId] = useState<number | null>(null);
+  // ?id=N opens the detail drawer for finding N — used as a
+  // deep-link target by Cmd-K and external bookmarks. Two-way bound:
+  // closing the drawer drops the param so the URL stays canonical.
+  const [params, setParams] = useSearchParams();
+  const idParam = params.get('id');
+  const selectedId = idParam !== null ? Number(idParam) : null;
+  const setSelectedId = (id: number | null) => {
+    const p = new URLSearchParams(params);
+    if (id === null) p.delete('id');
+    else p.set('id', String(id));
+    setParams(p, { replace: true });
+  };
   const [error, setError] = useState<string | null>(null);
   const [hasMoreFindings, setHasMoreFindings] = useState(true);
 

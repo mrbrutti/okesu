@@ -1,28 +1,30 @@
-// Recharts-based chart components for the Dashboard page. Imported
-// lazily by Dashboard.tsx via React.lazy so the ~80KB recharts bundle
-// only loads when an operator visits /dashboard — Findings / Daimons /
-// Nodes pages don't pay the cost.
+// Recharts-based chart components for the Dashboard page. Lazy-loaded
+// from Dashboard.tsx so the ~110KB recharts chunk only loads on the
+// /dashboard route.
 
 import { useMemo } from 'react';
 import {
-  Area,
-  AreaChart,
+  Bar,
+  BarChart,
   CartesianGrid,
+  Cell,
   Legend,
   Line,
   LineChart,
+  Pie,
+  PieChart,
   ResponsiveContainer,
   Tooltip,
   XAxis,
   YAxis,
 } from 'recharts';
-import type { DashboardResponse, InsightsFindingsResponse } from '../../api';
+import type { DashboardResponse, InsightsEventsResponse, InsightsFindingsResponse, TimeRange } from '../../api';
 
-// Palette aligned with tailwind.config.ts brand + sev tokens. Slot 0
-// is brand-500 (the actual app brand, #7c3aed). Slot 1 deliberately
-// is NOT red (sev.high collides) — chose cyan-600 for separation.
-// Slot 8 is sev.info (#64748b) which gives "other" enough contrast
-// against the chart's slate-200 grid lines.
+// Palette aligned with tailwind.config.ts brand-500 + sev.* tokens.
+// Slot 0 is brand-500. Slot 1 is cyan-600 (deliberately NOT red,
+// which would collide with sev.high in multi-line severity charts).
+// Slot 8 = sev.info for "other" — has contrast against the slate
+// grid lines.
 const PALETTE = [
   '#7c3aed', // brand-500
   '#0891b2', // cyan-600
@@ -35,15 +37,13 @@ const PALETTE = [
   '#64748b', // slate-500 — used for "other"
 ];
 
-// Severity colors track tailwind.config.ts sev.* tokens exactly so
-// chart series match the badges on Findings, Dashboard, and the
-// CRIT pills in the Stale fleet list.
+// Severity colors track tailwind sev.* tokens exactly.
 const SEVERITY_COLOR: Record<string, string> = {
-  CRITICAL: '#9333ea', // sev.critical (purple-600)
-  HIGH:     '#dc2626', // sev.high (red-600)
-  MEDIUM:   '#ea580c', // sev.medium (orange-600)
-  LOW:      '#ca8a04', // sev.low (yellow-600)
-  INFO:     '#64748b', // sev.info (slate-500)
+  CRITICAL: '#9333ea',
+  HIGH:     '#dc2626',
+  MEDIUM:   '#ea580c',
+  LOW:      '#ca8a04',
+  INFO:     '#64748b',
 };
 
 function colorFor(seriesName: string, idx: number, isSeverity: boolean): string {
@@ -51,98 +51,182 @@ function colorFor(seriesName: string, idx: number, isSeverity: boolean): string 
     return SEVERITY_COLOR[seriesName] ?? PALETTE[idx % PALETTE.length];
   }
   if (seriesName === 'other') return PALETTE[8];
-  // Skip slot 0 for non-severity grouping so the most-active series
-  // doesn't read as "primary/selected" by virtue of using brand color.
   return PALETTE[(idx + 1) % PALETTE.length];
 }
 
-// ── Events / hour, stacked area ─────────────────────────────────────
+// ── Events timeline (single line) ───────────────────────────────────
 
-export function EventsPerHourChart({ data }: { data: DashboardResponse['events_per_hour'] }) {
-  // Recharts wants flat row objects: one per bucket, with each event
-  // type as its own key. Find the union of keys across all buckets so
-  // we can build a stable Area for each.
-  const { rows, keys } = useMemo(() => {
-    const allKeys = new Set<string>();
-    const r = data.map((b) => {
-      const row: Record<string, number | string> = { hour: hourLabel(b.hour_ts) };
-      for (const [k, v] of Object.entries(b.by_type)) {
-        allKeys.add(k);
-        row[k] = v;
-      }
-      return row;
-    });
-    // Order: most-frequent types first so they're at the bottom of
-    // the stack (chart convention).
-    const totals: Record<string, number> = {};
-    for (const k of allKeys) totals[k] = 0;
-    for (const b of data) {
-      for (const [k, v] of Object.entries(b.by_type)) totals[k] += v;
-    }
-    const ordered = [...allKeys].sort((a, b) => totals[b] - totals[a]);
-    return { rows: r, keys: ordered };
-  }, [data]);
-
+export function EventsTimelineChart({ data, range }: { data: InsightsEventsResponse; range: TimeRange }) {
+  const rows = useMemo(
+    () => data.buckets.map((b) => ({ ts: tsLabel(b.ts, data.bucket_ms), count: b.count })),
+    [data],
+  );
   return (
-    <ResponsiveContainer width="100%" height={220}>
-      <AreaChart data={rows} margin={{ top: 5, right: 12, left: -10, bottom: 0 }}>
-        <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" vertical={false} />
-        <XAxis dataKey="hour" tick={{ fontSize: 10, fill: '#64748b' }} interval={3} />
-        <YAxis tick={{ fontSize: 10, fill: '#64748b' }} allowDecimals={false} />
-        <Tooltip contentStyle={tooltipStyle} labelStyle={{ fontWeight: 600 }} />
-        <Legend wrapperStyle={{ fontSize: 11 }} />
-        {keys.map((k, i) => (
-          <Area
-            key={k}
-            type="monotone"
-            dataKey={k}
-            stackId="1"
-            stroke={PALETTE[i % PALETTE.length]}
-            fill={PALETTE[i % PALETTE.length]}
-            fillOpacity={0.55}
-          />
-        ))}
-      </AreaChart>
+    <ResponsiveContainer width="100%" height={180}>
+      <LineChart data={rows} margin={{ top: 8, right: 12, left: -12, bottom: 0 }}>
+        <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
+        <XAxis
+          dataKey="ts"
+          tick={{ fontSize: 10, fill: '#94a3b8' }}
+          interval={tickInterval(range)}
+          axisLine={false}
+          tickLine={false}
+        />
+        <YAxis
+          tick={{ fontSize: 10, fill: '#94a3b8' }}
+          allowDecimals={false}
+          axisLine={false}
+          tickLine={false}
+          width={40}
+        />
+        <Tooltip contentStyle={tooltipStyle} labelStyle={{ fontWeight: 600 }} cursor={{ stroke: '#cbd5e1', strokeWidth: 1 }} />
+        <Line
+          type="monotone"
+          dataKey="count"
+          stroke={PALETTE[0]}
+          strokeWidth={2}
+          dot={false}
+          activeDot={{ r: 4, strokeWidth: 0 }}
+        />
+      </LineChart>
     </ResponsiveContainer>
   );
 }
 
 // ── Findings over time, multi-series line ───────────────────────────
 
-export function FindingsTimelineChart({ data }: { data: InsightsFindingsResponse }) {
-  const { rows, keys } = useMemo(() => {
-    const r = data.buckets.map((b) => {
+export function FindingsTimelineChart({ data, range }: { data: InsightsFindingsResponse; range: TimeRange }) {
+  const rows = useMemo(() => {
+    return data.buckets.map((b) => {
       const row: Record<string, number | string> = { ts: tsLabel(b.ts, data.bucket_ms) };
-      // Pre-fill all series with 0 so Recharts renders a continuous
-      // line through gaps instead of a tooltip-NaN.
       for (const k of data.series) row[k] = b.by[k] ?? 0;
       return row;
     });
-    return { rows: r, keys: data.series };
   }, [data]);
 
   const isSeverity = data.group_by === 'severity';
 
   return (
-    <ResponsiveContainer width="100%" height={260}>
-      <LineChart data={rows} margin={{ top: 5, right: 12, left: -10, bottom: 0 }}>
-        <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" vertical={false} />
-        <XAxis dataKey="ts" tick={{ fontSize: 10, fill: '#64748b' }} interval="preserveStartEnd" />
-        <YAxis tick={{ fontSize: 10, fill: '#64748b' }} allowDecimals={false} />
-        <Tooltip contentStyle={tooltipStyle} labelStyle={{ fontWeight: 600 }} />
-        <Legend wrapperStyle={{ fontSize: 11 }} />
-        {keys.map((k, i) => (
+    <ResponsiveContainer width="100%" height={220}>
+      <LineChart data={rows} margin={{ top: 8, right: 12, left: -12, bottom: 0 }}>
+        <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
+        <XAxis
+          dataKey="ts"
+          tick={{ fontSize: 10, fill: '#94a3b8' }}
+          interval={tickInterval(range)}
+          axisLine={false}
+          tickLine={false}
+        />
+        <YAxis
+          tick={{ fontSize: 10, fill: '#94a3b8' }}
+          allowDecimals={false}
+          axisLine={false}
+          tickLine={false}
+          width={40}
+        />
+        <Tooltip contentStyle={tooltipStyle} labelStyle={{ fontWeight: 600 }} cursor={{ stroke: '#cbd5e1', strokeWidth: 1 }} />
+        <Legend wrapperStyle={{ fontSize: 11, paddingTop: 6 }} iconType="line" />
+        {data.series.map((k, i) => (
           <Line
             key={k}
             type="monotone"
             dataKey={k}
             stroke={colorFor(k, i, isSeverity)}
-            dot={false}
             strokeWidth={2}
+            dot={false}
+            activeDot={{ r: 4, strokeWidth: 0 }}
           />
         ))}
       </LineChart>
     </ResponsiveContainer>
+  );
+}
+
+// ── Top affected hosts (horizontal bar) ─────────────────────────────
+
+export function TopHostsChart({ data }: { data: DashboardResponse['top_hosts'] }) {
+  if (!data || data.length === 0) {
+    return <div className="text-xs text-ink-mute py-12 text-center">No findings — fleet is clean.</div>;
+  }
+  const rows = data.map((d) => ({ host: d.host, open: d.open, critical: d.critical }));
+  const height = Math.max(120, rows.length * 28);
+  return (
+    <ResponsiveContainer width="100%" height={height}>
+      <BarChart data={rows} layout="vertical" margin={{ top: 0, right: 12, left: 8, bottom: 0 }}>
+        <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" horizontal={false} />
+        <XAxis
+          type="number"
+          tick={{ fontSize: 10, fill: '#94a3b8' }}
+          axisLine={false}
+          tickLine={false}
+          allowDecimals={false}
+        />
+        <YAxis
+          type="category"
+          dataKey="host"
+          tick={{ fontSize: 11, fill: '#475569' }}
+          axisLine={false}
+          tickLine={false}
+          width={120}
+        />
+        <Tooltip contentStyle={tooltipStyle} cursor={{ fill: '#f8fafc' }} />
+        <Bar dataKey="open" fill={PALETTE[0]} radius={[0, 4, 4, 0]} />
+      </BarChart>
+    </ResponsiveContainer>
+  );
+}
+
+// ── Fleet rollout donut ────────────────────────────────────────────
+
+export function FleetRolloutDonut({ data }: { data: DashboardResponse['fleet_rollout'] }) {
+  const slices = [
+    { name: 'On canonical', value: data.canonical, color: '#10b981' },     // emerald
+    { name: 'Other version', value: data.other_version, color: '#f59e0b' }, // amber
+    { name: 'Unknown',       value: data.unknown, color: '#94a3b8' },       // slate
+  ].filter((s) => s.value > 0);
+
+  if (data.total === 0) {
+    return <div className="text-xs text-ink-mute py-12 text-center">No heartbeating daemons.</div>;
+  }
+  const pct = data.total > 0 ? Math.round((data.canonical / data.total) * 100) : 0;
+
+  return (
+    <div className="flex items-center gap-4">
+      <div className="relative w-[140px] h-[140px] shrink-0">
+        <ResponsiveContainer width="100%" height="100%">
+          <PieChart>
+            <Pie
+              data={slices}
+              dataKey="value"
+              nameKey="name"
+              cx="50%"
+              cy="50%"
+              innerRadius={42}
+              outerRadius={62}
+              paddingAngle={2}
+              startAngle={90}
+              endAngle={-270}
+            >
+              {slices.map((s) => <Cell key={s.name} fill={s.color} />)}
+            </Pie>
+            <Tooltip contentStyle={tooltipStyle} />
+          </PieChart>
+        </ResponsiveContainer>
+        <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+          <div className="text-2xl font-semibold tabular-nums text-ink">{pct}%</div>
+          <div className="text-[10px] uppercase tracking-wide text-ink-mute">on canonical</div>
+        </div>
+      </div>
+      <ul className="text-xs space-y-1.5 flex-1 min-w-0">
+        {slices.map((s) => (
+          <li key={s.name} className="flex items-center gap-2">
+            <span className="w-2 h-2 rounded-full shrink-0" style={{ background: s.color }} />
+            <span className="text-ink-dim flex-1 truncate">{s.name}</span>
+            <span className="font-mono tabular-nums text-ink">{s.value}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
@@ -157,14 +241,18 @@ const tooltipStyle: React.CSSProperties = {
   boxShadow: '0 2px 6px rgba(0,0,0,0.06)',
 };
 
-function hourLabel(unixMs: number): string {
-  const d = new Date(unixMs);
-  return d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+// tickInterval picks a sensible XAxis density for the chart so labels
+// don't overlap. Recharts will draw every Nth tick.
+function tickInterval(range: TimeRange): number | 'preserveStartEnd' {
+  switch (range) {
+    case '30m': return 4;  // 30 buckets / 1m, show every 5th
+    case '1h':  return 4;
+    case '24h': return 3;  // 24 buckets / 1h
+    case '7d':  return 3;  // 28 buckets / 6h
+    case '30d': return 4;  // 30 buckets / 1d
+  }
 }
 
-// tsLabel formats a bucket timestamp at a granularity matching
-// bucket_ms. 24h view (1h buckets) shows time-of-day; 7d (6h
-// buckets) shows day+hour; 30d (1d buckets) shows the date.
 function tsLabel(unixMs: number, bucketMs: number): string {
   const d = new Date(unixMs);
   if (bucketMs >= 24 * 3600 * 1000) {
@@ -172,6 +260,10 @@ function tsLabel(unixMs: number, bucketMs: number): string {
   }
   if (bucketMs >= 6 * 3600 * 1000) {
     return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit' });
+  }
+  // <= 1h buckets: time of day, with seconds when bucket < 1m
+  if (bucketMs < 60 * 1000) {
+    return d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
   }
   return d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
 }

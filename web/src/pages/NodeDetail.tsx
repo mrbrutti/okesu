@@ -6,6 +6,7 @@ import {
   CheckCircle2,
   Clock,
   Cpu,
+  Fingerprint,
   Hash,
   HardDrive,
   Info,
@@ -17,11 +18,12 @@ import {
   RefreshCw,
   RotateCcw,
   Server,
+  Trash2,
   Upload,
   Wifi,
   WifiOff,
 } from 'lucide-react';
-import { api, type AboutInfo, type DaimonItem, type NodeItem } from '../api';
+import { api, ApiError, type AboutInfo, type DaimonItem, type KnownHostItem, type NodeItem, type User } from '../api';
 import { cn } from '../lib/cn';
 import EventTimeline from '../components/EventTimeline';
 import { BinaryUpdateDialog, type BinaryAction } from '../components/BinaryUpdateDialog';
@@ -39,6 +41,7 @@ export default function NodeDetailPage() {
   const [binaryAction, setBinaryAction] = useState<BinaryAction | null>(null);
   const [about, setAbout] = useState<AboutInfo | null>(null);
   const [agents, setAgents] = useState<DaimonItem[] | null>(null);
+  const [user, setUser] = useState<User | null>(null);
 
   // Binary version this node is running. All daimons on a node share
   // a single okesu binary, so any agent's reported version is the
@@ -84,6 +87,7 @@ export default function NodeDetailPage() {
   useEffect(() => {
     let cancelled = false;
     api.about().then((a) => { if (!cancelled) setAbout(a); }).catch(() => { /* ignore */ });
+    api.me().then((u) => { if (!cancelled) setUser(u); }).catch(() => { /* ignore */ });
     return () => { cancelled = true; };
   }, []);
 
@@ -265,7 +269,7 @@ export default function NodeDetailPage() {
             }
           />
         )}
-        {tab === 'overview' && <OverviewTab node={node} />}
+        {tab === 'overview' && <OverviewTab node={node} isAdmin={user?.role === 'admin'} />}
       </main>
       {binaryAction && (
         <BinaryUpdateDialog
@@ -313,7 +317,7 @@ function Stat({ label, value, icon: Icon }: { label: string; value: string; icon
   );
 }
 
-function OverviewTab({ node }: { node: NodeItem }) {
+function OverviewTab({ node, isAdmin }: { node: NodeItem; isAdmin: boolean }) {
   return (
     <div className="p-6 grid grid-cols-1 lg:grid-cols-2 gap-4">
       <Card title="Identity">
@@ -329,6 +333,7 @@ function OverviewTab({ node }: { node: NodeItem }) {
         <Row label="Last status" mono>{node.last_status_at ?? '—'}</Row>
         <Row label="Last deploy" mono>{node.last_deployed_at ?? 'never'}</Row>
       </Card>
+      <KnownHostCard nodeId={node.id} isAdmin={isAdmin} />
       <Card title="Telemetry" wide>
         {node.metadata_at ? (
           <>
@@ -395,6 +400,90 @@ function Row({ label, children, mono }: { label: string; children: React.ReactNo
       <dt className="text-ink-dim">{label}</dt>
       <dd className={cn('text-ink truncate', mono && 'font-mono text-xs')}>{children}</dd>
     </div>
+  );
+}
+
+function KnownHostCard({ nodeId, isAdmin }: { nodeId: number; isAdmin: boolean }) {
+  const [kh, setKh] = useState<KnownHostItem | null | undefined>(undefined);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const refresh = () => {
+    setError(null);
+    api.nodeKnownHost(nodeId)
+      .then((v) => setKh(v))
+      .catch((e) => {
+        setKh(null);
+        setError(e instanceof ApiError ? e.message : String(e));
+      });
+  };
+
+  useEffect(() => { refresh(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [nodeId]);
+
+  async function clear() {
+    if (!confirm('Clear the pinned host key for this node? The next deploy will re-establish trust on first connect (TOFU).')) return;
+    setBusy(true); setError(null);
+    try {
+      await api.clearNodeKnownHost(nodeId);
+      refresh();
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="bg-panel border border-border rounded-xl shadow-card p-5 lg:col-span-2">
+      <h3 className="text-sm font-semibold mb-3">SSH host key (pinned)</h3>
+
+      {kh === undefined && <p className="text-xs text-ink-mute">Loading…</p>}
+
+      {kh === null && (
+        <p className="text-xs text-ink-mute">
+          No host key pinned. The first deploy to this node will pin its key automatically (TOFU).
+        </p>
+      )}
+
+      {kh && (
+        <div className="space-y-2 text-sm">
+          <div className="flex items-center gap-2 flex-wrap">
+            <Fingerprint size={13} className="text-ink-mute shrink-0" />
+            <span className="font-mono text-xs break-all">{kh.fingerprint}</span>
+            {kh.key_type && (
+              <span className="text-[10px] uppercase tracking-wide text-ink-mute bg-slate-100 px-1.5 py-0.5 rounded">
+                {kh.key_type}
+              </span>
+            )}
+          </div>
+          <div className="text-[11px] text-ink-mute" title={kh.accepted_at}>
+            Pinned {formatAgo(kh.accepted_at)}
+            {kh.accepted_by_email && <> by {kh.accepted_by_email}</>}
+          </div>
+          {isAdmin && (
+            <div className="pt-1">
+              <button
+                onClick={clear}
+                disabled={busy}
+                className="text-xs px-2 py-1 border border-border rounded-md hover:bg-red-50 hover:text-red-700 inline-flex items-center gap-1 disabled:opacity-50"
+              >
+                <Trash2 size={11} />
+                {busy ? 'Clearing…' : 'Clear'}
+              </button>
+              <span className="text-[11px] text-ink-mute ml-3">
+                After legitimate host-key rotation, click <strong>Clear</strong> and the next deploy will re-pin via TOFU.
+              </span>
+            </div>
+          )}
+        </div>
+      )}
+
+      {error && (
+        <div className="mt-3 text-xs text-red-700 bg-red-50 border border-red-200 px-3 py-2 rounded-md">
+          {error}
+        </div>
+      )}
+    </section>
   );
 }
 

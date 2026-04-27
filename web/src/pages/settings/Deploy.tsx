@@ -8,7 +8,7 @@ import {
   Trash2,
   Upload,
 } from 'lucide-react';
-import { api, ApiError, type BinaryItem, type DeployKeyStatus, type KnownHostItem } from '../../api';
+import { api, ApiError, type BinaryItem, type DeployKeyStatus } from '../../api';
 import { cn } from '../../lib/cn';
 
 export default function DeploySection() {
@@ -20,14 +20,13 @@ export default function DeploySection() {
           Deploy
         </h2>
         <p className="text-xs text-ink-dim mt-0.5">
-          Daemon binaries for each target architecture, the SSH key used to
-          reach nodes, and the SSH host keys pinned for each registered node.
+          Daemon binaries for each target architecture and the SSH key used to
+          reach nodes.
         </p>
       </header>
 
       <SSHKeyCard />
       <BinariesCard />
-      <KnownHostsCard />
     </div>
   );
 }
@@ -328,86 +327,6 @@ function UploadForm({ onUploaded }: { onUploaded: () => void }) {
         Re-uploading replaces an existing binary with the same os/arch.
       </p>
     </div>
-  );
-}
-
-// ── known hosts ────────────────────────────────────────────────────────────
-
-function KnownHostsCard() {
-  const [list, setList] = useState<KnownHostItem[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  const refresh = () => {
-    api.knownHosts().then(setList).catch((e) => setError(String(e)));
-  };
-  useEffect(() => { refresh(); }, []);
-
-  async function clearOne(id: number, name: string) {
-    if (!confirm(`Clear pinned host key for "${name}"? The next deploy will re-establish trust on first connect (TOFU).`)) return;
-    try {
-      await api.clearNodeKnownHost(id);
-      refresh();
-    } catch (e) {
-      alert(String(e));
-    }
-  }
-
-  return (
-    <Card title="Pinned SSH host keys" subtitle="The CP TOFU-pins each node's host key on first deploy. Mismatches abort all subsequent deploys until cleared.">
-      {error && <Notice tone="err">{error}</Notice>}
-
-      {list === null ? (
-        <p className="text-sm text-ink-mute">Loading…</p>
-      ) : list.length === 0 ? (
-        <p className="text-sm text-ink-mute">No nodes have been deployed yet — the table fills up as deploys run.</p>
-      ) : (
-        <table className="w-full text-sm">
-          <thead className="text-left text-[11px] uppercase tracking-wide text-ink-mute border-b border-border">
-            <tr>
-              <th className="py-2 font-medium">Node</th>
-              <th className="py-2 font-medium">Key type</th>
-              <th className="py-2 font-medium">Fingerprint</th>
-              <th className="py-2 font-medium w-32">Pinned</th>
-              <th className="py-2 font-medium w-20"></th>
-            </tr>
-          </thead>
-          <tbody>
-            {list.map((kh) => (
-              <tr key={kh.node_id} className="border-b border-border/60 last:border-0 align-top">
-                <td className="py-2.5">
-                  <div className="text-sm font-medium">{kh.node_name}</div>
-                  <div className="text-[11px] text-ink-mute font-mono">{kh.hostname}:{kh.ssh_port}</div>
-                </td>
-                <td className="py-2.5 text-xs font-mono text-ink-dim">{kh.key_type}</td>
-                <td className="py-2.5 text-xs font-mono text-ink-dim break-all">
-                  <Fingerprint size={11} className="inline -mt-0.5 mr-0.5 text-ink-mute" />
-                  {kh.fingerprint}
-                </td>
-                <td className="py-2.5 text-[11px] text-ink-mute">
-                  {fmtRel(kh.accepted_at)}
-                  {kh.accepted_by_email && <div>by {kh.accepted_by_email}</div>}
-                </td>
-                <td className="py-2.5 text-right">
-                  <button
-                    onClick={() => clearOne(kh.node_id, kh.node_name || `#${kh.node_id}`)}
-                    className="text-xs px-2 py-1 border border-border rounded-md hover:bg-red-50 hover:text-red-700 inline-flex items-center gap-1"
-                  >
-                    <Trash2 size={11} />
-                    Clear
-                  </button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-
-      <Notice tone="info">
-        After legitimate host-key rotation, click <strong>Clear</strong> and the next
-        deploy will re-pin via TOFU. If you weren't expecting a change, treat the
-        mismatch as a security event and investigate before clearing.
-      </Notice>
-    </Card>
   );
 }
 

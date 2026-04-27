@@ -475,12 +475,17 @@ export const api = {
 
   // ── Dashboard ────────────────────────────────────────────────────
   dashboard: () => request<DashboardResponse>('/api/dashboard'),
-  insightsFindings: (params: { since?: '24h' | '7d' | '30d'; group_by?: 'severity' | 'agent' | 'host'; top?: number }) => {
+  insightsFindings: (params: { since?: TimeRange; group_by?: 'severity' | 'agent' | 'host'; top?: number }) => {
     const qs = new URLSearchParams();
     if (params.since) qs.set('since', params.since);
     if (params.group_by) qs.set('group_by', params.group_by);
     if (params.top) qs.set('top', String(params.top));
     return request<InsightsFindingsResponse>(`/api/insights/findings?${qs.toString()}`);
+  },
+  insightsEvents: (params: { since?: TimeRange }) => {
+    const qs = new URLSearchParams();
+    if (params.since) qs.set('since', params.since);
+    return request<InsightsEventsResponse>(`/api/insights/events?${qs.toString()}`);
   },
   users: () => request<UserItem[]>('/api/users'),
   user: (id: number) => request<UserItem>(`/api/users/${id}`),
@@ -835,9 +840,13 @@ export interface NodeDeployReq {
   include_mgmt_cert?: boolean;
 }
 
+/** Time-range shared across the two dashboard timeline charts. */
+export type TimeRange = '30m' | '1h' | '24h' | '7d' | '30d';
+
 export interface DashboardResponse {
   daimons: { total: number; healthy: number; unhealthy: number };
-  nodes: { total: number; connected: number };
+  nodes:   { total: number; heartbeating: number };
+  tunnels: { live: number };
   findings: { open: number; critical: number; high: number };
   drift: {
     total: number;
@@ -850,11 +859,14 @@ export interface DashboardResponse {
       binary_version?: string;
     }>;
   };
-  events_per_hour: Array<{
-    hour_ts: number;
-    by_type: Record<string, number>;
-  }>;
-  recent_critical: Finding[];
+  top_hosts: Array<{ host: string; open: number; critical: number }>;
+  fleet_rollout: {
+    canonical: number;
+    other_version: number;
+    unknown: number;
+    total: number;
+    canonical_ref: string;
+  };
 }
 
 export interface InsightsFindingsResponse {
@@ -865,6 +877,11 @@ export interface InsightsFindingsResponse {
     ts: number;
     by: Record<string, number>;
   }>;
+}
+
+export interface InsightsEventsResponse {
+  bucket_ms: number;
+  buckets: Array<{ ts: number; count: number }>;
 }
 
 export interface AboutInfo {

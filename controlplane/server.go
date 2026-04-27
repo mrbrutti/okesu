@@ -317,6 +317,7 @@ func (s *Server) routes() http.Handler {
 		r.Delete("/api/users/me/sessions", api.MyRevokeOtherSessions(s.store, s.mgr))
 		r.Get("/api/dashboard", api.Dashboard(s.store, s.eventStore, s.tunReg, s.cfg.DaimonFilesDir, s.daemonBinaryVersion))
 		r.Get("/api/insights/findings", api.InsightsFindings(s.store))
+		r.Get("/api/insights/events", api.InsightsEvents(s.eventStore))
 		r.Get("/api/system/about", api.AboutHandler(Version(), s.daemonBinaryVersion, api.AboutFeatures{
 			OIDC:          s.oidc != nil,
 			MgmtPlane:     s.mgmtHTTP != nil,
