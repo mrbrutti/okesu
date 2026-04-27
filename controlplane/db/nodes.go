@@ -237,6 +237,32 @@ func (s *Store) UpdateNodeMetadata(id int64, m NodeMetadataUpdate) error {
 	return err
 }
 
+// BackfillNodeDaemonHostname is the auto-recovery path that runs on
+// every daemon heartbeat: when a node has agents_installed that
+// includes `agentName` but its daemon_hostname is still blank, fill
+// it in with the value the daemon just reported. Single UPDATE; the
+// WHERE clause filters out the common no-op case (daemon_hostname
+// already set), so it costs ~one row scan per heartbeat after the
+// first match.
+//
+// Origin: nodes registered before Phase 7a's tunnel probe populated
+// daemon_hostname were stuck at NULL, which broke NodeDetail's Live
+// Events filter. This patch closes the gap going forward without
+// requiring operators to run "Refresh metadata" by hand.
+func (s *Store) BackfillNodeDaemonHostname(agentName, daemonHost string) error {
+	if agentName == "" || daemonHost == "" {
+		return nil
+	}
+	_, err := s.Exec(`
+		UPDATE nodes
+		SET daemon_hostname = ?
+		WHERE (daemon_hostname IS NULL OR daemon_hostname = '')
+		  AND agents_installed IS NOT NULL
+		  AND ',' || agents_installed || ',' LIKE '%,' || ? || ',%'
+	`, daemonHost, agentName)
+	return err
+}
+
 // SetNodeAutoUpdatePaused flips the per-node freeze pin. When paused,
 // the mgmt-plane /config endpoint masks definition_hash for all
 // daimons running on this node so their hot-reload poll never fires.

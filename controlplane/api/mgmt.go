@@ -122,6 +122,12 @@ func MgmtHeartbeat(store *db.Store) http.HandlerFunc {
 			http.Error(w, "store: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
+		// Auto-recover nodes whose daemon_hostname is blank — the
+		// NodeDetail Live Events filter joins on this column, so a
+		// missing value silently hides every event the operator
+		// expects to see. Fire-and-forget; failures here don't
+		// affect the heartbeat contract.
+		_ = store.BackfillNodeDaemonHostname(certName, p.Host)
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"ok":true}`))
 	}
