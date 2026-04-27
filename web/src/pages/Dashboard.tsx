@@ -192,8 +192,8 @@ export default function DashboardPage() {
                     to={`/findings?id=${f.id}`}
                     className="flex items-center gap-3 px-3 py-2 hover:bg-slate-50/60"
                   >
-                    <span className="text-[10px] uppercase tracking-wide text-red-700 bg-red-50 ring-1 ring-red-200 px-1.5 py-0.5 rounded font-mono">
-                      CRIT
+                    <span className="severity-critical text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded font-mono">
+                      CRITICAL
                     </span>
                     <span className="flex-1 text-sm text-ink truncate">{f.title || '(no title)'}</span>
                     <span className="text-[11px] text-ink-mute font-mono shrink-0">

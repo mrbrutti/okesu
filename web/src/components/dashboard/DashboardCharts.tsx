@@ -18,29 +18,32 @@ import {
 } from 'recharts';
 import type { DashboardResponse, InsightsFindingsResponse } from '../../api';
 
-// Brand-aligned palette. First entry matches the brand color used
-// across the app; subsequent entries cycle through complementary
-// hues at similar saturation. All readable on white.
+// Palette aligned with tailwind.config.ts brand + sev tokens. Slot 0
+// is brand-500 (the actual app brand, #7c3aed). Slot 1 deliberately
+// is NOT red (sev.high collides) — chose cyan-600 for separation.
+// Slot 8 is sev.info (#64748b) which gives "other" enough contrast
+// against the chart's slate-200 grid lines.
 const PALETTE = [
-  '#6366f1', // brand indigo
-  '#ef4444', // red
-  '#f59e0b', // amber
-  '#10b981', // emerald
-  '#06b6d4', // cyan
-  '#8b5cf6', // violet
-  '#ec4899', // pink
-  '#84cc16', // lime
-  '#94a3b8', // slate (used for "other")
+  '#7c3aed', // brand-500
+  '#0891b2', // cyan-600
+  '#f59e0b', // amber-500
+  '#10b981', // emerald-500
+  '#8b5cf6', // violet-500
+  '#ec4899', // pink-500
+  '#84cc16', // lime-500
+  '#0284c7', // sky-600
+  '#64748b', // slate-500 — used for "other"
 ];
 
-// Severity colors line up with the rest of the app's severity pills,
-// so when group_by="severity" the chart legend matches the badges.
+// Severity colors track tailwind.config.ts sev.* tokens exactly so
+// chart series match the badges on Findings, Dashboard, and the
+// CRIT pills in the Stale fleet list.
 const SEVERITY_COLOR: Record<string, string> = {
-  CRITICAL: '#dc2626',
-  HIGH: '#ea580c',
-  MEDIUM: '#ca8a04',
-  LOW: '#0891b2',
-  INFO: '#64748b',
+  CRITICAL: '#9333ea', // sev.critical (purple-600)
+  HIGH:     '#dc2626', // sev.high (red-600)
+  MEDIUM:   '#ea580c', // sev.medium (orange-600)
+  LOW:      '#ca8a04', // sev.low (yellow-600)
+  INFO:     '#64748b', // sev.info (slate-500)
 };
 
 function colorFor(seriesName: string, idx: number, isSeverity: boolean): string {
@@ -48,7 +51,9 @@ function colorFor(seriesName: string, idx: number, isSeverity: boolean): string 
     return SEVERITY_COLOR[seriesName] ?? PALETTE[idx % PALETTE.length];
   }
   if (seriesName === 'other') return PALETTE[8];
-  return PALETTE[idx % PALETTE.length];
+  // Skip slot 0 for non-severity grouping so the most-active series
+  // doesn't read as "primary/selected" by virtue of using brand color.
+  return PALETTE[(idx + 1) % PALETTE.length];
 }
 
 // ── Events / hour, stacked area ─────────────────────────────────────
