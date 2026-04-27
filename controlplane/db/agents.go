@@ -187,7 +187,7 @@ func (s *Store) ListAgents(limit, offset int) ([]*Agent, error) {
 			&a.Name, &a.Host, &a.Provider, &a.Model, &a.Version,
 			&a.RegisteredAt, &a.LastHeartbeatAt, &a.LastTickCount,
 			&a.DesiredMaxTurns, &a.DesiredEffort, &a.DesiredSuspended,
-			&a.ConfigUpdatedAt,
+			&a.ConfigUpdatedAt, &a.CurrentDefinitionHash,
 		); err != nil {
 			return nil, err
 		}
