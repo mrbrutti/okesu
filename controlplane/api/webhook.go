@@ -12,8 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/section9labs/okesu/agent"
-	"github.com/section9labs/okesu/controlplane/db"
+	"github.com/section9labs/okesu/controlplane/eventpipeline"
 	"github.com/section9labs/okesu/controlplane/ports"
 )
 
@@ -24,14 +23,21 @@ type Broadcaster interface {
 
 // WebhookHandler returns an http.HandlerFunc that accepts daemon webhook
 // events. It verifies HMAC-SHA256 signatures (matching agent/sinks.go),
-// persists each event through the EventStore port, projects finding
-// events into the relational state Store, and re-broadcasts to live
-// subscribers via PubSub.
+// publishes each event onto the queue for async persistence, and
+// re-broadcasts to live subscribers via PubSub.
 //
-// `eventStore` is the abstraction in front of the events firehose —
-// sqlite in dev, ClickHouse in production. `store` remains the
-// relational state Store because finding projection mutates rows.
-func WebhookHandler(store *db.Store, eventStore ports.EventStore, secret string, bcast Broadcaster) http.HandlerFunc {
+// Phase 8c.next2 — the handler no longer touches the EventStore or the
+// relational Store directly. Both event persistence and finding
+// projection happen in the eventpipeline worker, fed by the queue. In
+// dev (--queue=inprocess) this is a goroutine round-trip; in production
+// (--queue=kafka) it's the durable async ingest path: a worker failure
+// leaves the message uncommitted in Kafka, so a healthy CP replica
+// picks it up and no events are lost.
+//
+// The handler returns 200 once the queue acknowledges; the daemon's
+// retry policy maps 5xx → reattempt, so a Kafka outage propagates as
+// "ingest unavailable, please retry" rather than data loss.
+func WebhookHandler(queue ports.Queue, secret string, bcast Broadcaster) http.HandlerFunc {
 	const maxBodyBytes = 1 << 20 // 1 MiB
 	const maxClockSkew = 5 * time.Minute
 
@@ -68,7 +74,9 @@ func WebhookHandler(store *db.Store, eventStore ports.EventStore, secret string,
 		agentName := r.Header.Get("X-Okesu-Agent")
 		host := r.Header.Get("X-Okesu-Host")
 
-		// Body is NDJSON — parse one line at a time.
+		// Body is NDJSON — parse one line at a time and publish to the
+		// queue. The worker performs the EventStore.InsertBatch +
+		// finding projection downstream.
 		count := 0
 		for _, line := range splitJSONL(body) {
 			if len(line) == 0 {
@@ -86,7 +94,8 @@ func WebhookHandler(store *db.Store, eventStore ports.EventStore, secret string,
 			if ev.Host == "" {
 				ev.Host = host
 			}
-			eventID, err := eventStore.Insert(r.Context(), ports.EventRecord{
+
+			rec := ports.EventRecord{
 				Ts:       ev.Ts,
 				Type:     ev.Type,
 				Agent:    ev.Agent,
@@ -94,38 +103,21 @@ func WebhookHandler(store *db.Store, eventStore ports.EventStore, secret string,
 				Severity: ev.Severity,
 				Title:    ev.Title,
 				RawJSON:  string(line),
-			})
+			}
+			payload, err := json.Marshal(rec)
 			if err != nil {
-				http.Error(w, "store: "+err.Error(), http.StatusInternalServerError)
+				http.Error(w, "encode: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+			if err := queue.Publish(r.Context(), eventpipeline.TopicEventsRaw, payload); err != nil {
+				http.Error(w, "queue: "+err.Error(), http.StatusServiceUnavailable)
 				return
 			}
 
-			// Project finding events into the structured findings table.
-			// Title is re-normalized as a defense-in-depth — older daemon
-			// builds and external producers via /api/findings/ingest may
-			// not have run the harvester's normalization.
-			if ev.Type == "finding" {
-				_, _ = store.InsertFinding(&db.FindingInsert{
-					EventID:         eventID,
-					Ts:              ev.Ts,
-					Agent:           ev.Agent,
-					Host:            ev.Host,
-					Severity:        ev.Severity,
-					Title:           agent.NormalizeFindingTitle(ev.Title),
-					Resource:        ev.Resource,
-					Evidence:        ev.Evidence,
-					DedupKey:        ev.DedupKey,
-					RawJSON:         string(line),
-					Category:        ev.Category,
-					ProcessPID:      ev.ProcessPID,
-					ProcessName:     ev.ProcessName,
-					Path:            ev.Path,
-					NetworkEndpoint: ev.NetworkEndpoint,
-					CVE:             ev.CVE,
-					Tags:            ev.Tags,
-					Attributes:      string(ev.Attributes),
-				})
-			}
+			// Live UI feed runs off the broadcast, not off the EventStore.
+			// Acceptable: an SSE client may briefly see an event before
+			// it lands in the Recent Events list, since the worker hasn't
+			// flushed yet. The window is bounded by BatchTimeout (100ms).
 			bcast.Publish(line)
 			count++
 		}

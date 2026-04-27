@@ -41,6 +41,7 @@ type Server struct {
 	cfg        Config
 	store      *db.Store
 	eventStore ports.EventStore
+	queue      ports.Queue
 	mgr        *auth.Manager
 	bcast      *Broadcaster
 	ca         *CA
@@ -190,7 +191,7 @@ func New(cfg Config) (*Server, error) {
 	// when multiple replicas run.
 	pipelineCtx, pipelineCancel := context.WithCancel(context.Background())
 	go func() {
-		w := eventpipeline.NewWorker(queue, eventStore, eventpipeline.Config{})
+		w := eventpipeline.NewWorker(queue, eventStore, store, eventpipeline.Config{})
 		if err := w.Run(pipelineCtx); err != nil && pipelineCtx.Err() == nil {
 			log.Printf("eventpipeline worker exited: %v", err)
 		}
@@ -201,6 +202,7 @@ func New(cfg Config) (*Server, error) {
 		cfg:        cfg,
 		store:      store,
 		eventStore: eventStore,
+		queue:      queue,
 		mgr:        mgr,
 		bcast:      bcast,
 		ca:         ca,
@@ -273,7 +275,7 @@ func (s *Server) routes() http.Handler {
 	r.Use(middleware.Recoverer)
 
 	// Public webhook endpoint — auth via HMAC, not cookies.
-	r.Post("/api/webhooks/events", api.WebhookHandler(s.store, s.eventStore, s.cfg.WebhookSecret, s.bcast))
+	r.Post("/api/webhooks/events", api.WebhookHandler(s.queue, s.cfg.WebhookSecret, s.bcast))
 
 	// External findings ingest — auth via Bearer API token, scope=findings:write.
 	r.Group(func(r chi.Router) {

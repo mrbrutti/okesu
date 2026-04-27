@@ -20,6 +20,8 @@ import (
 	"log"
 	"time"
 
+	"github.com/section9labs/okesu/agent"
+	"github.com/section9labs/okesu/controlplane/db"
 	"github.com/section9labs/okesu/controlplane/ports"
 )
 
@@ -40,27 +42,40 @@ type Config struct {
 	BatchTimeout time.Duration // max wait before flush; 0 → 100ms
 }
 
-// Worker reads from `queue`, batches messages, and writes them to
-// `store`. Run blocks until ctx cancels.
+// Worker reads from `queue`, batches messages, and writes them to the
+// EventStore. Run blocks until ctx cancels.
 //
-// On any error from store.InsertBatch the worker logs and DOESN'T ack
-// — the queue will redeliver. This means a transient ClickHouse
-// outage causes a backlog in Kafka but no data loss.
+// Phase 8c.next2 — the worker also projects finding events into the
+// relational state Store. The split is: events go through batched
+// EventStore.InsertBatch (cheap, columnar, append-only); findings go
+// through per-row Store.InsertFinding so each finding gets its
+// generated event_id from a single-row Insert. Findings are typically
+// a tiny fraction of total event volume so the per-row cost is fine.
+//
+// On any error from EventStore.InsertBatch the worker logs and
+// DOESN'T ack — the queue redelivers. Transient ClickHouse outages
+// produce a Kafka backlog but no data loss. Finding projection errors
+// are logged but don't block the batch ack: the underlying event is
+// already durable; the finding can be re-projected later if needed
+// (Phase 13's known-issues feed reads from the events table).
 type Worker struct {
-	queue ports.Queue
-	store ports.EventStore
-	cfg   Config
+	queue      ports.Queue
+	eventStore ports.EventStore
+	store      *db.Store
+	cfg        Config
 }
 
-// NewWorker constructs a Worker.
-func NewWorker(queue ports.Queue, store ports.EventStore, cfg Config) *Worker {
+// NewWorker constructs a Worker. Pass `store` nil to skip finding
+// projection (e.g. read-only replicas, or tests that only care about
+// the events firehose).
+func NewWorker(queue ports.Queue, eventStore ports.EventStore, store *db.Store, cfg Config) *Worker {
 	if cfg.BatchSize <= 0 {
 		cfg.BatchSize = 1000
 	}
 	if cfg.BatchTimeout <= 0 {
 		cfg.BatchTimeout = 100 * time.Millisecond
 	}
-	return &Worker{queue: queue, store: store, cfg: cfg}
+	return &Worker{queue: queue, eventStore: eventStore, store: store, cfg: cfg}
 }
 
 // Run starts the worker loop. Blocks until ctx cancels or the queue
@@ -92,13 +107,51 @@ func (w *Worker) Run(ctx context.Context) error {
 		if len(pending) == 0 {
 			return
 		}
-		if err := w.store.InsertBatch(ctx, pending); err != nil {
-			log.Printf("eventpipeline: batch insert failed (%d rows): %v", len(pending), err)
-			// Don't clear pending — the next flush retries the same
-			// rows. In the Kafka path, the messages aren't acked yet
-			// so they'll be redelivered if the CP dies; the in-process
-			// path just keeps retrying in memory until it succeeds.
-			return
+		// Split findings out so we can capture each one's event_id
+		// from a single-row Insert and link it into the findings
+		// table. Non-findings go through the batched fast path.
+		var (
+			findings   []ports.EventRecord
+			nonFinding = pending[:0:cap(pending)]
+		)
+		for _, e := range pending {
+			if e.Type == "finding" {
+				findings = append(findings, e)
+			} else {
+				nonFinding = append(nonFinding, e)
+			}
+		}
+		if len(nonFinding) > 0 {
+			if err := w.eventStore.InsertBatch(ctx, nonFinding); err != nil {
+				log.Printf("eventpipeline: batch insert failed (%d rows): %v", len(nonFinding), err)
+				// Don't clear pending — the next flush retries the
+				// same rows. In the Kafka path, the messages aren't
+				// acked yet so they'll be redelivered if the CP dies;
+				// the in-process path retries in memory.
+				return
+			}
+		}
+		for _, ev := range findings {
+			id, err := w.eventStore.Insert(ctx, ev)
+			if err != nil {
+				log.Printf("eventpipeline: finding event insert failed: %v", err)
+				return // leave pending intact for retry
+			}
+			if w.store == nil {
+				continue
+			}
+			fi, perr := parseFindingFields(ev)
+			if perr != nil {
+				log.Printf("eventpipeline: finding projection parse failed: %v (event_id=%d, skipping projection)", perr, id)
+				continue
+			}
+			fi.EventID = id
+			if _, ferr := w.store.InsertFinding(fi); ferr != nil {
+				// Event is durable; finding row failed to project.
+				// Log and continue — don't redeliver, that would
+				// double-insert the underlying event.
+				log.Printf("eventpipeline: finding projection failed (event_id=%d): %v", id, ferr)
+			}
 		}
 		pending = pending[:0]
 	}
@@ -141,4 +194,50 @@ func (w *Worker) Run(ctx context.Context) error {
 			return err
 		}
 	}
+}
+
+// findingFields mirrors the optional fields the daemon attaches to a
+// finding-type event. Re-parsed from RawJSON because ports.EventRecord
+// only carries the indexed fields; the firehose RawJSON is the source
+// of truth for everything else.
+type findingFields struct {
+	Resource        string          `json:"resource"`
+	Evidence        string          `json:"evidence"`
+	DedupKey        string          `json:"dedup_key"`
+	Category        string          `json:"category"`
+	ProcessPID      int64           `json:"process_pid"`
+	ProcessName     string          `json:"process_name"`
+	Path            string          `json:"path"`
+	NetworkEndpoint string          `json:"network_endpoint"`
+	CVE             string          `json:"cve"`
+	Tags            string          `json:"tags"`
+	Attributes      json.RawMessage `json:"attributes"`
+}
+
+func parseFindingFields(ev ports.EventRecord) (*db.FindingInsert, error) {
+	var f findingFields
+	if ev.RawJSON != "" {
+		if err := json.Unmarshal([]byte(ev.RawJSON), &f); err != nil {
+			return nil, err
+		}
+	}
+	return &db.FindingInsert{
+		Ts:              ev.Ts,
+		Agent:           ev.Agent,
+		Host:            ev.Host,
+		Severity:        ev.Severity,
+		Title:           agent.NormalizeFindingTitle(ev.Title),
+		Resource:        f.Resource,
+		Evidence:        f.Evidence,
+		DedupKey:        f.DedupKey,
+		RawJSON:         ev.RawJSON,
+		Category:        f.Category,
+		ProcessPID:      f.ProcessPID,
+		ProcessName:     f.ProcessName,
+		Path:            f.Path,
+		NetworkEndpoint: f.NetworkEndpoint,
+		CVE:             f.CVE,
+		Tags:            f.Tags,
+		Attributes:      string(f.Attributes),
+	}, nil
 }
