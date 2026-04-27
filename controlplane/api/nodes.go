@@ -19,6 +19,7 @@ import (
 	"github.com/section9labs/okesu/controlplane/auth"
 	"github.com/section9labs/okesu/controlplane/db"
 	"github.com/section9labs/okesu/controlplane/jobs"
+	"github.com/section9labs/okesu/controlplane/ports"
 	"github.com/section9labs/okesu/controlplane/sshdeploy"
 	"github.com/section9labs/okesu/controlplane/tunnel"
 )
@@ -43,6 +44,37 @@ type NodesConfig struct {
 	// host.lima.internal from inside a container).
 	WebhookURL string
 	MgmtURL    string
+	// Secrets, when set, is consulted as a fallback for the SSH private
+	// key when a deploy / update / rollback request omits one. Lookup
+	// uses the canonical name controlplane.SecretDeploySSHPrivateKey.
+	// Operators set the stored key via Settings → Deploy → SSH Key.
+	Secrets ports.Secrets
+}
+
+// resolvePrivateKey returns the SSH private key to use for a deploy
+// request, plus a source label for audit logs.
+//
+// Priority: per-request body > stored fallback. Returns
+// (key, "request"|"stored", nil) on success or (nil, "", err) when
+// neither a request key nor a stored fallback is available.
+func resolvePrivateKey(ctx context.Context, requestKey string, secrets ports.Secrets) ([]byte, string, error) {
+	if k := strings.TrimSpace(requestKey); k != "" {
+		return []byte(k), "request", nil
+	}
+	if secrets == nil {
+		return nil, "", errors.New("private_key is required (no stored deploy key configured)")
+	}
+	// Canonical name kept in sync with controlplane.SecretDeploySSHPrivateKey.
+	// Hard-coded here rather than imported to avoid a circular dependency
+	// (the controlplane package imports api).
+	stored, err := secrets.Get(ctx, "deploy/ssh-private-key")
+	if err != nil {
+		return nil, "", errors.New("private_key is required (no stored deploy key configured)")
+	}
+	if len(stored) == 0 {
+		return nil, "", errors.New("stored deploy key is empty")
+	}
+	return stored, "stored", nil
 }
 
 // dbBinaryResolver looks up the daemon binary path for an os/arch from the
@@ -366,8 +398,9 @@ func NodeUpdateBinary(store *db.Store, reg *jobs.Registry, cfg NodesConfig) http
 			http.Error(w, "bad json", http.StatusBadRequest)
 			return
 		}
-		if strings.TrimSpace(req.PrivateKey) == "" {
-			http.Error(w, "private_key is required", http.StatusBadRequest)
+		privKey, keySource, err := resolvePrivateKey(r.Context(), req.PrivateKey, cfg.Secrets)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 		n, err := store.NodeByID(id)
@@ -418,7 +451,7 @@ func NodeUpdateBinary(store *db.Store, reg *jobs.Registry, cfg NodesConfig) http
 				User:            n.SSHUser,
 				Host:            n.Hostname,
 				Port:            n.SSHPort,
-				PrivateKey:      []byte(req.PrivateKey),
+				PrivateKey:      privKey,
 				Passphrase:      req.Passphrase,
 				HostKeyCallback: hostKeyCallback,
 			},
@@ -431,7 +464,7 @@ func NodeUpdateBinary(store *db.Store, reg *jobs.Registry, cfg NodesConfig) http
 		audit.Emit(r, store, db.AuditEntry{
 			Action: "node.update_binary",
 			Target: fmt.Sprintf("node:%d", id),
-			Metadata: map[string]any{"job_id": job.ID, "agents": ureq.AgentNames},
+			Metadata: map[string]any{"job_id": job.ID, "agents": ureq.AgentNames, "ssh_key_source": keySource},
 		})
 
 		go func() {
@@ -458,7 +491,7 @@ func NodeUpdateBinary(store *db.Store, reg *jobs.Registry, cfg NodesConfig) http
 // NodeRollbackBinary reverts the binary swap performed by the most
 // recent NodeUpdateBinary call: rename /usr/local/bin/okesu.previous
 // back to /usr/local/bin/okesu and bounce the agents.
-func NodeRollbackBinary(store *db.Store, reg *jobs.Registry) http.HandlerFunc {
+func NodeRollbackBinary(store *db.Store, reg *jobs.Registry, cfg NodesConfig) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 		if err != nil {
@@ -470,8 +503,9 @@ func NodeRollbackBinary(store *db.Store, reg *jobs.Registry) http.HandlerFunc {
 			http.Error(w, "bad json", http.StatusBadRequest)
 			return
 		}
-		if strings.TrimSpace(req.PrivateKey) == "" {
-			http.Error(w, "private_key is required", http.StatusBadRequest)
+		privKey, keySource, err := resolvePrivateKey(r.Context(), req.PrivateKey, cfg.Secrets)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 		n, err := store.NodeByID(id)
@@ -509,7 +543,7 @@ func NodeRollbackBinary(store *db.Store, reg *jobs.Registry) http.HandlerFunc {
 				User:            n.SSHUser,
 				Host:            n.Hostname,
 				Port:            n.SSHPort,
-				PrivateKey:      []byte(req.PrivateKey),
+				PrivateKey:      privKey,
 				Passphrase:      req.Passphrase,
 				HostKeyCallback: hostKeyCallback,
 			},
@@ -520,7 +554,7 @@ func NodeRollbackBinary(store *db.Store, reg *jobs.Registry) http.HandlerFunc {
 		audit.Emit(r, store, db.AuditEntry{
 			Action: "node.rollback_binary",
 			Target: fmt.Sprintf("node:%d", id),
-			Metadata: map[string]any{"job_id": job.ID, "agents": rreq.AgentNames},
+			Metadata: map[string]any{"job_id": job.ID, "agents": rreq.AgentNames, "ssh_key_source": keySource},
 		})
 
 		go func() {
@@ -589,8 +623,9 @@ func NodeDeploy(store *db.Store, reg *jobs.Registry, deployer NodeDeployer, cfg 
 			http.Error(w, "agents is required", http.StatusBadRequest)
 			return
 		}
-		if strings.TrimSpace(req.PrivateKey) == "" {
-			http.Error(w, "private_key is required", http.StatusBadRequest)
+		privKey, keySource, err := resolvePrivateKey(r.Context(), req.PrivateKey, cfg.Secrets)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 		n, err := store.NodeByID(id)
@@ -673,7 +708,7 @@ func NodeDeploy(store *db.Store, reg *jobs.Registry, deployer NodeDeployer, cfg 
 				User:            n.SSHUser,
 				Host:            n.Hostname,
 				Port:            n.SSHPort,
-				PrivateKey:      []byte(req.PrivateKey),
+				PrivateKey:      privKey,
 				Passphrase:      req.Passphrase,
 				HostKeyCallback: hostKeyCallback,
 			},
@@ -694,7 +729,7 @@ func NodeDeploy(store *db.Store, reg *jobs.Registry, deployer NodeDeployer, cfg 
 		audit.Emit(r, store, db.AuditEntry{
 			Action: "node.deploy",
 			Target: fmt.Sprintf("node:%d", id),
-			Metadata: map[string]any{"agents": req.Agents, "job_id": job.ID},
+			Metadata: map[string]any{"agents": req.Agents, "job_id": job.ID, "ssh_key_source": keySource},
 		})
 
 		go func() {

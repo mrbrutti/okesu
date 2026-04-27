@@ -1,13 +1,14 @@
-import { ChangeEvent, useEffect, useRef, useState } from 'react';
+import { ChangeEvent, ReactNode, useEffect, useRef, useState } from 'react';
 import {
   AlertTriangle,
   Cpu,
   Fingerprint,
   HardDrive,
+  Key,
   Trash2,
   Upload,
 } from 'lucide-react';
-import { api, ApiError, type BinaryItem, type KnownHostItem } from '../../api';
+import { api, ApiError, type BinaryItem, type DeployKeyStatus, type KnownHostItem } from '../../api';
 import { cn } from '../../lib/cn';
 
 export default function DeploySection() {
@@ -19,14 +20,143 @@ export default function DeploySection() {
           Deploy
         </h2>
         <p className="text-xs text-ink-dim mt-0.5">
-          Daemon binaries for each target architecture, and the SSH host keys
-          pinned for each registered node.
+          Daemon binaries for each target architecture, the SSH key used to
+          reach nodes, and the SSH host keys pinned for each registered node.
         </p>
       </header>
 
+      <SSHKeyCard />
       <BinariesCard />
       <KnownHostsCard />
     </div>
+  );
+}
+
+// ── SSH key (CP-wide fallback) ─────────────────────────────────────────────
+
+function SSHKeyCard() {
+  const [status, setStatus] = useState<DeployKeyStatus | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [editing, setEditing] = useState(false);
+  const [keyText, setKeyText] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  const refresh = () => {
+    setError(null);
+    api.deployKeyStatus().then(setStatus).catch((e) => setError(String(e)));
+  };
+  useEffect(() => { refresh(); }, []);
+
+  const onSave = async () => {
+    setError(null);
+    if (!keyText.trim()) {
+      setError('paste a PEM-encoded private key first');
+      return;
+    }
+    setSaving(true);
+    try {
+      const next = await api.setDeployKey(keyText);
+      setStatus(next);
+      setKeyText('');
+      setEditing(false);
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const onClear = async () => {
+    if (!confirm('Remove the stored deploy SSH key? Future deploys will require a per-request private_key again.')) return;
+    setError(null);
+    try {
+      await api.clearDeployKey();
+      refresh();
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : String(e));
+    }
+  };
+
+  return (
+    <Card
+      title={<><Key size={14} className="inline -mt-0.5 mr-1.5 text-brand-500" />SSH key</>}
+      subtitle="A single private key the CP uses to reach every node, when a deploy request doesn't carry its own. The key bytes never leave the server after being saved — only the fingerprint is shown here."
+    >
+      {status && status.configured && !editing && (
+        <div className="space-y-2 text-sm">
+          <div className="flex items-center gap-2 flex-wrap">
+            <Fingerprint size={14} className="text-ink-mute" />
+            <span className="font-mono text-xs break-all">{status.fingerprint || 'unparseable'}</span>
+            {status.key_type && (
+              <span className="text-[10px] uppercase tracking-wide text-ink-mute bg-slate-100 px-1.5 py-0.5 rounded">
+                {status.key_type}
+              </span>
+            )}
+          </div>
+          {status.comment && <div className="text-xs text-ink-dim">{status.comment}</div>}
+          <div className="flex gap-2 pt-2">
+            <button
+              onClick={() => setEditing(true)}
+              disabled={!status.adapter_writable}
+              className="text-xs px-2.5 py-1.5 rounded-md bg-brand-500 text-white hover:bg-brand-600 disabled:opacity-50 disabled:cursor-not-allowed"
+              title={status.adapter_writable ? 'Replace the stored key' : 'The configured secrets adapter is read-only'}
+            >
+              Replace
+            </button>
+            <button
+              onClick={onClear}
+              disabled={!status.adapter_writable}
+              className="text-xs px-2.5 py-1.5 rounded-md border border-border hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <Trash2 size={11} className="inline -mt-0.5 mr-1" />Remove
+            </button>
+          </div>
+        </div>
+      )}
+
+      {(!status?.configured || editing) && (
+        <div className="space-y-2">
+          {!status?.adapter_writable && (
+            <Notice tone="warn">
+              The configured secrets adapter is read-only. To store a key, point the CP at a writable
+              source (e.g. <code className="font-mono bg-yellow-100 px-1 py-0.5 rounded">--secrets-source file://&hellip;</code>)
+              or rotate via the underlying store directly.
+            </Notice>
+          )}
+          <textarea
+            value={keyText}
+            onChange={(e) => setKeyText(e.target.value)}
+            placeholder="-----BEGIN OPENSSH PRIVATE KEY-----&#10;…&#10;-----END OPENSSH PRIVATE KEY-----"
+            rows={8}
+            spellCheck={false}
+            disabled={!status?.adapter_writable}
+            className="w-full font-mono text-[11px] p-2.5 border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500/30 disabled:bg-slate-50"
+          />
+          <div className="flex gap-2 items-center">
+            <button
+              onClick={onSave}
+              disabled={saving || !status?.adapter_writable}
+              className="text-xs px-3 py-1.5 rounded-md bg-brand-500 text-white hover:bg-brand-600 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {saving ? 'Saving…' : 'Save'}
+            </button>
+            {editing && (
+              <button
+                onClick={() => { setEditing(false); setKeyText(''); setError(null); }}
+                className="text-xs px-3 py-1.5 rounded-md border border-border hover:bg-slate-50"
+              >
+                Cancel
+              </button>
+            )}
+            <span className="text-[11px] text-ink-mute ml-auto">
+              Encrypted (passphrase-protected) keys are rejected — decrypt locally first.
+            </span>
+          </div>
+        </div>
+      )}
+
+      {error && <Notice tone="err">{error}</Notice>}
+    </Card>
   );
 }
 
@@ -283,7 +413,7 @@ function KnownHostsCard() {
 
 // ── shared ─────────────────────────────────────────────────────────────────
 
-function Card({ title, subtitle, children }: { title: string; subtitle?: string; children: React.ReactNode }) {
+function Card({ title, subtitle, children }: { title: ReactNode; subtitle?: string; children: React.ReactNode }) {
   return (
     <section className="bg-panel border border-border rounded-xl shadow-card p-5">
       <h3 className="text-sm font-semibold">{title}</h3>

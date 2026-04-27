@@ -42,6 +42,7 @@ type Server struct {
 	store      *db.Store
 	eventStore ports.EventStore
 	queue      ports.Queue
+	secrets    ports.Secrets
 	mgr        *auth.Manager
 	bcast      *Broadcaster
 	ca         *CA
@@ -203,6 +204,7 @@ func New(cfg Config) (*Server, error) {
 		store:      store,
 		eventStore: eventStore,
 		queue:      queue,
+		secrets:    secrets,
 		mgr:        mgr,
 		bcast:      bcast,
 		ca:         ca,
@@ -400,11 +402,17 @@ func (s *Server) routes() http.Handler {
 			r.Post("/api/nodes", api.NodeCreate(s.store))
 			r.Delete("/api/nodes/{id}", api.NodeDelete(s.store))
 			r.Post("/api/nodes/{id}/refresh-metadata", api.NodeRefreshMetadata(s.store, s.tunReg))
+			r.Get("/api/system/deploy-ssh-key", api.DeployKeyGet(s.secrets))
+			r.Put("/api/system/deploy-ssh-key", api.DeployKeyPut(s.store, s.secrets))
+			r.Delete("/api/system/deploy-ssh-key", api.DeployKeyDelete(s.store, s.secrets))
 			r.Post("/api/nodes/{id}/update-binary", api.NodeUpdateBinary(s.store, s.jobs, api.NodesConfig{
 				DaemonBinaryPath:  s.cfg.DaemonBinaryPath,
 				DaemonBinariesDir: s.cfg.DaemonBinariesDir,
+				Secrets:           s.secrets,
 			}))
-			r.Post("/api/nodes/{id}/rollback-binary", api.NodeRollbackBinary(s.store, s.jobs))
+			r.Post("/api/nodes/{id}/rollback-binary", api.NodeRollbackBinary(s.store, s.jobs, api.NodesConfig{
+				Secrets: s.secrets,
+			}))
 			r.Post("/api/nodes/{id}/deploy", api.NodeDeploy(s.store, s.jobs, s, api.NodesConfig{
 				DaemonBinaryPath:  s.cfg.DaemonBinaryPath,
 				DaemonBinariesDir: s.cfg.DaemonBinariesDir,
@@ -412,6 +420,7 @@ func (s *Server) routes() http.Handler {
 				WebhookSecret:     s.cfg.WebhookSecret,
 				WebhookURL:        s.cfg.EffectiveWebhookURL(),
 				MgmtURL:           s.cfg.EffectiveMgmtURL(),
+				Secrets:           s.secrets,
 			}))
 			r.Post("/api/runs", api.CreateRun(s.runs, s.tunReg, s.store, s.cfg.AgentFilesDirs))
 			r.Post("/api/runs/{id}/cancel", api.CancelRun(s.runs, s.tunReg, s.store))

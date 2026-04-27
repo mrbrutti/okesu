@@ -48,6 +48,7 @@ const (
 	SecretClickHousePassword  = "clickhouse/password"
 	SecretKafkaSASLPassword   = "kafka/sasl-password"
 	SecretBlobSecretKey       = "blob/secret-key"
+	SecretDeploySSHPrivateKey = "deploy/ssh-private-key"
 )
 
 // buildSecrets picks the ports.Secrets adapter from cfg.SecretsSource:

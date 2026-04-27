@@ -22,6 +22,10 @@ import (
 
 // Adapter satisfies ports.Secrets via env vars + an optional
 // directory-of-files fallback for secrets too large to fit in env.
+//
+// When Dir is set, Adapter additionally satisfies ports.SecretsWriter:
+// Put writes to <Dir>/<name> at mode 0600. Env-only adapters (no Dir)
+// stay read-only — Put returns ErrNotSupported.
 type Adapter struct {
 	// Dir is an optional directory of secret files. When set, a Get
 	// for "name" first tries env, then <Dir>/<name> (slashes preserved).
@@ -61,5 +65,43 @@ func (a *Adapter) Get(_ context.Context, name string) ([]byte, error) {
 	return nil, fmt.Errorf("%w: %s", ports.ErrNotFound, name)
 }
 
-// Compile-time assertion.
+// Put writes value to <Dir>/<name> at mode 0600. Returns
+// ErrNotSupported when no Dir is configured (env-only adapter).
+//
+// Parent directories are created at mode 0700; missing-then-create is
+// the common path on first set. The write is to a temp file + rename
+// so a partial write never replaces an intact existing file.
+func (a *Adapter) Put(_ context.Context, name string, value []byte) error {
+	if name == "" {
+		return fmt.Errorf("secret name required")
+	}
+	if a.Dir == "" {
+		return ports.ErrNotSupported
+	}
+	path := filepath.Join(a.Dir, filepath.Clean("/"+name))
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp.*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath) // no-op on success after rename
+	if err := os.Chmod(tmpPath, 0o600); err != nil {
+		tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(value); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
+}
+
+// Compile-time assertions.
 var _ ports.Secrets = (*Adapter)(nil)
+var _ ports.SecretsWriter = (*Adapter)(nil)

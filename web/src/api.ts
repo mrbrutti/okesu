@@ -491,6 +491,18 @@ export const api = {
   knownHosts: () => request<KnownHostItem[]>('/api/deploy/known-hosts'),
   nodeKnownHost: (id: number) =>
     request<KnownHostItem | null>(`/api/nodes/${id}/known-host`),
+
+  // Stored CP-wide SSH key for deploys (Settings → Deploy → SSH Key).
+  // GET returns metadata only — the key bytes never leave the server.
+  deployKeyStatus: () => request<DeployKeyStatus>('/api/system/deploy-ssh-key'),
+  setDeployKey: (privateKey: string) =>
+    request<DeployKeyStatus>('/api/system/deploy-ssh-key', {
+      method: 'PUT',
+      body: privateKey,
+      headers: { 'Content-Type': 'application/x-pem-file' },
+    }),
+  clearDeployKey: () =>
+    request<void>('/api/system/deploy-ssh-key', { method: 'DELETE' }),
   clearNodeKnownHost: (id: number) =>
     request<void>(`/api/nodes/${id}/known-host`, { method: 'DELETE' }),
 
@@ -844,6 +856,19 @@ export interface BinaryItem {
   size_bytes: number;
   uploaded_at: string;
   uploaded_by_email?: string;
+}
+
+/** Status of the CP-wide stored SSH key used as a fallback when a deploy
+ *  request omits a per-deploy private_key. The key bytes themselves
+ *  never leave the server — only fingerprint + metadata. */
+export interface DeployKeyStatus {
+  configured: boolean;
+  fingerprint?: string; // SHA256:<base64> (OpenSSH style)
+  key_type?: string;    // ssh-ed25519, ssh-rsa, …
+  comment?: string;
+  /** When false, the configured Secrets adapter is read-only and the
+   *  Save button should be disabled. */
+  adapter_writable: boolean;
 }
 
 export interface KnownHostItem {
