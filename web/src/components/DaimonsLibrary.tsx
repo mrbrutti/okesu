@@ -16,6 +16,7 @@ import {
   FilePlus,
   Loader2,
   RefreshCw,
+  RotateCcw,
   Save,
   Trash2,
   X,
@@ -227,6 +228,8 @@ function DaimonEditor({
       .catch((e) => setError(formatError(e)));
   }, [name, isNew]);
 
+  const [warnings, setWarnings] = useState<string[] | null>(null);
+
   async function save() {
     if (!content) return;
     const targetName = isNew ? draftName.trim() : name;
@@ -236,7 +239,16 @@ function DaimonEditor({
     }
     setBusy(true); setError(null);
     try {
-      await api.daimonLibrarySave(targetName, content);
+      const saved = await api.daimonLibrarySave(targetName, content);
+      setMeta(saved);
+      // Phase: restart-required warnings — interval / stateDir changes
+      // don't hot-reload. Show them inline; let the operator decide
+      // whether to schedule daemon restarts.
+      if (saved.warnings && saved.warnings.length > 0) {
+        setWarnings(saved.warnings);
+        setBusy(false);
+        return; // keep the editor open so the operator sees the notice
+      }
       onSaved();
     } catch (e) {
       setError(formatError(e));
@@ -252,6 +264,23 @@ function DaimonEditor({
     try {
       await api.daimonLibraryDelete(name);
       onDeleted();
+    } catch (e) {
+      setError(formatError(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function rollback() {
+    if (isNew || !meta?.previous_version) return;
+    const restoreLabel = `v${meta.previous_version.replace(/^v/i, '')}`;
+    if (!confirm(`Roll back "${name}" to ${restoreLabel}? The current definition is preserved as the new "previous" — a second rollback brings it back.`)) return;
+    setBusy(true); setError(null);
+    try {
+      const restored = await api.daimonLibraryRollback(name);
+      setContent(restored.content);
+      setMeta(restored);
+      onSaved(); // refresh the list outside
     } catch (e) {
       setError(formatError(e));
     } finally {
@@ -295,6 +324,21 @@ function DaimonEditor({
             <AlertCircle size={12} className="mt-0.5 shrink-0" /> {error}
           </div>
         )}
+        {warnings && warnings.length > 0 && (
+          <div className="mb-3 text-xs text-yellow-800 bg-yellow-50 border border-yellow-200 px-3 py-2 rounded-md">
+            <div className="font-medium flex items-center gap-1.5 mb-1">
+              <AlertCircle size={12} /> Saved — but some changes need a restart
+            </div>
+            <ul className="list-disc ml-5 space-y-1">
+              {warnings.map((wmsg, i) => <li key={i}>{wmsg}</li>)}
+            </ul>
+            <p className="mt-1 text-ink-dim">
+              Hot-reloadable changes (model / prompt / tools / maxTurns / effort) are
+              already live across the fleet. Restart the listed daimons individually
+              to pick up the rest.
+            </p>
+          </div>
+        )}
         {content === null ? (
           <p className="text-ink-mute text-sm">Loading…</p>
         ) : (
@@ -308,7 +352,7 @@ function DaimonEditor({
       </div>
 
       <footer className="px-5 py-3 border-t border-border flex items-center justify-between gap-2">
-        <div>
+        <div className="flex items-center gap-2">
           {!isNew && (
             <button
               onClick={del}
@@ -316,6 +360,16 @@ function DaimonEditor({
               className="inline-flex items-center gap-1 text-xs text-red-700 hover:text-red-800 hover:bg-red-50 px-2 py-1 rounded-md disabled:opacity-50"
             >
               <Trash2 size={12} /> Delete
+            </button>
+          )}
+          {!isNew && meta?.previous_version && (
+            <button
+              onClick={rollback}
+              disabled={busy}
+              title={`Restore the previous version (v${meta.previous_version.replace(/^v/i, '')}) — saved ${meta.previous_modified_at ? new Date(meta.previous_modified_at).toLocaleString() : 'before the most recent edit'}.`}
+              className="inline-flex items-center gap-1 text-xs text-yellow-800 hover:text-yellow-900 hover:bg-yellow-50 px-2 py-1 rounded-md disabled:opacity-50"
+            >
+              <RotateCcw size={12} /> Roll back to v{meta.previous_version.replace(/^v/i, '')}
             </button>
           )}
         </div>

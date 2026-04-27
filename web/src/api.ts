@@ -66,6 +66,10 @@ export interface DaimonItem {
 export interface DaimonLibraryItem {
   name: string;
   description?: string;
+  /** Operator-set version label from the daimon file frontmatter
+   *  (e.g. "2", "v3"). Surfaces alongside the hash so the rollout
+   *  indicator is human-readable. */
+  version?: string;
   provider?: string;
   model?: string;
   mode?: string;
@@ -75,10 +79,17 @@ export interface DaimonLibraryItem {
   /** Canonical sha256 of the file content. UI compares against each
    *  registered daimon's current_definition_hash to flag drift. */
   hash?: string;
+  /** Operator-set version label of the <name>.previous.md slot.
+   *  When non-empty, a one-click rollback is available. */
+  previous_version?: string;
+  previous_modified_at?: string;
 }
 
 export interface DaimonLibraryDetail extends DaimonLibraryItem {
   content: string;
+  /** Restart-required warnings populated on save responses. Surfaces
+   *  fields that changed but don't hot-reload (interval, stateDir). */
+  warnings?: string[];
 }
 
 export interface AgentLibraryItem {
@@ -294,6 +305,10 @@ export const api = {
     request<void>(`/api/daimons/library/${encodeURIComponent(name)}`, {
       method: 'DELETE',
     }),
+  daimonLibraryRollback: (name: string) =>
+    request<DaimonLibraryDetail>(`/api/daimons/library/${encodeURIComponent(name)}/rollback`, {
+      method: 'POST',
+    }),
 
   // Agent Library — short-form Claude/Codex agent definitions sourced
   // from ~/.claude/agents, ~/.codex/agents, and any --agent-files-dir
@@ -425,6 +440,11 @@ export const api = {
     request<void>(`/api/nodes/${id}`, { method: 'DELETE' }),
   refreshNodeMetadata: (id: number) =>
     request<NodeItem>(`/api/nodes/${id}/refresh-metadata`, { method: 'POST' }),
+  setNodeAutoUpdatePaused: (id: number, paused: boolean) =>
+    request<NodeItem>(`/api/nodes/${id}/auto-update`, {
+      method: 'PUT',
+      body: JSON.stringify({ paused }),
+    }),
 
   // Phase 7c — binary update + rollback. Streams job log via the
   // existing /api/jobs/{id}/log SSE endpoint that deploys already use.
@@ -772,6 +792,10 @@ export interface NodeItem {
   os_release?: string;
   arch?: string;
   cpu_count?: number;
+  /** When true, daimons running on this node will NOT hot-reload new
+   *  definitions. Operators set this for compliance windows or before
+   *  manual rollouts. */
+  auto_update_paused?: boolean;
   memory_mb?: number;
   disk_free_mb?: number;
   okesu_version?: string;

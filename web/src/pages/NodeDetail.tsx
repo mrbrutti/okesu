@@ -10,7 +10,10 @@ import {
   HardDrive,
   Info,
   Loader2,
+  Lock,
   Package,
+  Pause,
+  Play,
   RefreshCw,
   RotateCcw,
   Server,
@@ -54,6 +57,16 @@ export default function NodeDetailPage() {
     nodeBinaryVersion &&
     about.daemon_version !== nodeBinaryVersion
   );
+
+  async function toggleAutoUpdate() {
+    if (!node) return;
+    try {
+      const next = await api.setNodeAutoUpdatePaused(node.id, !node.auto_update_paused);
+      setNode(next);
+    } catch (e) {
+      setRefreshError(String(e));
+    }
+  }
 
   async function refreshMetadata() {
     if (!node) return;
@@ -160,6 +173,25 @@ export default function NodeDetailPage() {
                 </span>
               )
             )}
+            {node.auto_update_paused && (
+              <span
+                className="inline-flex items-center gap-1 text-[11px] font-mono text-slate-700 bg-slate-100 ring-1 ring-slate-300 px-2 py-1 rounded"
+                title="Auto-update is paused — daimons on this node will not hot-reload until unpaused."
+              >
+                <Lock size={11} /> frozen
+              </span>
+            )}
+            <button
+              onClick={toggleAutoUpdate}
+              title={node.auto_update_paused ? 'Resume auto-update — daimons hot-reload on next poll' : 'Pause auto-update — freeze the daimon definitions on this node'}
+              className={cn(
+                "inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-md border bg-panel hover:bg-slate-50",
+                node.auto_update_paused ? "border-blue-300 bg-blue-50 text-blue-800 hover:bg-blue-100" : "border-border"
+              )}
+            >
+              {node.auto_update_paused ? <Play size={12} /> : <Pause size={12} />}
+              {node.auto_update_paused ? 'Resume' : 'Pause auto-update'}
+            </button>
             <button
               onClick={refreshMetadata}
               disabled={refreshing || !connected}

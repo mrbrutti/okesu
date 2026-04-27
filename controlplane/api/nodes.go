@@ -122,19 +122,25 @@ type nodeJSON struct {
 	DiskFreeMB    int64  `json:"disk_free_mb,omitempty"`
 	OkesuVersion  string `json:"okesu_version,omitempty"`
 	MetadataAt    string `json:"metadata_at,omitempty"`
+
+	// AutoUpdatePaused freezes daimon hot-reload for this node. Set
+	// from Settings → Deploy or per-node detail page; reflected in
+	// the audit log and surfaces as a UI badge.
+	AutoUpdatePaused bool `json:"auto_update_paused"`
 }
 
 func toNodeJSON(n *db.Node) nodeJSON {
 	out := nodeJSON{
-		ID:             n.ID,
-		Name:           n.Name,
-		Hostname:       n.Hostname,
-		DaemonHostname: n.DaemonHostname.String,
-		SSHUser:        n.SSHUser,
-		SSHPort:        n.SSHPort,
-		Status:         n.Status,
-		Notes:          n.Notes.String,
-		CreatedAt:      n.CreatedAt.UTC().Format(time.RFC3339),
+		ID:               n.ID,
+		Name:             n.Name,
+		Hostname:         n.Hostname,
+		DaemonHostname:   n.DaemonHostname.String,
+		SSHUser:          n.SSHUser,
+		SSHPort:          n.SSHPort,
+		Status:           n.Status,
+		Notes:            n.Notes.String,
+		AutoUpdatePaused: n.AutoUpdatePaused,
+		CreatedAt:        n.CreatedAt.UTC().Format(time.RFC3339),
 	}
 	if n.StatusMessage.Valid {
 		out.StatusMessage = n.StatusMessage.String
@@ -253,6 +259,46 @@ func NodeDetail(store *db.Store) http.HandlerFunc {
 				return
 			}
 			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(toNodeJSON(n))
+	}
+}
+
+// NodeAutoUpdateToggle flips the per-node freeze pin. When paused, the
+// daemons running on this node stop hot-reloading new daimon
+// definitions: the mgmt-plane /config endpoint mirrors their loaded
+// hash back, so their drift check sees "no change."
+//
+// PUT /api/nodes/{id}/auto-update  body: {"paused": true|false}
+func NodeAutoUpdateToggle(store *db.Store) http.HandlerFunc {
+	type req struct {
+		Paused bool `json:"paused"`
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+		if err != nil {
+			http.Error(w, "bad id", http.StatusBadRequest)
+			return
+		}
+		var body req
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "bad json", http.StatusBadRequest)
+			return
+		}
+		if err := store.SetNodeAutoUpdatePaused(id, body.Paused); err != nil {
+			http.Error(w, "store: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		audit.Emit(r, store, db.AuditEntry{
+			Action: "node.auto_update_paused.set",
+			Target: fmt.Sprintf("node:%d", id),
+			Metadata: map[string]any{"paused": body.Paused},
+		})
+		n, err := store.NodeByID(id)
+		if err != nil {
+			http.Error(w, "store: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")

@@ -37,6 +37,7 @@ import (
 type daimonSummary struct {
 	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`
+	Version     string `json:"version,omitempty"`
 	Provider    string `json:"provider,omitempty"`
 	Model       string `json:"model,omitempty"`
 	Mode        string `json:"mode,omitempty"`
@@ -47,6 +48,12 @@ type daimonSummary struct {
 	// rows compare this against each registered daemon's
 	// current_definition_hash to compute drift ("8 of 10 on current").
 	Hash string `json:"hash,omitempty"`
+	// PreviousVersion is the operator-set version label of the
+	// <name>.previous.md slot — non-empty when a one-click rollback is
+	// available. Empty when no previous slot exists (first save) or
+	// when the previous file lacked a version frontmatter.
+	PreviousVersion  string `json:"previous_version,omitempty"`
+	PreviousModified string `json:"previous_modified_at,omitempty"`
 }
 
 // daimonDetail extends daimonSummary with the raw file content. Saved
@@ -54,6 +61,11 @@ type daimonSummary struct {
 type daimonDetail struct {
 	daimonSummary
 	Content string `json:"content"`
+	// Warnings is populated on save (and only on save) when the new
+	// content changes a field that doesn't hot-reload — operators
+	// need to restart the daemon for it to take effect. UI surfaces
+	// these as a yellow notice next to the Save button.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // frontmatter captures the keys we surface in the list summary. Unknown
@@ -61,10 +73,12 @@ type daimonDetail struct {
 type frontmatter struct {
 	Name        string `yaml:"name"`
 	Description string `yaml:"description"`
+	Version     string `yaml:"version"`
 	Provider    string `yaml:"provider"`
 	Model       string `yaml:"model"`
 	Mode        string `yaml:"mode"`
 	Interval    string `yaml:"interval"`
+	StateDir    string `yaml:"stateDir"`
 }
 
 // splitFrontmatter pulls the YAML frontmatter from a markdown file.
@@ -123,20 +137,51 @@ func readDaimonFile(dir, name string) (daimonDetail, error) {
 		fm.Name = name
 	}
 	hash := computeContentHash(content)
+
+	// Inspect <name>.previous.md so the UI knows whether a rollback
+	// is possible and what version it would restore to.
+	prevVersion, prevModified := readPreviousMeta(dir, name)
+
 	return daimonDetail{
 		daimonSummary: daimonSummary{
-			Name:        fm.Name,
-			Description: fm.Description,
-			Provider:    fm.Provider,
-			Model:       fm.Model,
-			Mode:        fm.Mode,
-			Interval:    fm.Interval,
-			ModifiedAt:  st.ModTime().UTC().Format(time.RFC3339),
-			SizeBytes:   st.Size(),
-			Hash:        hash,
+			Name:             fm.Name,
+			Description:      fm.Description,
+			Version:          fm.Version,
+			Provider:         fm.Provider,
+			Model:            fm.Model,
+			Mode:             fm.Mode,
+			Interval:         fm.Interval,
+			ModifiedAt:       st.ModTime().UTC().Format(time.RFC3339),
+			SizeBytes:        st.Size(),
+			Hash:             hash,
+			PreviousVersion:  prevVersion,
+			PreviousModified: prevModified,
 		},
 		Content: string(content),
 	}, nil
+}
+
+// readPreviousMeta peeks at <name>.previous.md to surface rollback
+// availability without requiring the operator to inspect the
+// filesystem. Returns ("", "") when no previous slot exists.
+func readPreviousMeta(dir, name string) (version, modifiedAt string) {
+	path := filepath.Join(dir, name+".previous.md")
+	st, err := os.Stat(path)
+	if err != nil {
+		return "", ""
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return "", st.ModTime().UTC().Format(time.RFC3339)
+	}
+	if y, _ := splitFrontmatter(body); y != "" {
+		var fm frontmatter
+		if yaml.Unmarshal([]byte(y), &fm) == nil {
+			version = fm.Version
+		}
+	}
+	modifiedAt = st.ModTime().UTC().Format(time.RFC3339)
+	return
 }
 
 // computeContentHash returns hex(sha256(content)) — same convention used
@@ -266,6 +311,40 @@ func DaimonLibraryPut(store *db.Store, daimonFilesDir string) http.HandlerFunc {
 			return
 		}
 		path := filepath.Join(daimonFilesDir, name+".md")
+		previous := filepath.Join(daimonFilesDir, name+".previous.md")
+
+		// Single-deep "previous" slot — same pattern as Phase 7c's
+		// binary update. Before overwriting the live file, copy it to
+		// <name>.previous.md so a one-click rollback is possible.
+		// Skip when no live file exists yet (first save).
+		//
+		// While we're inspecting the previous content, also compute
+		// restart-required warnings: interval and stateDir don't
+		// hot-reload (Phase 7b only reloads model/prompt/tools/etc).
+		previousVersion := ""
+		var warnings []string
+		if existing, err := os.ReadFile(path); err == nil {
+			if y, _ := splitFrontmatter(existing); y != "" {
+				var pfm frontmatter
+				if yaml.Unmarshal([]byte(y), &pfm) == nil {
+					previousVersion = pfm.Version
+					if pfm.Interval != fm.Interval && (pfm.Interval != "" || fm.Interval != "") {
+						warnings = append(warnings, fmt.Sprintf(
+							"interval changed (%q → %q) — does NOT hot-reload; restart the daimons on each node for it to take effect.",
+							pfm.Interval, fm.Interval,
+						))
+					}
+					if pfm.StateDir != fm.StateDir && (pfm.StateDir != "" || fm.StateDir != "") {
+						warnings = append(warnings, fmt.Sprintf(
+							"stateDir changed (%q → %q) — does NOT hot-reload; restart the daimons on each node for it to take effect.",
+							pfm.StateDir, fm.StateDir,
+						))
+					}
+				}
+			}
+			_ = os.WriteFile(previous, existing, 0644)
+		}
+
 		tmp := path + ".tmp"
 		if err := os.WriteFile(tmp, []byte(body.Content), 0644); err != nil {
 			http.Error(w, "write: "+err.Error(), http.StatusInternalServerError)
@@ -281,10 +360,78 @@ func DaimonLibraryPut(store *db.Store, daimonFilesDir string) http.HandlerFunc {
 			Action: "daimon.library_save",
 			Target: "daimon:" + name,
 			Metadata: map[string]any{
-				"size_bytes": len(body.Content),
-				"provider":   fm.Provider,
-				"model":      fm.Model,
+				"size_bytes":       len(body.Content),
+				"provider":         fm.Provider,
+				"model":            fm.Model,
+				"new_version":      fm.Version,
+				"previous_version": previousVersion,
 			},
+		})
+
+		detail, err := readDaimonFile(daimonFilesDir, name)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		detail.Warnings = warnings
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(detail)
+	}
+}
+
+// DaimonLibraryRollback handles POST /api/daimons/library/{name}/rollback.
+//
+// Atomically swaps <name>.md and <name>.previous.md. The current file
+// becomes the new "previous" so a second rollback brings back what was
+// just rolled back from — symmetric, single-deep slot.
+//
+// Trips the same hot-reload path as a normal save: every registered
+// daemon polls /config every ~60s, sees the new definition_hash, and
+// fetches /definition. No daemon restart needed.
+func DaimonLibraryRollback(store *db.Store, daimonFilesDir string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if daimonFilesDir == "" {
+			http.Error(w, "library disabled", http.StatusServiceUnavailable)
+			return
+		}
+		u := auth.UserFromContext(r.Context())
+		if u == nil {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		name := chi.URLParam(r, "name")
+		if !validDaimonName(name) {
+			http.Error(w, "invalid name", http.StatusBadRequest)
+			return
+		}
+		current := filepath.Join(daimonFilesDir, name+".md")
+		previous := filepath.Join(daimonFilesDir, name+".previous.md")
+		if _, err := os.Stat(previous); err != nil {
+			http.Error(w, "no previous version to roll back to", http.StatusBadRequest)
+			return
+		}
+		// Symmetric swap via a stash file so we don't lose state on
+		// partial failure. current → stash, previous → current,
+		// stash → previous.
+		stash := filepath.Join(daimonFilesDir, name+".swap.tmp")
+		if err := os.Rename(current, stash); err != nil {
+			http.Error(w, "stash current: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if err := os.Rename(previous, current); err != nil {
+			// Try to restore the stash, then surface the failure.
+			_ = os.Rename(stash, current)
+			http.Error(w, "promote previous: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if err := os.Rename(stash, previous); err != nil {
+			http.Error(w, "demote stash: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		audit.Emit(r, store, db.AuditEntry{
+			Action: "daimon.library_rollback",
+			Target: "daimon:" + name,
 		})
 
 		detail, err := readDaimonFile(daimonFilesDir, name)

@@ -47,6 +47,13 @@ type Node struct {
 	OkesuVersion   sql.NullString
 	MetadataAt     sql.NullTime
 
+	// AutoUpdatePaused freezes daimon hot-reload for this node. The
+	// mgmt-plane /config endpoint masks the canonical definition_hash
+	// so the daemon's poll loop sees "no change" and stays put.
+	// Operators flip it on for compliance windows or before manual
+	// deploys; flip off to resume rollout.
+	AutoUpdatePaused bool
+
 	CreatedAt       time.Time
 }
 
@@ -77,7 +84,7 @@ func (s *Store) NodeByID(id int64) (*Node, error) {
 		       agents_installed, notes, daemon_hostname,
 		       kernel_release, os_release, arch, cpu_count, memory_mb,
 		       disk_free_mb, okesu_version, metadata_at,
-		       created_at
+		       auto_update_paused, created_at
 		FROM nodes WHERE id = ?
 	`, id).Scan(
 		&n.ID, &n.Name, &n.Hostname, &n.SSHUser, &n.SSHPort,
@@ -85,7 +92,7 @@ func (s *Store) NodeByID(id int64) (*Node, error) {
 		&n.AgentsInstalled, &n.Notes, &n.DaemonHostname,
 			&n.KernelRelease, &n.OSRelease, &n.Arch, &n.CPUCount, &n.MemoryMB,
 			&n.DiskFreeMB, &n.OkesuVersion, &n.MetadataAt,
-			&n.CreatedAt,
+			&n.AutoUpdatePaused, &n.CreatedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -109,7 +116,7 @@ func (s *Store) ListNodes(limit, offset int) ([]*Node, error) {
 		       agents_installed, notes, daemon_hostname,
 		       kernel_release, os_release, arch, cpu_count, memory_mb,
 		       disk_free_mb, okesu_version, metadata_at,
-		       created_at
+		       auto_update_paused, created_at
 		FROM nodes ORDER BY created_at DESC
 		LIMIT ? OFFSET ?
 	`, limit, offset)
@@ -126,7 +133,7 @@ func (s *Store) ListNodes(limit, offset int) ([]*Node, error) {
 			&n.AgentsInstalled, &n.Notes, &n.DaemonHostname,
 			&n.KernelRelease, &n.OSRelease, &n.Arch, &n.CPUCount, &n.MemoryMB,
 			&n.DiskFreeMB, &n.OkesuVersion, &n.MetadataAt,
-			&n.CreatedAt,
+			&n.AutoUpdatePaused, &n.CreatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -228,4 +235,36 @@ func (s *Store) UpdateNodeMetadata(id int64, m NodeMetadataUpdate) error {
 		id,
 	)
 	return err
+}
+
+// SetNodeAutoUpdatePaused flips the per-node freeze pin. When paused,
+// the mgmt-plane /config endpoint masks definition_hash for all
+// daimons running on this node so their hot-reload poll never fires.
+func (s *Store) SetNodeAutoUpdatePaused(id int64, paused bool) error {
+	_, err := s.Exec(`UPDATE nodes SET auto_update_paused = ? WHERE id = ?`, paused, id)
+	return err
+}
+
+// NodeIsAutoUpdatePausedByDaemonHostname returns true when the daemon
+// reporting `daemonHost` runs on a node flagged auto_update_paused.
+// Used by the mgmt-plane /config handler to decide whether to mask
+// the definition_hash for a poll. Returns false when no node matches
+// (legacy daemons not deployed via the CP, or hostname mismatch).
+func (s *Store) NodeIsAutoUpdatePausedByDaemonHostname(daemonHost string) (bool, error) {
+	if daemonHost == "" {
+		return false, nil
+	}
+	var paused bool
+	err := s.QueryRow(`
+		SELECT auto_update_paused FROM nodes
+		WHERE daemon_hostname = ? OR hostname = ?
+		LIMIT 1
+	`, daemonHost, daemonHost).Scan(&paused)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return false, nil
+		}
+		return false, err
+	}
+	return paused, nil
 }

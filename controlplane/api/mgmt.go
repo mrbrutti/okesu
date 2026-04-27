@@ -173,7 +173,16 @@ func MgmtConfig(store *db.Store, daimonFilesDir string) http.HandlerFunc {
 		if agent.DesiredEffort.Valid {
 			resp.Effort = agent.DesiredEffort.String
 		}
-		if h, herr := computeDefinitionHash(daimonFilesDir, certName); herr == nil {
+		// Per-node freeze (Phase: stored auto_update_paused). When the
+		// node hosting this daemon is paused, mirror the daemon's own
+		// loaded hash back to it so its drift check sees "no change"
+		// and hot-reload doesn't fire. Skip silently when the agent
+		// row hasn't been observed on a known node yet (host not yet
+		// matched to a node).
+		paused, _ := store.NodeIsAutoUpdatePausedByDaemonHostname(agent.Host)
+		if paused && agent.CurrentDefinitionHash.Valid {
+			resp.DefinitionHash = agent.CurrentDefinitionHash.String
+		} else if h, herr := computeDefinitionHash(daimonFilesDir, certName); herr == nil {
 			resp.DefinitionHash = h
 		}
 		w.Header().Set("Content-Type", "application/json")
