@@ -15,7 +15,9 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // UpdateBinaryRequest is the input to UpdateBinary. Mirrors DeployRequest
@@ -103,21 +105,31 @@ func UpdateBinary(ctx context.Context, req UpdateBinaryRequest, logFn LogFn) err
 	if err != nil {
 		return fmt.Errorf("open daemon binary: %w", err)
 	}
-	if err := c.UploadFromReader("/usr/local/bin/okesu.new", binFile, 0755); err != nil {
+	// SCP/SFTP uploads run as the SSH user without going through a
+	// shell, so we can't sudo the upload itself. Stage it under the
+	// user's HOME (always writable) and move it into the install dir
+	// with sudo as the next step. Avoids "permission denied" on
+	// /usr/local/bin for non-root SSH users (Mac developer machines,
+	// homebrew installs, etc.).
+	stagePath := stagePath(c, "okesu.new")
+	if err := c.UploadFromReader(stagePath, binFile, 0755); err != nil {
 		_ = binFile.Close()
-		return fmt.Errorf("upload binary: %w", err)
+		return fmt.Errorf("upload binary to %s: %w", stagePath, err)
 	}
 	_ = binFile.Close()
-	emit("✓ uploaded to /usr/local/bin/okesu.new")
+	emit("✓ uploaded to %s (staging)", stagePath)
 
-	// Commit point: keep the old binary as .previous, swap the new one in.
-	// The two renames are atomic individually; there's a sub-millisecond
-	// window where neither okesu nor okesu.previous exists, but we don't
-	// touch okesu.new until after the rename completes. Worst case if the
-	// CP host is wedged: the operator can ssh in and `mv okesu.new okesu`
-	// to recover.
+	// Commit point: move staged file into /usr/local/bin/okesu.new,
+	// keep the old binary as .previous, swap the new one in. The two
+	// renames are atomic individually; there's a sub-millisecond
+	// window where neither okesu nor okesu.previous exists, but we
+	// don't touch okesu.new until after the rename completes. Worst
+	// case if the CP host is wedged mid-swap: the operator can ssh in
+	// and `mv okesu.new okesu` to recover.
 	emit("→ swapping in new binary")
 	swap := `set -e
+mkdir -p /usr/local/bin
+mv -f ` + shellQuote(stagePath) + ` /usr/local/bin/okesu.new
 if [ -e /usr/local/bin/okesu ]; then
   mv -f /usr/local/bin/okesu /usr/local/bin/okesu.previous
 fi
@@ -125,11 +137,22 @@ mv -f /usr/local/bin/okesu.new /usr/local/bin/okesu
 chmod 0755 /usr/local/bin/okesu
 `
 	if out, err := runWithSudo(c, swap); err != nil {
+		// Best-effort cleanup of the staged file when the swap fails.
+		_, _ = c.Run("rm -f " + shellQuote(stagePath))
 		return fmt.Errorf("binary swap: %w (%s)", err, out)
 	}
 	emit("✓ binary at /usr/local/bin/okesu (previous saved)")
 
-	// Restart services.
+	// Restart services. systemd is Linux-only — non-Linux targets
+	// (macOS, FreeBSD, OpenBSD, Windows) skip this step. The binary
+	// is in place; the operator restarts whatever runtime they're
+	// using by hand.
+	if targetOS != "linux" {
+		emit("  (target is %s — systemd not available; binary swapped, restart agents manually if needed)", targetOS)
+		emit("✓ binary update complete")
+		return nil
+	}
+
 	if len(req.AgentNames) == 0 {
 		// Discover what's running.
 		if out, err := c.Run(`systemctl list-units 'okesu-agent@*.service' --plain --no-legend --state=loaded | awk '{print $1}'`); err == nil {
@@ -194,6 +217,12 @@ func RollbackBinary(ctx context.Context, req RollbackBinaryRequest, logFn LogFn)
 		return err
 	}
 
+	// Detect target OS so we can skip systemctl when it isn't there.
+	targetOS := "linux"
+	if out, err := c.Run("uname -s"); err == nil {
+		targetOS = strings.ToLower(strings.TrimSpace(out))
+	}
+
 	// Sanity check: the previous binary must exist.
 	if out, err := c.Run("test -e /usr/local/bin/okesu.previous && echo ok || echo missing"); err != nil || strings.TrimSpace(out) != "ok" {
 		return fmt.Errorf("nothing to roll back to: /usr/local/bin/okesu.previous not found")
@@ -214,6 +243,12 @@ chmod 0755 /usr/local/bin/okesu
 		return fmt.Errorf("rollback swap: %w (%s)", err, out)
 	}
 	emit("✓ binary rolled back")
+
+	if targetOS != "linux" {
+		emit("  (target is %s — systemd not available; binary rolled back, restart agents manually if needed)", targetOS)
+		emit("✓ rollback complete")
+		return nil
+	}
 
 	if len(req.AgentNames) == 0 {
 		if out, err := c.Run(`systemctl list-units 'okesu-agent@*.service' --plain --no-legend --state=loaded | awk '{print $1}'`); err == nil {
@@ -247,4 +282,22 @@ func runWithSudo(c *Client, script string) (string, error) {
 		return out, nil
 	}
 	return c.Run("bash -c " + shellQuote(script))
+}
+
+// stagePath picks a writable directory the SSH user owns (HOME, or
+// /tmp as fallback) and returns a per-deploy unique upload target
+// inside it. SCP/SFTP uploads can't sudo, so a non-root SSH user
+// can't write directly to /usr/local/bin — the binary lands here
+// first and gets sudo-moved into place during the swap step.
+func stagePath(c *Client, basename string) string {
+	// Probe the SSH user's HOME via a single shell command so we don't
+	// depend on the SFTP server's notion of "current dir." Ignore
+	// errors — we have a /tmp fallback.
+	out, err := c.Run(`echo -n "$HOME"`)
+	home := strings.TrimSpace(out)
+	if err != nil || home == "" || home == "/" {
+		home = "/tmp"
+	}
+	suffix := strconv.FormatInt(time.Now().UnixNano(), 36)
+	return home + "/." + basename + "." + suffix
 }
