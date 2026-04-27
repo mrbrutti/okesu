@@ -107,9 +107,12 @@ if [[ -f "$ENV_FILE" ]]; then
 fi
 
 # Build host binaries for the local CP and the local node tunnel client.
+# Always use the Makefile so version stamping (-ldflags
+# -X agent.buildVersion=…) lands in every binary. Bypass risks
+# producing "dev"-tagged daemons that look like drift in the dashboard.
 [[ -f "$ROOT/okesu" && -f "$ROOT/okesu-cp" ]] || {
     log "building host binaries (okesu, okesu-cp)"
-    ( cd "$ROOT" && go build -o okesu ./cmd/okesu && go build -o okesu-cp ./cmd/cp )
+    ( cd "$ROOT" && make -s daemon-host cp )
 }
 
 # Build a Linux daemon binary the CP can deploy onto containers/VMs.
@@ -125,8 +128,7 @@ esac
 DAEMON_LINUX_BIN="$ROOT/okesu-linux-${GO_TARGET_ARCH}"
 [[ -f "$DAEMON_LINUX_BIN" ]] || {
     log "cross-compiling daemon for linux/$GO_TARGET_ARCH"
-    ( cd "$ROOT" && CGO_ENABLED=0 GOOS=linux GOARCH=$GO_TARGET_ARCH \
-        go build -o "$DAEMON_LINUX_BIN" ./cmd/okesu )
+    ( cd "$ROOT" && make -s daemon DAEMON_GOOS=linux DAEMON_GOARCH=$GO_TARGET_ARCH )
 }
 
 # Stage the cross-compiled binary in the multi-arch directory the CP scans
