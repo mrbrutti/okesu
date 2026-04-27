@@ -76,12 +76,18 @@ EOF
 okesu-cp serve --config /tmp/cp.yaml --secrets-source=file://$HOME/.okesu-secrets
 ```
 
-## What's not in this directory yet
+## What's in this directory
 
-- Terraform module that provisions the above (DB, Cache, Streaming,
-  Object Storage, OKE, LBs, IAM, Certificates) — Phase 8f
+- `cp.example.yaml` — canonical YAML config (this file's running example)
+- `terraform/` — modules that provision the OCI side (DB, Streaming,
+  Cache, Object Storage, OKE + ClickHouse, fleet VMs). See
+  [`terraform/README.md`](terraform/README.md) for the layout and
+  [`docs/oci-validation.md`](../../docs/oci-validation.md) for the
+  end-to-end smoke runbook.
+
+## What's not here yet
+
 - Helm chart for the CP itself + tunnel-server StatefulSet — Phase 8f
 - Runbooks for cert rotation, DR, scaling out tunnel servers — Phase 8f
-
-This file exists today as the reference architecture document so the
-shape is locked in even before the IaC lands.
+- OCI Vault adapter for `ports.Secrets` (`oci-vault://` source) — Phase 8e.next
+- OCI Certificates adapter for `ports.CertManager` — Phase 8e.next

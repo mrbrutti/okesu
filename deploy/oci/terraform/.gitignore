@@ -1,0 +1,17 @@
+# Terraform state — never commit; contains every secret captured during apply.
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+
+# Plan artifacts.
+tfplan
+tfplan.destroy
+
+# tfvars files — they contain tenancy OCIDs and SSH public keys.
+# Keep terraform.tfvars.example tracked so operators have a template.
+terraform.tfvars
+*.auto.tfvars
+
+# Generated kubeconfig — Terraform also writes this to secrets_dir.
+kubeconfig

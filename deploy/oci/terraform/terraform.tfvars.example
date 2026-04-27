@@ -1,0 +1,26 @@
+# Copy to terraform.tfvars and fill in. The runbook (docs/oci-validation.md
+# §Phase 0) includes a `oci iam …` command that pulls each OCID for you.
+#
+# This file is git-ignored — never commit a populated terraform.tfvars.
+
+tenancy_ocid     = "ocid1.tenancy.oc1..xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+user_ocid        = "ocid1.user.oc1..xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+compartment_ocid = "ocid1.compartment.oc1..xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+
+region      = "us-ashburn-1"
+fleet_size  = 8
+name_prefix = "okesu-smoke"
+
+# Public half of the SSH key the CP will use to reach fleet VMs.
+# The private half stays on your laptop, never on disk in OCI.
+ssh_public_key = "ssh-ed25519 AAAA… your.email@example.com"
+
+# Optional. Fall back to data.oci_core_images for Oracle Linux 9 amd64.
+# fleet_image_ocid = ""
+
+# Optional. Override if E2.1.Micro is exhausted in your tenancy.
+# fleet_shape = "VM.Standard.E2.1.Micro"
+
+# Optional. Where Terraform writes the generated passwords (mode 0600).
+# Match this to the --secrets-source path you'll pass to okesu-cp.
+# secrets_dir = "~/.okesu-secrets"
