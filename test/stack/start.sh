@@ -258,7 +258,10 @@ for i in "${!FLEET_NAMES[@]}"; do
     cname="okesu-sshtarget-${name}"
     log "starting fleet member ${name} (distro=${distro}, ssh=:${port})"
     "${DOCKER_CMD[@]}" rm -f "$cname" >/dev/null 2>&1 || true
-    "${DOCKER_CMD[@]}" run -d --name "$cname" \
+    # `--hostname` sets the kernel UTS namespace inside the container so
+    # `os.Hostname()` (and therefore events.host / agents.host on the CP)
+    # reports the friendly fleet name instead of the random docker hash.
+    "${DOCKER_CMD[@]}" run -d --name "$cname" --hostname "$name" \
         -p "${port}:22" "okesu-sshtarget-${distro}:test" >/dev/null
 done
 

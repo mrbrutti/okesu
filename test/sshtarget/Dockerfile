@@ -41,7 +41,7 @@ RUN set -eux; \
         rm -rf /var/lib/apt/lists/* ;; \
       fedora) \
         dnf install -y --setopt=install_weak_deps=False \
-          openssh-server bash procps-ng iproute sudo ca-certificates && \
+          openssh-server bash procps-ng iproute sudo ca-certificates hostname && \
         ssh-keygen -A && \
         dnf clean all ;; \
       rocky) \
