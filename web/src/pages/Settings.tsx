@@ -4,6 +4,7 @@ import {
   ClipboardList,
   Database,
   Eye,
+  HardDrive,
   Info,
   KeyRound,
   Plug,
@@ -24,6 +25,7 @@ import AboutSection from './settings/About';
 import NotificationsSection from './settings/Notifications';
 import IntegrationsSection from './settings/Integrations';
 import DatabaseSection from './settings/Database';
+import DeploySection from './settings/Deploy';
 import DisplaySection from './settings/Display';
 
 interface Props {
@@ -45,6 +47,7 @@ const NAV: NavItem[] = [
   { to: 'integrations',    label: 'Integrations',   icon: Plug,         adminOnly: true },
   { to: 'audit',           label: 'Audit log',      icon: ClipboardList, adminOnly: true },
   { to: 'authentication',  label: 'Authentication', icon: ShieldCheck,  adminOnly: true },
+  { to: 'deploy',          label: 'Deploy',         icon: HardDrive,    adminOnly: true },
   { to: 'database',        label: 'Database',       icon: Database,     adminOnly: true },
   { to: 'about',           label: 'About',          icon: Info },
 ];
@@ -97,6 +100,7 @@ export default function SettingsPage({ user }: Props) {
           <Route path="integrations"   element={user.role === 'admin' ? <IntegrationsSection /> : <Forbidden />} />
           <Route path="audit"          element={user.role === 'admin' ? <AuditLogSection /> : <Forbidden />} />
           <Route path="authentication" element={user.role === 'admin' ? <AuthenticationSection about={about} /> : <Forbidden />} />
+          <Route path="deploy"         element={user.role === 'admin' ? <DeploySection /> : <Forbidden />} />
           <Route path="database"       element={user.role === 'admin' ? <DatabaseSection /> : <Forbidden />} />
           <Route path="about"          element={<AboutSection about={about} />} />
           <Route path="*"              element={<Navigate to="profile" replace />} />
