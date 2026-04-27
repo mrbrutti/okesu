@@ -1225,3 +1225,103 @@ func (s *Store) GroupedFindings(f GroupedFindingsFilter) ([]*FindingGroup, error
 	}
 	return out, rows.Err()
 }
+
+// FindingsTimeSeriesBucket is one (bucket_ts, series_name → count) row
+// from FindingsTimeSeries. Used by the dashboard's multi-line chart.
+type FindingsTimeSeriesBucket struct {
+	Ts int64
+	By map[string]int64
+}
+
+// FindingsTimeSeries buckets findings by (ts ÷ bucketMs) and aggregates
+// counts per `dimCol` (severity | agent | host). Series are folded:
+// only the top-`topN` distinct dimension values keep their own line;
+// the rest collapse into "other". Empty dimension values render as
+// "(unknown)".
+//
+// sinceMs lower-bounds ts; bucketMs sets the grid (3600000 for 1h,
+// 86400000 for 1d). The caller fills empty buckets so a continuous
+// line renders.
+//
+// Tested portably across SQLite + Postgres via the Store's placeholder
+// rewriter — `?` works on both. The arithmetic is plain int math
+// (ts / bucketMs * bucketMs), no dialect helpers needed.
+func (s *Store) FindingsTimeSeries(sinceMs, bucketMs int64, dimCol string, topN int) ([]FindingsTimeSeriesBucket, []string, error) {
+	switch dimCol {
+	case "severity", "agent", "host":
+		// allowed
+	default:
+		return nil, nil, fmt.Errorf("dimCol must be severity|agent|host, got %q", dimCol)
+	}
+	if bucketMs <= 0 {
+		bucketMs = int64(time.Hour / time.Millisecond)
+	}
+	// Find the top-N dimension values by total count first; everything
+	// else collapses to "other" to keep the chart readable.
+	rows, err := s.Query(`
+		SELECT COALESCE(NULLIF(`+dimCol+`, ''), '(unknown)') AS dim, COUNT(*) AS n
+		FROM findings
+		WHERE ts >= ?
+		GROUP BY dim
+		ORDER BY n DESC
+		LIMIT ?
+	`, sinceMs, topN)
+	if err != nil {
+		return nil, nil, err
+	}
+	top := map[string]bool{}
+	var seriesOrdered []string
+	for rows.Next() {
+		var name string
+		var n int64
+		if err := rows.Scan(&name, &n); err != nil {
+			rows.Close()
+			return nil, nil, err
+		}
+		top[name] = true
+		seriesOrdered = append(seriesOrdered, name)
+	}
+	rows.Close()
+
+	// Now bucket every row, collapsing non-top series into "other".
+	rows, err = s.Query(`
+		SELECT (ts / ?) * ? AS bucket_ts,
+		       COALESCE(NULLIF(`+dimCol+`, ''), '(unknown)') AS dim,
+		       COUNT(*) AS n
+		FROM findings
+		WHERE ts >= ?
+		GROUP BY bucket_ts, dim
+		ORDER BY bucket_ts ASC
+	`, bucketMs, bucketMs, sinceMs)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+	hasOther := false
+	bucketMap := map[int64]map[string]int64{}
+	for rows.Next() {
+		var bts, n int64
+		var name string
+		if err := rows.Scan(&bts, &name, &n); err != nil {
+			return nil, nil, err
+		}
+		series := name
+		if !top[series] {
+			series = "other"
+			hasOther = true
+		}
+		if bucketMap[bts] == nil {
+			bucketMap[bts] = map[string]int64{}
+		}
+		bucketMap[bts][series] += n
+	}
+	if hasOther {
+		seriesOrdered = append(seriesOrdered, "other")
+	}
+
+	out := make([]FindingsTimeSeriesBucket, 0, len(bucketMap))
+	for ts, by := range bucketMap {
+		out = append(out, FindingsTimeSeriesBucket{Ts: ts, By: by})
+	}
+	return out, seriesOrdered, nil
+}

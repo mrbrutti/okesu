@@ -6,6 +6,7 @@ import EventsPage from './pages/Events';
 import DaimonsPage from './pages/Daimons';
 import DaimonDetailPage from './pages/DaimonDetail';
 import AgentsPage from './pages/Agents';
+import DashboardPage from './pages/Dashboard';
 import FindingsPage from './pages/Findings';
 import NodesPage from './pages/Nodes';
 import NodeDetailPage from './pages/NodeDetail';
@@ -45,7 +46,8 @@ export default function App() {
       <Route
         element={user ? <Layout user={user} onLogout={() => setUser(null)} /> : <Navigate to="/login" replace />}
       >
-        <Route index element={<FindingsPage />} />
+        <Route index element={<DashboardPage />} />
+        <Route path="/dashboard" element={<DashboardPage />} />
         <Route path="/findings" element={<FindingsPage />} />
         <Route path="/events" element={<EventsPage />} />
         <Route path="/daimons" element={<DaimonsPage />} />

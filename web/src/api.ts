@@ -472,6 +472,16 @@ export const api = {
 
   // Phase 7 — Settings
   about: () => request<AboutInfo>('/api/system/about'),
+
+  // ── Dashboard ────────────────────────────────────────────────────
+  dashboard: () => request<DashboardResponse>('/api/dashboard'),
+  insightsFindings: (params: { since?: '24h' | '7d' | '30d'; group_by?: 'severity' | 'agent' | 'host'; top?: number }) => {
+    const qs = new URLSearchParams();
+    if (params.since) qs.set('since', params.since);
+    if (params.group_by) qs.set('group_by', params.group_by);
+    if (params.top) qs.set('top', String(params.top));
+    return request<InsightsFindingsResponse>(`/api/insights/findings?${qs.toString()}`);
+  },
   users: () => request<UserItem[]>('/api/users'),
   user: (id: number) => request<UserItem>(`/api/users/${id}`),
   createUser: (req: { email: string; role: string; password: string }) =>
@@ -823,6 +833,38 @@ export interface NodeDeployReq {
   openai_api_key?: string;
   include_webhook?: boolean;
   include_mgmt_cert?: boolean;
+}
+
+export interface DashboardResponse {
+  daimons: { total: number; healthy: number; unhealthy: number };
+  nodes: { total: number; connected: number };
+  findings: { open: number; critical: number; high: number };
+  drift: {
+    total: number;
+    items: Array<{
+      name: string;
+      host: string;
+      current_hash?: string;
+      canonical_hash?: string;
+      definition_version?: string;
+      binary_version?: string;
+    }>;
+  };
+  events_per_hour: Array<{
+    hour_ts: number;
+    by_type: Record<string, number>;
+  }>;
+  recent_critical: Finding[];
+}
+
+export interface InsightsFindingsResponse {
+  bucket_ms: number;
+  group_by: 'severity' | 'agent' | 'host';
+  series: string[];
+  buckets: Array<{
+    ts: number;
+    by: Record<string, number>;
+  }>;
 }
 
 export interface AboutInfo {

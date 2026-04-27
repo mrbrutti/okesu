@@ -1,5 +1,5 @@
 import { Link, NavLink, Outlet, useNavigate } from 'react-router-dom';
-import { Activity, AlertTriangle, Server, Layers, Settings, LogOut, Sparkles, Terminal } from 'lucide-react';
+import { Activity, AlertTriangle, LayoutDashboard, Server, Layers, Settings, LogOut, Sparkles, Terminal } from 'lucide-react';
 import { api, type User } from '../api';
 import { cn } from '../lib/cn';
 
@@ -9,6 +9,7 @@ interface Props {
 }
 
 const nav = [
+  { to: '/dashboard',  label: 'Dashboard',    icon: LayoutDashboard, enabled: true  },
   { to: '/findings',   label: 'Findings',     icon: AlertTriangle,  enabled: true  },
   { to: '/events',     label: 'Live Events',  icon: Activity,       enabled: true  },
   { to: '/daimons',    label: 'Daimons',      icon: Layers,         enabled: true  },
@@ -45,7 +46,7 @@ export default function Layout({ user, onLogout }: Props) {
             <NavLink
               key={item.to}
               to={item.to}
-              end={item.to === '/findings'}
+              end={item.to === '/dashboard' || item.to === '/findings'}
               className={({ isActive }) =>
                 cn(
                   'flex items-center gap-2.5 px-3 py-2 rounded-md text-sm transition-colors',
