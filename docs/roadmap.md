@@ -7,6 +7,14 @@ The **Settings page** (currently `/settings` shows as `soon` in the nav) is wove
 through every phase as the home for new admin surfaces, not built as a single
 chunk up-front.
 
+> **Note on phase numbering.** Phase 7 and Phase 8 in this document are the
+> *Control Plane* roadmap entries (Settings + Users, Deploy hardening). The
+> daemon side of the project independently shipped a separate *Phase 7
+> (Lifecycle Management)* and *Phase 8 (Hexagonal Architecture / OCI
+> adapters)* — see [§Daemon-side Phase 7 + 8 — already shipped](#daemon-side-phase-7--8--already-shipped)
+> at the bottom of this file for what landed and what's deferred. The two
+> tracks are independent; nothing here is blocked on that work.
+
 ```mermaid
 gantt
     title Post-v1 phase ordering
@@ -532,3 +540,60 @@ Conscious omissions — call out before starting these:
   ownership would require a tags/labels system — defer to a "compliance v2" phase.
 - **SOC2 Type II artifacts.** Audit log (Phase 7) is the foundation; the rest is
   process/policy work outside the codebase.
+
+---
+
+## Daemon-side Phase 7 + 8 — already shipped
+
+The daemon-side roadmap ran on a parallel track to the CP-side phases above
+and has now landed end-to-end. Documented here for the audit trail; current
+state and architecture details live in
+[`docs/architecture.md`](architecture.md) §22–23 and
+[`INSTALL.md`](../INSTALL.md) §12–13.
+
+### Phase 7 — Lifecycle Management
+
+| Sub-phase | What shipped |
+|---|---|
+| 7a | Node metadata refresh via tunnel — `MsgProbe` / `MsgProbeReply`, sub-second per node, no SSH. |
+| 7b | Daimon hot-reload via mgmt-plane — `definition_hash` on heartbeat + `GET /definition`, picks up library edits in ~60s without restart. Hot-reloads system prompt, model, allowed tools, `maxTurns`, `effort`. |
+| 7c | Binary update + rollback via SSH — `okesu.previous` slot for atomic rollback, jobs stream through existing `/api/jobs/{id}/log` SSE. |
+
+### Phase 8 — Hexagonal Architecture (Ports + Adapters)
+
+The CP now talks to every external service through a small Go interface.
+Adapter selection is a config decision; the same binary runs in dev (SQLite +
+in-process) and OCI production (Postgres + ClickHouse + Kafka + Redis + S3 +
+Vault).
+
+| Sub-phase | What shipped |
+|---|---|
+| 8a | Ports defined: `Store`, `EventStore`, `Queue`, `PubSub`, `BlobStore`, `CertManager`, `Secrets`. Sentinel errors. In-process dev adapters. |
+| 8b | Postgres driver foundation — `db.Open` dialect detection from DSN. |
+| 8b.next | Migration port to Postgres — split `migrations/sqlite/` and `migrations/postgres/` dirs, runtime `?` → `$N` placeholder rewriter, dialect-aware `tsToMillisExpr`. |
+| 8c | EventStore port + sqlite adapter (foundation). |
+| 8c.next | ClickHouse + Kafka adapters wired through `eventpipeline` worker — async batched ingest, MergeTree schema bootstrap, SASL/TLS for managed Kafka. |
+| 8d | Redis pub/sub adapter — stateless CP, multi-replica SSE fan-out. |
+| 8e | S3-compatible BlobStore (works against OCI Object Storage with Customer Secret Keys). |
+| 8f | `dev/docker-compose.yml` (Postgres + ClickHouse + Redpanda + Redis + MinIO) + synthetic load-test harness. |
+| 8g | Secrets through one door — YAML config + `${secret:NAME}` resolver + `--secrets-source` (`env` / `file://` / `oci-vault://` reserved). Canonical secret names, `LoadCredential=`-friendly. |
+
+### Deferred (require an OCI tenancy or wider integration)
+
+| Item | Notes |
+|---|---|
+| OCI Vault adapter (`oci-vault://...`) | Phase 8e.next, blocked on tenancy round-trip. CP currently errors if this scheme is used. |
+| OCI Certificates adapter for `ports.CertManager` | Phase 8e.next. Today the internal self-signed CA satisfies the port. |
+| Webhook handler refactor to `Queue.Publish` | The receive path validates HMAC and persists synchronously; full async ingest end-to-end requires routing the webhook handler through Kafka rather than the direct `EventStore.InsertBatch`. Tracked for Phase 9. |
+| Removal of deprecated CLI / env-var secret flags | Today logs a deprecation hint; full removal queued behind one release of overlap. |
+| Helm chart for OKE deployment + Terraform module for OCI dependencies | Listed as TODO in the Phase 8f commit; not started. |
+| Persistent-tunnel load test harness | Skeleton in `test/loadtest/`; lacks the long-lived tunnel scenario. |
+| Prometheus metrics endpoint | Mentioned during 8d as a complement to the stateless CP work. |
+
+### Phase 9 (next, daemon-side) — Federation foundation
+
+Tracked as task #119. Adds a `cp_meta` table and an introspect endpoint so a
+parent CP can discover and aggregate from child CPs without touching their
+internal state. Designed to compose with the OCI adapters above —
+multi-region deployments will benefit from federated SSE fan-out via Redis
+and federated event archive via ClickHouse / S3.

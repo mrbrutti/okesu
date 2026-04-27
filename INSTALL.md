@@ -15,6 +15,8 @@ This guide covers deploying both the **daemon agents** (`okesu`) and the **Contr
 9. [Networking & firewall](#9-networking--firewall)
 10. [Operations](#10-operations)
 11. [Troubleshooting](#11-troubleshooting)
+12. [Lifecycle: updating daimons, binaries & node metadata (Phase 7)](#12-lifecycle-updating-daimons-binaries--node-metadata-phase-7)
+13. [OCI deployment shape (Phase 8)](#13-oci-deployment-shape-phase-8)
 
 ---
 
@@ -266,6 +268,100 @@ OKESU_CP_WEBHOOK_SECRET=long-random-string-32-bytes-min
 # OKESU_CP_ADMIN_EMAIL=admin@local
 ```
 
+The legacy `OKESU_CP_*` env vars and matching CLI flags still work, but
+they trigger a deprecation log line at boot. **Phase 8g (below) is the
+recommended production path** — secrets stay out of the env block, and
+non-secret config moves to a YAML file that can ship through CI/CD.
+
+### 6.2.1. YAML config + `--secrets-source` (Phase 8g — recommended for production)
+
+Production deployments use:
+
+```bash
+okesu-cp serve \
+  --config /etc/okesu/cp.yaml \
+  --secrets-source file:///run/credentials/okesu-cp.service
+```
+
+- `--config` points at a YAML file containing every non-secret setting
+  (DSN hostnames, regions, bucket names, OIDC issuer URL, …). Secret
+  fields use `"${secret:NAME}"` references that the CP resolves at
+  boot. The file is safe to commit to git, ship through CI/CD, share
+  between operators.
+- `--secrets-source` selects the `ports.Secrets` adapter. **No secret
+  value ever appears on the CLI or in `OKESU_CP_*` env vars in
+  production.**
+
+**Available secret sources:**
+
+| Source                                              | Use when                                              |
+|-----------------------------------------------------|-------------------------------------------------------|
+| `env` (default)                                      | dev — secrets in `OKESU_SECRET_*` env vars            |
+| `file:///etc/okesu/secrets`                          | systemd `LoadCredential=` — secrets injected at start |
+| `file:///run/credentials/okesu-cp.service`           | Same, with the systemd-managed default path         |
+| `oci-vault://<compartment-ocid>?region=us-ashburn-1` | OCI Vault (Phase 8e.next — pending tenancy validation) |
+
+**Canonical secret names** (slash-separated, mirrors OCI Vault folders):
+
+```
+cp/admin-password         clickhouse/password
+cp/webhook-secret         kafka/sasl-password
+cp/session-key            blob/secret-key
+cp/oidc/client-secret
+```
+
+**Example `/etc/okesu/cp.yaml`** — single-host SQLite + local-disk
+deployment with `LoadCredential=`:
+
+```yaml
+listen: ":8443"
+mgmt_listen: ":8444"
+db: "/var/lib/okesu-cp/cp.db"
+admin_email: "admin@local"
+admin_password:  "${secret:cp/admin-password}"
+session_key:     "${secret:cp/session-key}"
+webhook_secret:  "${secret:cp/webhook-secret}"
+event_ttl_days: 30
+```
+
+**Example `/etc/okesu/cp.yaml`** — full OCI shape (Postgres + ClickHouse
++ Streaming + Cache + Object Storage). The complete reference lives at
+`deploy/oci/cp.example.yaml`:
+
+```yaml
+db: "postgres://okesu@db.adb.us-ashburn-1.oraclecloud.com:5432/cpdb?sslmode=require"
+
+events_store: "clickhouse"
+clickhouse_addrs: ["clickhouse-0.okesu.svc:9000", "clickhouse-1.okesu.svc:9000"]
+clickhouse_database: "okesu_events"
+clickhouse_username: "okesu"
+clickhouse_password: "${secret:clickhouse/password}"
+clickhouse_secure:   true
+
+queue: "kafka"
+kafka_brokers: ["streampool-xxxxx.streaming.us-ashburn-1.oci.oraclecloud.com:9092"]
+kafka_sasl_username: "<tenancy>/<username>/<stream-pool-ocid>"
+kafka_sasl_password: "${secret:kafka/sasl-password}"
+kafka_use_tls:       true
+
+pubsub_url: "redis://cache.us-ashburn-1.oci.oraclecloud.com:6379/0"
+
+blob_url:        "<namespace>.compat.objectstorage.us-ashburn-1.oraclecloud.com"
+blob_access_key: "your-customer-key-access-id"
+blob_secret_key: "${secret:blob/secret-key}"
+blob_bucket:     "okesu-prod"
+blob_region:     "us-ashburn-1"
+
+admin_password:  "${secret:cp/admin-password}"
+session_key:     "${secret:cp/session-key}"
+webhook_secret:  "${secret:cp/webhook-secret}"
+```
+
+The CP picks adapters from this YAML alone — switching from SQLite to
+Postgres, or from local disk to S3, is a config edit, not a code change.
+See §13 (OCI deployment shape) and `deploy/oci/README.md` for which
+adapter slots map to which OCI service.
+
 ### 6.3. systemd unit
 
 `/etc/systemd/system/okesu-cp.service`:
@@ -282,11 +378,25 @@ StartLimitBurst=5
 Type=simple
 User=okesu-cp
 Group=okesu-cp
-ExecStart=/usr/local/bin/okesu-cp serve
+ExecStart=/usr/local/bin/okesu-cp serve \
+  --config /etc/okesu/cp.yaml \
+  --secrets-source file:///run/credentials/okesu-cp.service
 Restart=on-failure
 RestartSec=10s
 
-EnvironmentFile=/etc/okesu-cp/config.env
+# Phase 8g — secrets injected at start, removed from /run on stop.
+# Each LoadCredential entry maps a canonical secret name to a file
+# under /run/credentials/okesu-cp.service/. The CP reads them by name
+# via the file:// secrets adapter — no environment variable, no flag,
+# no /proc/PID/environ exposure.
+LoadCredential=cp/admin-password:/etc/okesu/secrets/cp/admin-password
+LoadCredential=cp/webhook-secret:/etc/okesu/secrets/cp/webhook-secret
+LoadCredential=cp/session-key:/etc/okesu/secrets/cp/session-key
+# Add as needed for your config:
+# LoadCredential=clickhouse/password:/etc/okesu/secrets/clickhouse/password
+# LoadCredential=kafka/sasl-password:/etc/okesu/secrets/kafka/sasl-password
+# LoadCredential=blob/secret-key:/etc/okesu/secrets/blob/secret-key
+# LoadCredential=cp/oidc/client-secret:/etc/okesu/secrets/cp/oidc/client-secret
 
 # Filesystem hardening
 WorkingDirectory=/var/lib/okesu-cp
@@ -310,12 +420,26 @@ Bootstrap:
 ```bash
 sudo useradd --system --create-home --home-dir /var/lib/okesu-cp okesu-cp
 sudo install -m 0755 ./okesu-cp /usr/local/bin/okesu-cp
-sudo install -d -m 0700 -o okesu-cp -g okesu-cp /etc/okesu-cp /var/lib/okesu-cp
-# write /etc/okesu-cp/config.env with mode 0600 owned by okesu-cp:okesu-cp
+sudo install -d -m 0755 /etc/okesu
+sudo install -d -m 0700 -o okesu-cp -g okesu-cp /etc/okesu/secrets/cp /var/lib/okesu-cp
+
+# Drop the canonical secrets, mode 0600. Names match the LoadCredential mapping.
+echo -n "$(openssl rand -base64 24)" | sudo install -m 0600 /dev/stdin /etc/okesu/secrets/cp/admin-password
+echo -n "$(openssl rand -hex 32)"    | sudo install -m 0600 /dev/stdin /etc/okesu/secrets/cp/webhook-secret
+echo -n "$(openssl rand -base64 32)" | sudo install -m 0600 /dev/stdin /etc/okesu/secrets/cp/session-key
+
+# Drop the YAML config. Use the canonical example as a starting point.
+sudo install -m 0644 deploy/oci/cp.example.yaml /etc/okesu/cp.yaml
+
 sudo systemctl daemon-reload
 sudo systemctl enable --now okesu-cp
 sudo journalctl -fu okesu-cp
 ```
+
+For dev / quick-start without `LoadCredential=`, drop `--secrets-source`
+to the env-only fallback and keep secrets in `/etc/okesu-cp/config.env`
+as before. The legacy `EnvironmentFile=/etc/okesu-cp/config.env` path
+still works — see §6.2 above.
 
 ### 6.4. Container image
 
@@ -1648,3 +1772,172 @@ The daemon hasn't reached the mgmt plane. Check `journalctl -u okesu-agent@<name
 
 **Config push doesn't apply**
 Daemons poll on `pollSec` interval (default 60s). Wait one cycle after pressing Save. Hot reload is on the **next poll**, not immediate. The daemon also needs to re-enter its agentic loop to pick up new `maxTurns` / `effort` — the change applies to the **next** tick, not the currently running one.
+
+---
+
+## 12. Lifecycle: updating daimons, binaries & node metadata (Phase 7)
+
+Three independent things change in a live fleet, and Phase 7 split them
+into three first-class actions so the operator UX matches the underlying
+mechanics.
+
+| Artifact            | Channel         | Restart? | Operator UX                       |
+|---------------------|-----------------|----------|-----------------------------------|
+| Daimon definition   | mgmt-plane      | No       | Save in Library → auto-rolls in 60s |
+| Daemon binary       | SSH             | Yes      | "Update binary" on Nodes page     |
+| Node binary (tunnel)| SSH (same as ↑) | Yes      | Same — same Go binary             |
+| Node metadata       | Tunnel probe    | No       | "Refresh metadata" on NodeDetail  |
+
+### 12.1. Daimon hot-reload (Phase 7b)
+
+Edit a daimon definition in the Library, save, every running daemon
+picks up the change within ~60 seconds. No SSH, no service restart.
+
+**What hot-reloads:** system prompt, model, allowed tools, `maxTurns`,
+`effort`.
+
+**What still requires a restart:** `interval` schedule, `stateDir`. The
+save-time validator flags these and warns the operator.
+
+**Wire shape:** the daemon's existing config poller now also tracks a
+`definition_hash`. When the CP-reported hash differs from the daemon's
+local hash, the daemon fetches the full `*.md` file via
+`GET /api/v1/agents/{name}/definition`, parses it, and applies it on
+the next tick. The fetched body's hash is verified against
+`/config`'s reported hash to guard against mid-fetch updates.
+
+**Per-host rollout:** `agents.current_definition_hash` is keyed by
+`(name, host)` so the UI shows a per-host rollout indicator —
+"3/5 hosts on v2".
+
+### 12.2. Binary update + rollback (Phase 7c)
+
+Updating the `okesu` binary requires a process restart, so it lives
+on the Nodes page as an explicit action.
+
+```bash
+# CP UI → Nodes → <node> → "Update binary"
+#  - select an arch from --daemon-binaries-dir
+#  - SSH push to /usr/local/bin/okesu.new
+#  - atomic rename: okesu → okesu.previous, okesu.new → okesu
+#  - systemctl restart okesu-agent@*
+```
+
+If the new binary misbehaves, **Rollback** inverts the renames and
+restarts. Both flows stream through the same `/api/jobs/{id}/log`
+SSE endpoint that initial deploys use.
+
+The previous-binary slot is single-deep — a second update overwrites
+the rollback target. To roll back to `N − 2`, redeploy from the CP's
+`--daemon-binaries-dir`.
+
+### 12.3. Node metadata refresh (Phase 7a)
+
+The CP can ask a connected node "what does your hardware look like?"
+via the existing reverse tunnel — no SSH, no restart, sub-second per
+node. Collected fields: kernel release, OS release (`/etc/os-release`),
+CPU count, memory total, disk space at `/var/lib/okesu`.
+
+Hit **Refresh metadata** on the NodeDetail page after the CP grows a
+new metadata column without redeploying the fleet.
+
+---
+
+## 13. OCI deployment shape (Phase 8)
+
+The Control Plane is cloud-agnostic — every external dependency goes
+through a port (see `controlplane/ports/`) and selecting an OCI-native
+adapter is a config decision. This section is the operator-facing side
+of that story: which OCI service maps to which port, and how to wire
+them up.
+
+### 13.1. Adapter ↔ OCI service mapping
+
+| Concern                     | OCI service                          | Adapter (`controlplane/adapters/`)         |
+|-----------------------------|--------------------------------------|--------------------------------------------|
+| Relational state            | OCI Database with PostgreSQL         | postgres driver via `db.Open(postgres://)` |
+| Events firehose             | ClickHouse on OKE                    | `clickhouseevents/`                         |
+| Async event pipeline        | OCI Streaming (Kafka API)            | `kafka/`                                    |
+| Pub/sub fan-out             | OCI Cache (Redis)                    | `redispubsub/`                              |
+| Blob storage                | OCI Object Storage (S3-compatible)   | `s3blob/`                                   |
+| Compute                     | OKE                                  | (Helm chart — Phase 8f)                     |
+| L7 LB (UI / API)            | OCI Load Balancer                    | (Ingress)                                   |
+| L4 LB (tunnels, 1M+ conns)  | OCI Network Load Balancer            | (Service annotation)                        |
+| OIDC SSO                    | Identity Domains                     | already integrated                          |
+| PKI (mTLS for daemons)      | OCI Certificates                     | `oci-certs/` (Phase 8e.next)                |
+| Secrets / KMS               | OCI Vault                            | `oci-vault/` (Phase 8e.next)                |
+
+### 13.2. Adapter selection — config flags
+
+Every adapter is selected once at boot from the YAML file (preferred)
+or from the equivalent CLI flag.
+
+| Choice         | YAML field            | CLI flag             | Notes                                                |
+|----------------|-----------------------|----------------------|------------------------------------------------------|
+| Store          | `db:`                 | `--db`               | DSN scheme picks SQLite vs Postgres                  |
+| Events store   | `events_store:`       | `--events-store`     | `sqlite` (default) / `clickhouse`                    |
+| Queue          | `queue:`              | `--queue`            | `inprocess` (default) / `kafka`                      |
+| Pub/sub        | `pubsub_url:`         | `--pubsub-url`       | empty → in-process                                   |
+| Blob           | `blob_url:`           | `--blob-url`         | empty → filesystem at `--blob-dir`                   |
+| Secrets        | n/a                   | `--secrets-source`   | `env` / `file://...` / `oci-vault://...`             |
+
+A run with all OCI adapters wired:
+
+```bash
+okesu-cp serve \
+  --config /etc/okesu/cp.yaml \
+  --secrets-source file:///run/credentials/okesu-cp.service
+```
+
+### 13.3. Async event ingest pipeline
+
+In production the write path becomes:
+
+```
+webhook POST → CP validates HMAC → publish to Kafka topic events.raw
+                                                                ↓
+                            eventpipeline worker (one per CP replica)
+                                                                ↓
+                                        accumulate 100ms / 1000-row batch
+                                                                ↓
+                                                ClickHouse.InsertBatch
+```
+
+A worker failure leaves the message uncommitted in Kafka, so a healthy
+replica picks it up — no data loss. Findings projection (state-mutating)
+stays in the synchronous CP path because it depends on the event_id;
+only the events stream goes async.
+
+### 13.4. Stateless CP
+
+With `--pubsub-url redis://...`, the three pieces of in-memory state
+(SSE broadcaster, run subscribers, deploy job log subscribers) all
+fan through Redis pub/sub. An event posted to replica A reaches an
+SSE client on replica B in milliseconds. Run multiple CP replicas
+behind an L7 LB; SSE sticky sessions are not required.
+
+### 13.5. Postgres dialect notes
+
+The CP code base stays SQLite-native. A runtime placeholder rewriter
+(`controlplane/db/rewriter.go`) converts every `?` placeholder to `$N`
+on Postgres and is bypassed entirely on SQLite. Migrations live in
+`controlplane/db/migrations/sqlite/` and `…/postgres/` — both dirs
+stay in lockstep.
+
+### 13.6. Local production-shape stack
+
+To exercise every adapter without an OCI tenancy:
+
+```bash
+cd dev
+docker compose up -d
+```
+
+Brings up Postgres 16, ClickHouse 24, Redpanda (Kafka-compat), Redis 7,
+and MinIO. See `dev/README.md` for the full CP invocation.
+
+### 13.7. Reference
+
+- `deploy/oci/README.md` — full OCI deployment guide (services, IAM, networking)
+- `deploy/oci/cp.example.yaml` — canonical YAML config template
+- `docs/architecture.md` §23 — ports table, adapter selection diagram, wire details

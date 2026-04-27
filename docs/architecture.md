@@ -27,6 +27,8 @@ Okesu is a fully autonomous AI agent runner written in Go. It exposes a single b
 19. [Concurrency Model](#19-concurrency-model)
 20. [Data Structures Reference](#20-data-structures-reference)
 21. [Control Plane Data Architecture](#21-control-plane-data-architecture)
+22. [Lifecycle Management (Phase 7)](#22-lifecycle-management-phase-7)
+23. [Hexagonal Architecture (Phase 8 — Ports + Adapters)](#23-hexagonal-architecture-phase-8--ports--adapters)
 
 ---
 
@@ -1418,3 +1420,276 @@ The pull cache (top loop) handles the bulk-suppression case at
 near-zero token cost. The tool (bottom path) handles the cases the
 LLM wants nuance for — related issues, cross-host context, "is this
 what we think it is?".
+
+---
+
+## 22. Lifecycle Management (Phase 7)
+
+Operators routinely need to update three independent things — daimon
+*definitions* (the prompt + tools), daemon *binaries*, and node
+*metadata* — without taking the fleet down. Phase 7 split these into
+three first-class actions so the operator UX matches the underlying
+mechanics.
+
+### 22.1 Daimon hot-reload (Phase 7b — mgmt-plane push)
+
+Edit a daimon definition in the Daimon Library, save, every running
+daemon picks up the change within ~60 seconds. No SSH, no service
+restart, mid-tick conversations finish unaffected.
+
+```mermaid
+sequenceDiagram
+    participant Op as Operator
+    participant CP as Control Plane
+    participant D1 as Daemon (host A)
+    participant D2 as Daemon (host B)
+
+    Op->>CP: PUT /api/daimons/library/{name}
+    Note over CP: validates frontmatter,<br/>writes file to --daimon-files-dir,<br/>computes sha256
+
+    loop every 60s (mTLS poll)
+        D1->>CP: GET /api/v1/agents/{name}/config
+        CP-->>D1: {definition_hash: "abc...", ...}
+        Note over D1: local hash differs?
+        D1->>CP: GET /api/v1/agents/{name}/definition
+        CP-->>D1: full *.md file content + X-Definition-Hash
+        Note over D1: parse → hot-reload<br/>(system prompt, tools, model, max_turns, effort)<br/>on next tick
+        D1->>CP: heartbeat {definition_hash: "abc..."}
+    end
+
+    Note over CP: agents.current_definition_hash<br/>per (name, host)<br/>drives the rollout indicator
+```
+
+**What hot-reloads:** system prompt, model, allowed tools, max turns,
+effort.
+
+**What still requires a restart:** schedule (`interval`), `stateDir`.
+The save-time validator flags these and warns the operator.
+
+**Race protection:** the daemon verifies the post-fetch hash matches
+what `/config` reported. If a second save lands mid-fetch, it skips
+this round and retries on the next poll cycle.
+
+### 22.2 Binary update + rollback (Phase 7c — SSH push)
+
+Updating the `okesu` binary is structurally different from a daimon
+edit because it requires a process restart. Phase 7c treats it as a
+discrete operator action with explicit rollback.
+
+```
+SSH to node →  upload to /usr/local/bin/okesu.new
+                                ↓
+            mv okesu → okesu.previous (atomic)
+            mv okesu.new → okesu     (atomic)
+                                ↓
+            systemctl restart okesu-agent@*
+```
+
+Rollback inverts the renames: `okesu.previous → okesu`, then the
+same systemd restart. Both flows are jobs streamed through the
+existing `/api/jobs/{id}/log` SSE endpoint that deploys already
+use, so the UI just reuses `subscribeJobLog`.
+
+The previous-binary slot is single-deep by design — a second update
+overwrites the first rollback target. Operators rolling back to
+`N - 2` need to re-deploy from the CP's `--daemon-binaries-dir`.
+
+### 22.3 Node metadata refresh (Phase 7a — tunnel probe)
+
+Some operator-visible fields aren't tied to the binary or the
+daimon — they're just "what does this node look like". Phase 7a
+adds a `MsgProbe` / `MsgProbeReply` round-trip on the existing
+tunnel: the CP sends a probe, the node collects `os.Hostname()`,
+`uname -m`, `/etc/os-release`, `runtime.NumCPU()`, `/proc/meminfo`,
+`syscall.Statfs(/var/lib/okesu)`, returns it. The CP writes to
+`nodes.kernel_release`, `nodes.os_release`, etc.
+
+No SSH required, no service restart, sub-second per node. Operators
+hit "Refresh metadata" on the NodeDetail page after the CP grows a
+new column (e.g. `daemon_hostname` from migration 014) without
+having to redeploy the fleet.
+
+### 22.4 Update lifecycle table
+
+| Artifact            | Channel         | Restart? | Operator UX                       |
+|---------------------|-----------------|----------|-----------------------------------|
+| Daimon definition   | mgmt-plane      | No       | Save in Library → auto-rolls in 60s |
+| Daemon binary       | SSH             | Yes      | "Update binary" on Nodes page     |
+| Node binary (tunnel)| SSH (same as ↑) | Yes      | Same — same Go binary             |
+| Node metadata       | Tunnel probe    | No       | "Refresh metadata" on NodeDetail  |
+
+---
+
+## 23. Hexagonal Architecture (Phase 8 — Ports + Adapters)
+
+Phase 8 refactored the CP to talk to every external service through
+small Go interfaces ("ports") so the same code runs in dev (SQLite +
+in-process queue + filesystem blobs) and production (Postgres +
+ClickHouse + Kafka + Redis + S3 + OCI Vault) — adapter selection is
+a config decision, not a code change.
+
+### 23.1 The ports
+
+| Port (`controlplane/ports/`) | Purpose                                | Adapters shipping today                             |
+|------------------------------|----------------------------------------|-----------------------------------------------------|
+| `Store` (the SQL DB)         | Relational state — users, daimons, findings, audit | SQLite (dev), Postgres (production via pgx)        |
+| `EventStore`                 | Events firehose — append-only telemetry | sqliteevents (wraps Store), clickhouseevents       |
+| `Queue`                      | Durable async ingest                   | inprocess (channel-backed), kafka (Kafka API + SASL/TLS) |
+| `PubSub`                     | Fire-and-forget broadcast (SSE fan-out)| inprocess, redispubsub (Redis & compatible)        |
+| `BlobStore`                  | Object storage (binaries, exports, cold-tier) | filesystem (local disk), s3blob (any S3-compat)    |
+| `CertManager`                | mTLS PKI for daemons + tunnel-clients  | internalca (current self-signed), oci-certificates (planned) |
+| `Secrets`                    | KMS / secret store                      | envsecrets (env + LoadCredential dir), oci-vault (planned) |
+
+Each port is small (1–6 methods), error semantics use sentinel
+errors (`ports.ErrNotFound`, `ports.ErrAlreadyExists`,
+`ports.ErrNotSupported`, `ports.ErrShutdown`), and the CP code
+never imports an adapter directly. Selection happens once at
+`controlplane.New(cfg)`.
+
+### 23.2 Adapter selection
+
+```mermaid
+graph LR
+    Cfg[Config] --> Pick{adapter selector}
+    Pick -->|--db sqlite/postgres| Store
+    Pick -->|--events-store| Events[EventStore]
+    Pick -->|--queue| Q[Queue]
+    Pick -->|--pubsub-url| PubSub
+    Pick -->|--blob-url| Blob
+    Pick -->|--secrets-source| Sec[Secrets]
+
+    Store -->|sqlite| SQLite[(SQLite file)]
+    Store -->|postgres| PG[(OCI DB-PG / RDS)]
+    Events -->|sqliteevents| SQLite
+    Events -->|clickhouseevents| CH[(ClickHouse cluster)]
+    Q -->|inprocess| Mem[in-memory channels]
+    Q -->|kafka| KK[Kafka / OCI Streaming]
+    PubSub -->|inprocess| Mem
+    PubSub -->|redispubsub| Redis[(Redis / OCI Cache)]
+    Blob -->|filesystem| Disk[local disk]
+    Blob -->|s3blob| S3[S3 / OCI Object Storage]
+    Sec -->|envsecrets| Env[OKESU_SECRET_*\nor /etc/okesu/secrets]
+    Sec -->|oci-vault| Vault[OCI Vault]
+```
+
+### 23.3 Async event ingest pipeline
+
+In production with `--events-store=clickhouse --queue=kafka`, the
+write path becomes:
+
+```
+webhook POST → CP validates HMAC → publish to Kafka topic events.raw
+                                                                ↓
+                            eventpipeline worker (one per CP replica)
+                                                                ↓
+                                        accumulate 100ms / 1000-row batch
+                                                                ↓
+                                                ClickHouse.InsertBatch
+```
+
+A worker failure leaves the message uncommitted in Kafka, so a
+healthy CP replica picks it up. No data loss. Findings projection
+(state-mutating) stays in the synchronous CP path because it
+depends on the event_id; the events stream is the only piece that
+goes async.
+
+### 23.4 Stateless CP for horizontal scale
+
+Three pieces of in-memory state used to pin the CP to a single
+process:
+
+- `Broadcaster` (SSE fan-out for `/api/events/stream`)
+- run subscriber channels (live job/run logs)
+- deploy job log subscribers
+
+Phase 8d moved these behind `ports.PubSub`. The default
+in-process adapter preserves single-CP behavior; `--pubsub-url
+redis://...` swaps in Redis so an event posted to replica A reaches
+an SSE client on replica B in milliseconds.
+
+### 23.5 Database dialect handling
+
+`Store.Exec` / `Query` / `QueryRow` (and their `Context` variants)
+override the embedded `*sql.DB` to apply a runtime placeholder
+rewriter when `Dialect == DialectPostgres`. Every `?` placeholder
+becomes `$N`; single-quoted string literals are passed through
+verbatim. The CP code base stays SQLite-native; Postgres
+compatibility is a single-pass transformation.
+
+Dialect-specific helpers live in `controlplane/db/rewriter.go`:
+
+- `tsToMillisExpr(dialect, col)` — `strftime('%s', col) * 1000` on
+  SQLite, `(EXTRACT(EPOCH FROM col) * 1000)::bigint` on Postgres
+- `dialectSQL(dialect)` — migration-runner check/insert SQL with
+  the right placeholder style
+
+Migrations live in `migrations/sqlite/` and `migrations/postgres/`.
+The runner picks the dir from the dialect; both dirs stay in
+lockstep — every migration N has a counterpart at the same N.
+
+### 23.6 Secrets — single door (Phase 8g)
+
+Every secret the CP needs flows through `ports.Secrets` at boot.
+Three layers, applied in order in `controlplane.New`:
+
+```
+1. LoadConfigFile          — YAML config with "${secret:NAME}" refs
+        ↓
+2. resolveConfigSecretRefs — substitute ${secret:NAME} via adapter
+        ↓
+3. resolveSecrets          — for canonical names the CP needs,
+                              fill the field if still empty
+```
+
+Canonical secret names (slash-separated, mirrors OCI Vault folder
+hierarchy):
+
+```
+cp/admin-password         clickhouse/password
+cp/webhook-secret         kafka/sasl-password
+cp/session-key            blob/secret-key
+cp/oidc/client-secret
+```
+
+`--secrets-source` selects the adapter:
+
+| Source                                       | Use when                                |
+|----------------------------------------------|-----------------------------------------|
+| `env` (default)                              | dev — secrets in `OKESU_SECRET_*` env vars |
+| `file:///etc/okesu/secrets`                  | systemd `LoadCredential=` in production |
+| `oci-vault://<compartment-ocid>?region=...`  | OCI Vault (Phase 8e.next, after tenancy round-trip) |
+
+`scrubDSN()` redacts password components from URL-style DSNs before
+logging. CLI flags + raw `OKESU_CP_*` env vars for individual
+secrets still work but trigger a deprecation log line at boot.
+
+### 23.7 What still needs the OCI tenancy
+
+- Postgres migrations applied against managed OCI Database PostgreSQL
+- ClickHouse cluster on OKE — schema bootstrap + ingest under load
+- OCI Streaming SASL handshake (the SASL username format is
+  OCI-specific)
+- OCI Object Storage S3-compat round-trip with Customer Secret Keys
+- OCI Certificates adapter for `ports.CertManager` (Phase 8e.next)
+- OCI Vault adapter for `ports.Secrets` (Phase 8e.next)
+
+### 23.8 Where each adapter lives
+
+```
+controlplane/
+  ports/                       interfaces (ports.{Store,EventStore,Queue,PubSub,BlobStore,CertManager,Secrets})
+  adapters/
+    inprocess/                 channel-backed Queue + PubSub (dev)
+    sqliteevents/              EventStore wrapping db.Store
+    clickhouseevents/          EventStore against ClickHouse (production)
+    kafka/                     Queue against Kafka API (OCI Streaming, MSK, Confluent, Redpanda)
+    redispubsub/               PubSub against Redis (OCI Cache, ElastiCache, Cloud Memorystore)
+    filesystem/                BlobStore on local disk (dev)
+    s3blob/                    BlobStore against S3-compat (OCI Object Storage, AWS S3, R2, MinIO)
+    internalca/                CertManager around the built-in self-signed CA
+    envsecrets/                Secrets from env vars + optional dir of files
+  eventpipeline/               Queue → batch → EventStore worker
+```
+
+A new cloud requires writing one new file per service, not editing
+the rest of the CP.
