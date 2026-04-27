@@ -24,7 +24,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/coder/websocket"
@@ -404,13 +403,15 @@ func collectMetadata(cfg Config, probeID string) *tunnel.ProbeReplyPayload {
 	}
 
 	// Disk free for the okesu state dir if it exists, otherwise /var.
+	// Implementation lives in client_unix.go / client_other.go so the
+	// non-Unix builds don't reach for syscall.Statfs (Windows has no
+	// such syscall).
 	target := "/var/lib/okesu"
 	if _, err := os.Stat(target); err != nil {
 		target = "/var"
 	}
-	var stat syscall.Statfs_t
-	if err := syscall.Statfs(target, &stat); err == nil {
-		r.DiskFreeMB = int64(stat.Bavail) * int64(stat.Bsize) / (1024 * 1024)
+	if mb, ok := diskFreeMB(target); ok {
+		r.DiskFreeMB = mb
 	}
 
 	r.OkesuVersion = cfg.Version
