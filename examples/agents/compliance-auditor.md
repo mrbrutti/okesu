@@ -1,6 +1,7 @@
 ---
 # ── Identity ────────────────────────────────────────────────────────────────
 name: compliance-auditor
+version: "1"
 description: >
   Compliance and governance auditor. Checks CIS benchmarks, reviews IAM access
   staleness, enforces resource tagging policies, and validates data residency

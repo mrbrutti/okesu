@@ -11,9 +11,10 @@ import (
 
 // Config holds the runtime configuration passed from the CLI.
 type Config struct {
-	Name         string // agent name (from agent file; used in daemon events)
-	Provider     string
-	Model        string
+	Name              string // agent name (from agent file; used in daemon events)
+	DefinitionVersion string // operator-set version label from the daimon file (e.g. "2", "v3"); reported via heartbeat
+	Provider          string
+	Model             string
 	Prompt       string
 	SystemPrompt string
 	MaxTokens    int64

@@ -121,12 +121,15 @@ var sqliteM017 string
 //go:embed migrations/sqlite/018_agent_definition_hash.sql
 var sqliteM018 string
 
+//go:embed migrations/sqlite/019_agent_definition_version.sql
+var sqliteM019 string
+
 var sqliteMigrations = []string{
 	sqliteM001, sqliteM002, sqliteM003,
 	sqliteM004, sqliteM005, sqliteM006, sqliteM007,
 	sqliteM008, sqliteM009, sqliteM010, sqliteM011, sqliteM012,
 	sqliteM013, sqliteM014, sqliteM015, sqliteM016, sqliteM017,
-	sqliteM018,
+	sqliteM018, sqliteM019,
 }
 
 //go:embed migrations/postgres/001_init.sql
@@ -183,12 +186,15 @@ var pgM017 string
 //go:embed migrations/postgres/018_agent_definition_hash.sql
 var pgM018 string
 
+//go:embed migrations/postgres/019_agent_definition_version.sql
+var pgM019 string
+
 var postgresMigrations = []string{
 	pgM001, pgM002, pgM003,
 	pgM004, pgM005, pgM006, pgM007,
 	pgM008, pgM009, pgM010, pgM011, pgM012,
 	pgM013, pgM014, pgM015, pgM016, pgM017,
-	pgM018,
+	pgM018, pgM019,
 }
 
 // migrationsForDialect returns the embedded list matching the dialect.

@@ -1,6 +1,7 @@
 ---
 # ── Identity ────────────────────────────────────────────────────────────────
 name: sre-health
+version: "1"
 description: >
   SRE health monitor. Checks service health endpoints, TLS certificate expiry,
   deployment frequency, and recent incident patterns. Provides an operational

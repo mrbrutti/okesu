@@ -34,6 +34,10 @@ type agentJSON struct {
 	// CurrentDefinitionHash is the daemon-reported hash of its loaded
 	// definition; the UI compares against the library hash to flag drift.
 	CurrentDefinitionHash string `json:"current_definition_hash,omitempty"`
+	// DefinitionVersion is the operator-set version label from the daimon
+	// file (e.g. "2", "v3"). Surfaces alongside the hash so operators
+	// can tell at a glance "host A is on v2, host B still on v1."
+	DefinitionVersion string `json:"definition_version,omitempty"`
 }
 
 // AgentsList returns registered agents, paginated.
@@ -143,6 +147,9 @@ func toAgentJSON(a *db.Agent) agentJSON {
 	}
 	if a.CurrentDefinitionHash.Valid {
 		out.CurrentDefinitionHash = a.CurrentDefinitionHash.String
+	}
+	if a.DefinitionVersion.Valid {
+		out.DefinitionVersion = a.DefinitionVersion.String
 	}
 	return out
 }

@@ -24,11 +24,12 @@ import (
 // the Control Plane never needs to depend on the daemon's internal types.
 
 type registrationPayload struct {
-	Name     string `json:"name"`
-	Host     string `json:"host"`
-	Provider string `json:"provider"`
-	Model    string `json:"model"`
-	Version  string `json:"version"`
+	Name              string `json:"name"`
+	Host              string `json:"host"`
+	Provider          string `json:"provider"`
+	Model             string `json:"model"`
+	Version           string `json:"version"`            // okesu binary version
+	DefinitionVersion string `json:"definition_version"` // operator-set version label from the daimon file
 }
 
 type heartbeatPayload struct {
@@ -38,7 +39,8 @@ type heartbeatPayload struct {
 	// DefinitionHash, when set, is the sha256 of the daimon definition
 	// the daemon currently has loaded. The CP records it so the Daimon
 	// Library page can show "X of Y instances on current version".
-	DefinitionHash string `json:"definition_hash,omitempty"`
+	DefinitionHash    string `json:"definition_hash,omitempty"`
+	DefinitionVersion string `json:"definition_version,omitempty"`
 }
 
 type remoteConfigResponse struct {
@@ -86,7 +88,7 @@ func MgmtRegister(store *db.Store) http.HandlerFunc {
 		}
 		// Trust the cert CN as the canonical name.
 		if err := store.UpsertAgentRegistration(
-			certName, p.Host, p.Provider, p.Model, p.Version,
+			certName, p.Host, p.Provider, p.Model, p.Version, p.DefinitionVersion,
 		); err != nil {
 			http.Error(w, "store: "+err.Error(), http.StatusInternalServerError)
 			return
@@ -116,7 +118,7 @@ func MgmtHeartbeat(store *db.Store) http.HandlerFunc {
 			http.Error(w, "bad json", http.StatusBadRequest)
 			return
 		}
-		if err := store.RecordHeartbeat(certName, p.Host, p.TickCount, p.DefinitionHash); err != nil {
+		if err := store.RecordHeartbeat(certName, p.Host, p.TickCount, p.DefinitionHash, p.DefinitionVersion); err != nil {
 			http.Error(w, "store: "+err.Error(), http.StatusInternalServerError)
 			return
 		}

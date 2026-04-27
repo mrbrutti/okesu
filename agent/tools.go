@@ -337,6 +337,7 @@ type AgentDef struct {
 	// Common fields
 	Name        string   `yaml:"name"`
 	Description string   `yaml:"description"`
+	Version     string   `yaml:"version"`   // operator-set; reported with each heartbeat
 	Model       string   `yaml:"model"`
 	Provider    string   `yaml:"provider"`  // "claude" | "codex" — used by okesu auto
 	Tools       []string `yaml:"tools"`     // okesu or Claude Code CLI tool names

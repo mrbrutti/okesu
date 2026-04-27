@@ -1,6 +1,7 @@
 ---
 # ── Identity ────────────────────────────────────────────────────────────────
 name: data-quality
+version: "1"
 description: >
   Data quality auditor for databases and data pipelines. Checks row counts,
   null rates, schema drift, and pipeline freshness. Produces a data quality

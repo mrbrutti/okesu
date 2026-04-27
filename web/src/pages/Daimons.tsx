@@ -208,6 +208,14 @@ function DaimonRow({ daimon }: { daimon: DaimonItem }) {
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 flex-wrap">
             <span className="text-sm font-medium text-ink truncate">{daimon.name}</span>
+            {daimon.definition_version && (
+              <span
+                className="text-[10px] font-mono tracking-tight text-brand-700 bg-brand-50 ring-1 ring-brand-200 px-1.5 py-0.5 rounded"
+                title="Operator-set version label from the daimon file"
+              >
+                v{daimon.definition_version.replace(/^v/i, '')}
+              </span>
+            )}
             {daimon.desired_suspended && (
               <span className="text-[10px] uppercase tracking-wide text-yellow-700 bg-yellow-50 ring-1 ring-yellow-200 px-1.5 py-0.5 rounded">
                 <Pause size={9} className="inline -mt-0.5 mr-0.5" />

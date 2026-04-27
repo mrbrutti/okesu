@@ -1,6 +1,7 @@
 ---
 # ── Identity ────────────────────────────────────────────────────────────────
 name: edr
+version: "1"
 description: >
   Endpoint Detection & Response agent for Linux cloud hosts.
   Runs every 5 minutes, collects process/network/file telemetry,

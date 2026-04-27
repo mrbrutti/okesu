@@ -90,6 +90,10 @@ func RunDaemon(cfg Config, dcfg DaemonConfig) error {
 				_ = path // path may surface in future audit events
 			}
 		}
+		// Seed the operator-set version label too — same lifecycle as
+		// the hash. cfg.DefinitionVersion was populated from the agent
+		// file frontmatter at startup.
+		mgmt.SetLocalDefinitionVersion(cfg.DefinitionVersion)
 
 		mgmt.StartHeartbeat(mgmtCtx, state)
 		mgmt.StartKnownIssuesPoller(mgmtCtx)
@@ -165,7 +169,9 @@ func RunDaemon(cfg Config, dcfg DaemonConfig) error {
 			if len(def.Tools) > 0 {
 				cfg.AllowedTools = def.Tools
 			}
+			cfg.DefinitionVersion = def.Version
 			mgmt.SetLocalDefinitionHash(actualHash)
+			mgmt.SetLocalDefinitionVersion(def.Version)
 			Emit(Event{
 				Type:  EventConfigReloaded,
 				Agent: cfg.Name,

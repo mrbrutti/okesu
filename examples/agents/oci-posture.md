@@ -1,6 +1,7 @@
 ---
 # ── Identity ────────────────────────────────────────────────────────────────
 name: oci-posture
+version: "1"
 description: >
   Cloud posture agent for OCI tenancies. Audits IAM policies, compartment
   boundaries, network security groups, and object storage visibility across

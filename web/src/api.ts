@@ -58,6 +58,9 @@ export interface DaimonItem {
   /** sha256 of the definition the daemon currently has loaded.
    *  Compared client-side against the library hash to flag drift. */
   current_definition_hash?: string;
+  /** Operator-set version label from the daimon file's frontmatter
+   *  (e.g. "2", "v3"). Human-readable counterpart to the hash. */
+  definition_version?: string;
 }
 
 export interface DaimonLibraryItem {

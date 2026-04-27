@@ -1,6 +1,7 @@
 ---
 # ── Identity ────────────────────────────────────────────────────────────────
 name: instance-threat
+version: "2"
 description: >
   Active exploitation detector. Monitors for IMDS abuse, container escapes,
   privilege escalation, and cryptomining on a per-instance basis.

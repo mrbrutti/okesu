@@ -42,22 +42,25 @@ type MgmtConfig struct {
 
 // registrationPayload is sent to <mgmt>/api/v1/agents/register.
 type registrationPayload struct {
-	Name     string `json:"name"`
-	Host     string `json:"host"`
-	Provider string `json:"provider"`
-	Model    string `json:"model"`
-	Version  string `json:"version"`
+	Name              string `json:"name"`
+	Host              string `json:"host"`
+	Provider          string `json:"provider"`
+	Model             string `json:"model"`
+	Version           string `json:"version"`            // okesu binary version
+	DefinitionVersion string `json:"definition_version"` // operator-set version label from the daimon file
 }
 
 // heartbeatPayload is sent to <mgmt>/api/v1/agents/<name>/heartbeat.
 // DefinitionHash is the sha256 of the daemon's currently-loaded
-// definition; the CP records it so the Daimon Library page can show
-// drift across the fleet.
+// definition; DefinitionVersion is the operator-set human label from
+// that same file (e.g. "2", "v3"). Both are reported every tick so
+// the CP can show fleet-wide drift across the Daimons page.
 type heartbeatPayload struct {
-	Host           string `json:"host"`
-	Ts             int64  `json:"ts"`
-	TickCount      int64  `json:"tick_count,omitempty"`
-	DefinitionHash string `json:"definition_hash,omitempty"`
+	Host              string `json:"host"`
+	Ts                int64  `json:"ts"`
+	TickCount         int64  `json:"tick_count,omitempty"`
+	DefinitionHash    string `json:"definition_hash,omitempty"`
+	DefinitionVersion string `json:"definition_version,omitempty"`
 }
 
 // remoteConfig is the config returned by the polling endpoint.
@@ -121,7 +124,8 @@ type MgmtPlane struct {
 	// localDefinitionHash is the sha256 of the agent file content the
 	// daemon currently has loaded. Sent with every heartbeat so the CP
 	// can detect drift; updated when StartConfigPoller hot-reloads.
-	localDefinitionHash string
+	localDefinitionHash    string
+	localDefinitionVersion string
 }
 
 // SetLocalDefinitionHash records the daemon's currently-loaded definition
@@ -138,6 +142,23 @@ func (m *MgmtPlane) LocalDefinitionHash() string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.localDefinitionHash
+}
+
+// SetLocalDefinitionVersion records the operator-set version label of
+// the daimon definition currently loaded (e.g. "2", "v3"). Called at
+// startup and after each hot-reload alongside SetLocalDefinitionHash.
+func (m *MgmtPlane) SetLocalDefinitionVersion(v string) {
+	m.mu.Lock()
+	m.localDefinitionVersion = v
+	m.mu.Unlock()
+}
+
+// LocalDefinitionVersion returns the daemon's currently-loaded
+// operator-set version label.
+func (m *MgmtPlane) LocalDefinitionVersion() string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.localDefinitionVersion
 }
 
 // NewMgmtPlane constructs a MgmtPlane.
@@ -173,11 +194,12 @@ func NewMgmtPlane(mcfg MgmtConfig, agentCfg Config) (*MgmtPlane, error) {
 // Register sends the agent's identity to the management plane.
 func (m *MgmtPlane) Register() error {
 	payload := registrationPayload{
-		Name:     m.agent.Name,
-		Host:     m.host,
-		Provider: m.agent.Provider,
-		Model:    m.agent.Model,
-		Version:  Version(),
+		Name:              m.agent.Name,
+		Host:              m.host,
+		Provider:          m.agent.Provider,
+		Model:             m.agent.Model,
+		Version:           Version(),
+		DefinitionVersion: m.LocalDefinitionVersion(),
 	}
 	return m.post("/api/v1/agents/register", payload)
 }
@@ -199,10 +221,11 @@ func (m *MgmtPlane) StartHeartbeat(ctx context.Context, state *DaemonState) {
 				tc := state.TickCount
 				state.mu.Unlock()
 				payload := heartbeatPayload{
-					Host:           m.host,
-					Ts:             time.Now().UnixMilli(),
-					TickCount:      tc,
-					DefinitionHash: m.LocalDefinitionHash(),
+					Host:              m.host,
+					Ts:                time.Now().UnixMilli(),
+					TickCount:         tc,
+					DefinitionHash:    m.LocalDefinitionHash(),
+					DefinitionVersion: m.LocalDefinitionVersion(),
 				}
 				if err := m.post("/api/v1/agents/"+m.agent.Name+"/heartbeat", payload); err != nil {
 					Emit(Event{

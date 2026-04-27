@@ -1,6 +1,7 @@
 ---
 # ── Identity ────────────────────────────────────────────────────────────────
 name: cost-watcher
+version: "1"
 description: >
   FinOps cost watcher. Monitors OCI spending, detects anomalies, identifies
   idle resources, and tracks budget thresholds. Runs hourly to balance

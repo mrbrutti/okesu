@@ -1,6 +1,7 @@
 ---
 # ── Identity ────────────────────────────────────────────────────────────────
 name: instance-integrity
+version: "1"
 description: >
   Host integrity monitor. Detects unauthorized changes to critical files,
   OCI agent tampering, kernel module loads, eBPF program injection,

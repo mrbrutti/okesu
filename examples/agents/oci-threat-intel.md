@@ -1,6 +1,7 @@
 ---
 # ── Identity ────────────────────────────────────────────────────────────────
 name: oci-threat-intel
+version: "2"
 description: >
   Cloud threat intelligence agent for OCI. Correlates audit log anomalies,
   Cloud Guard findings, and cost signals across tenancies to detect active

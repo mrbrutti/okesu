@@ -12,7 +12,7 @@ type Agent struct {
 	Host             string
 	Provider         sql.NullString
 	Model            sql.NullString
-	Version          sql.NullString
+	Version          sql.NullString // okesu binary version
 	RegisteredAt     time.Time
 	LastHeartbeatAt  sql.NullTime
 	LastTickCount    int64
@@ -24,24 +24,30 @@ type Agent struct {
 	// loaded. Compared against the CP's canonical hash to surface drift
 	// on the Daimon Library page.
 	CurrentDefinitionHash sql.NullString
+	// DefinitionVersion is the operator-set version label from the
+	// daimon file's YAML frontmatter (e.g. "2", "v3"). Reported by the
+	// daemon at every heartbeat alongside the hash. Human-readable
+	// counterpart to the opaque hash.
+	DefinitionVersion sql.NullString
 }
 
 // UpsertAgentRegistration creates or updates an agent on registration.
 // Identity is (name, host) — preserves desired config across re-registrations
 // of the same daemon, but a different host registers as a new row.
-func (s *Store) UpsertAgentRegistration(name, host, provider, model, version string) error {
+func (s *Store) UpsertAgentRegistration(name, host, provider, model, version, definitionVersion string) error {
 	if host == "" {
 		host = "(unknown)"
 	}
 	_, err := s.Exec(`
-		INSERT INTO agents (name, host, provider, model, version, registered_at)
-		VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		INSERT INTO agents (name, host, provider, model, version, definition_version, registered_at)
+		VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
 		ON CONFLICT(name, host) DO UPDATE SET
-			provider     = excluded.provider,
-			model        = excluded.model,
-			version      = excluded.version,
-			registered_at = CURRENT_TIMESTAMP
-	`, name, host, provider, model, version)
+			provider           = excluded.provider,
+			model              = excluded.model,
+			version            = excluded.version,
+			definition_version = excluded.definition_version,
+			registered_at      = CURRENT_TIMESTAMP
+	`, name, host, provider, model, version, definitionVersion)
 	return err
 }
 
@@ -50,59 +56,68 @@ func (s *Store) UpsertAgentRegistration(name, host, provider, model, version str
 // hasn't registered yet — common for daemons whose first poll arrives
 // before their registration round-trip completes.
 //
-// definitionHash is the sha256 the daemon reports it has loaded. Empty
-// string skips the column (preserves existing value).
-func (s *Store) RecordHeartbeat(name, host string, tickCount int64, definitionHash string) error {
+// definitionHash is the sha256 the daemon reports it has loaded; empty
+// preserves the existing value. definitionVersion is the operator-set
+// label from the daimon file's frontmatter; empty also preserves.
+func (s *Store) RecordHeartbeat(name, host string, tickCount int64, definitionHash, definitionVersion string) error {
 	if host == "" {
 		host = "(unknown)"
 	}
-	if definitionHash == "" {
-		// Legacy path — don't touch current_definition_hash.
-		res, err := s.Exec(`
-			UPDATE agents
-			SET last_heartbeat_at = CURRENT_TIMESTAMP,
-			    last_tick_count = ?
-			WHERE name = ? AND host = ?
-		`, tickCount, name, host)
-		if err != nil {
-			return err
-		}
-		rows, _ := res.RowsAffected()
-		if rows == 0 {
-			_, err := s.Exec(`
-				INSERT INTO agents (name, host, last_heartbeat_at, last_tick_count)
-				VALUES (?, ?, CURRENT_TIMESTAMP, ?)
-				ON CONFLICT(name, host) DO UPDATE SET
-					last_heartbeat_at = CURRENT_TIMESTAMP,
-					last_tick_count   = excluded.last_tick_count
-			`, name, host, tickCount)
-			return err
-		}
-		return nil
+
+	// Build the SET clause dynamically so we don't clobber existing
+	// values when the daemon doesn't report them. Hash and version both
+	// have legacy-empty semantics: the daemon may be older than Phase 7b
+	// (no hash) or pre-version-frontmatter (no version).
+	setParts := []string{
+		"last_heartbeat_at = CURRENT_TIMESTAMP",
+		"last_tick_count = ?",
 	}
+	args := []any{tickCount}
+	if definitionHash != "" {
+		setParts = append(setParts, "current_definition_hash = ?")
+		args = append(args, definitionHash)
+	}
+	if definitionVersion != "" {
+		setParts = append(setParts, "definition_version = ?")
+		args = append(args, definitionVersion)
+	}
+	args = append(args, name, host)
+
 	res, err := s.Exec(`
-		UPDATE agents
-		SET last_heartbeat_at        = CURRENT_TIMESTAMP,
-		    last_tick_count          = ?,
-		    current_definition_hash  = ?
+		UPDATE agents SET `+joinComma(setParts)+`
 		WHERE name = ? AND host = ?
-	`, tickCount, definitionHash, name, host)
+	`, args...)
 	if err != nil {
 		return err
 	}
-	rows, _ := res.RowsAffected()
-	if rows == 0 {
-		_, err := s.Exec(`
-			INSERT INTO agents (name, host, last_heartbeat_at, last_tick_count, current_definition_hash)
-			VALUES (?, ?, CURRENT_TIMESTAMP, ?, ?)
-			ON CONFLICT(name, host) DO UPDATE SET
-				last_heartbeat_at       = CURRENT_TIMESTAMP,
-				last_tick_count         = excluded.last_tick_count,
-				current_definition_hash = excluded.current_definition_hash
-		`, name, host, tickCount, definitionHash)
-		return err
+	if rows, _ := res.RowsAffected(); rows > 0 {
+		return nil
 	}
-	return nil
+
+	// Insert path — agent's first heartbeat before its registration arrived.
+	_, err = s.Exec(`
+		INSERT INTO agents (name, host, last_heartbeat_at, last_tick_count, current_definition_hash, definition_version)
+		VALUES (?, ?, CURRENT_TIMESTAMP, ?, ?, ?)
+		ON CONFLICT(name, host) DO UPDATE SET
+			last_heartbeat_at       = CURRENT_TIMESTAMP,
+			last_tick_count         = excluded.last_tick_count,
+			current_definition_hash = COALESCE(NULLIF(excluded.current_definition_hash, ''), agents.current_definition_hash),
+			definition_version      = COALESCE(NULLIF(excluded.definition_version, ''), agents.definition_version)
+	`, name, host, tickCount, definitionHash, definitionVersion)
+	return err
+}
+
+// joinComma is a tiny helper kept package-local to avoid pulling strings
+// into a file that doesn't otherwise need it.
+func joinComma(parts []string) string {
+	out := ""
+	for i, p := range parts {
+		if i > 0 {
+			out += ", "
+		}
+		out += p
+	}
+	return out
 }
 
 // AgentByNameHost returns the row for one (name, host) pair.
@@ -112,13 +127,13 @@ func (s *Store) AgentByNameHost(name, host string) (*Agent, error) {
 		SELECT name, host, provider, model, version,
 		       registered_at, last_heartbeat_at, last_tick_count,
 		       desired_max_turns, desired_effort, desired_suspended,
-		       config_updated_at, current_definition_hash
+		       config_updated_at, current_definition_hash, definition_version
 		FROM agents WHERE name = ? AND host = ?
 	`, name, host).Scan(
 		&a.Name, &a.Host, &a.Provider, &a.Model, &a.Version,
 		&a.RegisteredAt, &a.LastHeartbeatAt, &a.LastTickCount,
 		&a.DesiredMaxTurns, &a.DesiredEffort, &a.DesiredSuspended,
-		&a.ConfigUpdatedAt, &a.CurrentDefinitionHash,
+		&a.ConfigUpdatedAt, &a.CurrentDefinitionHash, &a.DefinitionVersion,
 	)
 	if err != nil {
 		return nil, err
@@ -138,7 +153,7 @@ func (s *Store) AgentByName(name string) (*Agent, error) {
 		SELECT name, host, provider, model, version,
 		       registered_at, last_heartbeat_at, last_tick_count,
 		       desired_max_turns, desired_effort, desired_suspended,
-		       config_updated_at, current_definition_hash
+		       config_updated_at, current_definition_hash, definition_version
 		FROM agents
 		WHERE name = ?
 		ORDER BY (last_heartbeat_at IS NULL), last_heartbeat_at DESC
@@ -147,7 +162,7 @@ func (s *Store) AgentByName(name string) (*Agent, error) {
 		&a.Name, &a.Host, &a.Provider, &a.Model, &a.Version,
 		&a.RegisteredAt, &a.LastHeartbeatAt, &a.LastTickCount,
 		&a.DesiredMaxTurns, &a.DesiredEffort, &a.DesiredSuspended,
-		&a.ConfigUpdatedAt, &a.CurrentDefinitionHash,
+		&a.ConfigUpdatedAt, &a.CurrentDefinitionHash, &a.DefinitionVersion,
 	)
 	if err != nil {
 		return nil, err
@@ -171,7 +186,7 @@ func (s *Store) ListAgents(limit, offset int) ([]*Agent, error) {
 		SELECT name, host, provider, model, version,
 		       registered_at, last_heartbeat_at, last_tick_count,
 		       desired_max_turns, desired_effort, desired_suspended,
-		       config_updated_at, current_definition_hash
+		       config_updated_at, current_definition_hash, definition_version
 		FROM agents
 		ORDER BY (last_heartbeat_at IS NULL), last_heartbeat_at DESC, name, host
 		LIMIT ? OFFSET ?
@@ -187,7 +202,7 @@ func (s *Store) ListAgents(limit, offset int) ([]*Agent, error) {
 			&a.Name, &a.Host, &a.Provider, &a.Model, &a.Version,
 			&a.RegisteredAt, &a.LastHeartbeatAt, &a.LastTickCount,
 			&a.DesiredMaxTurns, &a.DesiredEffort, &a.DesiredSuspended,
-			&a.ConfigUpdatedAt, &a.CurrentDefinitionHash,
+			&a.ConfigUpdatedAt, &a.CurrentDefinitionHash, &a.DefinitionVersion,
 		); err != nil {
 			return nil, err
 		}
