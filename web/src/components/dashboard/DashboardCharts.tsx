@@ -176,20 +176,34 @@ export function TopHostsChart({ data }: { data: DashboardResponse['top_hosts'] }
   );
 }
 
-// ── Fleet rollout donut ────────────────────────────────────────────
+// ── OS distribution donut ──────────────────────────────────────────
 
-export function FleetRolloutDonut({ data }: { data: DashboardResponse['fleet_rollout'] }) {
-  const slices = [
-    { name: 'On canonical', value: data.canonical, color: '#10b981' },     // emerald
-    { name: 'Other version', value: data.other_version, color: '#f59e0b' }, // amber
-    { name: 'Unknown',       value: data.unknown, color: '#94a3b8' },       // slate
-  ].filter((s) => s.value > 0);
+// Per-OS color map. Distinct colors so the donut + legend are
+// glanceable even with 5+ slices. "Unknown" stays slate.
+const OS_COLOR: Record<string, string> = {
+  Debian:    '#a81d33', // debian red
+  Ubuntu:    '#e95420', // ubuntu orange
+  Fedora:    '#3c6eb4', // fedora blue
+  Rocky:     '#10b981', // emerald
+  AlmaLinux: '#0d597f',
+  RHEL:      '#ee0000',
+  CentOS:    '#9ccd2a',
+  Alpine:    '#0d597f',
+  Arch:      '#1793d1',
+  macOS:     '#94a3b8',
+  Unknown:   '#cbd5e1',
+};
 
-  if (data.total === 0) {
-    return <div className="text-xs text-ink-mute py-12 text-center">No heartbeating daemons.</div>;
+export function OSDistributionDonut({ data }: { data: DashboardResponse['os_distribution'] }) {
+  const total = data.reduce((sum, b) => sum + b.count, 0);
+  if (total === 0) {
+    return <div className="text-xs text-ink-mute py-12 text-center">No nodes registered yet.</div>;
   }
-  const pct = data.total > 0 ? Math.round((data.canonical / data.total) * 100) : 0;
-
+  const slices = data.map((b) => ({
+    name: b.os,
+    value: b.count,
+    color: OS_COLOR[b.os] ?? '#94a3b8',
+  }));
   return (
     <div className="flex items-center gap-4">
       <div className="relative w-[140px] h-[140px] shrink-0">
@@ -213,8 +227,8 @@ export function FleetRolloutDonut({ data }: { data: DashboardResponse['fleet_rol
           </PieChart>
         </ResponsiveContainer>
         <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-          <div className="text-2xl font-semibold tabular-nums text-ink">{pct}%</div>
-          <div className="text-[10px] uppercase tracking-wide text-ink-mute">on canonical</div>
+          <div className="text-2xl font-semibold tabular-nums text-ink">{total}</div>
+          <div className="text-[10px] uppercase tracking-wide text-ink-mute">nodes</div>
         </div>
       </div>
       <ul className="text-xs space-y-1.5 flex-1 min-w-0">

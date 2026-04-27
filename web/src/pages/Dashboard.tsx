@@ -15,13 +15,16 @@ import { lazy, Suspense, useEffect, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import {
   Activity,
+  AlertTriangle,
   CheckCircle2,
   Cpu,
   Loader2,
+  Lock,
   Radio,
   Server,
   ShieldAlert,
   TrendingUp,
+  WifiOff,
 } from 'lucide-react';
 import { api, ApiError, type DashboardResponse, type InsightsEventsResponse, type InsightsFindingsResponse, type TimeRange } from '../api';
 import { cn } from '../lib/cn';
@@ -35,8 +38,8 @@ const FindingsTimelineChart = lazy(() =>
 const TopHostsChart = lazy(() =>
   import('../components/dashboard/DashboardCharts').then((m) => ({ default: m.TopHostsChart })),
 );
-const FleetRolloutDonut = lazy(() =>
-  import('../components/dashboard/DashboardCharts').then((m) => ({ default: m.FleetRolloutDonut })),
+const OSDistributionDonut = lazy(() =>
+  import('../components/dashboard/DashboardCharts').then((m) => ({ default: m.OSDistributionDonut })),
 );
 
 type GroupBy = 'severity' | 'agent' | 'host';
@@ -213,17 +216,19 @@ export default function DashboardPage() {
               </Suspense>
             )}
           </Card>
-          <Card
-            title="Fleet rollout"
-            subtitle={data?.fleet_rollout.canonical_ref
-              ? `Canonical: ${data.fleet_rollout.canonical_ref.slice(0, 12)}`
-              : 'Daemon binary version distribution'}
-          >
+          <Card title="Operating systems" subtitle="Nodes by OS family">
             {!data ? <ChartSkeleton /> : (
               <Suspense fallback={<ChartSkeleton />}>
-                <FleetRolloutDonut data={data.fleet_rollout} />
+                <OSDistributionDonut data={data.os_distribution} />
               </Suspense>
             )}
+          </Card>
+        </section>
+
+        {/* Row 4: fleet status keypoints — full-width strip */}
+        <section>
+          <Card title="Fleet status" subtitle="Each node falls into exactly one bucket">
+            {!data ? <ChartSkeleton /> : <FleetStatusKeypoints data={data.fleet_status} />}
           </Card>
         </section>
       </div>
@@ -327,5 +332,41 @@ function ChartSkeleton() {
   );
 }
 
-// CheckCircle2 used in EmptyRow (kept for the Top hosts empty state inside the chart component itself).
+// CheckCircle2 used by FleetStatusKeypoints below.
 void CheckCircle2;
+
+// ── Fleet status keypoints — 4 big-number cells in one card ────────
+
+function FleetStatusKeypoints({ data }: { data: DashboardResponse['fleet_status'] }) {
+  const items: Array<{ label: string; value: number; icon: typeof CheckCircle2; tone: 'good' | 'warn' | 'bad' | 'mute' }> = [
+    { label: 'Healthy',         value: data.healthy,         icon: CheckCircle2,   tone: 'good' },
+    { label: 'Needs patching',  value: data.needs_patching,  icon: AlertTriangle,  tone: 'warn' },
+    { label: 'Offline',         value: data.offline,         icon: WifiOff,        tone: 'bad' },
+    { label: 'Frozen',          value: data.frozen,          icon: Lock,           tone: 'mute' },
+  ];
+  const toneCls = {
+    good: 'text-green-700 bg-green-50 ring-green-200',
+    warn: 'text-yellow-800 bg-yellow-50 ring-yellow-200',
+    bad:  'text-red-700 bg-red-50 ring-red-200',
+    mute: 'text-slate-700 bg-slate-100 ring-slate-200',
+  };
+  return (
+    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+      {items.map((it) => (
+        <div
+          key={it.label}
+          className={cn(
+            'rounded-lg ring-1 px-4 py-3 flex items-center gap-3',
+            toneCls[it.tone],
+          )}
+        >
+          <it.icon size={20} className="shrink-0 opacity-80" />
+          <div className="min-w-0">
+            <div className="text-2xl font-semibold tabular-nums leading-tight">{it.value}</div>
+            <div className="text-[11px] uppercase tracking-wide leading-tight opacity-90">{it.label}</div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}

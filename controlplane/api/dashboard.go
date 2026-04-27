@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/section9labs/okesu/controlplane/db"
@@ -29,7 +30,8 @@ type dashboardResponse struct {
 	Findings      dashFindings       `json:"findings"`
 	Drift         dashDrift          `json:"drift"`
 	TopHosts      []hostFindingCount `json:"top_hosts"`        // open findings by host (top 10)
-	FleetRollout  fleetRollout       `json:"fleet_rollout"`    // % of fleet on canonical version
+	OSDistribution []osBucket        `json:"os_distribution"`  // nodes by OS family
+	FleetStatus   fleetStatus        `json:"fleet_status"`     // healthy / needs_patching / offline / frozen
 }
 
 type dashDaimons struct {
@@ -63,14 +65,26 @@ type hostFindingCount struct {
 	Critical int64  `json:"critical"`
 }
 
-// fleetRollout drives the donut: what fraction of the fleet runs the
-// CP-canonical daemon version vs anything else.
-type fleetRollout struct {
-	Canonical    int    `json:"canonical"`    // count of agents whose binary version == canonical
-	OtherVersion int    `json:"other_version"`// count whose version is set but doesn't match
-	Unknown      int    `json:"unknown"`      // count whose version is empty (legacy daemons)
-	Total        int    `json:"total"`
-	CanonicalRef string `json:"canonical_ref"` // the canonical version string for context
+// osBucket is one slice of the OS-distribution donut. Family names
+// are intentionally coarse (Debian, Fedora, Rocky, Ubuntu, RHEL,
+// macOS, Other) — the dashboard wants a glanceable break-down, not
+// per-version detail. Per-node detail lives on NodeDetail.
+type osBucket struct {
+	OS    string `json:"os"`
+	Count int    `json:"count"`
+}
+
+// fleetStatus is the four-bucket node health summary. Each node falls
+// into exactly one bucket, ranked by the order below (offline wins
+// over frozen, frozen over patching). "Healthy" is the residual: a
+// node that's heartbeating, not paused, and on the canonical binary
+// + matching daimon hash.
+type fleetStatus struct {
+	Healthy       int `json:"healthy"`        // heartbeating + on canonical + not frozen
+	NeedsPatching int `json:"needs_patching"` // heartbeating + drift (binary or definition)
+	Offline       int `json:"offline"`        // no heartbeat in last 5min
+	Frozen        int `json:"frozen"`         // auto_update_paused = true
+	Total         int `json:"total"`
 }
 
 // dashDrift counts agents whose loaded definition_hash doesn't match
@@ -149,13 +163,13 @@ func Dashboard(store *db.Store, eventStore ports.EventStore, tunReg *tunnel.Regi
 		}
 
 		// Drift — for each heartbeating agent, compare reported
-		// definition_hash to canonical. Build the rollout summary in
-		// the same loop.
+		// definition_hash to canonical. Same loop also tracks which
+		// (name, host) pairs are drifting so we can credit nodes
+		// with patching pressure for the per-node fleet status below.
 		canonicalDaemon := ""
 		if daemonVersionFn != nil {
 			canonicalDaemon = daemonVersionFn()
 		}
-		out.FleetRollout.CanonicalRef = canonicalDaemon
 		canonicalCache := map[string]string{}
 		canonical := func(name string) string {
 			if h, ok := canonicalCache[name]; ok {
@@ -165,30 +179,23 @@ func Dashboard(store *db.Store, eventStore ports.EventStore, tunReg *tunnel.Regi
 			canonicalCache[name] = h
 			return h
 		}
+		hostsNeedingPatch := map[string]bool{}
 		for _, a := range agents {
 			if !a.LastHeartbeatAt.Valid || a.LastHeartbeatAt.Time.Before(fiveMinAgo) {
 				continue
 			}
 			binary := a.Version.String
-			out.FleetRollout.Total++
-			switch {
-			case binary == "":
-				out.FleetRollout.Unknown++
-			case canonicalDaemon != "" && binary == canonicalDaemon:
-				out.FleetRollout.Canonical++
-			default:
-				out.FleetRollout.OtherVersion++
-			}
-			if daimonFilesDir == "" {
-				continue
-			}
 			cur := a.CurrentDefinitionHash.String
-			want := canonical(a.Name)
+			want := ""
+			if daimonFilesDir != "" {
+				want = canonical(a.Name)
+			}
 			definitionDrift := want != "" && cur != "" && cur != want
 			binaryDrift := canonicalDaemon != "" && binary != "" && binary != canonicalDaemon
 			if !definitionDrift && !binaryDrift {
 				continue
 			}
+			hostsNeedingPatch[a.Host] = true
 			out.Drift.Total++
 			if len(out.Drift.Items) < 10 {
 				out.Drift.Items = append(out.Drift.Items, driftRow{
@@ -200,6 +207,45 @@ func Dashboard(store *db.Store, eventStore ports.EventStore, tunReg *tunnel.Regi
 					BinaryVersion:     binary,
 				})
 			}
+		}
+
+		// Fleet status — bucket each node into exactly one of the four
+		// states. Priority: offline → frozen → needs_patching → healthy.
+		osCounts := map[string]int{}
+		for _, n := range nodes {
+			out.FleetStatus.Total++
+			daemonHost := n.DaemonHostname.String
+			if daemonHost == "" {
+				daemonHost = n.Hostname
+			}
+			switch {
+			case !hostsHeartbeating[daemonHost]:
+				out.FleetStatus.Offline++
+			case n.AutoUpdatePaused:
+				out.FleetStatus.Frozen++
+			case hostsNeedingPatch[daemonHost]:
+				out.FleetStatus.NeedsPatching++
+			default:
+				out.FleetStatus.Healthy++
+			}
+
+			// OS distribution — read from os_release first, fall back
+			// to the node name (lab convention is <role>-<distro>-<n>).
+			os := classifyOS(n.OSRelease.String, n.Name)
+			osCounts[os]++
+		}
+		for os, n := range osCounts {
+			out.OSDistribution = append(out.OSDistribution, osBucket{OS: os, Count: n})
+		}
+		// Sort by count desc, then name asc for stable rendering.
+		sort.SliceStable(out.OSDistribution, func(i, j int) bool {
+			if out.OSDistribution[i].Count != out.OSDistribution[j].Count {
+				return out.OSDistribution[i].Count > out.OSDistribution[j].Count
+			}
+			return out.OSDistribution[i].OS < out.OSDistribution[j].OS
+		})
+		if out.OSDistribution == nil {
+			out.OSDistribution = []osBucket{}
 		}
 
 		// Top hosts by open findings count (limit 10).
@@ -222,6 +268,54 @@ func Dashboard(store *db.Store, eventStore ports.EventStore, tunReg *tunnel.Regi
 	}
 }
 
+
+// classifyOS bucketts a node into a coarse OS family (Debian /
+// Fedora / Rocky / Ubuntu / RHEL / macOS / Other). Reads os_release
+// (the contents of /etc/os-release captured by the Phase 7a tunnel
+// probe) when available, otherwise falls back to keywords in the
+// node name. Returns "Unknown" only when both are silent.
+func classifyOS(osRelease, nodeName string) string {
+	osr := strings.ToLower(osRelease)
+	for _, m := range []struct{ k, v string }{
+		{"ubuntu", "Ubuntu"},
+		{"debian", "Debian"},
+		{"fedora", "Fedora"},
+		{"rocky", "Rocky"},
+		{"alma", "AlmaLinux"},
+		{"red hat", "RHEL"},
+		{"rhel", "RHEL"},
+		{"centos", "CentOS"},
+		{"alpine", "Alpine"},
+		{"arch", "Arch"},
+		{"darwin", "macOS"},
+		{"mac os", "macOS"},
+	} {
+		if osr != "" && strings.Contains(osr, m.k) {
+			return m.v
+		}
+	}
+	// Fall back to the node name. Lab convention is
+	// "<role>-<distro>-<n>" (node-debian, edr-fedora-1, …).
+	nn := strings.ToLower(nodeName)
+	for _, m := range []struct{ k, v string }{
+		{"debian", "Debian"},
+		{"ubuntu", "Ubuntu"},
+		{"fedora", "Fedora"},
+		{"rocky", "Rocky"},
+		{"alma", "AlmaLinux"},
+		{"rhel", "RHEL"},
+		{"centos", "CentOS"},
+		{"alpine", "Alpine"},
+		{"arch", "Arch"},
+		{"mac", "macOS"},
+		{"darwin", "macOS"},
+	} {
+		if strings.Contains(nn, m.k) {
+			return m.v
+		}
+	}
+	return "Unknown"
+}
 
 // computeCanonicalHash returns the sha256 of the daimon library's
 // *.md file for `name`, hex-encoded. Returns "" when the file is

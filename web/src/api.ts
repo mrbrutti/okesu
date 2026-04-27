@@ -860,12 +860,13 @@ export interface DashboardResponse {
     }>;
   };
   top_hosts: Array<{ host: string; open: number; critical: number }>;
-  fleet_rollout: {
-    canonical: number;
-    other_version: number;
-    unknown: number;
+  os_distribution: Array<{ os: string; count: number }>;
+  fleet_status: {
+    healthy: number;
+    needs_patching: number;
+    offline: number;
+    frozen: number;
     total: number;
-    canonical_ref: string;
   };
 }
 
