@@ -1,5 +1,21 @@
+variable "oci_auth" {
+  description = "OCI provider auth mode. \"ApiKey\" for long-lived API keys, \"SecurityToken\" for `oci session authenticate` (browser SSO)."
+  type        = string
+  default     = "SecurityToken"
+  validation {
+    condition     = contains(["ApiKey", "SecurityToken", "InstancePrincipal"], var.oci_auth)
+    error_message = "oci_auth must be ApiKey, SecurityToken, or InstancePrincipal."
+  }
+}
+
+variable "oci_config_profile" {
+  description = "Profile name in ~/.oci/config (or ~/.oci/sessions/<name>/ for SecurityToken). Default: DEFAULT."
+  type        = string
+  default     = "DEFAULT"
+}
+
 variable "tenancy_ocid" {
-  description = "OCID of the tenancy. Find with: oci iam compartment list."
+  description = "OCID of the tenancy. Find with: oci iam compartment list --compartment-id-in-subtree true and look at parent_compartment_id."
   type        = string
 }
 

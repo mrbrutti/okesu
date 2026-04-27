@@ -1,8 +1,18 @@
 provider "oci" {
-  # Reads tenancy_ocid, user_ocid, fingerprint, key_file from
-  # ~/.oci/config[DEFAULT] automatically. Override the profile via
-  # the OCI_CONFIG_PROFILE environment variable if you have several.
-  region = var.region
+  # Two auth modes supported via var.oci_auth:
+  #
+  #   "ApiKey"        — default. Reads user_ocid + fingerprint + key_file
+  #                     from ~/.oci/config[<profile>]. Long-lived API key.
+  #   "SecurityToken" — for `oci session authenticate` (browser SSO).
+  #                     Reads the session from ~/.oci/sessions/<profile>/.
+  #                     Token expires after ~1h; re-auth refreshes it.
+  #
+  # The provider also needs tenancy_ocid + region either from the config
+  # file or via these explicit fields.
+  auth                = var.oci_auth
+  config_file_profile = var.oci_config_profile
+  tenancy_ocid        = var.tenancy_ocid
+  region              = var.region
 }
 
 # ── Network: foundational, every other module depends on it ─────────
