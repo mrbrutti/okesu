@@ -381,6 +381,7 @@ function DeployDrawer({ node, onClose }: { node: NodeItem; onClose: () => void }
   const [agents, setAgents] = useState<string[]>([]);
   const [privateKey, setPrivateKey] = useState('');
   const [passphrase, setPassphrase] = useState('');
+  const [sudoPassword, setSudoPassword] = useState('');
   const [anthropicKey, setAnthropicKey] = useState('');
   const [openaiKey, setOpenaiKey] = useState('');
   const [includeWebhook, setIncludeWebhook] = useState(true);
@@ -407,6 +408,7 @@ function DeployDrawer({ node, onClose }: { node: NodeItem; onClose: () => void }
         agents,
         private_key: privateKey,
         passphrase: passphrase || undefined,
+        sudo_password: sudoPassword || undefined,
         anthropic_api_key: anthropicKey || undefined,
         openai_api_key: openaiKey || undefined,
         include_webhook: includeWebhook,
@@ -464,6 +466,20 @@ function DeployDrawer({ node, onClose }: { node: NodeItem; onClose: () => void }
 
         <Field label="Passphrase (optional)">
           <input type="password" value={passphrase} onChange={(e) => setPassphrase(e.target.value)} className={inputCls} />
+        </Field>
+
+        <Field label="Sudo password (optional)">
+          <input
+            type="password"
+            value={sudoPassword}
+            onChange={(e) => setSudoPassword(e.target.value)}
+            placeholder="leave blank for root login or NOPASSWD sudo"
+            className={inputCls}
+          />
+          <p className="text-[11px] text-ink-mute mt-1">
+            Needed for Mac developer machines and other targets where the SSH user
+            isn't root and doesn't have passwordless sudo. Used once; not stored.
+          </p>
         </Field>
 
         <div className="grid grid-cols-2 gap-3">

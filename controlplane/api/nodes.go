@@ -421,8 +421,13 @@ func AgentLibrary(cfg NodesConfig) http.HandlerFunc {
 // and /rollback-binary. The SSH key is operator-supplied per request
 // (same UX as the deploy form) — never stored.
 type nodeBinaryReq struct {
-	PrivateKey string `json:"private_key"`
-	Passphrase string `json:"passphrase,omitempty"`
+	PrivateKey   string `json:"private_key"`
+	Passphrase   string `json:"passphrase,omitempty"`
+	// SudoPassword is forwarded to `sudo -S` on the target when the
+	// SSH user isn't root and doesn't have passwordless sudo. Mac
+	// developer machines need this; Linux containers running as root
+	// don't. Never persisted server-side.
+	SudoPassword string `json:"sudo_password,omitempty"`
 }
 
 // NodeUpdateBinary swaps the okesu binary on a node with the version
@@ -498,6 +503,7 @@ func NodeUpdateBinary(store *db.Store, reg *jobs.Registry, cfg NodesConfig) http
 				Host:            n.Hostname,
 				Port:            n.SSHPort,
 				PrivateKey:      privKey,
+				SudoPassword:    req.SudoPassword,
 				Passphrase:      req.Passphrase,
 				HostKeyCallback: hostKeyCallback,
 			},
@@ -590,6 +596,7 @@ func NodeRollbackBinary(store *db.Store, reg *jobs.Registry, cfg NodesConfig) ht
 				Host:            n.Hostname,
 				Port:            n.SSHPort,
 				PrivateKey:      privKey,
+				SudoPassword:    req.SudoPassword,
 				Passphrase:      req.Passphrase,
 				HostKeyCallback: hostKeyCallback,
 			},
@@ -645,6 +652,9 @@ type nodeDeployReq struct {
 	Agents          []string `json:"agents"`
 	PrivateKey      string   `json:"private_key"`
 	Passphrase      string   `json:"passphrase,omitempty"`
+	// SudoPassword forwarded to `sudo -S` on the target — see
+	// nodeBinaryReq.SudoPassword for the full rationale.
+	SudoPassword    string   `json:"sudo_password,omitempty"`
 	AnthropicKey    string   `json:"anthropic_api_key,omitempty"`
 	OpenAIKey       string   `json:"openai_api_key,omitempty"`
 	IncludeWebhook  bool     `json:"include_webhook"`
@@ -755,6 +765,7 @@ func NodeDeploy(store *db.Store, reg *jobs.Registry, deployer NodeDeployer, cfg 
 				Host:            n.Hostname,
 				Port:            n.SSHPort,
 				PrivateKey:      privKey,
+				SudoPassword:    req.SudoPassword,
 				Passphrase:      req.Passphrase,
 				HostKeyCallback: hostKeyCallback,
 			},

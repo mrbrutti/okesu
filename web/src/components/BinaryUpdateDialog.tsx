@@ -25,6 +25,7 @@ export function BinaryUpdateDialog({
 }) {
   const [privateKey, setPrivateKey] = useState('');
   const [passphrase, setPassphrase] = useState('');
+  const [sudoPassword, setSudoPassword] = useState('');
   const [logs, setLogs] = useState<string[]>([]);
   const [running, setRunning] = useState(false);
   const [doneStatus, setDoneStatus] = useState<string | null>(null);
@@ -51,6 +52,7 @@ export function BinaryUpdateDialog({
       const { job_id } = await fn(node.id, {
         private_key: privateKey,
         passphrase: passphrase || undefined,
+        sudo_password: sudoPassword || undefined,
       });
       const unsubscribe = subscribeJobLog(
         job_id,
@@ -109,6 +111,19 @@ export function BinaryUpdateDialog({
                   onChange={(e) => setPassphrase(e.target.value)}
                   className="w-full px-2.5 py-1.5 text-sm border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500/30"
                 />
+              </Field>
+              <Field label="Sudo password (optional)">
+                <input
+                  type="password"
+                  value={sudoPassword}
+                  onChange={(e) => setSudoPassword(e.target.value)}
+                  placeholder="leave blank for root login or NOPASSWD sudo"
+                  className="w-full px-2.5 py-1.5 text-sm border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500/30"
+                />
+                <p className="text-[11px] text-ink-mute mt-1">
+                  Needed for Mac developer machines and other targets where the SSH user
+                  isn't root and doesn't have passwordless sudo. Used once; not stored.
+                </p>
               </Field>
             </>
           )}

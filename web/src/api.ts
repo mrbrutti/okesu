@@ -448,13 +448,13 @@ export const api = {
 
   // Phase 7c — binary update + rollback. Streams job log via the
   // existing /api/jobs/{id}/log SSE endpoint that deploys already use.
-  updateNodeBinary: (id: number, req: { private_key: string; passphrase?: string }) =>
+  updateNodeBinary: (id: number, req: { private_key: string; passphrase?: string; sudo_password?: string }) =>
     request<{ job_id: string; node_id: number }>(`/api/nodes/${id}/update-binary`, {
       method: 'POST',
       body: JSON.stringify(req),
     }),
 
-  rollbackNodeBinary: (id: number, req: { private_key: string; passphrase?: string }) =>
+  rollbackNodeBinary: (id: number, req: { private_key: string; passphrase?: string; sudo_password?: string }) =>
     request<{ job_id: string; node_id: number }>(`/api/nodes/${id}/rollback-binary`, {
       method: 'POST',
       body: JSON.stringify(req),
@@ -814,6 +814,11 @@ export interface NodeDeployReq {
   agents: string[];
   private_key: string;
   passphrase?: string;
+  /** Forwarded to `sudo -S` on the target. Empty/omitted ⇒ try sudo
+   *  without password (NOPASSWD or root login) and fall through to
+   *  plain bash. Mac developer machines and other non-root SSH targets
+   *  need this. Never persisted server-side. */
+  sudo_password?: string;
   anthropic_api_key?: string;
   openai_api_key?: string;
   include_webhook?: boolean;

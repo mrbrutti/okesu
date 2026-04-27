@@ -136,7 +136,7 @@ fi
 mv -f /usr/local/bin/okesu.new /usr/local/bin/okesu
 chmod 0755 /usr/local/bin/okesu
 `
-	if out, err := runWithSudo(c, swap); err != nil {
+	if out, err := runWithSudo(c, req.Cred.SudoPassword, swap); err != nil {
 		// Best-effort cleanup of the staged file when the swap fails.
 		_, _ = c.Run("rm -f " + shellQuote(stagePath))
 		return fmt.Errorf("binary swap: %w (%s)", err, out)
@@ -239,7 +239,7 @@ fi
 mv -f /usr/local/bin/okesu.previous /usr/local/bin/okesu
 chmod 0755 /usr/local/bin/okesu
 `
-	if out, err := runWithSudo(c, swap); err != nil {
+	if out, err := runWithSudo(c, req.Cred.SudoPassword, swap); err != nil {
 		return fmt.Errorf("rollback swap: %w (%s)", err, out)
 	}
 	emit("✓ binary rolled back")
@@ -274,10 +274,41 @@ chmod 0755 /usr/local/bin/okesu
 	return nil
 }
 
-// runWithSudo wraps a shell snippet so it's tried first with sudo and
-// falls through to direct execution when sudo isn't available (root user).
-// Same pattern Deploy uses for the user/dir bootstrap.
-func runWithSudo(c *Client, script string) (string, error) {
+// runWithSudo wraps a shell snippet so it executes with whatever
+// privilege the target's sudo policy allows.
+//
+// Order of attempts:
+//
+//  1. If sudoPassword is non-empty, run `sudo -S -p '' bash -c …`
+//     and feed `sudoPassword + \n` to stdin. Mac developer machines
+//     and other targets without passwordless sudo land here. A bad
+//     password produces a clear error message instead of falling
+//     through to non-sudo.
+//  2. Try `sudo bash -c …` with no password (NOPASSWD or root login).
+//  3. Fall through to plain `bash -c …` (root SSH user — sudo isn't
+//     available but isn't needed either).
+func runWithSudo(c *Client, sudoPassword, script string) (string, error) {
+	if sudoPassword != "" {
+		// `-p ''` suppresses sudo's "[sudo] password for X:" prompt
+		// from going to stderr; we already know it wants a password.
+		out, err := c.RunWithStdin(
+			"sudo -S -p '' bash -c "+shellQuote(script),
+			sudoPassword+"\n",
+		)
+		if err == nil {
+			return out, nil
+		}
+		// Detect bad password specifically so the operator gets a
+		// clear message rather than a generic "exit status 1."
+		lo := strings.ToLower(out)
+		if strings.Contains(lo, "sorry, try again") ||
+			strings.Contains(lo, "incorrect password") ||
+			strings.Contains(lo, "authentication failure") {
+			return out, fmt.Errorf("sudo password rejected by remote: %w", err)
+		}
+		// Otherwise fall through — operator may have set NOPASSWD
+		// after configuring this node and the password is now stale.
+	}
 	if out, err := c.Run("sudo bash -c " + shellQuote(script)); err == nil {
 		return out, nil
 	}

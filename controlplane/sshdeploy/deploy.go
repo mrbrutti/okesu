@@ -177,11 +177,8 @@ func Deploy(ctx context.Context, req DeployRequest, logFn LogFn) (DeployResult, 
 id -u okesu >/dev/null 2>&1 || useradd --system --create-home --home-dir /var/lib/okesu okesu
 install -d -m 0755 -o okesu -g okesu /etc/okesu/agents /var/lib/okesu /var/log/okesu
 `
-	if out, err := c.Run("sudo bash -c " + shellQuote(bootstrap)); err != nil {
-		// Try without sudo for users who already are root.
-		if out2, err2 := c.Run("bash -c " + shellQuote(bootstrap)); err2 != nil {
-			return result, fmt.Errorf("user/dir bootstrap: %w (sudo output: %s) (no-sudo output: %s)", err, out, out2)
-		}
+	if out, err := runWithSudo(c, req.Cred.SudoPassword, bootstrap); err != nil {
+		return result, fmt.Errorf("user/dir bootstrap: %w (output: %s)", err, out)
 	}
 	emit("✓ user + dirs ready")
 

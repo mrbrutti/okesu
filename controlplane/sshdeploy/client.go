@@ -32,6 +32,12 @@ type Credential struct {
 	PrivateKey []byte
 	Passphrase string
 
+	// SudoPassword is fed to `sudo -S` when the SSH user isn't root and
+	// doesn't have passwordless sudo. Empty string means try sudo
+	// without a password (NOPASSWD or root login). Mac developer
+	// machines and other "regular user" SSH targets need this.
+	SudoPassword string
+
 	// HostKeyCallback receives the target's offered host key. The deploy
 	// orchestrator wraps a TOFU/known-hosts policy here. If nil, the SSH
 	// client uses InsecureIgnoreHostKey() (only acceptable for tests).
@@ -109,6 +115,31 @@ func (c *Client) Run(cmd string) (string, error) {
 		return "", fmt.Errorf("new session: %w", err)
 	}
 	defer sess.Close()
+	out, err := sess.CombinedOutput(cmd)
+	return string(out), err
+}
+
+// RunWithStdin executes cmd and writes stdinData to its stdin before
+// closing it. Used by `sudo -S` for password-via-stdin flows on Mac
+// developer machines and other non-passwordless-sudo targets.
+//
+// stdinData should include any trailing newlines the command expects
+// (e.g. "password\n"). The pipe is closed once stdinData is written
+// so the remote process sees EOF and proceeds.
+func (c *Client) RunWithStdin(cmd, stdinData string) (string, error) {
+	sess, err := c.ssh.NewSession()
+	if err != nil {
+		return "", fmt.Errorf("new session: %w", err)
+	}
+	defer sess.Close()
+	stdin, err := sess.StdinPipe()
+	if err != nil {
+		return "", fmt.Errorf("stdin pipe: %w", err)
+	}
+	go func() {
+		_, _ = stdin.Write([]byte(stdinData))
+		_ = stdin.Close()
+	}()
 	out, err := sess.CombinedOutput(cmd)
 	return string(out), err
 }
