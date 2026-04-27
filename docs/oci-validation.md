@@ -49,6 +49,72 @@ smoke-tested for 1–4 hours, then torn down.
 
 Local-machine prep. No OCI spend.
 
+### 0.1. Dedicated service-account user (recommended)
+
+If your tenancy admin uses SSO / Identity Domains, the federated user
+likely has Identity Domain admin rights but no IAM policies for Core
+Networking. Trying to `terraform apply` a VCN through that identity
+returns `404-NotAuthorizedOrNotFound`.
+
+The clean fix is a dedicated service-account user with a long-lived
+API key, scoped to the smoke compartment via a single policy:
+
+```bash
+# Generate a 2048-bit RSA keypair for the service account.
+umask 077
+openssl genrsa -out ~/.oci/okesu_api_key.pem 2048
+openssl rsa -pubout -in ~/.oci/okesu_api_key.pem -out ~/.oci/okesu_api_key_public.pem
+
+# Create the user. Capture the OCID from the output.
+oci iam user create \
+  --auth security_token --profile DEFAULT --region us-phoenix-1 \
+  --compartment-id "$TENANCY_OCID" \
+  --name okesu \
+  --description "Service account for okesu-smoke Terraform deploys"
+
+# Group + policy: smoke-admins manages the okesu-smoke compartment.
+oci iam group create \
+  --auth security_token --profile DEFAULT --region us-phoenix-1 \
+  --compartment-id "$TENANCY_OCID" --name okesu-smoke-admins \
+  --description "Manage rights in okesu-smoke compartment"
+
+oci iam group add-user \
+  --auth security_token --profile DEFAULT --region us-phoenix-1 \
+  --user-id "$OKESU_USER_OCID" --group-id "$OKESU_GROUP_OCID"
+
+oci iam policy create \
+  --auth security_token --profile DEFAULT --region us-phoenix-1 \
+  --compartment-id "$TENANCY_OCID" --name okesu-smoke-admins-policy \
+  --statements '["Allow group okesu-smoke-admins to manage all-resources in compartment okesu-smoke", "Allow group okesu-smoke-admins to read all-resources in tenancy"]'
+
+# Upload the public key, capture the fingerprint.
+oci iam user api-key upload \
+  --auth security_token --profile DEFAULT --region us-phoenix-1 \
+  --user-id "$OKESU_USER_OCID" \
+  --key-file ~/.oci/okesu_api_key_public.pem
+```
+
+Then append to `~/.oci/config`:
+
+```ini
+[OKESU]
+user=ocid1.user.oc1..<okesu-user-ocid>
+fingerprint=<fingerprint-from-upload>
+tenancy=ocid1.tenancy.oc1..<your-tenancy-ocid>
+region=us-ashburn-1
+key_file=~/.oci/okesu_api_key.pem
+```
+
+Set `oci_auth = "ApiKey"` and `oci_config_profile = "OKESU"` in
+`terraform.tfvars`. The OCI provider now authenticates as the
+service account; the federated SSO user only needs to manage IAM.
+
+> **Cross-region propagation lag.** A freshly-uploaded API key takes
+> 30–60 seconds to be visible in non-home regions. If the first
+> `terraform plan` returns 401, wait a minute and retry — it'll work.
+
+### 0.2. Standard pre-flight
+
 ```bash
 # 1. Verify the OCI CLI is configured.
 oci iam region list --query 'data[?name==`us-ashburn-1`]' --output table
