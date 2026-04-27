@@ -1,14 +1,16 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import {
   Activity,
   ArrowLeft,
+  CheckCircle2,
   Clock,
   Cpu,
   Hash,
   HardDrive,
   Info,
   Loader2,
+  Package,
   RefreshCw,
   RotateCcw,
   Server,
@@ -16,7 +18,7 @@ import {
   Wifi,
   WifiOff,
 } from 'lucide-react';
-import { api, type NodeItem } from '../api';
+import { api, type AboutInfo, type DaimonItem, type NodeItem } from '../api';
 import { cn } from '../lib/cn';
 import EventTimeline from '../components/EventTimeline';
 import { BinaryUpdateDialog, type BinaryAction } from '../components/BinaryUpdateDialog';
@@ -32,6 +34,26 @@ export default function NodeDetailPage() {
   const [refreshing, setRefreshing] = useState(false);
   const [refreshError, setRefreshError] = useState<string | null>(null);
   const [binaryAction, setBinaryAction] = useState<BinaryAction | null>(null);
+  const [about, setAbout] = useState<AboutInfo | null>(null);
+  const [agents, setAgents] = useState<DaimonItem[] | null>(null);
+
+  // Binary version this node is running. All daimons on a node share
+  // a single okesu binary, so any agent's reported version is the
+  // node's binary version. Empty when no daimon has heartbeated yet.
+  const nodeBinaryVersion = useMemo(() => {
+    if (!agents || !node) return '';
+    const hostMatch = (a: DaimonItem) =>
+      (node.daemon_hostname && a.host === node.daemon_hostname) ||
+      a.host === node.hostname;
+    const versions = agents.filter(hostMatch).map((a) => a.version).filter(Boolean) as string[];
+    return versions[0] || '';
+  }, [agents, node]);
+
+  const updateAvailable = !!(
+    about?.daemon_version &&
+    nodeBinaryVersion &&
+    about.daemon_version !== nodeBinaryVersion
+  );
 
   async function refreshMetadata() {
     if (!node) return;
@@ -48,10 +70,17 @@ export default function NodeDetailPage() {
 
   useEffect(() => {
     let cancelled = false;
+    api.about().then((a) => { if (!cancelled) setAbout(a); }).catch(() => { /* ignore */ });
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
     const idNum = Number(id);
     const refresh = () => {
       api.node(idNum).then((n) => { if (!cancelled) setNode(n); }).catch((err) => { if (!cancelled) setError(String(err)); });
       api.connectedNodes().then((arr) => { if (!cancelled) setConnected(arr.includes((node?.name) || '')); }).catch(() => { /* ignore */ });
+      api.daimons(500).then((rows) => { if (!cancelled) setAgents(rows); }).catch(() => { /* ignore */ });
     };
     refresh();
     const t = setInterval(refresh, 6_000);
@@ -113,6 +142,24 @@ export default function NodeDetailPage() {
           </div>
 
           <div className="flex items-center gap-2">
+            {nodeBinaryVersion && (
+              updateAvailable ? (
+                <span
+                  className="inline-flex items-center gap-1 text-[11px] font-mono text-yellow-800 bg-yellow-50 ring-1 ring-yellow-200 px-2 py-1 rounded"
+                  title={`This node runs okesu ${nodeBinaryVersion}; the CP would push ${about?.daemon_version} on Update.`}
+                >
+                  <Package size={11} /> bin {nodeBinaryVersion}
+                  <span className="text-yellow-600">→ {about?.daemon_version}</span>
+                </span>
+              ) : (
+                <span
+                  className="inline-flex items-center gap-1 text-[11px] font-mono text-green-800 bg-green-50 ring-1 ring-green-200 px-2 py-1 rounded"
+                  title="The node's binary matches the version the CP would push."
+                >
+                  <CheckCircle2 size={11} /> bin {nodeBinaryVersion}
+                </span>
+              )
+            )}
             <button
               onClick={refreshMetadata}
               disabled={refreshing || !connected}
@@ -125,7 +172,10 @@ export default function NodeDetailPage() {
             <button
               onClick={() => setBinaryAction('update')}
               title="Upload the CP's current daemon binary; saves the prior version for rollback"
-              className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-md border border-border bg-panel hover:bg-slate-50"
+              className={cn(
+                "inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-md border bg-panel hover:bg-slate-50",
+                updateAvailable ? "border-yellow-400 bg-yellow-50 text-yellow-800 hover:bg-yellow-100" : "border-border"
+              )}
             >
               <Upload size={12} />
               Update binary

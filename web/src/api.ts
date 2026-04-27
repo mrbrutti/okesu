@@ -797,7 +797,12 @@ export interface NodeDeployReq {
 }
 
 export interface AboutInfo {
+  /** okesu-cp binary version. */
   version: string;
+  /** okesu daemon binary version the CP would push on a deploy or update.
+   *  When this differs from a node's reported binary version, the UI
+   *  surfaces an "update available" cue. */
+  daemon_version?: string;
   go_version: string;
   os: string;
   arch: string;

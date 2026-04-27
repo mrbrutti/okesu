@@ -55,6 +55,16 @@ type Server struct {
 	mgmtHTTP *http.Server       // mTLS-protected management plane
 }
 
+// daemonBinaryVersion reports the version of the daemon binary the CP
+// would push on a deploy or update-binary action. By convention the
+// daemon is built from the same repo checkout as the CP, so we return
+// our own controlplane.Version() as the canonical value. Operators
+// who keep a custom daemon binary at --daemon-binary should override
+// this assumption (TODO: shell out to the binary's version subcommand).
+func (s *Server) daemonBinaryVersion() string {
+	return Version()
+}
+
 // IssueClientCert satisfies api.NodeDeployer. Used by the deploy flow to
 // generate per-agent mTLS client cert bundles on demand.
 func (s *Server) IssueClientCert(agent string) (cert, key, ca []byte, err error) {
@@ -305,7 +315,7 @@ func (s *Server) routes() http.Handler {
 		r.Post("/api/users/me/password", api.MyPasswordChange(s.store))
 		r.Get("/api/users/me/sessions", api.MySessions(s.store, s.mgr))
 		r.Delete("/api/users/me/sessions", api.MyRevokeOtherSessions(s.store, s.mgr))
-		r.Get("/api/system/about", api.AboutHandler(api.AboutFeatures{
+		r.Get("/api/system/about", api.AboutHandler(Version(), s.daemonBinaryVersion, api.AboutFeatures{
 			OIDC:          s.oidc != nil,
 			MgmtPlane:     s.mgmtHTTP != nil,
 			Tunnel:        s.mgmtHTTP != nil,
