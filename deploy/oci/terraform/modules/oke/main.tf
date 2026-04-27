@@ -85,7 +85,8 @@ resource "local_sensitive_file" "kubeconfig" {
 # ── ClickHouse via Helm ─────────────────────────────────────────────
 provider "helm" {
   alias = "oke"
-  kubernetes {
+  # helm provider 3.x — kubernetes is an attribute, not a block.
+  kubernetes = {
     config_path = local_sensitive_file.kubeconfig.filename
   }
 }
@@ -112,26 +113,16 @@ resource "helm_release" "clickhouse" {
   wait             = true
   timeout          = 600
 
-  set {
-    name  = "auth.username"
-    value = "default"
-  }
-  set_sensitive {
-    name  = "auth.password"
-    value = random_password.clickhouse.result
-  }
-  set {
-    name  = "shards"
-    value = "1"
-  }
-  set {
-    name  = "replicaCount"
-    value = "1"
-  }
-  set {
-    name  = "zookeeper.enabled"
-    value = "false"
-  }
+  # helm provider 3.x — set / set_sensitive are list attributes, not blocks.
+  set = [
+    { name = "auth.username", value = "default" },
+    { name = "shards",        value = "1" },
+    { name = "replicaCount",  value = "1" },
+    { name = "zookeeper.enabled", value = "false" },
+  ]
+  set_sensitive = [
+    { name = "auth.password", value = random_password.clickhouse.result },
+  ]
 }
 
 # ── Outputs ─────────────────────────────────────────────────────────

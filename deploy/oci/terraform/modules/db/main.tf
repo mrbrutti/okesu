@@ -47,19 +47,26 @@ resource "oci_psql_db_system" "main" {
   instance_count = 1
 }
 
-# OCI returns multiple endpoints; pick the primary.
+# OCI exposes connection details via a separate data source. Pull the
+# primary endpoint's FQDN — the IP can change on failover, the FQDN
+# is stable for the life of the system.
+data "oci_psql_db_system_connection_detail" "main" {
+  db_system_id = oci_psql_db_system.main.id
+}
+
 locals {
-  primary_endpoint = oci_psql_db_system.main.instances[0].private_ip
+  primary_endpoint = data.oci_psql_db_system_connection_detail.main.primary_db_endpoint[0].fqdn
+  primary_port     = data.oci_psql_db_system_connection_detail.main.primary_db_endpoint[0].port
   database_name    = "cpdb"
 }
 
 # ── Outputs ─────────────────────────────────────────────────────────
 output "dsn" {
-  value = "postgres://${var.admin_username}@${local.primary_endpoint}:5432/${local.database_name}?sslmode=require"
+  value = "postgres://${var.admin_username}@${local.primary_endpoint}:${local.primary_port}/${local.database_name}?sslmode=require"
 }
 
 output "dsn_with_password" {
-  value     = "postgres://${var.admin_username}:${random_password.admin.result}@${local.primary_endpoint}:5432/${local.database_name}?sslmode=require"
+  value     = "postgres://${var.admin_username}:${random_password.admin.result}@${local.primary_endpoint}:${local.primary_port}/${local.database_name}?sslmode=require"
   sensitive = true
 }
 
