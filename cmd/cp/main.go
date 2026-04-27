@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/spf13/cobra"
@@ -18,6 +19,28 @@ func main() {
 	if err := rootCmd().Execute(); err != nil {
 		os.Exit(1)
 	}
+}
+
+// earlyConfigPath scans args for "--config <path>", "-c <path>", or
+// "--config=path" and returns the value, BEFORE cobra parses flags.
+// Used so the YAML file can populate defaults and CLI flags can
+// override them rather than the other way around. Returns "" when
+// the operator didn't pass --config.
+func earlyConfigPath(args []string) string {
+	for i, a := range args {
+		switch {
+		case a == "--config" || a == "-c":
+			if i+1 < len(args) {
+				return args[i+1]
+			}
+		case strings.HasPrefix(a, "--config="):
+			return strings.TrimPrefix(a, "--config=")
+		case strings.HasPrefix(a, "-c="):
+			return strings.TrimPrefix(a, "-c=")
+		}
+	}
+	// Env var fallback for systemd unit files etc.
+	return os.Getenv("OKESU_CP_CONFIG")
 }
 
 func rootCmd() *cobra.Command {
@@ -34,6 +57,19 @@ operations dashboard.`,
 
 func serveCmd() *cobra.Command {
 	cfg := controlplane.FromEnv()
+
+	// Phase 8g: scan for --config / -c BEFORE cobra binds flags, so
+	// the YAML file populates defaults and CLI flags can override
+	// them in turn. Without this two-step, flags would silently lose
+	// to whatever the YAML contains (or vice versa) — neither is what
+	// the operator expects.
+	if path := earlyConfigPath(os.Args[1:]); path != "" {
+		if err := controlplane.LoadConfigFile(path, &cfg); err != nil {
+			fmt.Fprintf(os.Stderr, "config file: %v\n", err)
+			os.Exit(1)
+		}
+		cfg.ConfigFile = path
+	}
 
 	cmd := &cobra.Command{
 		Use:   "serve",
@@ -97,6 +133,10 @@ func serveCmd() *cobra.Command {
 
 	// Pub/sub (SSE fan-out, run subscribers)
 	cmd.Flags().StringVar(&cfg.PubSubURL, "pubsub-url", cfg.PubSubURL, "PubSub URL — empty=inprocess (single CP); redis://host:6379/0 for multi-replica deployments")
+
+	// Secrets source — see controlplane/secrets.go for canonical names + supported schemes.
+	cmd.Flags().StringVar(&cfg.SecretsSource, "secrets-source", cfg.SecretsSource, "Secrets source — env (default; OKESU_SECRET_*), file:///etc/okesu/secrets (systemd LoadCredential), oci-vault://<compartment-ocid>?region=...")
+	cmd.Flags().StringVar(&cfg.ConfigFile, "config", cfg.ConfigFile, "Path to YAML config file. Non-secret config + ${secret:NAME} references that resolve via --secrets-source")
 
 	// Events store + queue (async event ingest pipeline)
 	cmd.Flags().StringVar(&cfg.EventsStore, "events-store", cfg.EventsStore, "Events backend — empty/sqlite (default) or clickhouse")

@@ -63,12 +63,40 @@ func (s *Server) IssueClientCert(agent string) (cert, key, ca []byte, err error)
 	return c, k, s.ca.CertPEM, nil
 }
 
-// New constructs a Server. It opens (and migrates) the SQLite DB, ensures the
-// admin user exists, generates a self-signed TLS cert if needed, and wires
-// the HTTP routes.
+// New constructs a Server. It opens (and migrates) the database,
+// resolves any unset secrets through the configured ports.Secrets
+// adapter (Phase 8g), ensures the admin user exists, generates a
+// self-signed TLS cert if needed, and wires the HTTP routes.
 func New(cfg Config) (*Server, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
+	}
+
+	// Phase 8g: resolve secrets BEFORE we use any of them downstream.
+	// Three layers, applied in order:
+	//   1. resolveConfigSecretRefs — substitute "${secret:NAME}"
+	//      references that the YAML config file embedded.
+	//   2. resolveSecrets — for canonical-named secrets the CP knows
+	//      it needs, pull from the adapter when the field is still
+	//      empty (operator didn't pass via flag/env or YAML).
+	// Operators using legacy --admin-password etc. CLI flags get a
+	// deprecation warning at this point.
+	secrets, secretsLabel, serr := buildSecrets(cfg.SecretsSource)
+	if serr != nil {
+		return nil, fmt.Errorf("secrets source: %w", serr)
+	}
+	log.Printf("secrets source: %s", secretsLabel)
+	{
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if err := resolveConfigSecretRefs(ctx, &cfg, secrets); err != nil {
+			cancel()
+			return nil, fmt.Errorf("resolve config secret refs: %w", err)
+		}
+		if err := resolveSecrets(ctx, &cfg, secrets); err != nil {
+			cancel()
+			return nil, fmt.Errorf("resolve secrets: %w", err)
+		}
+		cancel()
 	}
 
 	store, err := db.Open(cfg.DBPath)

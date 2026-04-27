@@ -1,0 +1,78 @@
+# Example okesu-cp configuration for an OCI deployment.
+#
+# Usage:
+#   1. Drop this file at /etc/okesu/cp.yaml (or a path of your choice).
+#   2. Configure --secrets-source pointing at OCI Vault, a credentials
+#      directory (systemd LoadCredential=), or a HashiCorp Vault.
+#   3. Run: okesu-cp serve --config /etc/okesu/cp.yaml
+#
+# Every field that contains a secret references it by canonical name.
+# The CP resolves "${secret:NAME}" at boot via the secrets adapter; no
+# secret value ever appears in this file. The file is safe to commit
+# to git, ship through CI/CD, share between operators.
+#
+# Fields without a "${secret:...}" reference are non-secret config —
+# DSN hostnames, regions, bucket names, etc. — and live in this file.
+
+# ── Listen / TLS ─────────────────────────────────────────────────────
+listen: ":8443"           # UI + webhook ingest
+mgmt_listen: ":8444"      # mTLS management plane (daemon registration, heartbeats)
+
+# ── Database (relational state — users, daimons, findings, audit) ───
+db: "postgres://okesu@db.adb.us-ashburn-1.oraclecloud.com:5432/cpdb?sslmode=require"
+
+# ── Identity ─────────────────────────────────────────────────────────
+admin_email: "admin@example.com"
+admin_password: "${secret:cp/admin-password}"
+session_key:    "${secret:cp/session-key}"
+webhook_secret: "${secret:cp/webhook-secret}"
+
+oidc:
+  issuer:        "https://idcs-xxxx.identity.oraclecloud.com:443/"
+  client_id:     "your-client-id-from-iam"
+  client_secret: "${secret:cp/oidc/client-secret}"
+  redirect_url:  "https://cp.example.com/auth/oidc/callback"
+  groups_claim:  "groups"
+  role_map:      "okesu-admins:admin,okesu-ops:operator,okesu-viewers:viewer"
+  label:         "Sign in with Oracle"
+
+# ── Daemon deploy artifacts ──────────────────────────────────────────
+daemon_binaries_dir: "/var/lib/okesu/binaries"
+daimon_files_dir:    "/var/lib/okesu/daimons"
+agent_files_dirs:
+  - "/etc/okesu/agents"
+
+webhook_public_url: "https://cp.example.com/api/webhooks/events"
+mgmt_public_url:    "https://cp.example.com:8444"
+
+# ── Events firehose (ClickHouse) ─────────────────────────────────────
+events_store:    "clickhouse"
+clickhouse_addrs:
+  - "clickhouse-0.clickhouse-headless.okesu.svc:9000"
+  - "clickhouse-1.clickhouse-headless.okesu.svc:9000"
+  - "clickhouse-2.clickhouse-headless.okesu.svc:9000"
+clickhouse_database: "okesu_events"
+clickhouse_username: "okesu"
+clickhouse_password: "${secret:clickhouse/password}"
+clickhouse_secure:   true
+
+# ── Async event ingest queue (OCI Streaming) ─────────────────────────
+queue: "kafka"
+kafka_brokers:
+  - "streampool-xxxxx.streaming.us-ashburn-1.oci.oraclecloud.com:9092"
+kafka_sasl_username: "<tenancy>/<username>/<stream-pool-ocid>"
+kafka_sasl_password: "${secret:kafka/sasl-password}"
+kafka_use_tls:       true
+
+# ── Pub/sub (Redis on OCI Cache) ─────────────────────────────────────
+pubsub_url: "redis://cache.us-ashburn-1.oci.oraclecloud.com:6379/0"
+
+# ── Object storage (OCI Object Storage S3-compat) ───────────────────
+blob_url:        "<namespace>.compat.objectstorage.us-ashburn-1.oraclecloud.com"
+blob_access_key: "your-customer-key-access-id"
+blob_secret_key: "${secret:blob/secret-key}"
+blob_bucket:     "okesu-prod"
+blob_region:     "us-ashburn-1"
+
+# ── Retention ────────────────────────────────────────────────────────
+event_ttl_days: 30

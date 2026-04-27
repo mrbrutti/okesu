@@ -141,6 +141,25 @@ type Config struct {
 	// so SSE fan-out works across multiple CP replicas.
 	PubSubURL string
 
+	// SecretsSource selects how the CP fetches secrets at boot. Empty
+	// (or "env") falls back to OKESU_SECRET_* env vars + the legacy
+	// flag/env-var path; "file:///etc/okesu/secrets" reads each secret
+	// from a file in that directory (perfect for systemd
+	// LoadCredential=); "oci-vault://..." pulls from OCI Vault.
+	//
+	// Phase 8g: every secret the CP needs flows through this adapter
+	// rather than through CLI flags. Legacy flags still work for dev
+	// and trigger a deprecation warning.
+	SecretsSource string
+
+	// ConfigFile is the optional YAML/TOML config file path. When set,
+	// the file is loaded BEFORE flag parsing — flags then override
+	// fields the file populated. This means the deployable shape is:
+	//   - YAML: non-secret config + "${secret:NAME}" references
+	//   - --secrets-source: where the secret references resolve from
+	//   - flags: only for dev one-offs
+	ConfigFile string
+
 	// BlobStoreURL selects the ports.BlobStore adapter. Empty (default)
 	// keeps storage on the local filesystem at <db dir>/blobs/. Set to
 	// an s3:// URL to use S3-compatible object storage (OCI Object
@@ -225,6 +244,8 @@ func FromEnv() Config {
 
 		EventTTLDays: envInt("OKESU_CP_EVENT_TTL_DAYS", 0),
 		PubSubURL:    os.Getenv("OKESU_CP_PUBSUB_URL"),
+
+		SecretsSource: os.Getenv("OKESU_CP_SECRETS_SOURCE"),
 
 		BlobStoreURL:  os.Getenv("OKESU_CP_BLOB_URL"),
 		BlobAccessKey: os.Getenv("OKESU_CP_BLOB_ACCESS_KEY"),
