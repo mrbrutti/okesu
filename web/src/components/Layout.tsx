@@ -1,5 +1,5 @@
 import { Link, NavLink, Outlet, useNavigate } from 'react-router-dom';
-import { Activity, AlertTriangle, LayoutDashboard, Server, Layers, Settings, LogOut, Sparkles, Terminal } from 'lucide-react';
+import { Activity, AlertTriangle, LayoutDashboard, Server, Layers, Settings, LogOut, Sparkles } from 'lucide-react';
 import { api, type User } from '../api';
 import { cn } from '../lib/cn';
 
@@ -15,7 +15,6 @@ const nav = [
   { to: '/daimons',    label: 'Daimons',      icon: Layers,         enabled: true  },
   { to: '/agents',     label: 'Agents',       icon: Sparkles,       enabled: true  },
   { to: '/nodes',      label: 'Nodes',        icon: Server,         enabled: true  },
-  { to: '/runs',       label: 'Run Agent',    icon: Terminal,       enabled: true  },
   { to: '/settings',   label: 'Settings',     icon: Settings,       enabled: true  },
 ];
 
