@@ -145,6 +145,29 @@ export default function DashboardPage() {
           </div>
         )}
 
+        {/* Federation banner — only when this CP federates from peers.
+            Tells the operator the headline numbers below are aggregated
+            across children so a 0/0 daimon count + N children doesn't
+            look like the dashboard is broken. */}
+        {data && data.federation && data.federation.children > 0 && (
+          <Link
+            to="/federation"
+            className="block bg-gradient-to-r from-brand-50 to-panel border border-brand-200 rounded-xl px-4 py-2.5 text-xs hover:border-brand-300 transition-colors"
+          >
+            <div className="flex items-center gap-2 text-ink-dim">
+              <span className="inline-flex items-center justify-center w-5 h-5 rounded bg-brand-500 text-white shadow-sm">
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><circle cx="12" cy="12" r="2"/><path d="M12 2v6M12 16v6M2 12h6M16 12h6"/></svg>
+              </span>
+              <span>
+                Aggregating <span className="text-ink font-medium">{data.federation.healthy_children}/{data.federation.children}</span>
+                {' '}child CP{data.federation.children === 1 ? '' : 's'}.
+                The numbers below include federated daimons / nodes / findings.
+                <span className="text-brand-700 font-medium ml-1">View peers →</span>
+              </span>
+            </div>
+          </Link>
+        )}
+
         {/* Row 1: stat tiles */}
         <section className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
           <StatTile

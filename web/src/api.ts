@@ -881,6 +881,20 @@ export interface DashboardResponse {
     frozen: number;
     total: number;
   };
+  // Phase 9.5 — Always present, but children=0 when this CP federates
+  // from no one. When children > 0, the headline daimons/nodes/findings
+  // numbers above ALREADY include the federated rollup; local_only
+  // exposes the pre-rollup figures so the UI can show a "Local only"
+  // toggle.
+  federation: {
+    children: number;
+    healthy_children: number;
+    local_only: {
+      daimons_total: number;
+      nodes_total: number;
+      open_findings: number;
+    };
+  };
 }
 
 export interface InsightsFindingsResponse {

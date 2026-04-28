@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"runtime"
+	"sort"
 
 	"github.com/section9labs/okesu/controlplane/db"
 )
@@ -41,6 +42,12 @@ type IntrospectResponse struct {
 	// child's findings) belong on a separate, paginated endpoint
 	// scoped to the federation context — not on this poll.
 	Counts IntrospectCounts `json:"counts"`
+
+	// OS distribution — same shape as the local /api/dashboard
+	// returns. The parent merges these per-OS counts across all
+	// children so its OS chart shows the federated breakdown rather
+	// than its own (typically empty) local nodes.
+	OSDistribution []osBucket `json:"os_distribution"`
 
 	// Reachability — public URLs the parent can present to operators
 	// or hand to a federated client. Filled in only when the operator
@@ -121,6 +128,24 @@ func CPIntrospect(deps CPIntrospectDepsValue) http.HandlerFunc {
 			openFindings = fs.Open
 		}
 
+		// Per-OS counts using the same classifier the local dashboard
+		// uses — gives a parent CP an immediately-mergeable breakdown.
+		osCounts := map[string]int{}
+		for _, n := range nodes {
+			os := classifyOS(n.OSRelease.String, n.Name)
+			osCounts[os]++
+		}
+		osDist := make([]osBucket, 0, len(osCounts))
+		for os, n := range osCounts {
+			osDist = append(osDist, osBucket{OS: os, Count: n})
+		}
+		sort.SliceStable(osDist, func(i, j int) bool {
+			if osDist[i].Count != osDist[j].Count {
+				return osDist[i].Count > osDist[j].Count
+			}
+			return osDist[i].OS < osDist[j].OS
+		})
+
 		dv := ""
 		if deps.DaemonVersionFn != nil {
 			dv = deps.DaemonVersionFn()
@@ -143,6 +168,7 @@ func CPIntrospect(deps CPIntrospectDepsValue) http.HandlerFunc {
 				Nodes:          len(nodes),
 				OpenFindings:   openFindings,
 			},
+			OSDistribution:   osDist,
 			WebhookPublicURL: deps.WebhookURL,
 			MgmtPublicURL:    deps.MgmtURL,
 		}

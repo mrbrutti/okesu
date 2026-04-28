@@ -32,6 +32,28 @@ type dashboardResponse struct {
 	TopHosts      []hostFindingCount `json:"top_hosts"`        // open findings by host (top 10)
 	OSDistribution []osBucket        `json:"os_distribution"`  // nodes by OS family
 	FleetStatus   fleetStatus        `json:"fleet_status"`     // healthy / needs_patching / offline / frozen
+
+	// Phase 9.5 — federation rollup. Populated when this CP has
+	// registered children. Counts include LOCAL state plus the cached
+	// introspect counts from each child, so the parent's Dashboard
+	// shows the global view rather than its own (typically empty)
+	// local state. Children=0 means "this CP federates from no one,"
+	// in which case all the above fields are pure local data.
+	Federation dashFederation `json:"federation"`
+}
+
+type dashFederation struct {
+	Children        int `json:"children"`         // peers registered
+	HealthyChildren int `json:"healthy_children"` // peers with last_seen < 60s ago
+	// LocalOnly mirrors what /api/dashboard would return on a non-
+	// parent CP — the UI can show a "your CP only" toggle from this.
+	LocalOnly dashLocalOnly `json:"local_only"`
+}
+
+type dashLocalOnly struct {
+	DaimonsTotal int `json:"daimons_total"`
+	NodesTotal   int `json:"nodes_total"`
+	OpenFindings int64 `json:"open_findings"`
 }
 
 type dashDaimons struct {
@@ -275,6 +297,80 @@ func Dashboard(store *db.Store, eventStore ports.EventStore, tunReg *tunnel.Regi
 		if out.TopHosts == nil {
 			out.TopHosts = []hostFindingCount{}
 		}
+		if out.Drift.Items == nil {
+			out.Drift.Items = []driftRow{}
+		}
+
+		// Phase 9.5: fold federated peer counts into the headline
+		// numbers. The Dashboard is the operator's primary
+		// situational-awareness page; on a parent CP it should answer
+		// "what's the state of the WHOLE fleet?" not "what's the
+		// state of this one (often empty) CP?".
+		out.Federation.LocalOnly = dashLocalOnly{
+			DaimonsTotal: out.Daimons.Total,
+			NodesTotal:   out.Nodes.Total,
+			OpenFindings: out.Findings.Open,
+		}
+		peers, _ := store.ListFederationPeers()
+		out.Federation.Children = len(peers)
+		fiveMinAgoT := time.Now().Add(-5 * time.Minute)
+		for _, p := range peers {
+			if p.LastSeenAt.Valid && p.LastSeenAt.Time.After(fiveMinAgoT) {
+				out.Federation.HealthyChildren++
+			}
+			if p.IntrospectJSON == "" {
+				continue
+			}
+			var snap struct {
+				Counts struct {
+					Daimons        int   `json:"daimons"`
+					DaimonsHealthy int   `json:"daimons_healthy"`
+					Nodes          int   `json:"nodes"`
+					OpenFindings   int64 `json:"open_findings"`
+				} `json:"counts"`
+				OSDistribution []osBucket `json:"os_distribution"`
+			}
+			if err := json.Unmarshal([]byte(p.IntrospectJSON), &snap); err != nil {
+				continue
+			}
+			out.Daimons.Total += snap.Counts.Daimons
+			out.Daimons.Healthy += snap.Counts.DaimonsHealthy
+			// We don't get a separate "unhealthy" count from introspect
+			// today (it's derivable as Total - Healthy on the child but
+			// not exposed); approximate it the same way here.
+			out.Daimons.Unhealthy += snap.Counts.Daimons - snap.Counts.DaimonsHealthy
+			out.Nodes.Total += snap.Counts.Nodes
+			// Same for "heartbeating" — approximate as healthy daimons,
+			// since a node with ≥1 healthy daimon is reachable.
+			if snap.Counts.DaimonsHealthy > 0 {
+				out.Nodes.Heartbeating += snap.Counts.Nodes
+			}
+			out.Findings.Open += snap.Counts.OpenFindings
+			out.FleetStatus.Total += snap.Counts.Nodes
+			out.FleetStatus.Healthy += snap.Counts.Nodes // optimistic until we expose per-status counts
+			// OS distribution merge — sum counts by OS family.
+			for _, b := range snap.OSDistribution {
+				merged := false
+				for i := range out.OSDistribution {
+					if out.OSDistribution[i].OS == b.OS {
+						out.OSDistribution[i].Count += b.Count
+						merged = true
+						break
+					}
+				}
+				if !merged {
+					out.OSDistribution = append(out.OSDistribution, b)
+				}
+			}
+		}
+		// Re-sort OS distribution after federated merge so the chart
+		// order stays count-desc.
+		sort.SliceStable(out.OSDistribution, func(i, j int) bool {
+			if out.OSDistribution[i].Count != out.OSDistribution[j].Count {
+				return out.OSDistribution[i].Count > out.OSDistribution[j].Count
+			}
+			return out.OSDistribution[i].OS < out.OSDistribution[j].OS
+		})
 
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(out)
