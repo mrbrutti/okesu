@@ -3,6 +3,7 @@ import { Link, useSearchParams } from 'react-router-dom';
 import {
   ArrowUpRight,
   Check,
+  CheckCircle2,
   ChevronRight,
   Clock,
   Cpu,
@@ -17,6 +18,7 @@ import {
   ShieldAlert,
   Sparkles,
   Tag,
+  ThumbsDown,
   X,
 } from 'lucide-react';
 import { api, type Finding, type FindingGroup, type FindingsSummary, type FindingStatus, type RunListItem } from '../api';
@@ -28,6 +30,8 @@ import { SeverityMenu, type SeverityChange } from '../components/SeverityMenu';
 import { InvestigateDialog } from '../components/InvestigateDialog';
 import { StatusPill } from '../components/StatusPill';
 import { useInfiniteScroll } from '../lib/useInfiniteScroll';
+import { useSelection } from '../lib/useSelection';
+import { BulkActionBar, BulkActionButton } from '../components/BulkActionBar';
 
 const PAGE_SIZE = 250;
 
@@ -69,6 +73,12 @@ export default function FindingsPage() {
   };
   const [error, setError] = useState<string | null>(null);
   const [hasMoreFindings, setHasMoreFindings] = useState(true);
+  // Bulk selection — keyed by FindingGroup.group_key (only relevant in
+  // the grouped view; flat "recent" view doesn't get bulk actions yet
+  // because the action vocabulary changes per-finding rather than
+  // per-group).
+  const sel = useSelection<string>();
+  const [bulkBusy, setBulkBusy] = useState<null | FindingStatus>(null);
 
   const refresh = useMemo(() => () => {
     api.findings({
@@ -368,6 +378,9 @@ export default function FindingsPage() {
                 const list = groups.filter((g) => (g.severity || 'INFO').toUpperCase() === sev);
                 if (list.length === 0) return null;
                 const totalOccurrences = list.reduce((acc, g) => acc + g.count, 0);
+                const sevKeys = list.map((g) => g.group_key);
+                const allSelected = sevKeys.length > 0 && sevKeys.every((k) => sel.isSelected(k));
+                const someSelected = sevKeys.some((k) => sel.isSelected(k));
                 return (
                   <section key={sev}>
                     <SectionHeader
@@ -379,12 +392,24 @@ export default function FindingsPage() {
                           ? `${totalOccurrences} occurrence${totalOccurrences === 1 ? '' : 's'}`
                           : undefined
                       }
+                      leading={
+                        <input
+                          type="checkbox"
+                          checked={allSelected}
+                          ref={(el) => { if (el) el.indeterminate = !allSelected && someSelected; }}
+                          onChange={(e) => sel.setMany(sevKeys, e.target.checked)}
+                          title={allSelected ? `Deselect all ${sev}` : `Select all ${sev}`}
+                          className="rounded border-border text-brand-500 focus:ring-brand-500/30 cursor-pointer"
+                        />
+                      }
                     />
                     <ListCard>
                       {list.map((g) => (
                         <GroupRow
                           key={g.group_key}
                           g={g}
+                          selected={sel.isSelected(g.group_key)}
+                          onToggleSelected={(on) => sel.set(g.group_key, on)}
                           onOpen={() => setSelectedId(g.latest_id)}
                           onPickAgent={(a) => setAgentFilter(a)}
                           onPickHost={(h) => setHostFilter(h)}
@@ -395,6 +420,49 @@ export default function FindingsPage() {
                   </section>
                 );
               })}
+
+              {/* Bulk action bar — visible when ≥ 1 group selected. */}
+              <BulkActionBar count={sel.count} onClear={sel.clear} label="Groups">
+                <BulkActionButton
+                  tone="good"
+                  icon={Check}
+                  label="Acknowledge"
+                  busy={bulkBusy === 'acknowledged'}
+                  disabled={!!bulkBusy}
+                  title={`Acknowledge ${sel.count} group${sel.count === 1 ? '' : 's'}`}
+                  onClick={async () => {
+                    setBulkBusy('acknowledged');
+                    await bulkSetGroupStatus(sel.all, 'acknowledged', groups ?? []);
+                    setBulkBusy(null); sel.clear(); refresh();
+                  }}
+                />
+                <BulkActionButton
+                  tone="good"
+                  icon={CheckCircle2}
+                  label="Resolve"
+                  busy={bulkBusy === 'resolved'}
+                  disabled={!!bulkBusy}
+                  title={`Mark ${sel.count} group${sel.count === 1 ? '' : 's'} resolved`}
+                  onClick={async () => {
+                    setBulkBusy('resolved');
+                    await bulkSetGroupStatus(sel.all, 'resolved', groups ?? []);
+                    setBulkBusy(null); sel.clear(); refresh();
+                  }}
+                />
+                <BulkActionButton
+                  tone="warn"
+                  icon={ThumbsDown}
+                  label="False positive"
+                  busy={bulkBusy === 'false_positive'}
+                  disabled={!!bulkBusy}
+                  title={`Mark ${sel.count} group${sel.count === 1 ? '' : 's'} as false positive`}
+                  onClick={async () => {
+                    setBulkBusy('false_positive');
+                    await bulkSetGroupStatus(sel.all, 'false_positive', groups ?? []);
+                    setBulkBusy(null); sel.clear(); refresh();
+                  }}
+                />
+              </BulkActionBar>
             </div>
           )}
         </div>
@@ -408,6 +476,31 @@ export default function FindingsPage() {
         )}
       </div>
     </div>
+  );
+}
+
+// Fan-out POST `/api/findings/group/status` across the selection. Uses
+// allSettled so a single failed group doesn't abort the rest. The
+// caller is expected to refresh() afterward — the response here is just
+// {changed, status} per call and doesn't carry the updated FindingGroup
+// row, so we can't splice the local list optimistically the way Daimons
+// does.
+async function bulkSetGroupStatus(
+  groupKeys: string[],
+  status: FindingStatus,
+  groups: FindingGroup[],
+) {
+  const byKey = new Map(groups.map((g) => [g.group_key, g]));
+  const targets = groupKeys.map((k) => byKey.get(k)).filter((g): g is FindingGroup => !!g);
+  await Promise.allSettled(
+    targets.map((g) => api.setGroupStatus({
+      dedup_key: g.dedup_key,
+      title: g.title,
+      severity: g.severity,
+      agent: g.agent,
+      status,
+      note: 'bulk action via UI',
+    })),
   );
 }
 
@@ -559,13 +652,15 @@ function FilterChip({
 
 interface GroupRowProps {
   g: FindingGroup;
+  selected: boolean;
+  onToggleSelected: (on: boolean) => void;
   onOpen: () => void;
   onPickAgent: (a: string) => void;
   onPickHost: (h: string) => void;
   onAcked: () => void;
 }
 
-function GroupRow({ g, onOpen, onPickAgent, onPickHost, onAcked }: GroupRowProps) {
+function GroupRow({ g, selected, onToggleSelected, onOpen, onPickAgent, onPickHost, onAcked }: GroupRowProps) {
   const sev = (g.severity || 'INFO').toLowerCase();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -603,6 +698,17 @@ function GroupRow({ g, onOpen, onPickAgent, onPickHost, onAcked }: GroupRowProps
       className="w-full text-left flex items-stretch hover:bg-slate-50/60 transition-colors"
     >
       <span className={cn('w-1 shrink-0', sevBar(g.severity))} />
+      <div className="pl-4 pt-3.5 shrink-0">
+        <input
+          type="checkbox"
+          checked={selected}
+          onChange={(e) => onToggleSelected(e.target.checked)}
+          onClick={(e) => e.stopPropagation()}
+          onMouseDown={(e) => e.stopPropagation()}
+          aria-label={`Select ${g.title || 'finding group'}`}
+          className="rounded border-border text-brand-500 focus:ring-brand-500/30 cursor-pointer"
+        />
+      </div>
       <div className="px-4 py-3 flex items-start gap-3 flex-1 min-w-0">
         <span className={cn('severity-badge mt-0.5 shrink-0', `severity-${sev}`)}>
           {g.severity || 'INFO'}

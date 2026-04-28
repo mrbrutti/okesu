@@ -10,6 +10,7 @@ import {
   Plus,
   Server,
   Trash2,
+  Upload,
   Wifi,
   X,
 } from 'lucide-react';
@@ -18,6 +19,9 @@ import { cn } from '../lib/cn';
 import { SectionHeader, type SectionTone } from '../components/lists/SectionHeader';
 import { ListCard } from '../components/lists/ListCard';
 import { useInfiniteScroll } from '../lib/useInfiniteScroll';
+import { useSelection } from '../lib/useSelection';
+import { BulkActionBar, BulkActionButton } from '../components/BulkActionBar';
+import { BulkBinaryUpdateDialog } from '../components/BulkBinaryUpdateDialog';
 
 const NODES_PAGE_SIZE = 500;
 
@@ -44,6 +48,9 @@ export default function NodesPage() {
   const [showAdd, setShowAdd] = useState(false);
   const [deployingNode, setDeployingNode] = useState<NodeItem | null>(null);
   const [hasMore, setHasMore] = useState(true);
+  const sel = useSelection<string>();
+  const [bulkUpdate, setBulkUpdate] = useState<NodeItem[] | null>(null);
+  const [bulkBusy, setBulkBusy] = useState<null | 'delete'>(null);
 
   // Refresh the first page; merge by id so already-loaded older pages stay
   // visible. Newest entries overwrite tail dups.
@@ -130,15 +137,34 @@ export default function NodesPage() {
         {BUCKET_ORDER.map((bucket) => {
           const list = buckets[bucket];
           if (list.length === 0) return null;
+          const keys = list.map((n) => String(n.id));
+          const allSelected = keys.length > 0 && keys.every((k) => sel.isSelected(k));
+          const someSelected = keys.some((k) => sel.isSelected(k));
           return (
             <section key={bucket}>
-              <SectionHeader tone={BUCKET_TONE[bucket]} label={BUCKET_LABEL[bucket]} count={list.length} />
+              <SectionHeader
+                tone={BUCKET_TONE[bucket]}
+                label={BUCKET_LABEL[bucket]}
+                count={list.length}
+                leading={
+                  <input
+                    type="checkbox"
+                    checked={allSelected}
+                    ref={(el) => { if (el) el.indeterminate = !allSelected && someSelected; }}
+                    onChange={(e) => sel.setMany(keys, e.target.checked)}
+                    title={allSelected ? `Deselect all ${list.length}` : `Select all ${list.length}`}
+                    className="rounded border-border text-brand-500 focus:ring-brand-500/30 cursor-pointer"
+                  />
+                }
+              />
               <ListCard>
                 {list.map((n) => (
                   <NodeRow
                     key={n.id}
                     node={n}
                     connected={connected.has(n.name)}
+                    selected={sel.isSelected(String(n.id))}
+                    onToggleSelected={(on) => sel.set(String(n.id), on)}
                     onDeploy={() => setDeployingNode(n)}
                     onDelete={async () => {
                       if (confirm(`Remove node "${n.name}"?`)) {
@@ -152,6 +178,39 @@ export default function NodesPage() {
             </section>
           );
         })}
+
+        {/* Bulk action bar — appears when ≥ 1 node selected. */}
+        <BulkActionBar count={sel.count} onClear={sel.clear}>
+          <BulkActionButton
+            tone="neutral"
+            icon={Upload}
+            label="Update binary"
+            disabled={!!bulkBusy}
+            title={`SSH-update the okesu binary on ${sel.count} node${sel.count === 1 ? '' : 's'}`}
+            onClick={() => {
+              const ids = new Set(sel.all);
+              const targets = (nodes ?? []).filter((n) => ids.has(String(n.id)));
+              setBulkUpdate(targets);
+            }}
+          />
+          <BulkActionButton
+            tone="bad"
+            icon={Trash2}
+            label="Delete"
+            busy={bulkBusy === 'delete'}
+            disabled={!!bulkBusy}
+            title={`Remove ${sel.count} node${sel.count === 1 ? '' : 's'} from the Control Plane`}
+            onClick={async () => {
+              if (!confirm(`Remove ${sel.count} node${sel.count === 1 ? '' : 's'}? Their daemons will stop heartbeating but the remote okesu binary stays installed.`)) return;
+              setBulkBusy('delete');
+              const ids = sel.all.map(Number).filter((n) => Number.isFinite(n));
+              await Promise.allSettled(ids.map((id) => api.deleteNode(id)));
+              sel.clear();
+              setBulkBusy(null);
+              refresh();
+            }}
+          />
+        </BulkActionBar>
 
         {nodes && nodes.length > 0 && (
           <div ref={scroll.sentinelRef} className="text-[11px] text-ink-mute text-center py-2">
@@ -176,6 +235,13 @@ export default function NodesPage() {
           onClose={() => { setDeployingNode(null); refresh(); }}
         />
       )}
+      {bulkUpdate && bulkUpdate.length > 0 && (
+        <BulkBinaryUpdateDialog
+          nodes={bulkUpdate}
+          onClose={() => setBulkUpdate(null)}
+          onDone={() => { setBulkUpdate(null); sel.clear(); refresh(); }}
+        />
+      )}
     </div>
   );
 }
@@ -183,11 +249,15 @@ export default function NodesPage() {
 function NodeRow({
   node,
   connected,
+  selected,
+  onToggleSelected,
   onDeploy,
   onDelete,
 }: {
   node: NodeItem;
   connected: boolean;
+  selected: boolean;
+  onToggleSelected: (on: boolean) => void;
   onDeploy: () => void;
   onDelete: () => void;
 }) {
@@ -206,6 +276,15 @@ function NodeRow({
       className="block px-4 py-3 hover:bg-slate-50/60 transition-colors"
     >
       <div className="flex items-center gap-4">
+        <input
+          type="checkbox"
+          checked={selected}
+          onChange={(e) => onToggleSelected(e.target.checked)}
+          onClick={(e) => e.stopPropagation()}
+          onMouseDown={(e) => e.stopPropagation()}
+          aria-label={`Select ${node.name}`}
+          className="shrink-0 rounded border-border text-brand-500 focus:ring-brand-500/30 cursor-pointer"
+        />
         {/* avatar */}
         <div className="w-10 h-10 shrink-0 rounded-lg bg-gradient-to-br from-slate-700 to-slate-900 flex items-center justify-center text-white shadow-sm">
           <Server size={16} />

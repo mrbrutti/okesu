@@ -23,16 +23,20 @@ const TONE: Record<SectionTone, { dot: string; text: string }> = {
 };
 
 export function SectionHeader({
-  tone, label, count, hint,
+  tone, label, count, hint, leading,
 }: {
   tone: SectionTone;
   label: string;
   count: number;
   hint?: string;
+  // Optional element rendered before the dot. Used to host a bucket-level
+  // "select all" checkbox for bulk-action lists.
+  leading?: React.ReactNode;
 }) {
   const t = TONE[tone];
   return (
     <header className="flex items-center gap-2 mb-2 pl-1">
+      {leading}
       <span className={cn('w-2 h-2 rounded-full', t.dot)} />
       <h2 className={cn('text-sm font-semibold', t.text)}>{label}</h2>
       <span className="text-xs text-ink-mute tabular-nums">{count}</span>

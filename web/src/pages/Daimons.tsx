@@ -6,7 +6,9 @@ import {
   Cpu,
   FileEdit,
   Layers,
+  Loader2,
   Pause,
+  Play,
   Server,
 } from 'lucide-react';
 import { api, type DaimonItem } from '../api';
@@ -14,6 +16,8 @@ import { cn } from '../lib/cn';
 import { SectionHeader, type SectionTone } from '../components/lists/SectionHeader';
 import { ListCard } from '../components/lists/ListCard';
 import { useInfiniteScroll } from '../lib/useInfiniteScroll';
+import { useSelection } from '../lib/useSelection';
+import { BulkActionBar, BulkActionButton } from '../components/BulkActionBar';
 import DaimonsLibrary from '../components/DaimonsLibrary';
 
 const DAIMONS_PAGE_SIZE = 500;
@@ -68,10 +72,45 @@ const BUCKET_TONE: Record<Bucket, SectionTone> = {
   never:     'muted',
 };
 
+// Canonical row id used by the selection set and bulk patch lookups.
+// Must match the React key on each row so toggling stays stable across
+// the 8-second list refresh (which can reorder buckets).
+const daimonKey = (d: DaimonItem) => `${d.name}@${d.host}`;
+
+// Fan-out PATCH `desired_suspended` across the selection. Uses
+// allSettled so a single failed agent (e.g. one whose row vanished
+// between refresh and click) doesn't abort the rest. Successful
+// responses are spliced back into the parent list immediately so
+// operators see the new state before the 8-second refresh interval.
+async function bulkPatchSuspended(
+  keys: string[],
+  suspended: boolean,
+  daimons: DaimonItem[],
+  setDaimons: React.Dispatch<React.SetStateAction<DaimonItem[] | null>>,
+) {
+  const byKey = new Map(daimons.map((d) => [daimonKey(d), d]));
+  const targets = keys.map((k) => byKey.get(k)).filter((d): d is DaimonItem => !!d);
+  const results = await Promise.allSettled(
+    targets.map((d) => api.patchDaimon(d.name, { suspended })),
+  );
+  const updates: DaimonItem[] = [];
+  for (const r of results) {
+    if (r.status === 'fulfilled') updates.push(r.value);
+  }
+  if (updates.length === 0) return;
+  setDaimons((prev) => {
+    if (!prev) return prev;
+    const upBy = new Map(updates.map((u) => [daimonKey(u), u]));
+    return prev.map((d) => upBy.get(daimonKey(d)) ?? d);
+  });
+}
+
 function DaimonsDeployed() {
   const [daimons, setDaimons] = useState<DaimonItem[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [hasMore, setHasMore] = useState(true);
+  const sel = useSelection<string>();
+  const [bulkBusy, setBulkBusy] = useState<null | 'pause' | 'resume'>(null);
 
   // Refresh the first page; preserve already-loaded older pages by merging
   // on (name, host) identity, with newest entries overwriting tail dups.
@@ -157,9 +196,51 @@ function DaimonsDeployed() {
           const list = buckets[bucket];
           if (list.length === 0) return null;
           return (
-            <BucketSection key={bucket} bucket={bucket} list={list} />
+            <BucketSection
+              key={bucket}
+              bucket={bucket}
+              list={list}
+              sel={sel}
+              onPatched={(updated) =>
+                setDaimons((prev) =>
+                  (prev ?? []).map((d) =>
+                    d.name === updated.name && d.host === updated.host ? updated : d,
+                  ),
+                )
+              }
+            />
           );
         })}
+
+        {/* Bulk action bar — visible only when ≥ 1 daimon is selected. */}
+        <BulkActionBar count={sel.count} onClear={sel.clear}>
+          <BulkActionButton
+            tone="warn"
+            icon={Pause}
+            label="Pause"
+            busy={bulkBusy === 'pause'}
+            disabled={!!bulkBusy}
+            title="Pause selected daimons (next config-poll tick)"
+            onClick={async () => {
+              setBulkBusy('pause');
+              await bulkPatchSuspended(sel.all, true, daimons ?? [], setDaimons);
+              setBulkBusy(null);
+            }}
+          />
+          <BulkActionButton
+            tone="good"
+            icon={Play}
+            label="Resume"
+            busy={bulkBusy === 'resume'}
+            disabled={!!bulkBusy}
+            title="Resume selected daimons (next config-poll tick)"
+            onClick={async () => {
+              setBulkBusy('resume');
+              await bulkPatchSuspended(sel.all, false, daimons ?? [], setDaimons);
+              setBulkBusy(null);
+            }}
+          />
+        </BulkActionBar>
 
         {daimons && daimons.length > 0 && (
           <div ref={scroll.sentinelRef} className="text-[11px] text-ink-mute text-center py-2">
@@ -175,32 +256,99 @@ function DaimonsDeployed() {
   );
 }
 
-function BucketSection({ bucket, list }: { bucket: Bucket; list: DaimonItem[] }) {
+function BucketSection({
+  bucket, list, onPatched, sel,
+}: {
+  bucket: Bucket;
+  list: DaimonItem[];
+  onPatched: (d: DaimonItem) => void;
+  sel: ReturnType<typeof useSelection<string>>;
+}) {
+  // "Select all in bucket" tri-state checkbox. Toggles the entire bucket
+  // on if any are unselected, off when all are selected.
+  const keys = list.map(daimonKey);
+  const allSelected = keys.length > 0 && keys.every((k) => sel.isSelected(k));
+  const someSelected = keys.some((k) => sel.isSelected(k));
   return (
     <section>
-      <SectionHeader tone={BUCKET_TONE[bucket]} label={BUCKET_LABEL[bucket]} count={list.length} />
+      <SectionHeader
+        tone={BUCKET_TONE[bucket]}
+        label={BUCKET_LABEL[bucket]}
+        count={list.length}
+        leading={
+          <input
+            type="checkbox"
+            checked={allSelected}
+            ref={(el) => { if (el) el.indeterminate = !allSelected && someSelected; }}
+            onChange={(e) => sel.setMany(keys, e.target.checked)}
+            onClick={(e) => e.stopPropagation()}
+            title={allSelected ? `Deselect all ${list.length}` : `Select all ${list.length}`}
+            className="rounded border-border text-brand-500 focus:ring-brand-500/30 cursor-pointer"
+          />
+        }
+      />
       <ListCard>
         {list.map((d) => (
-          <DaimonRow key={`${d.name}@${d.host}`} daimon={d} />
+          <DaimonRow key={daimonKey(d)} daimon={d} onPatched={onPatched} sel={sel} />
         ))}
       </ListCard>
     </section>
   );
 }
 
-function DaimonRow({ daimon }: { daimon: DaimonItem }) {
+function DaimonRow({
+  daimon, onPatched, sel,
+}: {
+  daimon: DaimonItem;
+  onPatched: (d: DaimonItem) => void;
+  sel: ReturnType<typeof useSelection<string>>;
+}) {
+  const key = daimonKey(daimon);
+  const checked = sel.isSelected(key);
   const initials = daimon.name
     .split(/[-_]/)
     .filter(Boolean)
     .slice(0, 2)
     .map((s) => s[0]?.toUpperCase() ?? '')
     .join('');
+  const [pausing, setPausing] = useState(false);
+  // Toggle desired_suspended via PATCH /api/agents/{name}/config. The change
+  // takes effect on the daemon's next config-poll tick (≤ poll interval,
+  // typically 30s). We optimistically swap the row's value via onPatched so
+  // operators don't wait for the parent's 8s refresh to see their action.
+  async function togglePause(e: React.MouseEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (pausing) return;
+    setPausing(true);
+    try {
+      const updated = await api.patchDaimon(daimon.name, {
+        suspended: !daimon.desired_suspended,
+      });
+      onPatched(updated);
+    } catch {
+      // Swallow — the next list refresh will surface any sync issue.
+    } finally {
+      setPausing(false);
+    }
+  }
   return (
     <Link
       to={`/daimons/${encodeURIComponent(daimon.name)}`}
       className="block px-4 py-3 hover:bg-slate-50/60 transition-colors"
     >
       <div className="flex items-center gap-4">
+        <input
+          type="checkbox"
+          checked={checked}
+          onChange={(e) => sel.set(key, e.target.checked)}
+          onClick={(e) => e.stopPropagation()}
+          // The row is a Link; preventing default + stopping propagation
+          // keeps a checkbox click from navigating to the detail page.
+          onMouseDown={(e) => e.stopPropagation()}
+          aria-label={`Select ${daimon.name}`}
+          className="shrink-0 rounded border-border text-brand-500 focus:ring-brand-500/30 cursor-pointer"
+        />
         <div className="w-10 h-10 shrink-0 rounded-lg bg-gradient-to-br from-brand-500 to-brand-700 flex items-center justify-center text-white text-xs font-semibold shadow-sm">
           {initials || <Cpu size={14} />}
         </div>
@@ -258,6 +406,24 @@ function DaimonRow({ daimon }: { daimon: DaimonItem }) {
         <div className="w-28 shrink-0 text-[11px] text-ink-mute hidden xl:block truncate">
           <div className="text-ink-dim">{summarizeConfig(daimon)}</div>
         </div>
+
+        <button
+          type="button"
+          onClick={togglePause}
+          disabled={pausing}
+          title={daimon.desired_suspended ? 'Resume daimon (next config-poll tick)' : 'Pause daimon (next config-poll tick)'}
+          className={cn(
+            'shrink-0 inline-flex items-center justify-center w-7 h-7 rounded-md ring-1 transition-colors',
+            daimon.desired_suspended
+              ? 'text-green-700 bg-green-50 ring-green-200 hover:bg-green-100'
+              : 'text-yellow-700 bg-yellow-50 ring-yellow-200 hover:bg-yellow-100',
+            pausing && 'opacity-50 cursor-wait',
+          )}
+        >
+          {pausing
+            ? <Loader2 size={12} className="animate-spin" />
+            : daimon.desired_suspended ? <Play size={12} /> : <Pause size={12} />}
+        </button>
 
         <ChevronRight size={14} className="text-ink-mute shrink-0" />
       </div>

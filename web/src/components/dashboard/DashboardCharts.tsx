@@ -8,17 +8,18 @@ import {
   BarChart,
   CartesianGrid,
   Cell,
+  LabelList,
   Legend,
   Line,
   LineChart,
-  Pie,
-  PieChart,
   ResponsiveContainer,
   Tooltip,
   XAxis,
   YAxis,
 } from 'recharts';
 import type { DashboardResponse, InsightsEventsResponse, InsightsFindingsResponse, TimeRange } from '../../api';
+
+export type Scale = 'linear' | 'log' | 'cumulative';
 
 // Palette aligned with tailwind.config.ts brand-500 + sev.* tokens.
 // Slot 0 is brand-500. Slot 1 is cyan-600 (deliberately NOT red,
@@ -56,11 +57,15 @@ function colorFor(seriesName: string, idx: number, isSeverity: boolean): string 
 
 // ── Events timeline (single line) ───────────────────────────────────
 
-export function EventsTimelineChart({ data, range }: { data: InsightsEventsResponse; range: TimeRange }) {
-  const rows = useMemo(
-    () => data.buckets.map((b) => ({ ts: tsLabel(b.ts, data.bucket_ms), count: b.count })),
-    [data],
-  );
+export function EventsTimelineChart({ data, range, scale = 'linear' }: { data: InsightsEventsResponse; range: TimeRange; scale?: Scale }) {
+  const rows = useMemo(() => {
+    let running = 0;
+    return data.buckets.map((b) => {
+      running += b.count;
+      const v = scale === 'cumulative' ? running : b.count;
+      return { ts: tsLabel(b.ts, data.bucket_ms), count: scale === 'log' ? Math.max(v, 0.5) : v };
+    });
+  }, [data, scale]);
   return (
     <ResponsiveContainer width="100%" height={180}>
       <LineChart data={rows} margin={{ top: 8, right: 12, left: -12, bottom: 0 }}>
@@ -78,6 +83,9 @@ export function EventsTimelineChart({ data, range }: { data: InsightsEventsRespo
           axisLine={false}
           tickLine={false}
           width={40}
+          scale={scale === 'log' ? 'log' : 'auto'}
+          domain={scale === 'log' ? [0.5, 'auto'] : undefined}
+          allowDataOverflow={scale === 'log'}
         />
         <Tooltip contentStyle={tooltipStyle} labelStyle={{ fontWeight: 600 }} cursor={{ stroke: '#cbd5e1', strokeWidth: 1 }} />
         <Line
@@ -95,14 +103,21 @@ export function EventsTimelineChart({ data, range }: { data: InsightsEventsRespo
 
 // ── Findings over time, multi-series line ───────────────────────────
 
-export function FindingsTimelineChart({ data, range }: { data: InsightsFindingsResponse; range: TimeRange }) {
+export function FindingsTimelineChart({ data, range, scale = 'linear' }: { data: InsightsFindingsResponse; range: TimeRange; scale?: Scale }) {
   const rows = useMemo(() => {
+    const running: Record<string, number> = Object.fromEntries(data.series.map((k) => [k, 0]));
     return data.buckets.map((b) => {
       const row: Record<string, number | string> = { ts: tsLabel(b.ts, data.bucket_ms) };
-      for (const k of data.series) row[k] = b.by[k] ?? 0;
+      for (const k of data.series) {
+        const raw = b.by[k] ?? 0;
+        running[k] += raw;
+        const v = scale === 'cumulative' ? running[k] : raw;
+        // Log scale chokes on 0 — clamp to 0.5 so a flat zero series still renders.
+        row[k] = scale === 'log' ? Math.max(v, 0.5) : v;
+      }
       return row;
     });
-  }, [data]);
+  }, [data, scale]);
 
   const isSeverity = data.group_by === 'severity';
 
@@ -123,6 +138,9 @@ export function FindingsTimelineChart({ data, range }: { data: InsightsFindingsR
           axisLine={false}
           tickLine={false}
           width={40}
+          scale={scale === 'log' ? 'log' : 'auto'}
+          domain={scale === 'log' ? [0.5, 'auto'] : undefined}
+          allowDataOverflow={scale === 'log'}
         />
         <Tooltip contentStyle={tooltipStyle} labelStyle={{ fontWeight: 600 }} cursor={{ stroke: '#cbd5e1', strokeWidth: 1 }} />
         <Legend wrapperStyle={{ fontSize: 11, paddingTop: 6 }} iconType="line" />
@@ -146,13 +164,32 @@ export function FindingsTimelineChart({ data, range }: { data: InsightsFindingsR
 
 export function TopHostsChart({ data }: { data: DashboardResponse['top_hosts'] }) {
   if (!data || data.length === 0) {
-    return <div className="text-xs text-ink-mute py-12 text-center">No findings — fleet is clean.</div>;
+    return (
+      <div className="text-xs text-ink-mute py-12 text-center">
+        <div className="inline-flex items-center justify-center w-10 h-10 rounded-full bg-green-50 text-green-600 mb-2">✓</div>
+        <div>No findings — fleet is clean.</div>
+      </div>
+    );
   }
   const rows = data.map((d) => ({ host: d.host, open: d.open, critical: d.critical }));
-  const height = Math.max(120, rows.length * 28);
+  const height = Math.max(120, rows.length * 32);
+  // Highlight the host with the most criticals — Cell-by-Cell coloring
+  // lets us tint that one in sev.critical purple while the rest carry
+  // the brand gradient. Operators triage here first.
+  const maxCritical = Math.max(0, ...rows.map((r) => r.critical));
   return (
     <ResponsiveContainer width="100%" height={height}>
-      <BarChart data={rows} layout="vertical" margin={{ top: 0, right: 12, left: 8, bottom: 0 }}>
+      <BarChart data={rows} layout="vertical" margin={{ top: 0, right: 36, left: 8, bottom: 0 }}>
+        <defs>
+          <linearGradient id="topHostsBrand" x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0%"   stopColor="#a78bfa" />
+            <stop offset="100%" stopColor="#7c3aed" />
+          </linearGradient>
+          <linearGradient id="topHostsCrit" x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0%"   stopColor="#c084fc" />
+            <stop offset="100%" stopColor="#9333ea" />
+          </linearGradient>
+        </defs>
         <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" horizontal={false} />
         <XAxis
           type="number"
@@ -160,6 +197,7 @@ export function TopHostsChart({ data }: { data: DashboardResponse['top_hosts'] }
           axisLine={false}
           tickLine={false}
           allowDecimals={false}
+          hide
         />
         <YAxis
           type="category"
@@ -170,16 +208,31 @@ export function TopHostsChart({ data }: { data: DashboardResponse['top_hosts'] }
           width={120}
         />
         <Tooltip contentStyle={tooltipStyle} cursor={{ fill: '#f8fafc' }} />
-        <Bar dataKey="open" fill={PALETTE[0]} radius={[0, 4, 4, 0]} />
+        <Bar dataKey="open" radius={[0, 6, 6, 0]} barSize={14}>
+          {rows.map((r, i) => (
+            <Cell
+              key={i}
+              fill={r.critical === maxCritical && maxCritical > 0 ? 'url(#topHostsCrit)' : 'url(#topHostsBrand)'}
+            />
+          ))}
+          <LabelList
+            dataKey="open"
+            position="right"
+            offset={8}
+            fill="#475569"
+            fontSize={11}
+            fontWeight={600}
+          />
+        </Bar>
       </BarChart>
     </ResponsiveContainer>
   );
 }
 
-// ── OS distribution donut ──────────────────────────────────────────
+// ── OS distribution (horizontal bar — fills the card width) ───────
 
-// Per-OS color map. Distinct colors so the donut + legend are
-// glanceable even with 5+ slices. "Unknown" stays slate.
+// Per-OS color map. Bars get distinct hues so the chart reads at a
+// glance without a separate legend.
 const OS_COLOR: Record<string, string> = {
   Debian:    '#a81d33', // debian red
   Ubuntu:    '#e95420', // ubuntu orange
@@ -194,52 +247,88 @@ const OS_COLOR: Record<string, string> = {
   Unknown:   '#cbd5e1',
 };
 
-export function OSDistributionDonut({ data }: { data: DashboardResponse['os_distribution'] }) {
-  const total = data.reduce((sum, b) => sum + b.count, 0);
-  if (total === 0) {
-    return <div className="text-xs text-ink-mute py-12 text-center">No nodes registered yet.</div>;
-  }
-  const slices = data.map((b) => ({
-    name: b.os,
-    value: b.count,
-    color: OS_COLOR[b.os] ?? '#94a3b8',
-  }));
-  return (
-    <div className="flex items-center gap-4">
-      <div className="relative w-[140px] h-[140px] shrink-0">
-        <ResponsiveContainer width="100%" height="100%">
-          <PieChart>
-            <Pie
-              data={slices}
-              dataKey="value"
-              nameKey="name"
-              cx="50%"
-              cy="50%"
-              innerRadius={42}
-              outerRadius={62}
-              paddingAngle={2}
-              startAngle={90}
-              endAngle={-270}
-            >
-              {slices.map((s) => <Cell key={s.name} fill={s.color} />)}
-            </Pie>
-            <Tooltip contentStyle={tooltipStyle} />
-          </PieChart>
-        </ResponsiveContainer>
-        <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-          <div className="text-2xl font-semibold tabular-nums text-ink">{total}</div>
-          <div className="text-[10px] uppercase tracking-wide text-ink-mute">nodes</div>
-        </div>
+export function OSDistributionChart({ data }: { data: DashboardResponse['os_distribution'] }) {
+  if (!data || data.length === 0) {
+    return (
+      <div className="text-xs text-ink-mute py-12 text-center">
+        <div className="inline-flex items-center justify-center w-10 h-10 rounded-full bg-slate-100 text-slate-400 mb-2">·</div>
+        <div>No nodes registered yet.</div>
       </div>
-      <ul className="text-xs space-y-1.5 flex-1 min-w-0">
-        {slices.map((s) => (
-          <li key={s.name} className="flex items-center gap-2">
-            <span className="w-2 h-2 rounded-full shrink-0" style={{ background: s.color }} />
-            <span className="text-ink-dim flex-1 truncate">{s.name}</span>
-            <span className="font-mono tabular-nums text-ink">{s.value}</span>
-          </li>
-        ))}
-      </ul>
+    );
+  }
+  const total = data.reduce((sum, b) => sum + b.count, 0);
+  const rows = data.map((b) => ({ os: b.os, count: b.count, pct: (b.count / Math.max(total, 1)) * 100 }));
+  const height = Math.max(160, rows.length * 38);
+  // Per-OS gradients give the bars depth — same hue, two stops (light
+  // → solid). The ID is derived from the OS slug so each family gets
+  // a stable gradient definition reused across renders.
+  const grads = useMemo(() => {
+    const seen = new Set<string>();
+    return rows.flatMap((r) => {
+      if (seen.has(r.os)) return [];
+      seen.add(r.os);
+      const base = OS_COLOR[r.os] ?? '#94a3b8';
+      return [{
+        id: `os-${slug(r.os)}`,
+        light: lighten(base, 0.25),
+        solid: base,
+      }];
+    });
+  }, [rows]);
+  return (
+    <div>
+      <div className="flex items-baseline justify-between mb-2">
+        <span className="text-xs text-ink-dim">
+          <span className="text-ink font-medium tabular-nums">{rows.length}</span>{' '}
+          OS famil{rows.length === 1 ? 'y' : 'ies'}
+        </span>
+        <span className="text-xs text-ink-dim tabular-nums">
+          <span className="text-ink font-medium">{total}</span> nodes
+        </span>
+      </div>
+      <ResponsiveContainer width="100%" height={height}>
+        <BarChart data={rows} layout="vertical" margin={{ top: 4, right: 36, left: 8, bottom: 0 }}>
+          <defs>
+            {grads.map((g) => (
+              <linearGradient key={g.id} id={g.id} x1="0" y1="0" x2="1" y2="0">
+                <stop offset="0%"   stopColor={g.light} />
+                <stop offset="100%" stopColor={g.solid} />
+              </linearGradient>
+            ))}
+          </defs>
+          <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" horizontal={false} />
+          <XAxis
+            type="number"
+            tick={{ fontSize: 10, fill: '#94a3b8' }}
+            axisLine={false}
+            tickLine={false}
+            allowDecimals={false}
+            hide
+          />
+          <YAxis
+            type="category"
+            dataKey="os"
+            tick={{ fontSize: 11, fill: '#475569', fontWeight: 500 }}
+            axisLine={false}
+            tickLine={false}
+            width={90}
+          />
+          <Tooltip contentStyle={tooltipStyle} cursor={{ fill: '#f8fafc' }} />
+          <Bar dataKey="count" radius={[0, 6, 6, 0]} barSize={14}>
+            {rows.map((r) => (
+              <Cell key={r.os} fill={`url(#os-${slug(r.os)})`} />
+            ))}
+            <LabelList
+              dataKey="count"
+              position="right"
+              offset={8}
+              fill="#475569"
+              fontSize={11}
+              fontWeight={600}
+            />
+          </Bar>
+        </BarChart>
+      </ResponsiveContainer>
     </div>
   );
 }
@@ -254,6 +343,22 @@ const tooltipStyle: React.CSSProperties = {
   padding: '6px 10px',
   boxShadow: '0 2px 6px rgba(0,0,0,0.06)',
 };
+
+// slug normalises an OS family label into a stable URL-safe id used
+// as the linearGradient id. "Red Hat Enterprise Linux" → "red-hat…".
+function slug(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+}
+
+// lighten blends a hex color toward white by `amount` (0–1). Used to
+// build the light end of each per-OS bar gradient.
+function lighten(hex: string, amount: number): string {
+  const m = hex.replace('#', '').match(/.{2}/g);
+  if (!m || m.length !== 3) return hex;
+  const [r, g, b] = m.map((h) => parseInt(h, 16));
+  const mix = (c: number) => Math.round(c + (255 - c) * amount);
+  return '#' + [mix(r), mix(g), mix(b)].map((n) => n.toString(16).padStart(2, '0')).join('');
+}
 
 // tickInterval picks a sensible XAxis density for the chart so labels
 // don't overlap. Recharts will draw every Nth tick.

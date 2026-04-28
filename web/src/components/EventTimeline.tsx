@@ -42,15 +42,54 @@ const HIGH_VOLUME_TYPES = new Set(['finding', 'api_unavailable']);
 // to merge into a count-only row.
 const NEVER_GROUP_TYPES = new Set(['error']);
 
-// One displayable row in the timeline. Either a single event, or a group
-// of N same-(type, agent) events that arrived within the rolling window.
+// One displayable row in the timeline. Three shapes:
+//   - 'single' — one event rendered as its own row
+//   - 'group'  — N same-(type, agent) events within a rolling window
+//   - 'tick'   — all per-tick mechanics for one (agent, host, tick) folded
+//                into a single summary row. Default mode for the global
+//                Live Events feed; keeps fleet-wide volume manageable
+//                without hiding signal (findings + errors still surface).
 type TimelineRowEntry =
   | { kind: 'single'; event: EventItem }
   | { kind: 'group'; key: string; type: string; agent?: string;
       members: EventItem[]; count: number; hosts: string[];
-      firstTs: number; lastTs: number };
+      firstTs: number; lastTs: number }
+  | { kind: 'tick'; key: string;
+      agent: string; host?: string; tick: number;
+      startTs: number; endTs: number;
+      result?: string; duration?: string;
+      collectors: number; toolCalls: number; actionsTaken: number; actionsDenied: number;
+      findingCount: number; worstSeverity?: string;
+      // Per-severity counts for the rollup row's badge strip — operators
+      // want to see "1× CRITICAL · 2× HIGH" at a glance instead of just
+      // the worst severity, so a tick with mixed findings reads correctly.
+      // Keys are upper-case severity strings (CRITICAL, HIGH, MEDIUM, LOW, INFO).
+      severityCounts: Record<string, number>;
+      members: EventItem[] };
 
 type ConnState = 'connecting' | 'live' | 'reconnecting' | 'error';
+type Mode = 'rollup' | 'detail' | 'all';
+
+// Event types that carry a tick number AND describe per-tick mechanics
+// (the things a tick rollup folds). `finding` is included so findings
+// surface as a badge on their parent tick row. `tick_start` / `tick_done`
+// also fold here as the rollup boundaries themselves. The LLM-envelope
+// types (`init`, `text`, `done`) also fold so the operator sees the full
+// chronology when they expand a tick — they're noise on the global
+// fleet view, but useful when drilling into a specific tick.
+const TICK_MECHANIC_TYPES = new Set([
+  'tick_start',
+  'init',
+  'text',
+  'collector_result',
+  'tool_call',
+  'tool_result',
+  'action_taken',
+  'action_denied',
+  'finding',
+  'done',
+  'tick_done',
+]);
 
 interface TimelineProps {
   /** When set, only events whose `agent` field matches are shown. */
@@ -66,12 +105,20 @@ interface TimelineProps {
   /** Initial page size. */
   initialLimit?: number;
   /**
-   * View mode. "summary" hides high-volume loop internals
-   * (init/text/tool_call/tool_result/done/tick_start/collector_result).
-   * "all" shows everything. Defaults to "summary" — appropriate for the
-   * global Live Events page; pass "all" on the agent detail page.
+   * View mode.
+   *  - "rollup" (default for global Live Events): per-tick mechanics
+   *    (tool_call / tool_result / action_taken / collector_result /
+   *    finding / tick_start / tick_done) collapse into ONE row per
+   *    (agent, host, tick). Findings surface as severity chips on the
+   *    rollup row and the row expands to show the full chronology.
+   *    Errors and lifecycle events (daemon_start/stop, config_reloaded,
+   *    api_unavailable) stay as their own rows.
+   *  - "detail": no rollup — events render as individual rows, but pure
+   *    LLM-call envelope types (init / text / done) are still hidden.
+   *  - "all": every type, no rollup, no hiding. Use on AgentDetail
+   *    where the chronology IS the point.
    */
-  defaultMode?: 'summary' | 'all';
+  defaultMode?: Mode;
   /**
    * Whether the rolling-window grouping (Settings → Display) applies here.
    * Defaults to true on the global Live Events page; AgentDetail consults
@@ -80,22 +127,20 @@ interface TimelineProps {
   enableGrouping?: boolean;
 }
 
-// Event types that are LLM-loop internals — high volume, low signal for
-// fleet-wide monitoring. Hidden in summary mode, shown in detail mode.
+// Event types that are pure LLM-call metadata — hidden in summary mode
+// because they describe the *envelope* of every agent turn rather than
+// what the agent did. Everything operationally meaningful (the tool
+// the agent ran, the RBAC decision, the tick boundary, the collector
+// snapshot) stays visible so the timeline keeps a constant flow even
+// in summary mode.
 //
-// `action_taken` / `action_denied` are RBAC audit shadows of the same
-// tool_call/tool_result pair, useful on the per-agent conversation view
-// but redundant noise on the global Live Events feed. Same treatment.
+// Earlier this list also hid tool_call / tool_result / action_taken /
+// collector_result / tick_start, which removed ~94% of fleet events on
+// an active stack and made the page look frozen. Those are back in.
 const LOOP_TYPES = new Set([
-  'init',
-  'text',
-  'tool_call',
-  'tool_result',
-  'action_taken',
-  'action_denied',
-  'done',
-  'tick_start',
-  'collector_result',
+  'init', // session_init — handshake metadata, no signal
+  'text', // model token stream — too verbose for fleet view
+  'done', // turn_done — pair of init, same reason
 ]);
 
 export default function EventTimeline({
@@ -105,10 +150,10 @@ export default function EventTimeline({
   showHeader = true,
   compact = false,
   initialLimit = 500,
-  defaultMode = 'summary',
+  defaultMode = 'rollup',
   enableGrouping = true,
 }: TimelineProps) {
-  const [mode, setMode] = useState<'summary' | 'all'>(defaultMode);
+  const [mode, setMode] = useState<Mode>(defaultMode);
   const [events, setEvents] = useState<EventItem[]>([]);
   const [conn, setConn] = useState<ConnState>('connecting');
   const [liveIDs, setLiveIDs] = useState<Set<number>>(new Set());
@@ -118,9 +163,20 @@ export default function EventTimeline({
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
   const [hasMoreOlder, setHasMoreOlder] = useState(true);
   const [livePrefs] = useLiveEventsPrefs();
+  // Rollup mode hides clean ticks (completed result, no findings, no denied
+  // actions) by default — at fleet scale they're noise, and the events/min
+  // meter already conveys "things are flowing." Toggleable so an operator
+  // who wants the firehose can see everything.
+  const [showCleanTicks, setShowCleanTicks] = useState(false);
 
   const idCounter = useRef(0);
   const scrollRef = useRef<HTMLDivElement>(null);
+  // Sliding window of recent SSE arrivals (timestamps, ms). Used to
+  // compute the events-per-minute meter in the header — feels like a
+  // pulse for the page, makes it obvious things are flowing even when
+  // grouping has collapsed visible rows.
+  const recentArrivalsRef = useRef<number[]>([]);
+  const [eventsPerMin, setEventsPerMin] = useState(0);
 
   // Initial load.
   useEffect(() => {
@@ -189,6 +245,9 @@ export default function EventTimeline({
           idCounter.current += 1;
           const id = idCounter.current;
           setEvents((prev) => [{ ...e, id }, ...prev].slice(0, MAX_DISPLAYED));
+          // Append arrival timestamp to the rolling window. The timer
+          // below trims to the last 60s and recomputes the meter.
+          recentArrivalsRef.current.push(Date.now());
           setLiveIDs((prev) => {
             const next = new Set(prev);
             next.add(id);
@@ -210,9 +269,16 @@ export default function EventTimeline({
       }
     };
     connect();
+    // Recompute events/min every second from the 60s sliding window.
+    const rateTimer = window.setInterval(() => {
+      const cutoff = Date.now() - 60_000;
+      recentArrivalsRef.current = recentArrivalsRef.current.filter((t) => t >= cutoff);
+      setEventsPerMin(recentArrivalsRef.current.length);
+    }, 1000);
     return () => {
       if (unsubscribe) unsubscribe();
       if (reconnectTimer) clearTimeout(reconnectTimer);
+      clearInterval(rateTimer);
     };
   }, []);
 
@@ -226,7 +292,11 @@ export default function EventTimeline({
     let out = events;
     if (agentFilter) out = out.filter((e) => e.agent === agentFilter);
     if (hostFilter) out = out.filter((e) => e.host === hostFilter);
-    if (mode === 'summary') {
+    // Detail mode strips pure LLM-call envelope types (init/text/done).
+    // Rollup mode keeps them in the bucket so the per-tick member list
+    // shown on expand is complete; the LOOP_TYPES drop is applied AFTER
+    // rollup, only to the un-rolled tail.
+    if (mode === 'detail') {
       out = out.filter((e) => !LOOP_TYPES.has(e.type));
     }
     if (filter) {
@@ -239,12 +309,25 @@ export default function EventTimeline({
     return out;
   }, [events, agentFilter, hostFilter, filter, mode]);
 
+  // Hidden count tracks events the operator could surface by switching
+  // mode. In detail mode it's just LOOP_TYPES; in rollup mode it's
+  // every event that got folded into a tick rollup (because expanding
+  // the rollup brings them back).
   const hiddenCount = useMemo(() => {
-    if (mode !== 'summary') return 0;
+    if (mode === 'all') return 0;
+    if (mode === 'detail') {
+      return events.filter((e) => {
+        if (agentFilter && e.agent !== agentFilter) return false;
+        if (hostFilter && e.host !== hostFilter) return false;
+        return LOOP_TYPES.has(e.type);
+      }).length;
+    }
+    // mode === 'rollup' — count per-tick mechanic events that will fold.
     return events.filter((e) => {
       if (agentFilter && e.agent !== agentFilter) return false;
       if (hostFilter && e.host !== hostFilter) return false;
-      return LOOP_TYPES.has(e.type);
+      const tick = numberFromRaw(e.raw, 'tick');
+      return TICK_MECHANIC_TYPES.has(e.type) && tick !== undefined && !!e.agent;
     }).length;
   }, [events, mode, agentFilter, hostFilter]);
 
@@ -255,6 +338,29 @@ export default function EventTimeline({
   // When smartGrouping is on, the threshold exception is bypassed and a
   // storm detector promotes hot keys to (type)-only across agents.
   const rows = useMemo<TimelineRowEntry[]>(() => {
+    // In rollup mode, fold per-tick mechanics first. Tick rollups don't
+    // run through groupRollingWindow — each (agent, tick) is unique by
+    // construction, so windowed merging would never kick in anyway.
+    // The un-rolled remainder (lifecycle, errors, api_unavailable, text
+    // events) flows through the rolling-window grouper as before.
+    if (mode === 'rollup') {
+      const { tickRows, rest } = rollUpByTick(filtered);
+      // Split tick rollups: "interesting" (findings, denied actions,
+      // error result, skipped/suspended) surface as full rows; clean
+      // completions hide unless the operator toggles them on.
+      const visibleTicks = showCleanTicks
+        ? tickRows
+        : tickRows.filter((r) => r.kind === 'tick' && isInterestingTick(r));
+      const restRows = enableGrouping
+        ? groupRollingWindow(rest, livePrefs.windowSec * 1000, livePrefs.highVolumeThreshold, { smart: livePrefs.smartGrouping })
+        : rest.map((e) => ({ kind: 'single', event: e } as TimelineRowEntry));
+      // Interleave by timestamp so a tick that landed mid-stream sits
+      // where it belongs in the chronology.
+      const all: TimelineRowEntry[] = [...visibleTicks, ...restRows];
+      all.sort((a, b) => rowTs(b) - rowTs(a));
+      return all;
+    }
+
     if (!enableGrouping) {
       return filtered.map((e) => ({ kind: 'single', event: e } as TimelineRowEntry));
     }
@@ -273,26 +379,46 @@ export default function EventTimeline({
       { smart: livePrefs.smartGrouping },
     );
   }, [
-    filtered, enableGrouping,
+    filtered, enableGrouping, mode, showCleanTicks,
     livePrefs.windowSec, livePrefs.highVolumeThreshold, livePrefs.smartGrouping,
   ]);
+
+  // Total clean (uninteresting) tick count — shown as a passive counter
+  // pill in the header so operators see how much was folded out and can
+  // toggle them back on with one click.
+  const cleanTickCount = useMemo(() => {
+    if (mode !== 'rollup') return 0;
+    const { tickRows } = rollUpByTick(filtered);
+    return tickRows.filter((r) => r.kind === 'tick' && !isInterestingTick(r)).length;
+  }, [filtered, mode]);
 
   const grouped = useMemo(() => groupRowsByDay(rows), [rows]);
 
   return (
     <div className="h-full flex flex-col">
       {showHeader && (
-        <header className="px-6 py-4 border-b border-border bg-panel flex items-center justify-between gap-4">
+        <header className="px-6 py-4 border-b border-border bg-gradient-to-r from-brand-50/60 via-panel to-panel flex items-center justify-between gap-4">
           <div>
             <h1 className="text-lg font-semibold flex items-center gap-2">
-              <Activity size={18} className="text-brand-500" />
+              <span className="inline-flex items-center justify-center w-7 h-7 rounded-lg bg-gradient-to-br from-brand-500 to-brand-700 text-white shadow-sm">
+                <Activity size={14} />
+              </span>
               Live Events
             </h1>
-            <p className="text-xs text-ink-dim">
+            <p className="text-xs text-ink-dim ml-9">
               Real-time stream of every JSONL event posted to the webhook receiver.
+              <span className="ml-2 text-ink-mute">{filtered.length} of {events.length} shown</span>
             </p>
           </div>
           <div className="flex items-center gap-2">
+            <RateBadge eventsPerMin={eventsPerMin} live={conn === 'live'} />
+            {mode === 'rollup' && cleanTickCount > 0 && (
+              <CleanTickPill
+                count={cleanTickCount}
+                showing={showCleanTicks}
+                onToggle={() => setShowCleanTicks((v) => !v)}
+              />
+            )}
             <ModeToggle mode={mode} setMode={setMode} hiddenCount={hiddenCount} />
             <input
               type="search"
@@ -357,14 +483,33 @@ export default function EventTimeline({
                 </span>
               </div>
               <ul className="timeline-list space-y-1">
-                {group.items.map((row) => (
-                  row.kind === 'single' ? (
-                    <TimelineRow
-                      key={`s-${row.event.id}`}
-                      event={row.event}
-                      live={liveIDs.has(row.event.id)}
-                    />
-                  ) : (
+                {group.items.map((row) => {
+                  if (row.kind === 'single') {
+                    return (
+                      <TimelineRow
+                        key={`s-${row.event.id}`}
+                        event={row.event}
+                        live={liveIDs.has(row.event.id)}
+                      />
+                    );
+                  }
+                  if (row.kind === 'tick') {
+                    return (
+                      <TimelineTickRow
+                        key={`t-${row.key}`}
+                        row={row}
+                        expanded={expandedGroups.has(row.key)}
+                        onToggle={() => setExpandedGroups((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(row.key)) next.delete(row.key); else next.add(row.key);
+                          return next;
+                        })}
+                        live={row.members.some((m) => liveIDs.has(m.id))}
+                        liveIDs={liveIDs}
+                      />
+                    );
+                  }
+                  return (
                     <TimelineGroupRow
                       key={row.key}
                       row={row}
@@ -376,8 +521,8 @@ export default function EventTimeline({
                       })}
                       liveIDs={liveIDs}
                     />
-                  )
-                ))}
+                  );
+                })}
               </ul>
             </section>
           ))}
@@ -414,7 +559,7 @@ interface RowProps {
 function TimelineRow({ event, live }: RowProps) {
   const meta = describeEvent(event);
   return (
-    <li className="timeline-item flex items-start gap-3 pl-2 pr-1 py-1.5 rounded-md hover:bg-slate-50/60 transition-colors">
+    <li className={cn('timeline-item relative flex items-start gap-3 pl-2 pr-1 py-1.5 rounded-md hover:bg-slate-50/60 transition-colors', live && 'is-fresh')}>
       <time className="w-14 shrink-0 pt-1 text-[11px] font-mono text-ink-mute text-right">
         {fmtTime(event.ts)}
       </time>
@@ -479,34 +624,36 @@ function ModeToggle({
   hiddenCount,
   compact,
 }: {
-  mode: 'summary' | 'all';
-  setMode: (m: 'summary' | 'all') => void;
+  mode: Mode;
+  setMode: (m: Mode) => void;
   hiddenCount: number;
   compact?: boolean;
 }) {
+  const tabs: Array<{ value: Mode; label: string; title: string }> = [
+    { value: 'rollup', label: 'Rollup', title: 'One row per (agent, tick) — fleet-scale default' },
+    { value: 'detail', label: 'Detail', title: 'Each event as its own row, LLM envelope hidden' },
+    { value: 'all',    label: 'All',    title: 'Every event, no folding, no filtering' },
+  ];
   return (
     <div className={cn('flex items-center rounded-md bg-slate-100 p-0.5', compact ? 'text-[11px]' : 'text-xs')}>
-      <button
-        onClick={() => setMode('summary')}
-        className={cn(
-          'px-2 rounded-md font-medium',
-          compact ? 'py-0.5' : 'py-1',
-          mode === 'summary' ? 'bg-panel text-ink shadow-sm' : 'text-ink-dim hover:text-ink',
-        )}
-      >
-        Summary
-      </button>
-      <button
-        onClick={() => setMode('all')}
-        className={cn(
-          'px-2 rounded-md font-medium',
-          compact ? 'py-0.5' : 'py-1',
-          mode === 'all' ? 'bg-panel text-ink shadow-sm' : 'text-ink-dim hover:text-ink',
-        )}
-        title={mode === 'summary' && hiddenCount > 0 ? `${hiddenCount} loop event${hiddenCount === 1 ? '' : 's'} hidden` : ''}
-      >
-        All{mode === 'summary' && hiddenCount > 0 ? ` (+${hiddenCount})` : ''}
-      </button>
+      {tabs.map((t) => (
+        <button
+          key={t.value}
+          onClick={() => setMode(t.value)}
+          title={
+            mode === t.value && hiddenCount > 0 && t.value !== 'all'
+              ? `${hiddenCount} event${hiddenCount === 1 ? '' : 's'} folded — switch to All to see them`
+              : t.title
+          }
+          className={cn(
+            'px-2 rounded-md font-medium',
+            compact ? 'py-0.5' : 'py-1',
+            mode === t.value ? 'bg-panel text-ink shadow-sm' : 'text-ink-dim hover:text-ink',
+          )}
+        >
+          {t.label}
+        </button>
+      ))}
     </div>
   );
 }
@@ -585,6 +732,115 @@ function TimelineGroupRow({
   );
 }
 
+// TimelineTickRow renders one (agent, host, tick) bundle as a single
+// summary row. Compact at-a-glance: time + agent · #tick · result icon
+// + colored severity chip if the tick produced any findings + counts of
+// collectors / tools / actions / findings. Expand to see the full
+// chronology of constituent events (each as a regular TimelineRow).
+function TimelineTickRow({
+  row, expanded, onToggle, live, liveIDs,
+}: {
+  row: Extract<TimelineRowEntry, { kind: 'tick' }>;
+  expanded: boolean;
+  onToggle: () => void;
+  live: boolean;
+  liveIDs: Set<number>;
+}) {
+  // Result drives the dot color. Findings push the row into the
+  // sev.<worst> tone so a critical-finding tick reads at a glance.
+  const sev = row.worstSeverity?.toLowerCase();
+  const sevDotBg = sev
+    ? ({ critical: 'bg-sev-critical', high: 'bg-sev-high', medium: 'bg-sev-medium', low: 'bg-sev-low', info: 'bg-sev-info' } as Record<string, string>)[sev]
+    : undefined;
+  const dotBg = row.result === 'error'
+    ? 'bg-red-500'
+    : row.result === 'skipped'
+      ? 'bg-slate-400'
+      : sevDotBg ?? 'bg-green-500';
+  return (
+    <li className={cn('timeline-item relative', live && 'is-fresh')}>
+      <button
+        onClick={onToggle}
+        className={cn(
+          'w-full text-left flex items-start gap-3 pl-2 pr-1 py-1.5 rounded-md hover:bg-slate-50/60 transition-colors',
+          expanded && 'bg-slate-50/40',
+        )}
+      >
+        <time className="w-14 shrink-0 pt-1 text-[11px] font-mono text-ink-mute text-right">
+          {fmtTime(row.endTs)}
+        </time>
+        <div className="relative w-6 shrink-0 flex items-center justify-center pt-1">
+          <span className={cn('inline-flex items-center justify-center w-6 h-6 rounded-full ring-2 ring-panel text-white shadow-sm', dotBg)}>
+            <PlayCircle size={12} strokeWidth={2.4} />
+          </span>
+        </div>
+        <div className="flex-1 min-w-0 pt-0.5">
+          <div className="flex items-baseline gap-2 flex-wrap">
+            <span className="text-sm font-medium text-ink truncate">
+              {row.agent} <span className="text-ink-dim font-normal">· tick #{row.tick}</span>
+            </span>
+            {row.result && (
+              <span className={cn(
+                'text-[10px] font-medium uppercase tracking-wide px-1.5 py-0.5 rounded ring-1',
+                row.result === 'error'    ? 'text-red-700 bg-red-50 ring-red-200'
+                : row.result === 'skipped'? 'text-slate-700 bg-slate-50 ring-slate-200'
+                                          : 'text-green-700 bg-green-50 ring-green-200',
+              )}>
+                {row.result}
+              </span>
+            )}
+            {row.duration && (
+              <span className="text-[10px] text-ink-mute font-mono tabular-nums">{row.duration}</span>
+            )}
+            {/* One chip per severity bucket — `1× CRITICAL · 2× HIGH · 2× MEDIUM`
+                rather than a single worst-severity chip, so a tick with mixed
+                findings reports its full distribution. SEV_ORDER drives the
+                left-to-right ordering. */}
+            {row.findingCount > 0 && SEV_ORDER.map((sev) => {
+              const n = row.severityCounts[sev];
+              if (!n) return null;
+              return (
+                <span key={sev} className={cn('severity-badge tabular-nums', `severity-${sev.toLowerCase()}`)}>
+                  {n}× {sev}
+                </span>
+              );
+            })}
+            {row.host && (
+              <code className="text-[11px] text-ink-mute font-mono">{row.host}</code>
+            )}
+          </div>
+          <div className="mt-0.5 text-[11px] text-ink-mute flex items-center gap-3 flex-wrap">
+            {row.collectors > 0   && <TickStat label="collector" count={row.collectors} />}
+            {row.toolCalls > 0    && <TickStat label="tool"      count={row.toolCalls} />}
+            {row.actionsTaken > 0 && <TickStat label="action"    count={row.actionsTaken} />}
+            {row.actionsDenied > 0 && <TickStat label="denied"   count={row.actionsDenied} tone="bad" />}
+            {row.findingCount > 0 && <TickStat label="finding"   count={row.findingCount} tone={row.worstSeverity ? 'sev' : undefined} />}
+            <span className="ml-auto opacity-70">
+              {expanded ? 'collapse' : `expand (${row.members.length})`}
+            </span>
+          </div>
+        </div>
+      </button>
+      {expanded && (
+        <ul className="ml-[88px] mt-1 mb-2 space-y-0.5 border-l-2 border-slate-100 pl-3">
+          {[...row.members].reverse().map((m) => (
+            <TimelineRow key={`tm-${m.id}`} event={m} live={liveIDs.has(m.id)} />
+          ))}
+        </ul>
+      )}
+    </li>
+  );
+}
+
+function TickStat({ label, count, tone }: { label: string; count: number; tone?: 'bad' | 'sev' }) {
+  const cls = tone === 'bad' ? 'text-red-700' : tone === 'sev' ? 'text-purple-700 font-medium' : 'text-ink-dim';
+  return (
+    <span className={cls}>
+      <span className="tabular-nums font-medium">{count}</span> {label}{count === 1 ? '' : 's'}
+    </span>
+  );
+}
+
 function ConnPill({ state }: { state: ConnState }) {
   const cfg = {
     live:         { label: 'live',         cls: 'bg-green-50 text-green-700 ring-green-200',  icon: Wifi },
@@ -594,8 +850,66 @@ function ConnPill({ state }: { state: ConnState }) {
   }[state];
   return (
     <span className={cn('inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-md ring-1', cfg.cls)}>
-      <cfg.icon size={12} />
+      {state === 'live' ? (
+        <span className="relative flex w-2 h-2">
+          <span className="absolute inline-flex w-full h-full rounded-full bg-green-500 opacity-60 animate-ping" />
+          <span className="relative inline-flex w-2 h-2 rounded-full bg-green-500" />
+        </span>
+      ) : (
+        <cfg.icon size={12} />
+      )}
       {cfg.label}
+    </span>
+  );
+}
+
+// Compact pill showing how many clean tick rollups are folded out of
+// the visible feed. Click to flip showCleanTicks. Only appears in
+// rollup mode when the count > 0.
+function CleanTickPill({ count, showing, onToggle }: { count: number; showing: boolean; onToggle: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      title={showing ? 'Hide clean ticks (default)' : 'Show clean ticks too'}
+      className={cn(
+        'inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-md ring-1 transition-colors',
+        showing
+          ? 'bg-slate-100 text-ink-dim ring-slate-300 hover:bg-slate-200'
+          : 'bg-green-50 text-green-700 ring-green-200 hover:bg-green-100',
+      )}
+    >
+      <CheckCircle2 size={11} />
+      <span className="font-medium tabular-nums">+{count}</span>
+      <span className="text-[10px] opacity-80">clean tick{count === 1 ? '' : 's'}</span>
+    </button>
+  );
+}
+
+// Events-per-minute meter — pulses brand purple when arrivals are
+// landing, fades to neutral when the stream goes quiet. Operators get
+// a heartbeat-style indicator separate from the timeline rows
+// themselves (which can be visually static if everything's grouped).
+function RateBadge({ eventsPerMin, live }: { eventsPerMin: number; live: boolean }) {
+  const isFlowing = live && eventsPerMin > 0;
+  return (
+    <span
+      className={cn(
+        'inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-md ring-1 tabular-nums transition-colors',
+        isFlowing
+          ? 'bg-brand-50 text-brand-700 ring-brand-200'
+          : 'bg-slate-50 text-ink-mute ring-slate-200',
+      )}
+      title={`Events received in the last 60 seconds`}
+    >
+      <span
+        className={cn(
+          'inline-block w-1.5 h-1.5 rounded-full',
+          isFlowing ? 'bg-brand-500 animate-pulse' : 'bg-slate-300',
+        )}
+      />
+      <span className="font-medium">{eventsPerMin}</span>
+      <span className="text-[10px] opacity-70">ev/min</span>
     </span>
   );
 }
@@ -738,12 +1052,133 @@ function fmtTime(ms: number): string {
   });
 }
 
+// rowTs returns the canonical sort timestamp for a row entry — the
+// newest member's timestamp regardless of kind. Used to interleave
+// tick rollups with un-rolled lifecycle rows in chronological order.
+function rowTs(r: TimelineRowEntry): number {
+  if (r.kind === 'single') return r.event.ts;
+  if (r.kind === 'group')  return r.lastTs;
+  return r.endTs;
+}
+
+// A tick is "interesting" (worth surfacing on the global feed) when it
+// produced a finding, denied an action, errored, or was skipped (which
+// at the time of writing means the agent was paused via the management
+// plane). A bare clean completion is noise at fleet scale — the
+// dashboard's daimon health tile already says "33 healthy."
+function isInterestingTick(r: Extract<TimelineRowEntry, { kind: 'tick' }>): boolean {
+  if (r.findingCount > 0) return true;
+  if (r.actionsDenied > 0) return true;
+  if (r.result === 'error' || r.result === 'skipped') return true;
+  return false;
+}
+
+// rollUpByTick partitions events into (a) per-tick rollups and (b) the
+// un-rolled remainder. An event qualifies for rollup when it has both
+// a tick number and an agent AND its type is in TICK_MECHANIC_TYPES.
+// Errors and lifecycle events are deliberately excluded — they're
+// rare enough at fleet scale that surfacing them as their own row is
+// the right move.
+//
+// Severity ordering for the worst-finding chip on a rollup:
+//   CRITICAL > HIGH > MEDIUM > LOW > INFO
+const SEV_ORDER = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO'];
+function worstSeverity(a: string | undefined, b: string | undefined): string | undefined {
+  if (!a) return b;
+  if (!b) return a;
+  return SEV_ORDER.indexOf(a) <= SEV_ORDER.indexOf(b) ? a : b;
+}
+
+function rollUpByTick(events: EventItem[]): {
+  tickRows: TimelineRowEntry[];
+  rest: EventItem[];
+} {
+  type Bucket = {
+    key: string;
+    agent: string;
+    host?: string;
+    tick: number;
+    members: EventItem[];
+  };
+  const byKey = new Map<string, Bucket>();
+  const rest: EventItem[] = [];
+
+  for (const e of events) {
+    const tick = numberFromRaw(e.raw, 'tick');
+    if (!e.agent || tick === undefined || !TICK_MECHANIC_TYPES.has(e.type)) {
+      rest.push(e);
+      continue;
+    }
+    const k = `${e.agent}@${e.host ?? ''}#${tick}`;
+    let b = byKey.get(k);
+    if (!b) {
+      b = { key: k, agent: e.agent, host: e.host, tick, members: [] };
+      byKey.set(k, b);
+    }
+    b.members.push(e);
+  }
+
+  // Walk each bucket once: counts, result/duration from the tick_done
+  // event if present, severity-worst from any folded findings.
+  const tickRows: TimelineRowEntry[] = [];
+  for (const b of byKey.values()) {
+    // Members chronological, tick_start first → tick_done last.
+    b.members.sort((a, c) => a.ts - c.ts);
+    const startTs = b.members[0].ts;
+    const endTs = b.members[b.members.length - 1].ts;
+    let collectors = 0, toolCalls = 0, actionsTaken = 0, actionsDenied = 0, findingCount = 0;
+    let result: string | undefined;
+    let duration: string | undefined;
+    let worst: string | undefined;
+    const severityCounts: Record<string, number> = {};
+    for (const m of b.members) {
+      switch (m.type) {
+        case 'collector_result': collectors++; break;
+        case 'tool_call':        toolCalls++; break;
+        case 'action_taken':     actionsTaken++; break;
+        case 'action_denied':    actionsDenied++; break;
+        case 'finding': {
+          findingCount++;
+          const sev = (m.severity ?? '').toUpperCase() || 'INFO';
+          severityCounts[sev] = (severityCounts[sev] ?? 0) + 1;
+          worst = worstSeverity(worst, sev);
+          break;
+        }
+        case 'tick_done':
+          result = stringFromRaw(m.raw, 'result') ?? 'completed';
+          duration = stringFromRaw(m.raw, 'duration');
+          break;
+      }
+    }
+    // A "tick" with only a tick_start event and nothing else isn't
+    // worth a rollup row — emit those constituent events back to the
+    // tail so they render as plain singles.
+    if (b.members.length < 2 && !result) {
+      for (const m of b.members) rest.push(m);
+      continue;
+    }
+    tickRows.push({
+      kind: 'tick',
+      key: b.key,
+      agent: b.agent,
+      host: b.host,
+      tick: b.tick,
+      startTs, endTs,
+      result, duration,
+      collectors, toolCalls, actionsTaken, actionsDenied,
+      findingCount, worstSeverity: worst, severityCounts,
+      members: b.members,
+    });
+  }
+  return { tickRows, rest };
+}
+
 function groupRowsByDay(rows: TimelineRowEntry[]): Array<{ label: string; items: TimelineRowEntry[] }> {
   const groups: Array<{ label: string; items: TimelineRowEntry[] }> = [];
   const today = new Date();
   const yesterday = new Date(); yesterday.setDate(yesterday.getDate() - 1);
   for (const r of rows) {
-    const ts = r.kind === 'single' ? r.event.ts : r.lastTs;
+    const ts = rowTs(r);
     const d = new Date(ts);
     let label: string;
     if (sameDay(d, today)) label = 'Today';
@@ -886,10 +1321,6 @@ function groupRollingWindow(
     });
   }
   // Display order: newest first across the whole list.
-  out.sort((a, b) => {
-    const at = a.kind === 'single' ? a.event.ts : a.lastTs;
-    const bt = b.kind === 'single' ? b.event.ts : b.lastTs;
-    return bt - at;
-  });
+  out.sort((a, b) => rowTs(b) - rowTs(a));
   return out;
 }

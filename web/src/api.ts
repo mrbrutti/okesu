@@ -844,7 +844,7 @@ export interface NodeDeployReq {
 export type TimeRange = '30m' | '1h' | '24h' | '7d' | '30d';
 
 export interface DashboardResponse {
-  daimons: { total: number; healthy: number; unhealthy: number };
+  daimons: { total: number; healthy: number; unhealthy: number; suspended: number };
   nodes:   { total: number; heartbeating: number };
   tunnels: { live: number };
   findings: { open: number; critical: number; high: number };

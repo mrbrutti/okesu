@@ -60,6 +60,27 @@
     timeline-row-glow 1400ms ease-out both;
   will-change: transform, opacity;
 }
+
+/* Brand-purple left stripe on freshly-arrived rows — fades to nothing
+ * over ~2.5s, matching the lifetime of `liveIDs` on the row's React
+ * state. Gives the page a "raindrop hitting the surface" feel as new
+ * events land, even when many events are arriving at once. */
+.timeline-item.is-fresh::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 4px;
+  bottom: 4px;
+  width: 2px;
+  border-radius: 2px;
+  background: linear-gradient(to bottom, #a78bfa, #7c3aed);
+  animation: fresh-stripe 2400ms ease-out both;
+}
+@keyframes fresh-stripe {
+  0%   { opacity: 1; }
+  70%  { opacity: 0.6; }
+  100% { opacity: 0; }
+}
 .timeline-dot.is-live {
   animation: dot-pulse 1.4s cubic-bezier(0.45, 0, 0.55, 1) 2;
 }

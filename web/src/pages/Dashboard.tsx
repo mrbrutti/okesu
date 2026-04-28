@@ -38,20 +38,25 @@ const FindingsTimelineChart = lazy(() =>
 const TopHostsChart = lazy(() =>
   import('../components/dashboard/DashboardCharts').then((m) => ({ default: m.TopHostsChart })),
 );
-const OSDistributionDonut = lazy(() =>
-  import('../components/dashboard/DashboardCharts').then((m) => ({ default: m.OSDistributionDonut })),
+const OSDistributionChart = lazy(() =>
+  import('../components/dashboard/DashboardCharts').then((m) => ({ default: m.OSDistributionChart })),
 );
 
 type GroupBy = 'severity' | 'agent' | 'host';
+export type Scale = 'linear' | 'log' | 'cumulative';
 
 const RANGES: TimeRange[] = ['30m', '1h', '24h', '7d', '30d'];
 const GROUPS: GroupBy[] = ['severity', 'agent', 'host'];
+const SCALES: Scale[] = ['linear', 'log', 'cumulative'];
 
 function parseRange(s: string | null): TimeRange {
   return RANGES.includes(s as TimeRange) ? (s as TimeRange) : '24h';
 }
 function parseGroupBy(s: string | null): GroupBy {
   return GROUPS.includes(s as GroupBy) ? (s as GroupBy) : 'severity';
+}
+function parseScale(s: string | null): Scale {
+  return SCALES.includes(s as Scale) ? (s as Scale) : 'linear';
 }
 
 export default function DashboardPage() {
@@ -61,6 +66,12 @@ export default function DashboardPage() {
 
   const range = parseRange(params.get('range'));
   const groupBy = parseGroupBy(params.get('groupBy'));
+  // Two scales — one per timeline chart — so changing one doesn't yank
+  // the other. Reads ?eventsScale=/?findingsScale=, falling back to the
+  // legacy single ?scale= for old bookmarks, then to 'linear'.
+  const legacyScale = params.get('scale');
+  const eventsScale = parseScale(params.get('eventsScale') ?? legacyScale);
+  const findingsScale = parseScale(params.get('findingsScale') ?? legacyScale);
 
   const [events, setEvents] = useState<InsightsEventsResponse | null>(null);
   const [findings, setFindings] = useState<InsightsFindingsResponse | null>(null);
@@ -106,15 +117,25 @@ export default function DashboardPage() {
     p.set('groupBy', g);
     setParams(p, { replace: true });
   }
+  function setScale(key: 'eventsScale' | 'findingsScale', s: Scale) {
+    const p = new URLSearchParams(params);
+    p.set(key, s);
+    // Drop the legacy combined ?scale= so it doesn't shadow the per-chart
+    // values once the operator opts into the new picker.
+    p.delete('scale');
+    setParams(p, { replace: true });
+  }
 
   return (
     <div className="h-full flex flex-col">
-      <header className="px-6 py-4 border-b border-border bg-panel">
+      <header className="px-6 py-4 border-b border-border bg-gradient-to-r from-brand-50/60 via-panel to-panel">
         <h1 className="text-lg font-semibold flex items-center gap-2">
-          <Activity size={18} className="text-brand-500" />
+          <span className="inline-flex items-center justify-center w-7 h-7 rounded-lg bg-gradient-to-br from-brand-500 to-brand-700 text-white shadow-sm">
+            <Activity size={14} />
+          </span>
           Dashboard
         </h1>
-        <p className="text-xs text-ink-dim mt-0.5">Fleet health at a glance — refreshes every 15 seconds.</p>
+        <p className="text-xs text-ink-dim mt-0.5 ml-9">Fleet health at a glance — refreshes every 15 seconds.</p>
       </header>
 
       <div className="flex-1 overflow-auto p-6 space-y-6">
@@ -132,8 +153,21 @@ export default function DashboardPage() {
             to="/daimons"
             loading={!data}
             primary={data ? `${data.daimons.healthy}/${data.daimons.total}` : '—'}
-            accent={data && data.daimons.unhealthy > 0 ? 'warn' : 'good'}
-            sub={data ? `${data.daimons.unhealthy} unhealthy` : ''}
+            accent={
+              !data ? 'info'
+                : data.daimons.unhealthy > 0 ? 'warn'
+                : data.daimons.suspended > 0 ? 'info'
+                : 'good'
+            }
+            sub={data ? formatDaimonsSub(data.daimons) : ''}
+            // Inline segmented bar showing running / suspended / unhealthy
+            // split. Gives the pause feature visual weight without growing
+            // the tile's footprint.
+            segments={data ? [
+              { value: data.daimons.healthy,   color: 'bg-green-500',  title: `${data.daimons.healthy} running` },
+              { value: data.daimons.suspended, color: 'bg-yellow-400', title: `${data.daimons.suspended} paused` },
+              { value: data.daimons.unhealthy, color: 'bg-red-400',    title: `${data.daimons.unhealthy} unhealthy` },
+            ] : undefined}
           />
           <StatTile
             label="Nodes"
@@ -177,28 +211,34 @@ export default function DashboardPage() {
         <section className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           <Card
             title="Events"
-            subtitle={`Total / ${range}`}
-            right={<RangePicker value={range} onChange={setRange} />}
+            subtitle={`${scaleLabel(eventsScale)} / ${range}`}
+            right={
+              <div className="flex items-center gap-1.5">
+                <Picker value={eventsScale} options={SCALES} onChange={(v) => setScale('eventsScale', v as Scale)} />
+                <RangePicker value={range} onChange={setRange} />
+              </div>
+            }
           >
             {!events ? <ChartSkeleton /> : (
               <Suspense fallback={<ChartSkeleton />}>
-                <EventsTimelineChart data={events} range={range} />
+                <EventsTimelineChart data={events} range={range} scale={eventsScale} />
               </Suspense>
             )}
           </Card>
           <Card
             title="Findings"
-            subtitle={`Grouped by ${groupBy} / ${range}`}
+            subtitle={`${scaleLabel(findingsScale)} / by ${groupBy} / ${range}`}
             right={
               <div className="flex items-center gap-1.5">
                 <Picker value={groupBy} options={GROUPS} onChange={(v) => setGroupBy(v as GroupBy)} />
+                <Picker value={findingsScale} options={SCALES} onChange={(v) => setScale('findingsScale', v as Scale)} />
                 <RangePicker value={range} onChange={setRange} />
               </div>
             }
           >
             {!findings ? <ChartSkeleton /> : (
               <Suspense fallback={<ChartSkeleton />}>
-                <FindingsTimelineChart data={findings} range={range} />
+                <FindingsTimelineChart data={findings} range={range} scale={findingsScale} />
               </Suspense>
             )}
           </Card>
@@ -219,7 +259,7 @@ export default function DashboardPage() {
           <Card title="Operating systems" subtitle="Nodes by OS family">
             {!data ? <ChartSkeleton /> : (
               <Suspense fallback={<ChartSkeleton />}>
-                <OSDistributionDonut data={data.os_distribution} />
+                <OSDistributionChart data={data.os_distribution} />
               </Suspense>
             )}
           </Card>
@@ -240,8 +280,18 @@ export default function DashboardPage() {
 
 type Accent = 'good' | 'warn' | 'bad' | 'info';
 
+type Segment = { value: number; color: string; title: string };
+
+function formatDaimonsSub(d: { suspended: number; unhealthy: number }): string {
+  const parts: string[] = [];
+  if (d.suspended > 0) parts.push(`${d.suspended} paused`);
+  if (d.unhealthy > 0) parts.push(`${d.unhealthy} unhealthy`);
+  if (parts.length === 0) return 'all running';
+  return parts.join(' · ');
+}
+
 function StatTile({
-  label, icon: Icon, primary, sub, accent, to, loading,
+  label, icon: Icon, primary, sub, accent, to, loading, segments,
 }: {
   label: string;
   icon: typeof Cpu;
@@ -250,7 +300,16 @@ function StatTile({
   accent: Accent;
   to: string;
   loading: boolean;
+  // Optional segmented bar rendered under the primary number. Each
+  // segment's width is proportional to its value across the row.
+  segments?: Segment[];
 }) {
+  const accentStripe = {
+    good: 'bg-green-500',
+    warn: 'bg-yellow-500',
+    bad:  'bg-red-500',
+    info: 'bg-brand-500',
+  }[accent];
   const dotCls = {
     good: 'bg-green-500',
     warn: 'bg-yellow-500',
@@ -260,20 +319,49 @@ function StatTile({
   return (
     <Link
       to={to}
-      className="block bg-panel border border-border rounded-xl shadow-card p-4 hover:bg-slate-50/60 transition-colors"
+      className="group relative block bg-panel border border-border rounded-xl shadow-card overflow-hidden hover:border-brand-200 hover:shadow-md transition-all"
     >
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2 text-xs uppercase tracking-wide text-ink-mute font-medium">
-          <Icon size={12} />
-          {label}
+      {/* accent stripe — colored top edge picks up the same tone as the
+          status dot, giving the row of tiles a quick chromatic read */}
+      <div className={cn('h-0.5', accentStripe)} />
+      <div className="p-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2 text-[11px] uppercase tracking-wider text-ink-mute font-medium">
+            <Icon size={12} className="text-brand-500/70 group-hover:text-brand-500 transition-colors" />
+            {label}
+          </div>
+          <span className={cn('w-2 h-2 rounded-full', dotCls)} />
         </div>
-        <span className={cn('w-2 h-2 rounded-full', dotCls)} />
+        <div className="mt-2 text-2xl font-semibold text-ink tabular-nums leading-tight">
+          {loading ? <Loader2 size={20} className="animate-spin text-ink-mute" /> : primary}
+        </div>
+        {segments && segments.some((s) => s.value > 0) && <Segments segments={segments} />}
+        {sub && <div className="text-[11px] text-ink-mute mt-1 truncate">{sub}</div>}
       </div>
-      <div className="mt-2 text-2xl font-semibold text-ink tabular-nums">
-        {loading ? <Loader2 size={20} className="animate-spin text-ink-mute" /> : primary}
-      </div>
-      {sub && <div className="text-[11px] text-ink-mute mt-0.5 truncate">{sub}</div>}
     </Link>
+  );
+}
+
+// Segmented bar — proportional widths, with hover titles. Tiny by
+// design (h-1.5) so it doesn't compete with the headline number.
+function Segments({ segments }: { segments: Segment[] }) {
+  const total = segments.reduce((sum, s) => sum + s.value, 0);
+  if (total === 0) return null;
+  return (
+    <div className="mt-2 flex h-1.5 rounded-full overflow-hidden bg-slate-100">
+      {segments.map((s, i) => {
+        if (s.value === 0) return null;
+        const pct = (s.value / total) * 100;
+        return (
+          <div
+            key={i}
+            title={s.title}
+            className={cn(s.color, 'transition-all')}
+            style={{ width: `${pct}%` }}
+          />
+        );
+      })}
+    </div>
   );
 }
 
@@ -286,15 +374,18 @@ function Card({
   children: React.ReactNode;
 }) {
   return (
-    <section className="bg-panel border border-border rounded-xl shadow-card">
-      <header className="px-4 pt-3 pb-2 flex items-start justify-between gap-2">
-        <div className="min-w-0">
-          <h3 className="text-sm font-semibold">{title}</h3>
-          {subtitle && <p className="text-xs text-ink-dim mt-0.5 truncate">{subtitle}</p>}
+    <section className="bg-panel border border-border rounded-xl shadow-card hover:border-brand-200/60 transition-colors">
+      <header className="px-4 pt-3 pb-2 flex items-start justify-between gap-2 border-b border-border/60">
+        <div className="min-w-0 flex items-center gap-2">
+          <span className="w-1 h-4 rounded-full bg-gradient-to-b from-brand-400 to-brand-600" />
+          <div className="min-w-0">
+            <h3 className="text-sm font-semibold text-ink">{title}</h3>
+            {subtitle && <p className="text-[11px] text-ink-dim mt-0.5 truncate">{subtitle}</p>}
+          </div>
         </div>
         {right}
       </header>
-      <div className="p-4 pt-2">{children}</div>
+      <div className="p-4 pt-3">{children}</div>
     </section>
   );
 }
@@ -321,6 +412,14 @@ function Picker<T extends string>({ value, options, onChange }: { value: T; opti
       ))}
     </div>
   );
+}
+
+function scaleLabel(s: Scale): string {
+  switch (s) {
+    case 'linear':     return 'Linear';
+    case 'log':        return 'Log';
+    case 'cumulative': return 'Cumulative';
+  }
 }
 
 function ChartSkeleton() {
