@@ -735,6 +735,14 @@ function TimelineGroupRow({
   );
 }
 
+// EXPANDED_NOISE — types stripped from the per-tick expanded body
+// because they're either LLM-envelope (init/text/done) or audit
+// shadows (action_taken duplicates tool_call). Operators see the
+// operationally meaningful chronology by default; a "show all"
+// toggle on the row brings the full transcript back when they
+// genuinely need to reconstruct the LLM's reasoning.
+const EXPANDED_NOISE = new Set(['init', 'text', 'done', 'action_taken']);
+
 // TimelineTickRow renders one (agent, host, tick) bundle as a single
 // summary row. Compact at-a-glance: time + agent · #tick · result icon
 // + colored severity chip if the tick produced any findings + counts of
@@ -749,6 +757,14 @@ function TimelineTickRow({
   live: boolean;
   liveIDs: Set<number>;
 }) {
+  // Per-row: when the tick is expanded, default to a curated chronology
+  // (drop init/text/done/action_taken) and let the operator opt into
+  // the full LLM transcript with one click.
+  const [showRaw, setShowRaw] = useState(false);
+  const expandMembers = showRaw
+    ? row.members
+    : row.members.filter((m) => !EXPANDED_NOISE.has(m.type));
+  const hiddenInTick = row.members.length - expandMembers.length;
   // Result drives the dot color. Findings push the row into the
   // sev.<worst> tone so a critical-finding tick reads at a glance.
   const sev = row.worstSeverity?.toLowerCase();
@@ -826,11 +842,35 @@ function TimelineTickRow({
         </div>
       </button>
       {expanded && (
-        <ul className="ml-[88px] mt-1 mb-2 space-y-0.5 border-l-2 border-slate-100 pl-3">
-          {[...row.members].reverse().map((m) => (
-            <TimelineRow key={`tm-${m.id}`} event={m} live={liveIDs.has(m.id)} />
-          ))}
-        </ul>
+        <div>
+          <ul className="ml-[88px] mt-1 space-y-0.5 border-l-2 border-slate-100 pl-3">
+            {[...expandMembers].reverse().map((m) => (
+              <TimelineRow key={`tm-${m.id}`} event={m} live={liveIDs.has(m.id)} />
+            ))}
+          </ul>
+          {hiddenInTick > 0 && (
+            <div className="ml-[91px] mt-1 mb-2 text-[11px] text-ink-mute">
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); setShowRaw(true); }}
+                className="hover:text-ink-dim hover:underline"
+              >
+                + {hiddenInTick} LLM envelope event{hiddenInTick === 1 ? '' : 's'} hidden — show transcript
+              </button>
+            </div>
+          )}
+          {showRaw && hiddenInTick === 0 && (
+            <div className="ml-[91px] mt-1 mb-2 text-[11px] text-ink-mute">
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); setShowRaw(false); }}
+                className="hover:text-ink-dim hover:underline"
+              >
+                hide LLM transcript
+              </button>
+            </div>
+          )}
+        </div>
       )}
     </li>
   );
