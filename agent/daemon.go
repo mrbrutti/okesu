@@ -7,6 +7,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -54,6 +55,13 @@ func RunDaemon(cfg Config, dcfg DaemonConfig) error {
 		Provider: cfg.Provider,
 		Model:    cfg.Model,
 	})
+
+	// suspended mirrors the desired_suspended flag pushed from the
+	// management plane. When true, the timer-driven tick loop emits a
+	// "skipped: suspended" tick_done and returns immediately without
+	// spawning a tick goroutine — the daemon stays alive (heartbeats +
+	// config polls keep flowing) so the operator can resume it remotely.
+	var suspended atomic.Bool
 
 	// Phase 6: connect to management plane if configured.
 	mgmtCtx, mgmtCancel := context.WithCancel(context.Background())
@@ -104,6 +112,20 @@ func RunDaemon(cfg Config, dcfg DaemonConfig) error {
 			}
 			if rc.Effort != "" {
 				cfg.Effort = rc.Effort
+			}
+			// Suspend / resume — emit a dedicated event on transition so the
+			// CP can show a clean pause/resume marker on the timeline.
+			if was := suspended.Swap(rc.Suspended); was != rc.Suspended {
+				transition := "agent resumed via management plane"
+				if rc.Suspended {
+					transition = "agent suspended via management plane — ticks will be skipped until resumed"
+				}
+				Emit(Event{
+					Type:  EventText,
+					Agent: cfg.Name,
+					Host:  hostname,
+					Text:  transition,
+				})
 			}
 			Emit(Event{
 				Type:  EventConfigReloaded,
@@ -217,6 +239,22 @@ func RunDaemon(cfg Config, dcfg DaemonConfig) error {
 			tickNum++
 			n := tickNum
 			lastRun := lastRunAt // snapshot for the goroutine closure
+
+			if suspended.Load() {
+				// Operator paused us via the management plane. Skip the work
+				// but still emit tick_done so the UI's tick counter advances
+				// and the timeline shows a heartbeat-shaped trace instead
+				// of a flatline (which would look like a dead daemon).
+				Emit(Event{
+					Type:   EventTickDone,
+					Agent:  cfg.Name,
+					Host:   hostname,
+					Tick:   n,
+					Result: "skipped",
+					Text:   "agent suspended",
+				})
+				continue
+			}
 
 			if !tickMu.TryLock() {
 				// Previous tick is still running — apply overlap policy.
