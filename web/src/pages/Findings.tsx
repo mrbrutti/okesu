@@ -169,13 +169,13 @@ export default function FindingsPage() {
             <SummaryCard label="Info"     value={summary.info}     accent="info"     />
             <SummaryCard label="Last 24h" value={summary.last_24h} accent="ink"      />
           </div>
-          <TrendPanel buckets={summary.trend} total24h={summary.last_24h} />
-          {(summary.by_agent.length > 0 || summary.by_category.length > 0) && (
+          <TrendPanel buckets={summary.trend ?? []} total24h={summary.last_24h} />
+          {((summary.by_agent ?? []).length > 0 || (summary.by_category ?? []).length > 0) && (
             <div className="lg:col-span-3 grid grid-cols-1 lg:grid-cols-2 gap-4">
-              {summary.by_category.length > 0 && (
+              {(summary.by_category ?? []).length > 0 && (
                 <ChipPanel
                   title="Open findings by category"
-                  rows={summary.by_category.map((c) => ({
+                  rows={(summary.by_category ?? []).map((c) => ({
                     key: c.category,
                     label: CATEGORY_LABELS[c.category] ?? c.category,
                     open: c.open,
@@ -186,10 +186,10 @@ export default function FindingsPage() {
                   onPick={(c) => setCategoryFilter(c === categoryFilter ? '' : c)}
                 />
               )}
-              {summary.by_agent.length > 0 && (
+              {(summary.by_agent ?? []).length > 0 && (
                 <ChipPanel
                   title="Open findings by agent"
-                  rows={summary.by_agent.map((a) => ({
+                  rows={(summary.by_agent ?? []).map((a) => ({
                     key: a.agent,
                     label: a.agent,
                     open: a.open,

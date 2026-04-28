@@ -974,7 +974,15 @@ type FindingsTrendBucket struct {
 
 // FindingsSummary returns aggregate counts. Cheap thanks to the partial indexes.
 func (s *Store) FindingsSummary() (*FindingsSummary, error) {
-	out := &FindingsSummary{}
+	// Initialise slice fields to non-nil so the JSON wire shape stays
+	// `[]` not `null` even when the underlying queries return zero
+	// rows. Same "always arrays, never null" policy from d6648bc /
+	// the Phase 9 wire-shape contract.
+	out := &FindingsSummary{
+		ByAgent:    []FindingsByAgent{},
+		ByCategory: []FindingsByCategory{},
+		Trend:      []FindingsTrendBucket{},
+	}
 	if err := s.QueryRow(`SELECT COUNT(*) FROM findings`).Scan(&out.Total); err != nil {
 		return nil, err
 	}

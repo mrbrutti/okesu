@@ -204,9 +204,10 @@ deploy_fleet() {
     local SSH_KEY_FILE="$ROOT/test/sshtarget/keys/id_ed25519"
     [[ -f "$SSH_KEY_FILE" ]] || { warn "no SSH key at $SSH_KEY_FILE — registering nodes only"; }
 
-    # Read the fleet via FD 3 (not stdin) so commands inside the body
-    # (notably `docker run`) can't consume the remaining lines and
-    # silently kill the loop after one iteration.
+    # Pass 1 — launch all containers in parallel. Doing the SSH deploy
+    # in the same loop would race sshd's first-boot init (we'd dial
+    # before the in-container daemon listens on :22), which is what
+    # caused the "all 15 nodes failed: connection refused" report.
     while IFS= read -r line <&3; do
         [[ -z "$line" ]] && continue
         IFS=':' read -r f_name f_distro f_port f_agents <<<"$line"
@@ -214,7 +215,32 @@ deploy_fleet() {
         "${DOCKER_CMD[@]}" rm -f "$cname" >/dev/null 2>&1 || true
         "${DOCKER_CMD[@]}" run -d --name "$cname" --hostname "$f_name" \
             -p "${f_port}:22" "okesu-sshtarget-${f_distro}:test" >/dev/null
+    done 3<<<"$fleet"
 
+    # Wait for sshd in every container before deploying. Probe each
+    # mapped port with `nc -z` until it accepts a connection (or
+    # bail after a generous timeout). Faster than a fixed sleep on a
+    # warm machine, safe on a cold one.
+    log "  waiting for sshd in $(printf '%s\n' "$fleet" | grep -c .) container(s)..."
+    while IFS= read -r line <&3; do
+        [[ -z "$line" ]] && continue
+        IFS=':' read -r _ _ f_port _ <<<"$line"
+        local tries=0
+        while ! nc -z -w 1 localhost "$f_port" 2>/dev/null; do
+            tries=$((tries+1))
+            if (( tries > 30 )); then
+                warn "    sshd on :$f_port did not come up within 30s"
+                break
+            fi
+            sleep 1
+        done
+    done 3<<<"$fleet"
+
+    # Pass 2 — register + deploy. Now sshd is listening so the deploy
+    # job's first ssh dial succeeds.
+    while IFS= read -r line <&3; do
+        [[ -z "$line" ]] && continue
+        IFS=':' read -r f_name f_distro f_port f_agents <<<"$line"
         local node_payload
         node_payload=$(python3 -c "
 import json
