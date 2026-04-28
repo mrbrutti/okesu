@@ -43,13 +43,31 @@ DAEMON_TARGETS := \
 	windows/amd64 \
 	windows/arm64 \
 	freebsd/amd64 \
-	openbsd/amd64
+	openbsd/amd64 \
+	solaris/amd64 \
+	illumos/amd64
+
+# Solaris-family targets above:
+#   - solaris/amd64 — Oracle Solaris 11.4+ (the only Solaris arch
+#     upstream Go supports; SPARC is not in the Go runtime).
+#   - illumos/amd64 — the open-source descendants (OmniOS,
+#     OpenIndiana, SmartOS, Tribblix). Same chip as solaris but a
+#     separate GOOS so the runtime picks the right syscall vector.
 
 CP_TARGETS := \
 	linux/amd64 \
 	linux/arm64 \
 	darwin/amd64 \
 	darwin/arm64
+
+# CP is NOT in the Solaris/illumos matrix even though the daemon is —
+# the pure-Go SQLite stack (modernc.org/libc) doesn't include build
+# files for solaris/illumos. The CP can be made buildable on those
+# platforms via a `nosqlite` tag that swaps the default state store
+# to Postgres-only; tracked, but out of scope for the daemon-side
+# Solaris addition. Operators running CP on Solaris today should use
+# the linux/amd64 binary in a Solaris zone with linux branded brand,
+# or wait for the nosqlite build.
 
 DIST_DIR ?= dist
 BINARIES_DIR := $(DIST_DIR)/binaries
