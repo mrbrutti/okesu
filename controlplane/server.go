@@ -52,7 +52,8 @@ type Server struct {
 	tunReg     *tunnel.Registry
 	runs       *api.RunRegistry
 	notify     *notify.Worker
-	fedPoller  *federation.Poller // Phase 9 parent-side federation
+	fedPoller  *federation.Poller     // Phase 9 parent-side federation
+	fedAgg     *federation.Aggregator // Phase 9.6 federated reads
 	http       *http.Server
 	mgmtHTTP *http.Server       // mTLS-protected management plane
 }
@@ -252,6 +253,7 @@ func New(cfg Config) (*Server, error) {
 	// background goroutine inside New() before the caller has a
 	// chance to fail-stop.
 	srv.fedPoller = federation.NewPoller(store, nil)
+	srv.fedAgg = federation.NewAggregator(store)
 
 	// Phase 4: OIDC. Optional — boot continues if discovery fails so the CP
 	// stays available with password auth even when the IDP is unreachable.
@@ -324,6 +326,13 @@ func (s *Server) routes() http.Handler {
 	// not session cookies. Returns this CP's identity + aggregate counts so
 	// a parent CP can keep a federated view fresh without scraping internal
 	// state. Mounted in the public router; auth happens inside the handler.
+	// Phase 9.6: federation read endpoints. Token-authed siblings of
+	// the local read endpoints — the parent CP fans out to these to
+	// build merged Findings / Daimons / Nodes views.
+	r.Get("/api/v1/federation/findings", api.FederationFindings(s.store))
+	r.Get("/api/v1/federation/daimons",  api.FederationDaimons(s.store))
+	r.Get("/api/v1/federation/nodes",    api.FederationNodes(s.store))
+
 	r.Get("/api/v1/cp/introspect", api.CPIntrospect(api.CPIntrospectDepsValue{
 		Store:           s.store,
 		Version:         Version(),
@@ -370,19 +379,23 @@ func (s *Server) routes() http.Handler {
 			WebhookIngest: s.cfg.WebhookSecret != "",
 		}))
 
-		// Read endpoints — viewer+
+		// Read endpoints — viewer+. List endpoints route through the
+		// federation aggregator so the parent's UI shows merged
+		// (local + federated) rows when peers are registered. Detail
+		// endpoints stay local-only — drilling into a specific
+		// finding/agent/node by id is always a local concern.
 		r.Get("/api/events", api.EventsList(s.eventStore))
 		r.Get("/api/events/stream", api.EventsStream(s.bcast))
-		r.Get("/api/agents", api.AgentsList(s.store))
+		r.Get("/api/agents", api.FederatedAgentsList(s.store, s.fedAgg))
 		r.Get("/api/agents/{name}", api.AgentDetail(s.store))
-		r.Get("/api/findings", api.FindingsList(s.store))
+		r.Get("/api/findings", api.FederatedFindingsList(s.store, s.fedAgg))
 		r.Get("/api/findings/summary", api.FindingsSummary(s.store))
 		r.Get("/api/findings/grouped", api.FindingsGrouped(s.store))
 		r.Get("/api/findings/{id}", api.FindingDetail(s.store))
 			r.Get("/api/findings/{id}/runs", api.RunsForFinding(s.store))
 
 		// Read endpoints (continued)
-		r.Get("/api/nodes", api.NodesList(s.store))
+		r.Get("/api/nodes", api.FederatedNodesList(s.store, s.fedAgg))
 		r.Get("/api/nodes/{id}", api.NodeDetail(s.store))
 		r.Get("/api/nodes/library", api.AgentLibrary(api.NodesConfig{
 			DaemonBinaryPath:  s.cfg.DaemonBinaryPath,

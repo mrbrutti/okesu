@@ -38,6 +38,10 @@ type agentJSON struct {
 	// file (e.g. "2", "v3"). Surfaces alongside the hash so operators
 	// can tell at a glance "host A is on v2, host B still on v1."
 	DefinitionVersion string `json:"definition_version,omitempty"`
+
+	// Phase 9.6: federation source. Non-nil iff this row was federated
+	// from a child CP. Nil for local rows.
+	CPSource *CPSourceRef `json:"cp_source,omitempty"`
 }
 
 // AgentsList returns registered agents, paginated.

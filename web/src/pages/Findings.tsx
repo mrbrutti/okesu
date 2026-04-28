@@ -32,6 +32,7 @@ import { StatusPill } from '../components/StatusPill';
 import { useInfiniteScroll } from '../lib/useInfiniteScroll';
 import { useSelection } from '../lib/useSelection';
 import { BulkActionBar, BulkActionButton } from '../components/BulkActionBar';
+import { CPSourceChip } from '../components/CPSourceChip';
 
 const PAGE_SIZE = 250;
 
@@ -338,6 +339,7 @@ export default function FindingsPage() {
                             ack
                           </span>
                         )}
+                        <CPSourceChip source={f.cp_source} />
                       </div>
                       <div className="mt-0.5 text-xs text-ink-dim flex items-center gap-3 flex-wrap">
                         <span className="font-mono">{f.agent || '—'}</span>

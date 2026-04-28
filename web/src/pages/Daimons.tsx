@@ -18,6 +18,7 @@ import { ListCard } from '../components/lists/ListCard';
 import { useInfiniteScroll } from '../lib/useInfiniteScroll';
 import { useSelection } from '../lib/useSelection';
 import { BulkActionBar, BulkActionButton } from '../components/BulkActionBar';
+import { CPSourceChip } from '../components/CPSourceChip';
 import DaimonsLibrary from '../components/DaimonsLibrary';
 
 const DAIMONS_PAGE_SIZE = 500;
@@ -378,6 +379,7 @@ function DaimonRow({
                 suspended
               </span>
             )}
+            <CPSourceChip source={daimon.cp_source} />
           </div>
           <div className="text-xs text-ink-dim font-mono truncate">
             {daimon.host || 'unknown host'}

@@ -61,6 +61,17 @@ export interface DaimonItem {
   /** Operator-set version label from the daimon file's frontmatter
    *  (e.g. "2", "v3"). Human-readable counterpart to the hash. */
   definition_version?: string;
+  /** Phase 9.6: federation source. Non-null iff this row was fetched
+   *  from a federated child CP. Local rows leave this undefined. */
+  cp_source?: CPSourceRef;
+}
+
+/** Tag attached to a federated row identifying which child CP it came
+ *  from. Surfaces as a small chip in list rows. */
+export interface CPSourceRef {
+  instance_id: string;
+  display_name?: string;
+  region?: string;
 }
 
 export interface DaimonLibraryItem {
@@ -160,6 +171,8 @@ export interface Finding {
   operator_severity?: string;
   severity_override_at?: string;
   fingerprint?: string;
+  /** Phase 9.6: federation source. */
+  cp_source?: CPSourceRef;
 }
 
 export type Severity = 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW' | 'INFO';
@@ -828,6 +841,8 @@ export interface NodeItem {
   disk_free_mb?: number;
   okesu_version?: string;
   metadata_at?: string;
+  /** Phase 9.6: federation source. */
+  cp_source?: CPSourceRef;
 }
 
 export interface NodeCreateReq {

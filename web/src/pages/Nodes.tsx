@@ -22,6 +22,7 @@ import { useInfiniteScroll } from '../lib/useInfiniteScroll';
 import { useSelection } from '../lib/useSelection';
 import { BulkActionBar, BulkActionButton } from '../components/BulkActionBar';
 import { BulkBinaryUpdateDialog } from '../components/BulkBinaryUpdateDialog';
+import { CPSourceChip } from '../components/CPSourceChip';
 
 const NODES_PAGE_SIZE = 500;
 
@@ -300,6 +301,7 @@ function NodeRow({
                 tunnel live
               </span>
             )}
+            <CPSourceChip source={node.cp_source} />
           </div>
           <div className="text-xs text-ink-dim font-mono truncate">
             {node.ssh_user}@{node.hostname}{node.ssh_port !== 22 ? ':' + node.ssh_port : ''}

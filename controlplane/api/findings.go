@@ -64,6 +64,20 @@ type findingJSON struct {
 	CVE             string          `json:"cve,omitempty"`
 	Tags            []string        `json:"tags,omitempty"`
 	Attributes      json.RawMessage `json:"attributes,omitempty"`
+
+	// Phase 9.6 — federation source. Populated only when this row was
+	// fetched from a federated child CP. Local rows leave this nil so
+	// the UI can render a "from <CP>" chip iff non-null.
+	CPSource *CPSourceRef `json:"cp_source,omitempty"`
+}
+
+// CPSourceRef tags a row with the child CP it came from. Stable across
+// federated reads — InstanceID is the parent's only durable handle on
+// a child (URL can change, display_name is cosmetic).
+type CPSourceRef struct {
+	InstanceID  string `json:"instance_id"`
+	DisplayName string `json:"display_name,omitempty"`
+	Region      string `json:"region,omitempty"`
 }
 
 func toFindingJSON(f *db.Finding, includeRaw bool) findingJSON {

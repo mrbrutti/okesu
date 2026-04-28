@@ -127,6 +127,10 @@ type nodeJSON struct {
 	// from Settings → Deploy or per-node detail page; reflected in
 	// the audit log and surfaces as a UI badge.
 	AutoUpdatePaused bool `json:"auto_update_paused"`
+
+	// Phase 9.6: federation source. Non-nil iff this row was federated
+	// from a child CP. Nil for local rows.
+	CPSource *CPSourceRef `json:"cp_source,omitempty"`
 }
 
 func toNodeJSON(n *db.Node) nodeJSON {
