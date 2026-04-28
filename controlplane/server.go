@@ -333,7 +333,9 @@ func (s *Server) routes() http.Handler {
 	r.Get("/api/v1/federation/findings/summary", api.FederationFindingsSummary(s.store))
 	r.Get("/api/v1/federation/findings/grouped", api.FederationFindingsGrouped(s.store))
 	r.Get("/api/v1/federation/daimons",          api.FederationDaimons(s.store))
+	r.Get("/api/v1/federation/daimons/{name}",   api.FederationAgentDetail(s.store))
 	r.Get("/api/v1/federation/nodes",            api.FederationNodes(s.store))
+	r.Get("/api/v1/federation/nodes/{id}",       api.FederationNodeDetail(s.store))
 	r.Get("/api/v1/federation/events",                   api.RequireFederationToken(s.store, api.EventsList(s.eventStore)))
 	r.Get("/api/v1/federation/events/stream",            api.RequireFederationToken(s.store, api.EventsStream(s.bcast)))
 	r.Get("/api/v1/federation/insights/findings",        api.FederationInsightsFindings(s.store))
@@ -398,7 +400,7 @@ func (s *Server) routes() http.Handler {
 		r.Get("/api/events", api.FederatedEventsList(api.EventsList(s.eventStore), s.fedAgg))
 		r.Get("/api/events/stream", api.FederatedEventsStream(s.bcast, s.fedAgg))
 		r.Get("/api/agents", api.FederatedAgentsList(s.store, s.fedAgg))
-		r.Get("/api/agents/{name}", api.AgentDetail(s.store))
+		r.Get("/api/agents/{name}", api.FederatedAgentDetail(s.store, s.fedAgg))
 		r.Get("/api/findings", api.FederatedFindingsList(s.store, s.fedAgg))
 		r.Get("/api/findings/summary", api.FederatedFindingsSummary(s.store, s.fedAgg))
 		r.Get("/api/findings/grouped", api.FederatedFindingsGrouped(s.store, s.fedAgg))
@@ -407,7 +409,7 @@ func (s *Server) routes() http.Handler {
 
 		// Read endpoints (continued)
 		r.Get("/api/nodes", api.FederatedNodesList(s.store, s.fedAgg))
-		r.Get("/api/nodes/{id}", api.NodeDetail(s.store))
+		r.Get("/api/nodes/{id}", api.FederatedNodeDetail(s.store, s.fedAgg))
 		r.Get("/api/nodes/library", api.AgentLibrary(api.NodesConfig{
 			DaemonBinaryPath:  s.cfg.DaemonBinaryPath,
 			DaemonBinariesDir: s.cfg.DaemonBinariesDir,

@@ -269,10 +269,13 @@ function NodeRow({
   const stop = (e: React.MouseEvent) => { e.stopPropagation(); e.preventDefault(); };
   return (
     <Link
-      to={`/nodes/${node.id}`}
+      to={`/nodes/${node.id}${node.cp_source ? `?cp=${node.cp_source.instance_id}` : ''}`}
       onClick={(e) => {
         // Keep modifier-clicks (cmd/ctrl/shift/middle) for new-tab behavior.
-        if (e.defaultPrevented) navigate(`/nodes/${node.id}`);
+        if (e.defaultPrevented) {
+          const q = node.cp_source ? `?cp=${node.cp_source.instance_id}` : '';
+          navigate(`/nodes/${node.id}${q}`);
+        }
       }}
       className="block px-4 py-3 hover:bg-slate-50/60 transition-colors"
     >

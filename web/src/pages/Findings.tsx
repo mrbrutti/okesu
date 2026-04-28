@@ -729,6 +729,9 @@ function GroupRow({ g, selected, onToggleSelected, onOpen, onPickAgent, onPickHo
               </span>
             )}
             <CPSourceChip source={g.cp_source} />
+            {g.cp_sources && g.cp_sources.map((s) => (
+              <CPSourceChip key={s.instance_id} source={s} />
+            ))}
           </div>
           <div className="mt-0.5 text-xs text-ink-dim flex items-center gap-2 flex-wrap">
             {g.agent && (

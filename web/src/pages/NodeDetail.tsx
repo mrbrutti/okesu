@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useParams, useSearchParams } from 'react-router-dom';
 import {
   Activity,
   ArrowLeft,
@@ -32,6 +32,8 @@ type Tab = 'events' | 'overview';
 
 export default function NodeDetailPage() {
   const { id = '' } = useParams<{ id: string }>();
+  const [params] = useSearchParams();
+  const cp = params.get('cp') || undefined;
   const [node, setNode] = useState<NodeItem | null>(null);
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -95,7 +97,7 @@ export default function NodeDetailPage() {
     let cancelled = false;
     const idNum = Number(id);
     const refresh = () => {
-      api.node(idNum).then((n) => { if (!cancelled) setNode(n); }).catch((err) => { if (!cancelled) setError(String(err)); });
+      api.node(idNum, cp).then((n) => { if (!cancelled) setNode(n); }).catch((err) => { if (!cancelled) setError(String(err)); });
       api.connectedNodes().then((arr) => { if (!cancelled) setConnected(arr.includes((node?.name) || '')); }).catch(() => { /* ignore */ });
       api.daimons(500).then((rows) => { if (!cancelled) setAgents(rows); }).catch(() => { /* ignore */ });
     };

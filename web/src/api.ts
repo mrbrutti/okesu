@@ -248,8 +248,13 @@ export interface FindingGroup {
   first_seen: number;
   last_seen: number;
   latest_id: number;
-  /** Phase 9.6: federation source. */
+  /** Phase 9.6: federation source. Set when this group came from
+   *  a single child CP. */
   cp_source?: CPSourceRef;
+  /** Phase 9.7: when the same dedup_key was reported on multiple
+   *  child CPs, the parent merges the groups and lists every
+   *  contributing CP here. UI renders a chip per source. */
+  cp_sources?: CPSourceRef[];
 }
 
 export interface FindingsFilter {
@@ -300,7 +305,8 @@ export const api = {
     return request<DaimonItem[]>(qs ? `/api/agents?${qs}` : '/api/agents');
   },
 
-  daimon: (name: string) => request<DaimonItem>(`/api/agents/${encodeURIComponent(name)}`),
+  daimon: (name: string, cp?: string) =>
+    request<DaimonItem>(`/api/agents/${encodeURIComponent(name)}${cp ? `?cp=${cp}` : ''}`),
 
   patchDaimon: (name: string, patch: DaimonConfigPatch) =>
     request<DaimonItem>(`/api/agents/${encodeURIComponent(name)}/config`, {
@@ -451,7 +457,8 @@ export const api = {
     const qs = p.toString();
     return request<NodeItem[]>(qs ? `/api/nodes?${qs}` : '/api/nodes');
   },
-  node: (id: number) => request<NodeItem>(`/api/nodes/${id}`),
+  node: (id: number, cp?: string) =>
+    request<NodeItem>(`/api/nodes/${id}${cp ? `?cp=${cp}` : ''}`),
   createNode: (req: NodeCreateReq) =>
     request<NodeItem>('/api/nodes', { method: 'POST', body: JSON.stringify(req) }),
   deleteNode: (id: number) =>

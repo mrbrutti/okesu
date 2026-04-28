@@ -1,5 +1,5 @@
 import { FormEvent, useEffect, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useParams, useSearchParams } from 'react-router-dom';
 import {
   Activity,
   ArrowLeft,
@@ -24,6 +24,8 @@ type Tab = 'overview' | 'events' | 'messages' | 'findings' | 'config';
 
 export default function DaimonDetailPage() {
   const { name = '' } = useParams<{ name: string }>();
+  const [params] = useSearchParams();
+  const cp = params.get('cp') || undefined;
   const [daimon, setDaimon] = useState<DaimonItem | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>('messages');
@@ -32,7 +34,7 @@ export default function DaimonDetailPage() {
   useEffect(() => {
     let cancelled = false;
     const refresh = () => {
-      api.daimon(name)
+      api.daimon(name, cp)
         .then((d) => { if (!cancelled) setDaimon(d); })
         .catch((err) => { if (!cancelled) setError(String(err)); });
     };

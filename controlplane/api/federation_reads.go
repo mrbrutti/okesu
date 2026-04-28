@@ -525,9 +525,11 @@ func mergeTrendRows(a, b []db.FindingsTrendBucket) []db.FindingsTrendBucket {
 	return a
 }
 
-// FederatedFindingsGrouped wraps FindingsGrouped. Each group from a
-// federated child is tagged with cp_source so the UI can render
-// "from east" alongside the group title.
+// FederatedFindingsGrouped wraps FindingsGrouped. Same finding (same
+// dedup_key OR same title+severity+agent fingerprint) reported on
+// multiple CPs MERGES into one row with combined count + union of
+// hosts + the list of contributing CPs. Operators see one row per
+// distinct issue regardless of how many regions reported it.
 func FederatedFindingsGrouped(store *db.Store, agg *federation.Aggregator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		localRR := httpRecorder()
@@ -546,38 +548,102 @@ func FederatedFindingsGrouped(store *db.Store, agg *federation.Aggregator) http.
 		if rq := r.URL.RawQuery; rq != "" {
 			path += "?" + rq
 		}
+		// Bucket by fingerprint (dedup_key when set, else
+		// title|severity|agent). Each bucket accumulates count, hosts
+		// (union), first/last_seen extremes, and the set of CPs that
+		// contributed. Local rows enter with cp_sources = empty (they
+		// came from this CP, no tag needed).
+		type bucket struct {
+			Group   db.FindingGroup
+			Sources []CPSourceRef
+		}
+		buckets := map[string]*bucket{}
+		mergeRow := func(g db.FindingGroup, src *CPSourceRef) {
+			fp := g.DedupKey
+			if fp == "" {
+				fp = g.Title + "|" + g.Severity + "|" + g.Agent
+			}
+			b, ok := buckets[fp]
+			if !ok {
+				b = &bucket{Group: g}
+				buckets[fp] = b
+			} else {
+				b.Group.Count += g.Count
+				b.Group.Hosts = unionStrings(b.Group.Hosts, g.Hosts)
+				if g.FirstSeen < b.Group.FirstSeen || b.Group.FirstSeen == 0 {
+					b.Group.FirstSeen = g.FirstSeen
+				}
+				if g.LastSeen > b.Group.LastSeen {
+					b.Group.LastSeen = g.LastSeen
+					b.Group.LatestID = g.LatestID
+				}
+			}
+			if src != nil {
+				b.Sources = append(b.Sources, *src)
+			}
+		}
+		for _, g := range local {
+			mergeRow(g, nil)
+		}
+
 		var mu sync.Mutex
-		merged := append([]db.FindingGroup{}, local...)
 		results, _ := agg.FanOut(ctx, func(ctx context.Context, peer federation.Peer) error {
 			var rows []db.FindingGroup
 			if err := agg.FetchJSON(ctx, peer, path, &rows); err != nil {
 				return err
 			}
-			tag := CPSourceRef{
+			src := CPSourceRef{
 				InstanceID:  peer.Snapshot.InstanceID,
 				DisplayName: peer.Snapshot.DisplayName,
 				Region:      peer.Snapshot.Region,
 			}
-			tagJSON, _ := json.Marshal(&tag)
-			for i := range rows {
-				rows[i].CPSource = json.RawMessage(tagJSON)
-				// Disambiguate the group key across CPs — same key on
-				// east + west would collide as React row keys otherwise.
-				rows[i].GroupKey = peer.Snapshot.InstanceID + ":" + rows[i].GroupKey
-			}
 			mu.Lock()
-			merged = append(merged, rows...)
-			mu.Unlock()
+			defer mu.Unlock()
+			for _, g := range rows {
+				mergeRow(g, &src)
+			}
 			return nil
 		})
 		if pErr := federation.AnyError(results); pErr != nil {
 			w.Header().Set("X-Okesu-Federation-Warning", pErr.Error())
 		}
-		// Re-sort by last_seen desc — operator usually wants newest groups first.
-		sort.SliceStable(merged, func(i, j int) bool { return merged[i].LastSeen > merged[j].LastSeen })
+
+		// Materialize the buckets back into wire-shape groups.
+		// CPSources is encoded into the existing cp_source field
+		// when there's exactly one source (compact for the common
+		// case); when there are multiple, we use a new cp_sources
+		// array so the UI can render multiple chips.
+		out := make([]groupedFindingJSON, 0, len(buckets))
+		for fp, b := range buckets {
+			row := groupedFindingJSON{FindingGroup: b.Group}
+			// Disambiguate group_key when bucket spans CPs (so React
+			// keys stay unique even on dedup-less fingerprints).
+			if len(b.Sources) > 0 {
+				row.GroupKey = "fed:" + fp
+			}
+			if len(b.Sources) == 1 {
+				row.CPSource = &b.Sources[0]
+			} else if len(b.Sources) > 1 {
+				row.CPSources = b.Sources
+			}
+			out = append(out, row)
+		}
+		sort.SliceStable(out, func(i, j int) bool { return out[i].LastSeen > out[j].LastSeen })
+
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(merged)
+		_ = json.NewEncoder(w).Encode(out)
 	}
+}
+
+// groupedFindingJSON wraps db.FindingGroup with the federated-merge
+// extras. Embedding lets the wire shape stay backwards-compatible:
+// a non-federated CP returns the same fields it always has, and a
+// federated CP adds cp_source (single-CP origin) or cp_sources (the
+// merged group spans multiple CPs).
+type groupedFindingJSON struct {
+	db.FindingGroup
+	CPSource  *CPSourceRef  `json:"cp_source,omitempty"`
+	CPSources []CPSourceRef `json:"cp_sources,omitempty"`
 }
 
 // RequireFederationToken is exported so server.go can wrap arbitrary

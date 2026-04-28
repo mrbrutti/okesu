@@ -139,3 +139,107 @@ func ForwardingNodeCreate(store *db.Store, agg *federation.Aggregator) http.Hand
 func FederationNodeCreate(store *db.Store) http.HandlerFunc {
 	return requireFederationToken(store, NodeCreate(store))
 }
+
+// proxyToCPByQuery handles the ?cp=<instance_id> query convention used
+// by the parent's detail-page handlers. When the query is set and
+// matches a healthy peer, the GET is proxied to the child's matching
+// federation read endpoint and the body streamed back.
+//
+// Returns (handled, err). handled=true means the response was already
+// written; the caller should NOT touch w. The federationPath should
+// already include the resource id (e.g. "/api/v1/federation/nodes/42").
+func proxyToCPByQuery(w http.ResponseWriter, r *http.Request, agg *federation.Aggregator, federationPath string) (handled bool, err error) {
+	cpID := r.URL.Query().Get("cp")
+	if cpID == "" {
+		return false, nil
+	}
+	peers, _ := agg.HealthyPeers()
+	var target *federation.Peer
+	for i := range peers {
+		if peers[i].Snapshot.InstanceID == cpID {
+			target = &peers[i]
+			break
+		}
+	}
+	if target == nil {
+		http.Error(w, "target CP not found or unhealthy: "+cpID, http.StatusNotFound)
+		return true, nil
+	}
+	url := strings.TrimRight(target.Row.URL, "/") + federationPath
+	// Pass through any other query params (the receiver may use them).
+	q := r.URL.Query()
+	q.Del("cp")
+	if enc := q.Encode(); enc != "" {
+		url += "?" + enc
+	}
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, url, nil)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return true, err
+	}
+	req.Header.Set("X-Okesu-Federation-Token", target.Row.Token)
+	req.Header.Set("Accept", "application/json")
+	client := &http.Client{
+		Timeout:   proxyTimeout,
+		Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}},
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		http.Error(w, "proxy to "+target.Snapshot.DisplayName+": "+err.Error(), http.StatusBadGateway)
+		return true, err
+	}
+	defer resp.Body.Close()
+	for k, vs := range resp.Header {
+		if strings.EqualFold(k, "Content-Length") || strings.EqualFold(k, "Transfer-Encoding") {
+			continue
+		}
+		for _, v := range vs {
+			w.Header().Add(k, v)
+		}
+	}
+	w.Header().Set("X-Okesu-Forwarded-To", target.Snapshot.InstanceID)
+	w.WriteHeader(resp.StatusCode)
+	_, _ = io.Copy(w, resp.Body)
+	return true, nil
+}
+
+// FederatedNodeDetail wraps NodeDetail. When ?cp=<instance_id> is in
+// the URL, proxies to that child's /api/v1/federation/nodes/{id}.
+func FederatedNodeDetail(store *db.Store, agg *federation.Aggregator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Reconstruct the federation path from the same chi URL var
+		// the local handler uses. We can't access chi.URLParam here
+		// because the route hasn't been matched against the
+		// federation pattern; just use the raw path.
+		// e.g. /api/nodes/42 -> /api/v1/federation/nodes/42
+		path := strings.Replace(r.URL.Path, "/api/nodes/", "/api/v1/federation/nodes/", 1)
+		if handled, _ := proxyToCPByQuery(w, r, agg, path); handled {
+			return
+		}
+		NodeDetail(store).ServeHTTP(w, r)
+	}
+}
+
+// FederationNodeDetail is the child-side endpoint
+// (GET /api/v1/federation/nodes/{id}). Token-authed sibling of
+// NodeDetail.
+func FederationNodeDetail(store *db.Store) http.HandlerFunc {
+	return requireFederationToken(store, NodeDetail(store))
+}
+
+// FederatedAgentDetail wraps AgentDetail. Same ?cp= proxy convention.
+func FederatedAgentDetail(store *db.Store, agg *federation.Aggregator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		path := strings.Replace(r.URL.Path, "/api/agents/", "/api/v1/federation/daimons/", 1)
+		if handled, _ := proxyToCPByQuery(w, r, agg, path); handled {
+			return
+		}
+		AgentDetail(store).ServeHTTP(w, r)
+	}
+}
+
+// FederationAgentDetail is the child-side endpoint
+// (GET /api/v1/federation/daimons/{name}). Token-authed sibling.
+func FederationAgentDetail(store *db.Store) http.HandlerFunc {
+	return requireFederationToken(store, AgentDetail(store))
+}
