@@ -1,0 +1,222 @@
+// Package federation implements the parent side of the Okesu federation
+// protocol introduced in Phase 9. A parent CP polls each registered
+// child's /api/v1/cp/introspect endpoint on a fixed interval, stores
+// the response on the federation_peers row, and exposes the cached
+// view via /api/federation/peers for the UI.
+//
+// The protocol contract lives on the child side in
+// controlplane/api/cp_meta.go (the IntrospectResponse struct + the
+// GET /api/v1/cp/introspect handler). This package only consumes that
+// contract; it never reaches into a child's internal state.
+package federation
+
+import (
+	"context"
+	"crypto/tls"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/section9labs/okesu/controlplane/db"
+)
+
+// PollInterval controls how often each peer is polled. Chosen to be
+// fast enough to feel "live" in the parent UI but slow enough to be
+// negligible network load on the child (a single HTTP GET every 30s
+// per peer). The parent UI re-renders on its own ~15s refresh and
+// reads from the cached row — it never hits the children directly.
+const PollInterval = 30 * time.Second
+
+// pollTimeout caps each individual introspect call. Generous enough
+// for a slow child but well below PollInterval so a hung peer doesn't
+// stall the whole tick.
+const pollTimeout = 10 * time.Second
+
+// Poller runs the per-peer introspect loop. One Poller covers all
+// peers — a single goroutine reads peers from the store every tick
+// rather than spawning one goroutine per peer, so adding/removing a
+// peer at runtime is automatically picked up on the next tick without
+// goroutine bookkeeping.
+type Poller struct {
+	store    *db.Store
+	client   *http.Client
+	interval time.Duration
+
+	// onUpdate is invoked after every successful poll, so subscribers
+	// (e.g. the broadcaster for the federation SSE stream) can push
+	// fresh data to UI clients without polling the DB themselves.
+	onUpdate func(peerID int64)
+
+	mu     sync.Mutex
+	cancel context.CancelFunc
+}
+
+// NewPoller wires a Poller against the store. Pass an optional
+// onUpdate callback to be notified after each successful introspect.
+// The HTTP client uses InsecureSkipVerify because federated children
+// typically use self-signed certs in the lab + early production; a
+// future phase will support pinned-CA and proper TLS verification.
+func NewPoller(store *db.Store, onUpdate func(peerID int64)) *Poller {
+	return &Poller{
+		store: store,
+		client: &http.Client{
+			Timeout: pollTimeout,
+			Transport: &http.Transport{
+				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			},
+		},
+		interval: PollInterval,
+		onUpdate: onUpdate,
+	}
+}
+
+// Start runs the poll loop until ctx is done. Safe to call once per
+// process; calling twice replaces the running loop.
+func (p *Poller) Start(ctx context.Context) {
+	p.mu.Lock()
+	if p.cancel != nil {
+		p.cancel()
+	}
+	loopCtx, cancel := context.WithCancel(ctx)
+	p.cancel = cancel
+	p.mu.Unlock()
+
+	go func() {
+		// Tick once on startup so a freshly-launched parent doesn't
+		// wait a full PollInterval before showing peer status.
+		p.tickAll(loopCtx)
+		t := time.NewTicker(p.interval)
+		defer t.Stop()
+		for {
+			select {
+			case <-loopCtx.Done():
+				return
+			case <-t.C:
+				p.tickAll(loopCtx)
+			}
+		}
+	}()
+}
+
+// Stop cancels the loop. Safe to call multiple times.
+func (p *Poller) Stop() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.cancel != nil {
+		p.cancel()
+		p.cancel = nil
+	}
+}
+
+// tickAll fans out one introspect call per peer, in parallel. A slow
+// child can't hold up a fast one because each call is its own
+// goroutine bounded by pollTimeout.
+func (p *Poller) tickAll(ctx context.Context) {
+	peers, err := p.store.ListFederationPeers()
+	if err != nil {
+		log.Printf("federation poller: list peers: %v", err)
+		return
+	}
+	var wg sync.WaitGroup
+	for _, peer := range peers {
+		peer := peer
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			p.pollOne(ctx, &peer)
+		}()
+	}
+	wg.Wait()
+}
+
+// pollOne hits a single peer's introspect endpoint and updates its
+// row. PollOnce is also exported for the API's "force refresh" button.
+func (p *Poller) pollOne(ctx context.Context, peer *db.FederationPeer) {
+	body, err := p.fetchIntrospect(ctx, peer.URL, peer.Token)
+	if err != nil {
+		_ = p.store.RecordPeerFailure(peer.ID, err.Error())
+		return
+	}
+	if err := p.store.RecordPeerSuccess(peer.ID, body); err != nil {
+		log.Printf("federation poller: record success for peer %d: %v", peer.ID, err)
+		return
+	}
+	if p.onUpdate != nil {
+		p.onUpdate(peer.ID)
+	}
+}
+
+// PollOnce performs one introspect call against a peer and records
+// the result. Used by the "force refresh" admin action and by the
+// "verify" probe in the Add Peer flow (verifyOnly=true skips the
+// store update). Returns the body on success for the verify path.
+func (p *Poller) PollOnce(ctx context.Context, peer *db.FederationPeer, verifyOnly bool) (string, error) {
+	body, err := p.fetchIntrospect(ctx, peer.URL, peer.Token)
+	if err != nil {
+		if !verifyOnly {
+			_ = p.store.RecordPeerFailure(peer.ID, err.Error())
+		}
+		return "", err
+	}
+	if !verifyOnly {
+		if err := p.store.RecordPeerSuccess(peer.ID, body); err != nil {
+			return "", fmt.Errorf("store update: %w", err)
+		}
+		if p.onUpdate != nil {
+			p.onUpdate(peer.ID)
+		}
+	}
+	return body, nil
+}
+
+// fetchIntrospect is the actual HTTP call. Errors are wrapped with
+// the operator-visible prefix the UI displays in the "last error"
+// column ("HTTP 401 Unauthorized" beats "post: status 401").
+func (p *Poller) fetchIntrospect(ctx context.Context, baseURL, token string) (string, error) {
+	url := strings.TrimRight(baseURL, "/") + "/api/v1/cp/introspect"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("X-Okesu-Federation-Token", token)
+	req.Header.Set("Accept", "application/json")
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("dial: %w", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
+	if err != nil {
+		return "", fmt.Errorf("read body: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		// Pass the response snippet through so a misconfigured token
+		// shows up as e.g. "HTTP 401: federation token invalid or
+		// not configured" in the UI.
+		snippet := strings.TrimSpace(string(body))
+		if len(snippet) > 120 {
+			snippet = snippet[:120] + "…"
+		}
+		return "", fmt.Errorf("HTTP %d %s: %s", resp.StatusCode, http.StatusText(resp.StatusCode), snippet)
+	}
+	// Sanity-check: the body should at minimum be valid JSON with the
+	// instance_id field. Catches a child returning the UI HTML when
+	// the operator pasted a wrong base URL (e.g. https://child:8444
+	// where 8444 is the mgmt plane, not the API).
+	var probe struct {
+		InstanceID string `json:"instance_id"`
+	}
+	if err := json.Unmarshal(body, &probe); err != nil {
+		return "", fmt.Errorf("invalid JSON response: %w", err)
+	}
+	if probe.InstanceID == "" {
+		return "", errors.New("response missing instance_id (wrong URL?)")
+	}
+	return string(body), nil
+}

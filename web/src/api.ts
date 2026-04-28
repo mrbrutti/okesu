@@ -624,6 +624,19 @@ export const api = {
     }),
   revokeToken: (id: number) =>
     request<void>(`/api/tokens/${id}`, { method: 'DELETE' }),
+
+  // Phase 9.5 — federation (parent-side aggregator).
+  federationPeers: () =>
+    request<FederationPeer[]>('/api/federation/peers'),
+  addFederationPeer: (req: FederationPeerAddReq) =>
+    request<FederationPeer>('/api/federation/peers', {
+      method: 'POST',
+      body: JSON.stringify(req),
+    }),
+  deleteFederationPeer: (id: number) =>
+    request<void>(`/api/federation/peers/${id}`, { method: 'DELETE' }),
+  refreshFederationPeer: (id: number) =>
+    request<FederationPeer>(`/api/federation/peers/${id}/refresh`, { method: 'POST' }),
 };
 
 // ── Phase 9 — Notifications ────────────────────────────────────────────────
@@ -1024,4 +1037,45 @@ export function subscribeEvents(onEvent: (e: EventItem) => void): () => void {
     }
   };
   return () => es.close();
+}
+
+// ── Phase 9.5 — federation peers (parent-side) ─────────────────────────────
+
+// FederationPeer is one child CP this CP aggregates from. The
+// `introspect` blob mirrors the IntrospectResponse shape from the
+// child's /api/v1/cp/introspect; we keep it loose-typed here so adding
+// a new field on the wire doesn't require a UI rebuild.
+export interface FederationPeer {
+  id: number;
+  url: string;
+  display_name: string;
+  added_at: string;
+  last_polled_at?: string;
+  last_seen_at?: string;
+  last_error?: string;
+  heartbeat_age_sec?: number;
+  healthy: boolean;
+  introspect?: {
+    instance_id?: string;
+    region?: string;
+    display_name?: string;
+    role?: string;
+    version?: string;
+    daemon_version?: string;
+    counts?: {
+      daimons?: number;
+      daimons_healthy?: number;
+      nodes?: number;
+      open_findings?: number;
+    };
+    features?: Record<string, boolean>;
+    webhook_public_url?: string;
+    mgmt_public_url?: string;
+  };
+}
+
+export interface FederationPeerAddReq {
+  url: string;
+  token: string;
+  display_name?: string;
 }

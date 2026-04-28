@@ -29,6 +29,7 @@ import (
 	"github.com/section9labs/okesu/controlplane/eventpipeline"
 	"github.com/section9labs/okesu/controlplane/auth"
 	"github.com/section9labs/okesu/controlplane/db"
+	"github.com/section9labs/okesu/controlplane/federation"
 	"github.com/section9labs/okesu/controlplane/jobs"
 	"github.com/section9labs/okesu/controlplane/notify"
 	"github.com/section9labs/okesu/controlplane/ports"
@@ -51,6 +52,7 @@ type Server struct {
 	tunReg     *tunnel.Registry
 	runs       *api.RunRegistry
 	notify     *notify.Worker
+	fedPoller  *federation.Poller // Phase 9 parent-side federation
 	http       *http.Server
 	mgmtHTTP *http.Server       // mTLS-protected management plane
 }
@@ -244,6 +246,13 @@ func New(cfg Config) (*Server, error) {
 		MaxRetries: 3,
 	}
 
+	// Phase 9.5: federation poller. Hits each registered child CP's
+	// /api/v1/cp/introspect on a 30s tick, caches the response on the
+	// federation_peers row. Started in Run() so we don't spin up a
+	// background goroutine inside New() before the caller has a
+	// chance to fail-stop.
+	srv.fedPoller = federation.NewPoller(store, nil)
+
 	// Phase 4: OIDC. Optional — boot continues if discovery fails so the CP
 	// stays available with password auth even when the IDP is unreachable.
 	if cfg.OIDCEnabled() {
@@ -424,6 +433,13 @@ func (s *Server) routes() http.Handler {
 			r.Post("/api/tokens", api.TokenCreate(s.store))
 			r.Delete("/api/tokens/{id}", api.TokenRevoke(s.store))
 
+			// Phase 9.5: federation peers — admin-only because adding a
+			// peer means storing a credential for an outbound CP.
+			r.Get("/api/federation/peers", api.FederationListPeers(s.store))
+			r.Post("/api/federation/peers", api.FederationAddPeer(s.store, s.fedPoller))
+			r.Delete("/api/federation/peers/{id}", api.FederationDeletePeer(s.store))
+			r.Post("/api/federation/peers/{id}/refresh", api.FederationRefreshPeer(s.store, s.fedPoller))
+
 			// System / database (admin)
 			r.Get("/api/system/db/stats", api.DBStats(s.store, api.SystemDBConfig{
 				EventTTLDays: s.cfg.EventTTLDays,
@@ -515,6 +531,7 @@ func (s *Server) Run(ctx context.Context) error {
 
 	go s.sessionGC(ctx)
 	go s.notify.Run(ctx)
+	s.fedPoller.Start(ctx)
 
 	// Reconcile any runs left in 'running' state from a previous CP process —
 	// the child on the node may have finished while we were down, or be

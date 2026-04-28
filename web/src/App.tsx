@@ -11,6 +11,7 @@ import FindingsPage from './pages/Findings';
 import NodesPage from './pages/Nodes';
 import NodeDetailPage from './pages/NodeDetail';
 import SettingsPage from './pages/Settings';
+import FederationPage from './pages/Federation';
 import Layout from './components/Layout';
 
 export default function App() {
@@ -57,6 +58,7 @@ export default function App() {
         {/* Legacy URL — agents now hosts the runs tab. */}
         <Route path="/runs" element={<Navigate to="/agents?tab=runs" replace />} />
         <Route path="/settings/*" element={<SettingsPage user={user!} />} />
+        <Route path="/federation" element={<FederationPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
     </Routes>
