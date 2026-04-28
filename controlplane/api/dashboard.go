@@ -447,6 +447,16 @@ func InsightsFindings(store *db.Store) http.HandlerFunc {
 			return ti > tj
 		})
 
+		// Ensure non-nil slices so the JSON wire shape stays
+		// `"series":[]` rather than `"series":null` — the UI's
+		// useMemo dereferences these directly and a null crashes
+		// the whole Dashboard render.
+		if series == nil {
+			series = []string{}
+		}
+		if filled == nil {
+			filled = []insightsBucket{}
+		}
 		out := insightsFindingsResp{
 			BucketMs: bucketMs,
 			GroupBy:  groupBy,

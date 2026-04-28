@@ -58,14 +58,16 @@ function colorFor(seriesName: string, idx: number, isSeverity: boolean): string 
 // ── Events timeline (single line) ───────────────────────────────────
 
 export function EventsTimelineChart({ data, range, scale = 'linear' }: { data: InsightsEventsResponse; range: TimeRange; scale?: Scale }) {
+  // See FindingsTimelineChart for why these `?? []` coalesces matter.
+  const buckets = data.buckets ?? [];
   const rows = useMemo(() => {
     let running = 0;
-    return data.buckets.map((b) => {
+    return buckets.map((b) => {
       running += b.count;
       const v = scale === 'cumulative' ? running : b.count;
       return { ts: tsLabel(b.ts, data.bucket_ms), count: scale === 'log' ? Math.max(v, 0.5) : v };
     });
-  }, [data, scale]);
+  }, [data, scale, buckets]);
   return (
     <ResponsiveContainer width="100%" height={180}>
       <LineChart data={rows} margin={{ top: 8, right: 12, left: -12, bottom: 0 }}>
@@ -104,12 +106,18 @@ export function EventsTimelineChart({ data, range, scale = 'linear' }: { data: I
 // ── Findings over time, multi-series line ───────────────────────────
 
 export function FindingsTimelineChart({ data, range, scale = 'linear' }: { data: InsightsFindingsResponse; range: TimeRange; scale?: Scale }) {
+  // Defensive coalesce — the Go API serializes empty slices as null
+  // when the underlying slice is nil. Pre-fix servers (< 7755b08) and
+  // federated children running an older binary still return null,
+  // which would crash here without these `?? []` guards.
+  const series = data.series ?? [];
+  const buckets = data.buckets ?? [];
   const rows = useMemo(() => {
-    const running: Record<string, number> = Object.fromEntries(data.series.map((k) => [k, 0]));
-    return data.buckets.map((b) => {
+    const running: Record<string, number> = Object.fromEntries(series.map((k) => [k, 0]));
+    return buckets.map((b) => {
       const row: Record<string, number | string> = { ts: tsLabel(b.ts, data.bucket_ms) };
-      for (const k of data.series) {
-        const raw = b.by[k] ?? 0;
+      for (const k of series) {
+        const raw = b.by?.[k] ?? 0;
         running[k] += raw;
         const v = scale === 'cumulative' ? running[k] : raw;
         // Log scale chokes on 0 — clamp to 0.5 so a flat zero series still renders.
@@ -117,7 +125,7 @@ export function FindingsTimelineChart({ data, range, scale = 'linear' }: { data:
       }
       return row;
     });
-  }, [data, scale]);
+  }, [data, scale, series, buckets]);
 
   const isSeverity = data.group_by === 'severity';
 
@@ -144,7 +152,7 @@ export function FindingsTimelineChart({ data, range, scale = 'linear' }: { data:
         />
         <Tooltip contentStyle={tooltipStyle} labelStyle={{ fontWeight: 600 }} cursor={{ stroke: '#cbd5e1', strokeWidth: 1 }} />
         <Legend wrapperStyle={{ fontSize: 11, paddingTop: 6 }} iconType="line" />
-        {data.series.map((k, i) => (
+        {series.map((k, i) => (
           <Line
             key={k}
             type="monotone"
