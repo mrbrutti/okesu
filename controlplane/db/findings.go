@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -953,17 +954,21 @@ type FindingsByCategory struct {
 // more hosts. The dashboard collapses occurrences so an issue affecting
 // 50 nodes shows as a single row instead of 50.
 type FindingGroup struct {
-	GroupKey    string   `json:"group_key"`    // composite key actually grouped on
-	DedupKey    string   `json:"dedup_key,omitempty"`
-	Severity    string   `json:"severity,omitempty"`
-	Title       string   `json:"title,omitempty"`
-	Agent       string   `json:"agent,omitempty"`
-	Resource    string   `json:"resource,omitempty"`   // first occurrence's resource
-	Count       int64    `json:"count"`               // how many open findings in this group
-	Hosts       []string `json:"hosts"`               // distinct hosts reporting it
-	FirstSeen   int64    `json:"first_seen"`          // unix ms of earliest occurrence
-	LastSeen    int64    `json:"last_seen"`           // unix ms of most recent occurrence
-	LatestID    int64    `json:"latest_id"`           // findings.id of the newest occurrence (for drill-in)
+	GroupKey    string         `json:"group_key"`    // composite key actually grouped on
+	DedupKey    string         `json:"dedup_key,omitempty"`
+	Severity    string         `json:"severity,omitempty"`
+	Title       string         `json:"title,omitempty"`
+	Agent       string         `json:"agent,omitempty"`
+	Resource    string         `json:"resource,omitempty"`   // first occurrence's resource
+	Count       int64          `json:"count"`               // how many open findings in this group
+	Hosts       []string       `json:"hosts"`               // distinct hosts reporting it
+	FirstSeen   int64          `json:"first_seen"`          // unix ms of earliest occurrence
+	LastSeen    int64          `json:"last_seen"`           // unix ms of most recent occurrence
+	LatestID    int64          `json:"latest_id"`           // findings.id of the newest occurrence (for drill-in)
+	// Phase 9.6: federation source tag. Untyped JSON because the
+	// concrete CPSourceRef type lives in the api package; encoding it
+	// raw avoids an import cycle.
+	CPSource    json.RawMessage `json:"cp_source,omitempty"`
 }
 
 // FindingsTrendBucket is one hour of the trend sparkline.

@@ -21,6 +21,23 @@ import (
 // Read-side counterpart of WebhookHandler — both go through the
 // EventStore port so swapping the events firehose between SQLite (dev)
 // and ClickHouse (production) is a config decision, not a code change.
+// eventJSON is the wire shape for /api/events list rows. Extracted from
+// EventsList so the federation aggregator can deserialize the same
+// shape for cross-CP merging.
+type eventJSON struct {
+	ID       int64           `json:"id"`
+	Ts       int64           `json:"ts"`
+	Type     string          `json:"type"`
+	Agent    string          `json:"agent,omitempty"`
+	Host     string          `json:"host,omitempty"`
+	Severity string          `json:"severity,omitempty"`
+	Title    string          `json:"title,omitempty"`
+	Raw      json.RawMessage `json:"raw"`
+	// Phase 9.6: federation source — populated when this row was
+	// fetched from a federated child. Local rows leave this nil.
+	CPSource *CPSourceRef `json:"cp_source,omitempty"`
+}
+
 func EventsList(store ports.EventStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
@@ -34,20 +51,9 @@ func EventsList(store ports.EventStore) http.HandlerFunc {
 			return
 		}
 
-		// Wrap into a simple JSON shape suited for the UI.
-		type item struct {
-			ID       int64  `json:"id"`
-			Ts       int64  `json:"ts"`
-			Type     string `json:"type"`
-			Agent    string `json:"agent,omitempty"`
-			Host     string `json:"host,omitempty"`
-			Severity string `json:"severity,omitempty"`
-			Title    string `json:"title,omitempty"`
-			Raw      json.RawMessage `json:"raw"`
-		}
-		out := make([]item, 0, len(events))
+		out := make([]eventJSON, 0, len(events))
 		for _, e := range events {
-			out = append(out, item{
+			out = append(out, eventJSON{
 				ID:       e.ID,
 				Ts:       e.Ts,
 				Type:     e.Type,

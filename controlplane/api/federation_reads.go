@@ -1,11 +1,16 @@
 package api
 
 import (
+	"bufio"
+	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -49,6 +54,16 @@ func requireFederationToken(store *db.Store, next http.HandlerFunc) http.Handler
 // Same query params as /api/findings; same wire shape.
 func FederationFindings(store *db.Store) http.HandlerFunc {
 	return requireFederationToken(store, FindingsList(store))
+}
+
+// FederationFindingsSummary handles GET /api/v1/federation/findings/summary.
+func FederationFindingsSummary(store *db.Store) http.HandlerFunc {
+	return requireFederationToken(store, FindingsSummary(store))
+}
+
+// FederationFindingsGrouped handles GET /api/v1/federation/findings/grouped.
+func FederationFindingsGrouped(store *db.Store) http.HandlerFunc {
+	return requireFederationToken(store, FindingsGrouped(store))
 }
 
 // FederationDaimons handles GET /api/v1/federation/daimons.
@@ -229,6 +244,423 @@ func FederatedNodesList(store *db.Store, agg *federation.Aggregator) http.Handle
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(merged)
 	}
+}
+
+// FederatedFindingsSummary wraps FindingsSummary. Merges per-CP
+// summaries into one global summary: scalar counts are summed,
+// per-agent and per-category breakdowns are folded by name (so
+// the same agent name on east + west sums to a single row), and
+// the 24-hour trend is bucket-aligned and summed.
+//
+// The combined summary doesn't carry cp_source — it's an aggregate.
+// Callers who want per-CP detail use the introspect counts on the
+// Federation page.
+func FederatedFindingsSummary(store *db.Store, agg *federation.Aggregator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Local first.
+		localRR := httpRecorder()
+		FindingsSummary(store).ServeHTTP(localRR, r)
+		if localRR.code != http.StatusOK {
+			w.WriteHeader(localRR.code)
+			_, _ = w.Write(localRR.body)
+			return
+		}
+		var merged db.FindingsSummary
+		if err := json.Unmarshal(localRR.body, &merged); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+		var mu sync.Mutex
+		results, _ := agg.FanOut(ctx, func(ctx context.Context, peer federation.Peer) error {
+			var s db.FindingsSummary
+			if err := agg.FetchJSON(ctx, peer, "/api/v1/federation/findings/summary", &s); err != nil {
+				return err
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			merged.Open += s.Open
+			merged.Critical += s.Critical
+			merged.High += s.High
+			merged.Medium += s.Medium
+			merged.Low += s.Low
+			merged.Info += s.Info
+			merged.Last24h += s.Last24h
+			merged.ByAgent = mergeAgentRows(merged.ByAgent, s.ByAgent)
+			merged.ByCategory = mergeCategoryRows(merged.ByCategory, s.ByCategory)
+			merged.Trend = mergeTrendRows(merged.Trend, s.Trend)
+			return nil
+		})
+		if pErr := federation.AnyError(results); pErr != nil {
+			w.Header().Set("X-Okesu-Federation-Warning", pErr.Error())
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(merged)
+	}
+}
+
+func mergeAgentRows(a, b []db.FindingsByAgent) []db.FindingsByAgent {
+	idx := map[string]int{}
+	for i := range a {
+		idx[a[i].Agent] = i
+	}
+	for _, r := range b {
+		if i, ok := idx[r.Agent]; ok {
+			a[i].Open += r.Open
+			a[i].Critical += r.Critical
+			a[i].High += r.High
+		} else {
+			idx[r.Agent] = len(a)
+			a = append(a, r)
+		}
+	}
+	return a
+}
+
+func mergeCategoryRows(a, b []db.FindingsByCategory) []db.FindingsByCategory {
+	idx := map[string]int{}
+	for i := range a {
+		idx[a[i].Category] = i
+	}
+	for _, r := range b {
+		if i, ok := idx[r.Category]; ok {
+			a[i].Open += r.Open
+			a[i].Critical += r.Critical
+			a[i].High += r.High
+		} else {
+			idx[r.Category] = len(a)
+			a = append(a, r)
+		}
+	}
+	return a
+}
+
+func mergeTrendRows(a, b []db.FindingsTrendBucket) []db.FindingsTrendBucket {
+	idx := map[int64]int{}
+	for i := range a {
+		idx[a[i].HourTs] = i
+	}
+	for _, r := range b {
+		if i, ok := idx[r.HourTs]; ok {
+			a[i].Count += r.Count
+		} else {
+			idx[r.HourTs] = len(a)
+			a = append(a, r)
+		}
+	}
+	return a
+}
+
+// FederatedFindingsGrouped wraps FindingsGrouped. Each group from a
+// federated child is tagged with cp_source so the UI can render
+// "from east" alongside the group title.
+func FederatedFindingsGrouped(store *db.Store, agg *federation.Aggregator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		localRR := httpRecorder()
+		FindingsGrouped(store).ServeHTTP(localRR, r)
+		if localRR.code != http.StatusOK {
+			w.WriteHeader(localRR.code)
+			_, _ = w.Write(localRR.body)
+			return
+		}
+		var local []db.FindingGroup
+		_ = json.Unmarshal(localRR.body, &local)
+
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+		path := "/api/v1/federation/findings/grouped"
+		if rq := r.URL.RawQuery; rq != "" {
+			path += "?" + rq
+		}
+		var mu sync.Mutex
+		merged := append([]db.FindingGroup{}, local...)
+		results, _ := agg.FanOut(ctx, func(ctx context.Context, peer federation.Peer) error {
+			var rows []db.FindingGroup
+			if err := agg.FetchJSON(ctx, peer, path, &rows); err != nil {
+				return err
+			}
+			tag := CPSourceRef{
+				InstanceID:  peer.Snapshot.InstanceID,
+				DisplayName: peer.Snapshot.DisplayName,
+				Region:      peer.Snapshot.Region,
+			}
+			tagJSON, _ := json.Marshal(&tag)
+			for i := range rows {
+				rows[i].CPSource = json.RawMessage(tagJSON)
+				// Disambiguate the group key across CPs — same key on
+				// east + west would collide as React row keys otherwise.
+				rows[i].GroupKey = peer.Snapshot.InstanceID + ":" + rows[i].GroupKey
+			}
+			mu.Lock()
+			merged = append(merged, rows...)
+			mu.Unlock()
+			return nil
+		})
+		if pErr := federation.AnyError(results); pErr != nil {
+			w.Header().Set("X-Okesu-Federation-Warning", pErr.Error())
+		}
+		// Re-sort by last_seen desc — operator usually wants newest groups first.
+		sort.SliceStable(merged, func(i, j int) bool { return merged[i].LastSeen > merged[j].LastSeen })
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(merged)
+	}
+}
+
+// RequireFederationToken is exported so server.go can wrap arbitrary
+// handlers (e.g. EventsList) with the same token-auth gate the
+// findings/daimons/nodes federation endpoints use.
+func RequireFederationToken(store *db.Store, next http.Handler) http.HandlerFunc {
+	return requireFederationToken(store, next.ServeHTTP)
+}
+
+// FederatedEventsStream wraps the local SSE handler. For each
+// healthy peer, opens an outbound SSE connection to its
+// /api/v1/federation/events/stream, parses each event line, tags it
+// with the peer's cp_source (rewriting the JSON payload), and forwards
+// it to the same client connection. Closing the client connection
+// (or any peer connection) tears down all spawned goroutines.
+//
+// One peer goroutine per UI client. At small scale (a few children,
+// dozens of UI clients) this is fine; at larger scale a shared
+// per-peer fan-out broker would amortise the outbound connections.
+// That's a Phase 9.7 concern.
+// FederatedEventsStream wraps EventsStream. The local broadcaster
+// supplies local events; for each healthy peer we open an outbound
+// SSE connection to /api/v1/federation/events/stream and forward
+// events tagged with cp_source. One peer goroutine per UI client —
+// fine at small scale, a Phase 9.7 follow-up if it needs sharing.
+func FederatedEventsStream(bcast EventsSubscriber, agg *federation.Aggregator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		w.Header().Set("X-Accel-Buffering", "no")
+		_, _ = w.Write([]byte(": connected\n\n"))
+		flusher.Flush()
+
+		ctx, cancel := context.WithCancel(r.Context())
+		defer cancel()
+
+		// merged carries every event line bound for the client.
+		// Buffered so a slow peer can't block a healthy one.
+		merged := make(chan []byte, 256)
+
+		// Local source — subscribe directly to the broadcaster.
+		localCh, unsubscribe := bcast.Subscribe()
+		defer unsubscribe()
+		go func() {
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case line, ok := <-localCh:
+					if !ok {
+						return
+					}
+					select {
+					case <-ctx.Done():
+						return
+					case merged <- line:
+					}
+				}
+			}
+		}()
+
+		// Per-peer goroutines — one outbound SSE per healthy child.
+		peers, _ := agg.HealthyPeers()
+		for _, p := range peers {
+			p := p
+			go streamFromPeer(ctx, p, r.URL.RawQuery, merged)
+		}
+
+		// Pump merged → client until the client disconnects.
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case line, ok := <-merged:
+				if !ok {
+					return
+				}
+				_, _ = w.Write([]byte("data: "))
+				_, _ = w.Write(line)
+				_, _ = w.Write([]byte("\n\n"))
+				flusher.Flush()
+			}
+		}
+	}
+}
+
+// streamFromPeer dials peer's federation SSE, parses each "data:"
+// line, injects cp_source into the JSON, and forwards to merged.
+// Reconnects with exponential backoff until ctx is done.
+func streamFromPeer(ctx context.Context, peer federation.Peer, rawQuery string, merged chan<- []byte) {
+	tag := CPSourceRef{
+		InstanceID:  peer.Snapshot.InstanceID,
+		DisplayName: peer.Snapshot.DisplayName,
+		Region:      peer.Snapshot.Region,
+	}
+	url := strings.TrimRight(peer.Row.URL, "/") + "/api/v1/federation/events/stream"
+	if rawQuery != "" {
+		url += "?" + rawQuery
+	}
+	client := &http.Client{
+		Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}},
+	}
+	backoff := time.Second
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			return
+		}
+		req.Header.Set("X-Okesu-Federation-Token", peer.Row.Token)
+		req.Header.Set("Accept", "text/event-stream")
+		resp, err := client.Do(req)
+		if err == nil && resp.StatusCode == http.StatusOK {
+			backoff = time.Second
+			scanSSEData(ctx, resp.Body, merged, &tag)
+			resp.Body.Close()
+		} else {
+			if resp != nil {
+				resp.Body.Close()
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(backoff):
+			}
+			if backoff < 30*time.Second {
+				backoff *= 2
+			}
+		}
+	}
+}
+
+// scanSSEData reads SSE-framed text from r; for each "data:" line it
+// emits the body onto merged, with cp_source injected when tag != nil.
+func scanSSEData(ctx context.Context, r io.Reader, merged chan<- []byte, tag *CPSourceRef) {
+	br := bufio.NewReader(r)
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		line, err := br.ReadBytes('\n')
+		if len(line) == 0 && err != nil {
+			return
+		}
+		if !bytes.HasPrefix(line, []byte("data: ")) {
+			continue
+		}
+		body := bytes.TrimSpace(line[6:])
+		if tag != nil {
+			body = injectCPSource(body, tag)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case merged <- body:
+		}
+	}
+}
+
+// injectCPSource adds cp_source to the event JSON so the UI's event
+// renderer can pick it up. Cheap — unmarshal to map, set the key,
+// re-marshal.
+func injectCPSource(body []byte, tag *CPSourceRef) []byte {
+	var m map[string]any
+	if err := json.Unmarshal(body, &m); err != nil {
+		return body
+	}
+	m["cp_source"] = tag
+	out, err := json.Marshal(m)
+	if err != nil {
+		return body
+	}
+	return out
+}
+
+// FederatedEventsList wraps EventsList. Each event from a federated
+// child is tagged with cp_source. Sorted by ts desc after merge.
+func FederatedEventsList(local http.Handler, agg *federation.Aggregator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		localRR := httpRecorder()
+		local.ServeHTTP(localRR, r)
+		if localRR.code != http.StatusOK {
+			w.WriteHeader(localRR.code)
+			_, _ = w.Write(localRR.body)
+			return
+		}
+		var localRows []eventJSON
+		_ = json.Unmarshal(localRR.body, &localRows)
+
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+		path := "/api/v1/federation/events"
+		if rq := r.URL.RawQuery; rq != "" {
+			path += "?" + rq
+		}
+		var mu sync.Mutex
+		merged := append([]eventJSON{}, localRows...)
+		results, _ := agg.FanOut(ctx, func(ctx context.Context, peer federation.Peer) error {
+			var rows []eventJSON
+			if err := agg.FetchJSON(ctx, peer, path, &rows); err != nil {
+				return err
+			}
+			tag := &CPSourceRef{
+				InstanceID:  peer.Snapshot.InstanceID,
+				DisplayName: peer.Snapshot.DisplayName,
+				Region:      peer.Snapshot.Region,
+			}
+			for i := range rows {
+				rows[i].CPSource = tag
+			}
+			mu.Lock()
+			merged = append(merged, rows...)
+			mu.Unlock()
+			return nil
+		})
+		if pErr := federation.AnyError(results); pErr != nil {
+			w.Header().Set("X-Okesu-Federation-Warning", pErr.Error())
+		}
+		sort.SliceStable(merged, func(i, j int) bool { return merged[i].Ts > merged[j].Ts })
+		// Cap to the originally-requested limit so a federated 100
+		// per source doesn't return 300 rows.
+		limit := 100
+		if v := r.URL.Query().Get("limit"); v != "" {
+			if n, err := parseIntDefault(v, 100); err == nil && n > 0 {
+				limit = n
+			}
+		}
+		if len(merged) > limit {
+			merged = merged[:limit]
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(merged)
+	}
+}
+
+func parseIntDefault(s string, def int) (int, error) {
+	if s == "" {
+		return def, nil
+	}
+	var n int
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return def, nil
+		}
+		n = n*10 + int(c-'0')
+	}
+	return n, nil
 }
 
 // httpRecorder is a tiny in-memory ResponseWriter for capturing a

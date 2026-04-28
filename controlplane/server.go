@@ -328,10 +328,14 @@ func (s *Server) routes() http.Handler {
 	// state. Mounted in the public router; auth happens inside the handler.
 	// Phase 9.6: federation read endpoints. Token-authed siblings of
 	// the local read endpoints — the parent CP fans out to these to
-	// build merged Findings / Daimons / Nodes views.
-	r.Get("/api/v1/federation/findings", api.FederationFindings(s.store))
-	r.Get("/api/v1/federation/daimons",  api.FederationDaimons(s.store))
-	r.Get("/api/v1/federation/nodes",    api.FederationNodes(s.store))
+	// build merged Findings / Daimons / Nodes / Events views.
+	r.Get("/api/v1/federation/findings",         api.FederationFindings(s.store))
+	r.Get("/api/v1/federation/findings/summary", api.FederationFindingsSummary(s.store))
+	r.Get("/api/v1/federation/findings/grouped", api.FederationFindingsGrouped(s.store))
+	r.Get("/api/v1/federation/daimons",          api.FederationDaimons(s.store))
+	r.Get("/api/v1/federation/nodes",            api.FederationNodes(s.store))
+	r.Get("/api/v1/federation/events",           api.RequireFederationToken(s.store, api.EventsList(s.eventStore)))
+	r.Get("/api/v1/federation/events/stream",    api.RequireFederationToken(s.store, api.EventsStream(s.bcast)))
 
 	r.Get("/api/v1/cp/introspect", api.CPIntrospect(api.CPIntrospectDepsValue{
 		Store:           s.store,
@@ -384,13 +388,13 @@ func (s *Server) routes() http.Handler {
 		// (local + federated) rows when peers are registered. Detail
 		// endpoints stay local-only — drilling into a specific
 		// finding/agent/node by id is always a local concern.
-		r.Get("/api/events", api.EventsList(s.eventStore))
-		r.Get("/api/events/stream", api.EventsStream(s.bcast))
+		r.Get("/api/events", api.FederatedEventsList(api.EventsList(s.eventStore), s.fedAgg))
+		r.Get("/api/events/stream", api.FederatedEventsStream(s.bcast, s.fedAgg))
 		r.Get("/api/agents", api.FederatedAgentsList(s.store, s.fedAgg))
 		r.Get("/api/agents/{name}", api.AgentDetail(s.store))
 		r.Get("/api/findings", api.FederatedFindingsList(s.store, s.fedAgg))
-		r.Get("/api/findings/summary", api.FindingsSummary(s.store))
-		r.Get("/api/findings/grouped", api.FindingsGrouped(s.store))
+		r.Get("/api/findings/summary", api.FederatedFindingsSummary(s.store, s.fedAgg))
+		r.Get("/api/findings/grouped", api.FederatedFindingsGrouped(s.store, s.fedAgg))
 		r.Get("/api/findings/{id}", api.FindingDetail(s.store))
 			r.Get("/api/findings/{id}/runs", api.RunsForFinding(s.store))
 

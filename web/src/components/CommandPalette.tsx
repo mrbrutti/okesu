@@ -25,12 +25,14 @@ import {
 import {
   api,
   type AgentLibraryItem,
+  type CPSourceRef,
   type DaimonItem,
   type Finding,
   type NodeItem,
 } from '../api';
 import { cn } from '../lib/cn';
 import { useHotkey } from '../lib/useHotkey';
+import { CPSourceChip } from './CPSourceChip';
 
 // Per-group cap — beyond this we render a "+ N more" footer row that
 // navigates to the section page so the operator can keep digging.
@@ -53,6 +55,8 @@ interface BaseRow {
   severity?: string;
   /** Where Enter / click navigates. */
   to: string;
+  /** Phase 9.6: federated source CP, when this row came from a child. */
+  cpSource?: CPSourceRef;
 }
 
 interface CacheBundle {
@@ -130,20 +134,22 @@ export default function CommandPalette() {
     for (const f of cache.findings) {
       rows.push({
         kind: 'finding',
-        key: 'f-' + f.id,
+        key: 'f-' + f.id + '-' + (f.cp_source?.instance_id ?? ''),
         title: f.title || ('finding #' + f.id),
         subtitle: [f.severity, f.host].filter(Boolean).join(' · ') || undefined,
         severity: f.severity,
         to: '/findings?id=' + f.id,
+        cpSource: f.cp_source,
       });
     }
     for (const d of cache.daimons) {
       rows.push({
         kind: 'daimon',
-        key: 'd-' + d.name + '-' + d.host,
+        key: 'd-' + d.name + '-' + d.host + '-' + (d.cp_source?.instance_id ?? ''),
         title: d.name,
         subtitle: d.host || undefined,
         to: '/daimons/' + encodeURIComponent(d.name),
+        cpSource: d.cp_source,
       });
     }
     // De-dupe agents by name — agentLibrary surfaces the file once per
@@ -164,10 +170,11 @@ export default function CommandPalette() {
     for (const n of cache.nodes) {
       rows.push({
         kind: 'node',
-        key: 'n-' + n.id,
+        key: 'n-' + n.id + '-' + (n.cp_source?.instance_id ?? ''),
         title: n.name,
         subtitle: n.hostname || undefined,
         to: '/nodes/' + n.id,
+        cpSource: n.cp_source,
       });
     }
     return rows;
@@ -414,7 +421,10 @@ function ResultRow({
     >
       <Icon size={14} className={cn('shrink-0', active ? 'text-brand-700' : 'text-ink-mute')} />
       <div className="min-w-0 flex-1">
-        <div className="truncate">{highlight(row.title, matched, query)}</div>
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="truncate">{highlight(row.title, matched, query)}</span>
+          <CPSourceChip source={row.cpSource} />
+        </div>
         {row.subtitle && (
           <div className={cn('text-[11px] truncate', active ? 'text-brand-700/70' : 'text-ink-mute')}>
             {row.kind === 'finding' && row.severity ? (
