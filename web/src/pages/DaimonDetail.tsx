@@ -130,16 +130,23 @@ export default function DaimonDetailPage() {
       </header>
 
       <main className="flex-1 overflow-hidden">
-        {tab === 'messages' && <AgentMessages agentName={daimon.name} />}
-        {tab === 'findings' && <AgentFindings agentName={daimon.name} />}
+        {tab === 'messages' && (
+          <AgentMessages
+            agentName={daimon.name}
+            host={daimon.host}
+            cpInstanceID={daimon.cp_source?.instance_id}
+          />
+        )}
+        {tab === 'findings' && <AgentFindings agentName={daimon.name} host={daimon.host} />}
         {tab === 'events' && (
           <EventTimeline
             agentFilter={daimon.name}
+            hostFilter={daimon.host}
             showHeader={false}
             compact
             defaultMode="all"
             enableGrouping={livePrefs.applyToAgentDetail}
-            emptyHint={`No events from ${daimon.name} yet. Heartbeats and tick lifecycle events will appear here as they arrive.`}
+            emptyHint={`No events from ${daimon.name} on ${daimon.host} yet. Heartbeats and tick lifecycle events will appear here as they arrive.`}
           />
         )}
         {tab === 'overview' && <OverviewTab daimon={daimon} />}

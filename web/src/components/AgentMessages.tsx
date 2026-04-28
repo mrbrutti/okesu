@@ -35,6 +35,16 @@ const MAX_RETAINED_EVENTS = 20_000;
 
 interface Props {
   agentName: string;
+  /** Host the daimon runs on. Required to disambiguate when multiple
+   *  daimons share the same agent name across the fleet — without this
+   *  the Messages view conflates every "edr" daimon's events into one
+   *  stream and tick 16 ends up showing 32 collectors (8 per host × 4
+   *  hosts that happen to be on tick 16). */
+  host?: string;
+  /** Federation source. When set, the conversation includes only
+   *  events that came from the same child CP — same reasoning as host
+   *  but at the inter-CP boundary. */
+  cpInstanceID?: string;
 }
 
 interface Turn {
@@ -62,7 +72,7 @@ type Move =
   | { kind: 'tool_call'; name?: string; input?: unknown; ts: number; toolID?: string }
   | { kind: 'tool_result'; output?: string; ts: number; toolID?: string };
 
-export default function AgentMessages({ agentName }: Props) {
+export default function AgentMessages({ agentName, host, cpInstanceID }: Props) {
   const [events, setEvents] = useState<EventItem[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [openTicks, setOpenTicks] = useState<Set<number>>(new Set());
@@ -129,8 +139,23 @@ export default function AgentMessages({ agentName }: Props) {
     },
   });
 
-  // Group events by tick — only events for this agent.
-  const turns = useMemo(() => buildTurns(events.filter((e) => e.agent === agentName)), [events, agentName]);
+  // Group events by tick — only events for THIS specific daimon.
+  // Filter by (agent, host) pair to avoid conflating multiple daimons
+  // with the same agent name on different hosts. When the daimon is
+  // federated, also pin to the source CP so the same (agent, host)
+  // pair on a different child doesn't bleed in.
+  const turns = useMemo(() => buildTurns(
+    events.filter((e) => {
+      if (e.agent !== agentName) return false;
+      if (host && e.host && e.host !== host) return false;
+      if (cpInstanceID && e.cp_source && e.cp_source.instance_id !== cpInstanceID) return false;
+      // Local daimons (no cp_source on the event) shouldn't surface
+      // for a federated daimon view, and vice versa.
+      if (cpInstanceID && !e.cp_source) return false;
+      if (!cpInstanceID && e.cp_source) return false;
+      return true;
+    })
+  ), [events, agentName, host, cpInstanceID]);
 
   // Auto-open the most recent turn when new events arrive.
   useEffect(() => {

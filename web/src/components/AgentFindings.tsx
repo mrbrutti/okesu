@@ -13,6 +13,10 @@ const FINDINGS_PAGE_SIZE = 250;
 
 interface Props {
   agentName: string;
+  /** Pin the findings to the daimon's specific host so we don't
+   *  conflate findings from other daimons that happen to share the
+   *  same agent name (common when a fleet has 10x edr daimons). */
+  host?: string;
 }
 
 type Sev = 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW' | 'INFO';
@@ -20,7 +24,7 @@ type State = 'open' | 'acked' | 'all';
 
 const ALL_SEVS: Sev[] = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO'];
 
-export default function AgentFindings({ agentName }: Props) {
+export default function AgentFindings({ agentName, host }: Props) {
   const [findings, setFindings] = useState<Finding[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [sevs, setSevs] = useState<Sev[]>([]);
@@ -32,7 +36,7 @@ export default function AgentFindings({ agentName }: Props) {
   // periodic refresh interval doesn't wipe history the user has scrolled
   // through. New entries at the head overwrite tail dups by id.
   const refresh = () => {
-    api.findings({ agent: agentName, severity: sevs, state, limit: FINDINGS_PAGE_SIZE })
+    api.findings({ agent: agentName, host, severity: sevs, state, limit: FINDINGS_PAGE_SIZE })
       .then((list) => {
         setFindings((prev) => {
           const newest = list;
@@ -68,6 +72,7 @@ export default function AgentFindings({ agentName }: Props) {
       if (!findings) return;
       const next = await api.findings({
         agent: agentName,
+        host,
         severity: sevs,
         state,
         limit: FINDINGS_PAGE_SIZE,
