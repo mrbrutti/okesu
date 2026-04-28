@@ -36,8 +36,9 @@ type dashboardResponse struct {
 
 type dashDaimons struct {
 	Total     int `json:"total"`
-	Healthy   int `json:"healthy"`     // heartbeated <5min ago
-	Unhealthy int `json:"unhealthy"`
+	Healthy   int `json:"healthy"`     // heartbeated <5min ago AND not suspended
+	Unhealthy int `json:"unhealthy"`   // never heartbeated OR stale heartbeat
+	Suspended int `json:"suspended"`   // desired_suspended=true (operator paused via UI)
 }
 
 type dashNodes struct {
@@ -121,15 +122,27 @@ func Dashboard(store *db.Store, eventStore ports.EventStore, tunReg *tunnel.Regi
 		out := dashboardResponse{}
 
 		// Daimons (fetched paginated via existing Store helper, then summarised).
+		// Suspended takes precedence over healthy/unhealthy in the bucket
+		// counts: a paused daimon still heartbeats, but we don't want to
+		// surface it as "healthy" because the operator deliberately stopped
+		// its work. Heartbeating-host tracking still uses the live heartbeat
+		// signal (paused or not) since heartbeat presence is what tells us
+		// the host is reachable for fleet_status / drift purposes.
 		agents, _ := store.ListAgents(1000, 0)
 		fiveMinAgo := time.Now().Add(-5 * time.Minute)
 		hostsHeartbeating := map[string]bool{}
 		for _, a := range agents {
 			out.Daimons.Total++
-			if a.LastHeartbeatAt.Valid && a.LastHeartbeatAt.Time.After(fiveMinAgo) {
-				out.Daimons.Healthy++
+			heartbeating := a.LastHeartbeatAt.Valid && a.LastHeartbeatAt.Time.After(fiveMinAgo)
+			if heartbeating {
 				hostsHeartbeating[a.Host] = true
-			} else {
+			}
+			switch {
+			case a.DesiredSuspended:
+				out.Daimons.Suspended++
+			case heartbeating:
+				out.Daimons.Healthy++
+			default:
 				out.Daimons.Unhealthy++
 			}
 		}
