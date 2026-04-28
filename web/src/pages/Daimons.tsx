@@ -335,7 +335,7 @@ function DaimonRow({
   }
   return (
     <Link
-      to={`/daimons/${encodeURIComponent(daimon.name)}${daimon.cp_source ? `?cp=${daimon.cp_source.instance_id}` : ''}`}
+      to={`/daimons/${encodeURIComponent(daimon.name)}?host=${encodeURIComponent(daimon.host)}${daimon.cp_source ? `&cp=${daimon.cp_source.instance_id}` : ''}`}
       className="block px-4 py-3 hover:bg-slate-50/60 transition-colors"
     >
       <div className="flex items-center gap-4">

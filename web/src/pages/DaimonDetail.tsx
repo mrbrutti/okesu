@@ -25,6 +25,7 @@ type Tab = 'overview' | 'events' | 'messages' | 'findings' | 'config';
 export default function DaimonDetailPage() {
   const { name = '' } = useParams<{ name: string }>();
   const [params] = useSearchParams();
+  const host = params.get('host') || undefined;
   const cp = params.get('cp') || undefined;
   const [daimon, setDaimon] = useState<DaimonItem | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -34,7 +35,7 @@ export default function DaimonDetailPage() {
   useEffect(() => {
     let cancelled = false;
     const refresh = () => {
-      api.daimon(name, cp)
+      api.daimon(name, host, cp)
         .then((d) => { if (!cancelled) setDaimon(d); })
         .catch((err) => { if (!cancelled) setError(String(err)); });
     };

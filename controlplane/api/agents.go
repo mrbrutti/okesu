@@ -65,11 +65,26 @@ func AgentsList(store *db.Store) http.HandlerFunc {
 }
 
 // AgentDetail returns a single agent.
-// GET /api/agents/{name}
+// GET /api/agents/{name}?host=<hostname>
+//
+// At fleet scale a single agent NAME (e.g. "edr") is registered on
+// many hosts — AgentByName returns whichever one heartbeated last,
+// which is rarely the one the operator clicked on. Pass ?host= to
+// disambiguate; the legacy "by-name only" path is preserved for
+// callers that don't know the host yet.
 func AgentDetail(store *db.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		name := chi.URLParam(r, "name")
-		a, err := store.AgentByName(name)
+		host := r.URL.Query().Get("host")
+		var (
+			a   *db.Agent
+			err error
+		)
+		if host != "" {
+			a, err = store.AgentByNameHost(name, host)
+		} else {
+			a, err = store.AgentByName(name)
+		}
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				http.Error(w, "not found", http.StatusNotFound)

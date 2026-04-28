@@ -305,8 +305,13 @@ export const api = {
     return request<DaimonItem[]>(qs ? `/api/agents?${qs}` : '/api/agents');
   },
 
-  daimon: (name: string, cp?: string) =>
-    request<DaimonItem>(`/api/agents/${encodeURIComponent(name)}${cp ? `?cp=${cp}` : ''}`),
+  daimon: (name: string, host?: string, cp?: string) => {
+    const q = new URLSearchParams();
+    if (host) q.set('host', host);
+    if (cp) q.set('cp', cp);
+    const qs = q.toString();
+    return request<DaimonItem>(`/api/agents/${encodeURIComponent(name)}${qs ? `?${qs}` : ''}`);
+  },
 
   patchDaimon: (name: string, patch: DaimonConfigPatch) =>
     request<DaimonItem>(`/api/agents/${encodeURIComponent(name)}/config`, {
