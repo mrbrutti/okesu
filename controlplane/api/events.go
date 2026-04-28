@@ -40,19 +40,45 @@ type eventJSON struct {
 
 func EventsList(store ports.EventStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+		q := r.URL.Query()
+		limit, _ := strconv.Atoi(q.Get("limit"))
 		if limit <= 0 {
 			limit = 100
 		}
-		beforeTs, _ := strconv.ParseInt(r.URL.Query().Get("before_ts"), 10, 64)
-		events, err := store.Recent(r.Context(), limit, beforeTs)
+		beforeTs, _ := strconv.ParseInt(q.Get("before_ts"), 10, 64)
+		// Optional server-side filters. The detail-page Messages tab
+		// passes agent+host so it gets only one daimon's events
+		// instead of fighting for room in the most-recent-1000 window
+		// across a busy fleet (where 1000 events ≈ 60s of history at
+		// fleet scale, often missing the very daimon the operator
+		// just clicked on).
+		filterAgent := q.Get("agent")
+		filterHost := q.Get("host")
+		// Over-fetch when filtering — most rows in the recent window
+		// won't match, so we need a wider scoop to land `limit`
+		// matching rows. Cap at a generous ceiling so we don't pull
+		// the whole table on a busy CP.
+		fetchLimit := limit
+		if filterAgent != "" || filterHost != "" {
+			fetchLimit = limit * 25
+			if fetchLimit > 5000 {
+				fetchLimit = 5000
+			}
+		}
+		events, err := store.Recent(r.Context(), fetchLimit, beforeTs)
 		if err != nil {
 			http.Error(w, "query: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 
-		out := make([]eventJSON, 0, len(events))
+		out := make([]eventJSON, 0, limit)
 		for _, e := range events {
+			if filterAgent != "" && e.Agent != filterAgent {
+				continue
+			}
+			if filterHost != "" && e.Host != filterHost {
+				continue
+			}
 			out = append(out, eventJSON{
 				ID:       e.ID,
 				Ts:       e.Ts,
@@ -63,6 +89,9 @@ func EventsList(store ports.EventStore) http.HandlerFunc {
 				Title:    e.Title,
 				Raw:      json.RawMessage(e.RawJSON),
 			})
+			if len(out) >= limit {
+				break
+			}
 		}
 
 		w.Header().Set("Content-Type", "application/json")

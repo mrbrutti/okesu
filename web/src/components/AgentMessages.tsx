@@ -84,7 +84,7 @@ export default function AgentMessages({ agentName, host, cpInstanceID }: Props) 
   // Initial load.
   useEffect(() => {
     let cancelled = false;
-    api.events(INITIAL_LIMIT)
+    api.events(INITIAL_LIMIT, undefined, { agent: agentName, host })
       .then((list) => {
         if (cancelled) return;
         idCounter.current = Math.max(idCounter.current, list.length + 1);
@@ -124,7 +124,7 @@ export default function AgentMessages({ agentName, host, cpInstanceID }: Props) 
         return;
       }
       try {
-        const older = await api.events(PAGE_SIZE, oldest.ts);
+        const older = await api.events(PAGE_SIZE, oldest.ts, { agent: agentName, host });
         if (older.length === 0) {
           setHasMoreOlder(false);
           return;

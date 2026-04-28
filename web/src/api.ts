@@ -289,9 +289,11 @@ export const api = {
 
   me: () => request<User>('/api/auth/me'),
 
-  events: (limit = 100, beforeTs?: number) => {
+  events: (limit = 100, beforeTs?: number, filter?: { agent?: string; host?: string }) => {
     const p = new URLSearchParams({ limit: String(limit) });
     if (beforeTs && beforeTs > 0) p.set('before_ts', String(beforeTs));
+    if (filter?.agent) p.set('agent', filter.agent);
+    if (filter?.host)  p.set('host',  filter.host);
     return request<EventItem[]>(`/api/events?${p.toString()}`);
   },
 
