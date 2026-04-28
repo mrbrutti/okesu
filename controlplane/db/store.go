@@ -127,12 +127,15 @@ var sqliteM019 string
 //go:embed migrations/sqlite/020_node_auto_update_paused.sql
 var sqliteM020 string
 
+//go:embed migrations/sqlite/021_cp_meta.sql
+var sqliteM021 string
+
 var sqliteMigrations = []string{
 	sqliteM001, sqliteM002, sqliteM003,
 	sqliteM004, sqliteM005, sqliteM006, sqliteM007,
 	sqliteM008, sqliteM009, sqliteM010, sqliteM011, sqliteM012,
 	sqliteM013, sqliteM014, sqliteM015, sqliteM016, sqliteM017,
-	sqliteM018, sqliteM019, sqliteM020,
+	sqliteM018, sqliteM019, sqliteM020, sqliteM021,
 }
 
 //go:embed migrations/postgres/001_init.sql
@@ -195,12 +198,15 @@ var pgM019 string
 //go:embed migrations/postgres/020_node_auto_update_paused.sql
 var pgM020 string
 
+//go:embed migrations/postgres/021_cp_meta.sql
+var pgM021 string
+
 var postgresMigrations = []string{
 	pgM001, pgM002, pgM003,
 	pgM004, pgM005, pgM006, pgM007,
 	pgM008, pgM009, pgM010, pgM011, pgM012,
 	pgM013, pgM014, pgM015, pgM016, pgM017,
-	pgM018, pgM019, pgM020,
+	pgM018, pgM019, pgM020, pgM021,
 }
 
 // migrationsForDialect returns the embedded list matching the dialect.

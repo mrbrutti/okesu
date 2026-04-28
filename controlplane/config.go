@@ -190,6 +190,27 @@ type Config struct {
 	KafkaSASLUsername  string
 	KafkaSASLPassword  string
 	KafkaUseTLS        bool
+
+	// ── Federation foundation (Phase 9) ─────────────────────────────────────
+	//
+	// CPRegion is an operator-set label for this CP — typically the OCI
+	// region ("us-ashburn-1") or a similar geographic / business unit
+	// identifier. Surfaced on the introspect endpoint so a parent CP can
+	// reason about which region a finding came from.
+	CPRegion string
+
+	// CPDisplayName is a human-readable label ("Primary CP", "EU west").
+	// Cosmetic only; set what reads well in the parent CP's UI.
+	CPDisplayName string
+
+	// FederationToken is a shared secret a parent CP presents on the
+	// introspect endpoint via the X-Okesu-Federation-Token header. The
+	// CP stores its bcrypt hash in cp_meta.federation_token_hash on
+	// first boot (and rotates it whenever the operator changes the
+	// flag/env). Empty disables federation auth — the introspect
+	// endpoint then only accepts authenticated session callers (useful
+	// for local discovery).
+	FederationToken string
 }
 
 // OIDCEnabled reports whether OIDC is configured.
@@ -265,6 +286,10 @@ func FromEnv() Config {
 		KafkaSASLUsername: os.Getenv("OKESU_CP_KAFKA_SASL_USERNAME"),
 		KafkaSASLPassword: os.Getenv("OKESU_CP_KAFKA_SASL_PASSWORD"),
 		KafkaUseTLS:       envBool("OKESU_CP_KAFKA_USE_TLS", false),
+
+		CPRegion:        os.Getenv("OKESU_CP_REGION"),
+		CPDisplayName:   os.Getenv("OKESU_CP_DISPLAY_NAME"),
+		FederationToken: os.Getenv("OKESU_CP_FEDERATION_TOKEN"),
 	}
 }
 

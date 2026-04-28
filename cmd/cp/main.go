@@ -159,6 +159,11 @@ func serveCmd() *cobra.Command {
 	cmd.Flags().StringVar(&cfg.BlobBucket, "blob-bucket", cfg.BlobBucket, "S3 bucket name")
 	cmd.Flags().StringVar(&cfg.BlobRegion, "blob-region", cfg.BlobRegion, "S3 region (e.g. us-ashburn-1 for OCI, us-east-1 for AWS)")
 
+	// Federation (Phase 9) — labels surfaced on /api/v1/cp/introspect.
+	cmd.Flags().StringVar(&cfg.CPRegion, "cp-region", cfg.CPRegion, "Region label for this CP (e.g. us-ashburn-1) — surfaced on the federation introspect endpoint")
+	cmd.Flags().StringVar(&cfg.CPDisplayName, "cp-display-name", cfg.CPDisplayName, "Human-readable name for this CP (cosmetic; shown to a parent CP in federated views)")
+	cmd.Flags().StringVar(&cfg.FederationToken, "federation-token", cfg.FederationToken, "Shared secret a parent CP presents on /api/v1/cp/introspect (X-Okesu-Federation-Token). Empty disables federation auth.")
+
 	return cmd
 }
 

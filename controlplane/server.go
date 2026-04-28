@@ -120,6 +120,22 @@ func New(cfg Config) (*Server, error) {
 		return nil, fmt.Errorf("seed admin: %w", err)
 	}
 
+	// Phase 9: bootstrap / refresh cp_meta. The first call ensures a
+	// stable instance_id is generated; subsequent calls overwrite the
+	// operator-tunable fields (region, display name, federation token)
+	// from flags/env so a config change picks up cleanly on restart
+	// without a SQL migration. Token is only rotated when explicitly
+	// set; "-" (sentinel) clears it. Empty leaves the existing hash
+	// untouched, so an operator can launch once with the token and
+	// then re-launch with the flag empty without losing federation.
+	tokenOp := cfg.FederationToken
+	if tokenOp == "" {
+		// preserve existing hash
+	}
+	if _, err := store.UpdateCPMeta(cfg.CPRegion, cfg.CPDisplayName, "", tokenOp); err != nil {
+		return nil, fmt.Errorf("cp_meta init: %w", err)
+	}
+
 	mgr, err := auth.NewManager(store, cfg.SessionKey)
 	if err != nil {
 		return nil, fmt.Errorf("session manager: %w", err)
@@ -294,6 +310,25 @@ func (s *Server) routes() http.Handler {
 		r.Use(auth.RequireToken(s.store, auth.ScopeFindingsWrite))
 		r.Post("/api/findings/ingest", api.FindingIngest(s.store, s.eventStore, s.bcast))
 	})
+
+	// Federation introspect (Phase 9) — auth via X-Okesu-Federation-Token,
+	// not session cookies. Returns this CP's identity + aggregate counts so
+	// a parent CP can keep a federated view fresh without scraping internal
+	// state. Mounted in the public router; auth happens inside the handler.
+	r.Get("/api/v1/cp/introspect", api.CPIntrospect(api.CPIntrospectDepsValue{
+		Store:           s.store,
+		Version:         Version(),
+		DaemonVersionFn: s.daemonBinaryVersion,
+		Features: api.AboutFeatures{
+			OIDC:          s.oidc != nil,
+			MgmtPlane:     s.cfg.MgmtListen != "",
+			Tunnel:        s.tunReg != nil,
+			Deploy:        s.cfg.DaemonBinaryPath != "" && s.cfg.DaimonFilesDir != "",
+			WebhookIngest: s.cfg.WebhookSecret != "",
+		},
+		WebhookURL: s.cfg.EffectiveWebhookURL(),
+		MgmtURL:    s.cfg.EffectiveMgmtURL(),
+	}))
 
 	// Public auth endpoints.
 	r.Post("/api/auth/login", api.LoginHandler(s.store, s.mgr))
