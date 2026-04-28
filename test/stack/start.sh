@@ -107,13 +107,12 @@ if [[ -f "$ENV_FILE" ]]; then
 fi
 
 # Build host binaries for the local CP and the local node tunnel client.
-# Always use the Makefile so version stamping (-ldflags
-# -X agent.buildVersion=…) lands in every binary. Bypass risks
-# producing "dev"-tagged daemons that look like drift in the dashboard.
-[[ -f "$ROOT/okesu" && -f "$ROOT/okesu-cp" ]] || {
-    log "building host binaries (okesu, okesu-cp)"
-    ( cd "$ROOT" && make -s daemon-host cp )
-}
+# Always defer to `make` — its own up-to-date check is correct, and a
+# bare existence test silently uses a stale binary when new flags
+# land (e.g. Phase 9's --cp-region). Version stamping
+# (-ldflags -X agent.buildVersion=…) only lands when make runs.
+log "building host binaries (make detects up-to-date)"
+( cd "$ROOT" && make -s daemon-host cp )
 
 # Build a Linux daemon binary the CP can deploy onto containers/VMs.
 # Only build the architecture matching the runtime — for Lima/Docker on
@@ -126,10 +125,8 @@ case "$TARGET_ARCH" in
     *) fail "unsupported OKESU_TARGET_ARCH=$TARGET_ARCH (set to arm64 or amd64)";;
 esac
 DAEMON_LINUX_BIN="$ROOT/okesu-linux-${GO_TARGET_ARCH}"
-[[ -f "$DAEMON_LINUX_BIN" ]] || {
-    log "cross-compiling daemon for linux/$GO_TARGET_ARCH"
-    ( cd "$ROOT" && make -s daemon DAEMON_GOOS=linux DAEMON_GOARCH=$GO_TARGET_ARCH )
-}
+log "cross-compiling daemon for linux/$GO_TARGET_ARCH (make detects up-to-date)"
+( cd "$ROOT" && make -s daemon DAEMON_GOOS=linux DAEMON_GOARCH=$GO_TARGET_ARCH )
 
 # Stage the cross-compiled binary in the multi-arch directory the CP scans
 # at boot. A new arch can be added by dropping another okesu-linux-<arch>

@@ -55,10 +55,11 @@ if [[ -f "$ENV_FILE" ]]; then
 fi
 
 # ── Build host + linux daemon binaries (same as start.sh) ───────────────
-[[ -f "$ROOT/okesu" && -f "$ROOT/okesu-cp" ]] || {
-    log "building host binaries"
-    ( cd "$ROOT" && make -s daemon-host cp )
-}
+# Always defer to `make` rather than skipping when the binaries exist —
+# `make` does its own up-to-date check against the source tree, and a
+# stale-binary mismatch silently breaks new flags (e.g. --cp-region).
+log "building host binaries (make detects up-to-date)"
+( cd "$ROOT" && make -s daemon-host cp )
 TARGET_ARCH="${OKESU_TARGET_ARCH:-$(uname -m)}"
 case "$TARGET_ARCH" in
     arm64|aarch64) GO_TARGET_ARCH=arm64 ;;
@@ -66,10 +67,8 @@ case "$TARGET_ARCH" in
     *) fail "unsupported arch $TARGET_ARCH";;
 esac
 DAEMON_LINUX_BIN="$ROOT/okesu-linux-${GO_TARGET_ARCH}"
-[[ -f "$DAEMON_LINUX_BIN" ]] || {
-    log "cross-compiling daemon for linux/$GO_TARGET_ARCH"
-    ( cd "$ROOT" && make -s daemon DAEMON_GOOS=linux DAEMON_GOARCH=$GO_TARGET_ARCH )
-}
+log "cross-compiling daemon for linux/$GO_TARGET_ARCH (make detects up-to-date)"
+( cd "$ROOT" && make -s daemon DAEMON_GOOS=linux DAEMON_GOARCH=$GO_TARGET_ARCH )
 [[ -f "$ROOT/controlplane/ui/dist/index.html" ]] || {
     log "building web UI"
     have npm || fail "npm required to build web UI"
