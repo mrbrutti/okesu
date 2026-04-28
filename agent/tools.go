@@ -183,23 +183,36 @@ func normalizeToolName(name string) string {
 // the name and route through invokeLookupFindings instead. If we end up
 // here with that name, the LLM is calling a tool the daemon doesn't have a
 // CP for; we return a structured error so the model stops trying.
+//
+// Every tool's output is run through RedactSecrets before being
+// returned to the model — defense-in-depth so a `bash` invocation
+// running `env` / `printenv` / `cat …/agents/*.env` doesn't leak
+// API keys into the JSONL stream → webhook → Control Plane events
+// table → Live Events feed. The redactor catches PEM blocks,
+// branded API tokens (Anthropic / OpenAI / GitHub / Stripe / AWS),
+// bearer headers, JWTs, and key=value pairs whose key matches a
+// secret-name lexicon. It can over-redact in ambiguous cases —
+// that's the intended trade-off (false positives cost readability,
+// false negatives cost a credential).
 func ExecuteTool(name string, input map[string]interface{}) string {
+	var out string
 	switch name {
 	case "bash":
-		return execBash(input)
+		out = execBash(input)
 	case "read_file":
-		return execReadFile(input)
+		out = execReadFile(input)
 	case "write_file":
-		return execWriteFile(input)
+		out = execWriteFile(input)
 	case "list_files":
-		return execListFiles(input)
+		out = execListFiles(input)
 	case "search":
-		return execSearch(input)
+		out = execSearch(input)
 	case "lookup_findings":
 		return "error: lookup_findings is unavailable — this daemon is not connected to a Control Plane"
 	default:
 		return fmt.Sprintf("error: unknown tool %q", name)
 	}
+	return RedactSecrets(out)
 }
 
 // invokeLookupFindings is the per-Config dispatch for the lookup_findings
