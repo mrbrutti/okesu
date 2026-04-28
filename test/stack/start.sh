@@ -173,7 +173,42 @@ else
     DOCKER_CMD=()
 fi
 
-# ── 1. Start the Control Plane ────────────────────────────────────────────────
+# ── 1. Pre-flight: refuse to wipe state if the ports are already taken ───────
+# Earlier versions ran `rm -f run/cp.db*` unconditionally, then tried to bind.
+# If a foreign CP (or a previous instance of this script) was holding :$UI_PORT,
+# the bind failed but the operator's DB had already been nuked. Probe both
+# ports first; abort cleanly so the operator can run ./stop.sh or free the
+# ports before we touch anything destructive.
+port_owner() {
+    if have lsof; then
+        lsof -nP -iTCP:"$1" -sTCP:LISTEN -t 2>/dev/null | head -1
+    fi
+}
+port_in_use() {
+    if have lsof; then
+        [[ -n "$(port_owner "$1")" ]]
+    else
+        # Fallback when lsof isn't installed. /dev/tcp is a bash builtin.
+        (echo > /dev/tcp/127.0.0.1/"$1") >/dev/null 2>&1
+    fi
+}
+
+UI_OWNER=""; MGMT_OWNER=""
+port_in_use "$UI_PORT"   && UI_OWNER="$(port_owner "$UI_PORT")"
+port_in_use "$MGMT_PORT" && MGMT_OWNER="$(port_owner "$MGMT_PORT")"
+if [[ -n "$UI_OWNER" || -n "$MGMT_OWNER" ]]; then
+    EXISTING_CP="$(cat "$RUN_DIR/cp.pid" 2>/dev/null || true)"
+    if [[ -n "$EXISTING_CP" ]] && kill -0 "$EXISTING_CP" 2>/dev/null && \
+       [[ "$EXISTING_CP" == "$UI_OWNER" || "$EXISTING_CP" == "$MGMT_OWNER" ]]; then
+        fail "Control Plane already running (pid $EXISTING_CP, $RUN_DIR/cp.pid).
+       Run ./stop.sh first, or kill it manually before re-running."
+    fi
+    fail "Port already in use — UI=$UI_PORT (pid '${UI_OWNER:-?}'), MGMT=$MGMT_PORT (pid '${MGMT_OWNER:-?}').
+       Refusing to wipe $RUN_DIR/cp.db while we can't claim the ports.
+       Free the ports (or stop the offending process) and try again."
+fi
+
+# ── 2. Start the Control Plane ────────────────────────────────────────────────
 log "starting Control Plane on https://localhost:$UI_PORT"
 rm -f "$RUN_DIR/cp.db" "$RUN_DIR/cp.db-"* "$RUN_DIR"/*.crt "$RUN_DIR"/*.key 2>/dev/null || true
 "$ROOT/okesu-cp" serve \
@@ -360,80 +395,7 @@ if [[ -z "${ANTHROPIC_API_KEY:-}" ]]; then
     warn "  export ANTHROPIC_API_KEY=sk-ant-… and re-run for real findings."
 fi
 
-# ── 7. Seed a few demo finding events so the dashboard isn't empty ────────────
-log "seeding demo finding events"
-seed_finding() {
-    # All fields stay as strings to match the webhook wire contract.
-    # Multi-line evidence is split into a list by the UI on \n.
-    local sev="$1" title="$2" resource="$3" evidence="$4" recommended="$5" dedup="$6"
-    local ts
-    ts=$(python3 -c 'import time; print(int(time.time()*1000))' 2>/dev/null || date +%s)000
-    local body
-    body=$(SEV="$sev" TITLE="$title" RESOURCE="$resource" EVIDENCE="$evidence" REC="$recommended" DEDUP="$dedup" \
-      python3 -c "
-import json, os
-print(json.dumps({
-    'type': 'finding',
-    'ts': $ts,
-    'agent': 'edr-demo',
-    'host': 'prod-web-01',
-    'severity': os.environ['SEV'],
-    'title': os.environ['TITLE'],
-    'resource': os.environ['RESOURCE'],
-    'evidence': os.environ['EVIDENCE'],
-    'recommended_action': os.environ['REC'],
-    'dedup_key': os.environ['DEDUP'],
-}))
-")
-    local sig
-    sig=$(printf '%s' "$body" | openssl dgst -sha256 -hmac "$WEBHOOK_SECRET" -hex | awk '{print $NF}')
-    curl -sk -X POST "https://localhost:$UI_PORT/api/webhooks/events" \
-        -H 'Content-Type: application/x-ndjson' \
-        -H "X-Okesu-Signature: sha256=$sig" \
-        -H 'X-Okesu-Agent: edr-demo' \
-        -H 'X-Okesu-Host: prod-web-01' \
-        -d "$body" > /dev/null
-    sleep 0.05
-}
-
-# CRITICAL — memfd process indicates fileless malware
-seed_finding CRITICAL "Memfd process detected (no disk-backed executable)" "pid:1337" \
-  $'1337 root      0.5  python3 /memfd:exploit (deleted)\nESTABLISHED tcp 1337 -> 45.83.91.22:8080\n/proc/1337/exe -> /memfd:1337 (deleted)' \
-  'Isolate the host from the network and capture process memory before terminating. The exec path indicates the binary was loaded directly into memory, a classic fileless-malware technique.' \
-  'pid:1337+memfd'
-
-# HIGH — SSH from a source not on the allowlist
-seed_finding HIGH "SSH login from unexpected source" "ip:1.2.3.4" \
-  $'sshd[2381]: Accepted publickey for root from 1.2.3.4 port 51234 ssh2\n1.2.3.4 not in CIDR allowlist (10.0.0.0/8, 172.16.0.0/12)' \
-  'Verify whether 1.2.3.4 is an authorized administrator IP. If not, rotate the SSH keys for the root account and review recent audit logs for actions taken during this session.' \
-  'ip:1.2.3.4+ssh-root'
-
-# HIGH — new setuid binary in a writable location
-seed_finding HIGH "New setuid binary in writable directory" "path:/tmp/.x/sudo" \
-  $'-rwsr-xr-x 1 root root 184072 /tmp/.x/sudo\nsha256: 7b3e...cd02 (does not match system /usr/bin/sudo)\ncreated: just now' \
-  'Remove the binary, audit /tmp for other suspicious files, and review the bash history of users who recently logged in. A setuid binary placed in a writable directory is a classic privilege escalation staging artifact.' \
-  'path:/tmp/.x/sudo'
-
-# MEDIUM — world-writable cron file
-seed_finding MEDIUM "World-writable cron file" "path:/etc/cron.d/maintenance" \
-  '-rw-rw-rw- 1 root root 285 /etc/cron.d/maintenance' \
-  'Restore mode 0644 on /etc/cron.d/maintenance. World-writable cron files allow any local user to schedule arbitrary code execution as root.' \
-  'path:/etc/cron.d/maintenance'
-
-# LOW — stale package mirror, mostly informational
-seed_finding LOW "Apt mirror has not been updated in 14 days" "host:apt.example.com" \
-  $'last update 14d ago\napt-get update returned 304 Not Modified' \
-  'Check whether apt.example.com is being updated. Stale mirrors cause delayed security patches but no immediate risk.' \
-  'apt-stale'
-
-# Plus a duplicate of the CRITICAL finding from a few minutes ago,
-# so the "Related occurrences" section in the drawer has content.
-seed_finding CRITICAL "Memfd process detected (no disk-backed executable)" "pid:1337" \
-  $'(prior occurrence at 09:14:22)\n1337 root      0.5  python3 /memfd:exploit (deleted)' \
-  'Isolate the host from the network and capture process memory before terminating.' \
-  'pid:1337+memfd'
-
-# ── 8. Register every fleet member, then trigger deploy on each ───────────────
+# ── 7. Register every fleet member, then trigger deploy on each ───────────────
 SSH_KEY_FILE="$ROOT/test/sshtarget/keys/id_ed25519"
 if (( ${#FLEET_NAMES[@]} > 0 && ${#DOCKER_CMD[@]} > 0 )); then
     log "registering ${#FLEET_NAMES[@]} fleet member(s) with the Control Plane"

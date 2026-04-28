@@ -6,20 +6,32 @@ set -uo pipefail
 cd "$(dirname "$0")"
 RUN_DIR="$(pwd)/run"
 
+# Kill the PID in $1 only if its argv contains $2. Without the cmd check
+# we'd happily kill whatever process happens to be living at that PID
+# (e.g. the demo daemon.pid pointing at an unrelated `okesu daemon`
+# someone launched by hand) — that's how the macOS edr-demo got reaped
+# as collateral last lab restart.
 stop_pid() {
-    local pidfile="$1"
+    local pidfile="$1" expected="$2" pid cmd
     [[ -f "$pidfile" ]] || return 0
-    local pid
     pid="$(cat "$pidfile")"
-    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
-        kill "$pid" 2>/dev/null && echo "stopped pid $pid ($(basename "$pidfile" .pid))"
+    if [[ -z "$pid" ]] || ! kill -0 "$pid" 2>/dev/null; then
+        rm -f "$pidfile"
+        return 0
     fi
+    cmd="$(ps -p "$pid" -o args= 2>/dev/null || true)"
+    if [[ -n "$expected" && "$cmd" != *"$expected"* ]]; then
+        echo "skip pid $pid ($(basename "$pidfile" .pid)): not ours — argv: $cmd"
+        rm -f "$pidfile"
+        return 0
+    fi
+    kill "$pid" 2>/dev/null && echo "stopped pid $pid ($(basename "$pidfile" .pid))"
     rm -f "$pidfile"
 }
 
-stop_pid "$RUN_DIR/daemon.pid"
-stop_pid "$RUN_DIR/node.pid"
-stop_pid "$RUN_DIR/cp.pid"
+stop_pid "$RUN_DIR/daemon.pid" "okesu daemon"
+stop_pid "$RUN_DIR/node.pid"   "okesu node"
+stop_pid "$RUN_DIR/cp.pid"     "okesu-cp serve"
 
 if [[ -n "${DOCKER:-}" ]]; then
     DOCKER_CMD=($DOCKER)
