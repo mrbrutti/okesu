@@ -24,6 +24,7 @@ import { api, ApiError, subscribeEvents, type EventItem } from '../api';
 import { cn } from '../lib/cn';
 import { useLiveEventsPrefs } from '../lib/preferences';
 import { useInfiniteScroll } from '../lib/useInfiniteScroll';
+import { CPSourceChip } from './CPSourceChip';
 
 // Hard ceiling on the in-memory event list. Lazy loading lets the operator
 // scroll back through history; this cap prevents unbounded growth on a
@@ -592,6 +593,7 @@ function TimelineRow({ event, live }: RowProps) {
               {meta.tagText}
             </span>
           )}
+          <CPSourceChip source={event.cp_source} />
         </div>
         {meta.subtitle && (
           <div className="mt-0.5 text-xs text-ink-dim truncate">{meta.subtitle}</div>
@@ -702,6 +704,7 @@ function TimelineGroupRow({
             {row.agent && (
               <code className="text-[11px] text-ink-mute font-mono">{row.agent}</code>
             )}
+            <CPSourceChip source={row.members[0]?.cp_source} />
           </div>
           <div className="mt-0.5 text-[11px] text-ink-mute flex items-center gap-2 flex-wrap">
             {row.hosts.length > 0 && (
@@ -779,6 +782,7 @@ function TimelineTickRow({
             <span className="text-sm font-medium text-ink truncate">
               {row.agent} <span className="text-ink-dim font-normal">· tick #{row.tick}</span>
             </span>
+            <CPSourceChip source={row.members[0]?.cp_source} />
             {row.result && (
               <span className={cn(
                 'text-[10px] font-medium uppercase tracking-wide px-1.5 py-0.5 rounded ring-1',

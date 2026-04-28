@@ -728,6 +728,7 @@ function GroupRow({ g, selected, onToggleSelected, onOpen, onPickAgent, onPickHo
                 ×{g.count}
               </span>
             )}
+            <CPSourceChip source={g.cp_source} />
           </div>
           <div className="mt-0.5 text-xs text-ink-dim flex items-center gap-2 flex-wrap">
             {g.agent && (

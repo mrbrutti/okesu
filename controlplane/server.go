@@ -334,8 +334,10 @@ func (s *Server) routes() http.Handler {
 	r.Get("/api/v1/federation/findings/grouped", api.FederationFindingsGrouped(s.store))
 	r.Get("/api/v1/federation/daimons",          api.FederationDaimons(s.store))
 	r.Get("/api/v1/federation/nodes",            api.FederationNodes(s.store))
-	r.Get("/api/v1/federation/events",           api.RequireFederationToken(s.store, api.EventsList(s.eventStore)))
-	r.Get("/api/v1/federation/events/stream",    api.RequireFederationToken(s.store, api.EventsStream(s.bcast)))
+	r.Get("/api/v1/federation/events",                   api.RequireFederationToken(s.store, api.EventsList(s.eventStore)))
+	r.Get("/api/v1/federation/events/stream",            api.RequireFederationToken(s.store, api.EventsStream(s.bcast)))
+	r.Get("/api/v1/federation/insights/findings",        api.FederationInsightsFindings(s.store))
+	r.Get("/api/v1/federation/insights/events",          api.RequireFederationToken(s.store, api.InsightsEvents(s.eventStore)))
 
 	r.Get("/api/v1/cp/introspect", api.CPIntrospect(api.CPIntrospectDepsValue{
 		Store:           s.store,
@@ -373,8 +375,8 @@ func (s *Server) routes() http.Handler {
 		r.Get("/api/users/me/sessions", api.MySessions(s.store, s.mgr))
 		r.Delete("/api/users/me/sessions", api.MyRevokeOtherSessions(s.store, s.mgr))
 		r.Get("/api/dashboard", api.Dashboard(s.store, s.eventStore, s.tunReg, s.cfg.DaimonFilesDir, s.daemonBinaryVersion))
-		r.Get("/api/insights/findings", api.InsightsFindings(s.store))
-		r.Get("/api/insights/events", api.InsightsEvents(s.eventStore))
+		r.Get("/api/insights/findings", api.FederatedInsightsFindings(s.store, s.fedAgg))
+		r.Get("/api/insights/events", api.FederatedInsightsEvents(api.InsightsEvents(s.eventStore), s.fedAgg))
 		r.Get("/api/system/about", api.AboutHandler(Version(), s.daemonBinaryVersion, api.AboutFeatures{
 			OIDC:          s.oidc != nil,
 			MgmtPlane:     s.mgmtHTTP != nil,

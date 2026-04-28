@@ -15,6 +15,9 @@ export interface EventItem {
   severity?: string;
   title?: string;
   raw: Record<string, unknown>;
+  /** Phase 9.6: federation source — populated when this event came
+   *  from a federated child CP. Local events leave this undefined. */
+  cp_source?: CPSourceRef;
 }
 
 export class ApiError extends Error {
@@ -245,6 +248,8 @@ export interface FindingGroup {
   first_seen: number;
   last_seen: number;
   latest_id: number;
+  /** Phase 9.6: federation source. */
+  cp_source?: CPSourceRef;
 }
 
 export interface FindingsFilter {
@@ -1059,6 +1064,10 @@ export function subscribeEvents(onEvent: (e: EventItem) => void): () => void {
         severity: raw.severity,
         title: raw.title,
         raw,
+        // Federation source — injected by the parent CP's SSE
+        // multiplexer (controlplane/api/federation_reads.go's
+        // injectCPSource); local events leave this undefined.
+        cp_source: raw.cp_source as CPSourceRef | undefined,
       };
       onEvent(item);
     } catch {

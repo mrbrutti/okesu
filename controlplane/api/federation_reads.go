@@ -56,6 +56,178 @@ func FederationFindings(store *db.Store) http.HandlerFunc {
 	return requireFederationToken(store, FindingsList(store))
 }
 
+// FederationInsightsFindings handles GET /api/v1/federation/insights/findings.
+func FederationInsightsFindings(store *db.Store) http.HandlerFunc {
+	return requireFederationToken(store, InsightsFindings(store))
+}
+
+// FederatedInsightsEvents wraps InsightsEvents. Each peer's bucket
+// counts are summed into the parent's response, bucket-aligned by
+// the (ts, bucket_ms) key. bucket_ms is the same on every peer
+// because the API uses fixed-window quantization driven by ?since.
+func FederatedInsightsEvents(local http.Handler, agg *federation.Aggregator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		localRR := httpRecorder()
+		local.ServeHTTP(localRR, r)
+		if localRR.code != http.StatusOK {
+			w.WriteHeader(localRR.code)
+			_, _ = w.Write(localRR.body)
+			return
+		}
+		var merged eventsTimelineWire
+		if err := json.Unmarshal(localRR.body, &merged); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+		path := "/api/v1/federation/insights/events"
+		if rq := r.URL.RawQuery; rq != "" {
+			path += "?" + rq
+		}
+		var mu sync.Mutex
+		results, _ := agg.FanOut(ctx, func(ctx context.Context, peer federation.Peer) error {
+			var s eventsTimelineWire
+			if err := agg.FetchJSON(ctx, peer, path, &s); err != nil {
+				return err
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			merged.Buckets = mergeEventBuckets(merged.Buckets, s.Buckets)
+			return nil
+		})
+		if pErr := federation.AnyError(results); pErr != nil {
+			w.Header().Set("X-Okesu-Federation-Warning", pErr.Error())
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(merged)
+	}
+}
+
+// FederatedInsightsFindings wraps InsightsFindings. Series union'd
+// across CPs; per-bucket per-series counts summed.
+func FederatedInsightsFindings(store *db.Store, agg *federation.Aggregator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		localRR := httpRecorder()
+		InsightsFindings(store).ServeHTTP(localRR, r)
+		if localRR.code != http.StatusOK {
+			w.WriteHeader(localRR.code)
+			_, _ = w.Write(localRR.body)
+			return
+		}
+		var merged findingsTimelineWire
+		if err := json.Unmarshal(localRR.body, &merged); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+		path := "/api/v1/federation/insights/findings"
+		if rq := r.URL.RawQuery; rq != "" {
+			path += "?" + rq
+		}
+		var mu sync.Mutex
+		results, _ := agg.FanOut(ctx, func(ctx context.Context, peer federation.Peer) error {
+			var s findingsTimelineWire
+			if err := agg.FetchJSON(ctx, peer, path, &s); err != nil {
+				return err
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			merged.Series = unionStrings(merged.Series, s.Series)
+			merged.Buckets = mergeFindingBuckets(merged.Buckets, s.Buckets)
+			return nil
+		})
+		if pErr := federation.AnyError(results); pErr != nil {
+			w.Header().Set("X-Okesu-Federation-Warning", pErr.Error())
+		}
+		// Always non-nil arrays (Phase 9 wire-shape policy).
+		if merged.Series == nil {
+			merged.Series = []string{}
+		}
+		if merged.Buckets == nil {
+			merged.Buckets = []findingsBucketWire{}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(merged)
+	}
+}
+
+// Wire shapes for the insights endpoints — duplicated locally so
+// federation_reads.go doesn't reach across to the unexported
+// types in dashboard.go.
+type eventsTimelineWire struct {
+	BucketMs int64                `json:"bucket_ms"`
+	Buckets  []eventsBucketWire   `json:"buckets"`
+}
+type eventsBucketWire struct {
+	Ts    int64 `json:"ts"`
+	Count int64 `json:"count"`
+}
+type findingsTimelineWire struct {
+	BucketMs int64                  `json:"bucket_ms"`
+	GroupBy  string                 `json:"group_by"`
+	Series   []string               `json:"series"`
+	Buckets  []findingsBucketWire   `json:"buckets"`
+}
+type findingsBucketWire struct {
+	Ts int64            `json:"ts"`
+	By map[string]int64 `json:"by"`
+}
+
+func mergeEventBuckets(a, b []eventsBucketWire) []eventsBucketWire {
+	idx := make(map[int64]int, len(a))
+	for i := range a {
+		idx[a[i].Ts] = i
+	}
+	for _, r := range b {
+		if i, ok := idx[r.Ts]; ok {
+			a[i].Count += r.Count
+		} else {
+			idx[r.Ts] = len(a)
+			a = append(a, r)
+		}
+	}
+	return a
+}
+
+func mergeFindingBuckets(a, b []findingsBucketWire) []findingsBucketWire {
+	idx := make(map[int64]int, len(a))
+	for i := range a {
+		idx[a[i].Ts] = i
+	}
+	for _, r := range b {
+		if i, ok := idx[r.Ts]; ok {
+			if a[i].By == nil {
+				a[i].By = map[string]int64{}
+			}
+			for k, v := range r.By {
+				a[i].By[k] += v
+			}
+		} else {
+			idx[r.Ts] = len(a)
+			a = append(a, r)
+		}
+	}
+	return a
+}
+
+func unionStrings(a, b []string) []string {
+	seen := make(map[string]struct{}, len(a))
+	for _, s := range a {
+		seen[s] = struct{}{}
+	}
+	for _, s := range b {
+		if _, ok := seen[s]; !ok {
+			seen[s] = struct{}{}
+			a = append(a, s)
+		}
+	}
+	return a
+}
+
 // FederationFindingsSummary handles GET /api/v1/federation/findings/summary.
 func FederationFindingsSummary(store *db.Store) http.HandlerFunc {
 	return requireFederationToken(store, FindingsSummary(store))
