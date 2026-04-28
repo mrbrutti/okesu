@@ -194,7 +194,9 @@ fi
 
 # ── deploy_fleet <ui_port> <fleet> ──────────────────────────────────────
 deploy_fleet() {
-    local ui_port="$1" fleet="$2" cookies="$STACK_DIR/run-fed/cookies-$ui_port.txt"
+    local ui_port="$1"
+    local fleet="$2"
+    local cookies="$STACK_DIR/run-fed/cookies-$ui_port.txt"
     curl -sk -c "$cookies" -X POST "https://localhost:$ui_port/api/auth/login" \
         -H 'Content-Type: application/json' \
         -d "{\"email\":\"admin@local\",\"password\":\"$ADMIN_PASSWORD\"}" > /dev/null
@@ -202,7 +204,10 @@ deploy_fleet() {
     local SSH_KEY_FILE="$ROOT/test/sshtarget/keys/id_ed25519"
     [[ -f "$SSH_KEY_FILE" ]] || { warn "no SSH key at $SSH_KEY_FILE — registering nodes only"; }
 
-    while IFS= read -r line; do
+    # Read the fleet via FD 3 (not stdin) so commands inside the body
+    # (notably `docker run`) can't consume the remaining lines and
+    # silently kill the loop after one iteration.
+    while IFS= read -r line <&3; do
         [[ -z "$line" ]] && continue
         IFS=':' read -r f_name f_distro f_port f_agents <<<"$line"
         local cname="okesu-sshtarget-${f_name}"
@@ -253,7 +258,7 @@ print(json.dumps({
                 -d "$deploy_payload" > /dev/null
             printf '  · %-18s ssh=:%-5s agents=%s\n' "$f_name" "$f_port" "$f_agents"
         fi
-    done <<<"$fleet"
+    done 3<<<"$fleet"
 }
 
 log "deploying east fleet (15 nodes → :8443)"
