@@ -339,6 +339,11 @@ func (s *Server) routes() http.Handler {
 	r.Get("/api/v1/federation/insights/findings",        api.FederationInsightsFindings(s.store))
 	r.Get("/api/v1/federation/insights/events",          api.RequireFederationToken(s.store, api.InsightsEvents(s.eventStore)))
 
+	// Phase 9.7: federation writes. Token-authed POST endpoints the
+	// parent's forwarding handlers proxy to when an operator picks a
+	// target child CP from the Global UI.
+	r.Post("/api/v1/federation/nodes", api.FederationNodeCreate(s.store))
+
 	r.Get("/api/v1/cp/introspect", api.CPIntrospect(api.CPIntrospectDepsValue{
 		Store:           s.store,
 		Version:         Version(),
@@ -483,7 +488,7 @@ func (s *Server) routes() http.Handler {
 			r.Post("/api/findings/{id}/severity", api.FindingSetSeverity(s.store))
 			r.Get("/api/findings/severity-rules", api.SeverityRulesList(s.store))
 			r.Delete("/api/findings/severity-rules", api.SeverityRuleDelete(s.store))
-			r.Post("/api/nodes", api.NodeCreate(s.store))
+			r.Post("/api/nodes", api.ForwardingNodeCreate(s.store, s.fedAgg))
 			r.Delete("/api/nodes/{id}", api.NodeDelete(s.store))
 			r.Post("/api/nodes/{id}/refresh-metadata", api.NodeRefreshMetadata(s.store, s.tunReg))
 			r.Put("/api/nodes/{id}/auto-update", api.NodeAutoUpdateToggle(s.store))

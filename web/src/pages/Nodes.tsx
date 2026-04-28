@@ -14,7 +14,7 @@ import {
   Wifi,
   X,
 } from 'lucide-react';
-import { api, subscribeJobLog, type NodeItem } from '../api';
+import { api, subscribeJobLog, type FederationPeer, type NodeItem } from '../api';
 import { cn } from '../lib/cn';
 import { SectionHeader, type SectionTone } from '../components/lists/SectionHeader';
 import { ListCard } from '../components/lists/ListCard';
@@ -398,11 +398,24 @@ function AddNodeModal({ onClose, onCreated }: { onClose: () => void; onCreated: 
   const [notes, setNotes] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Phase 9.7: federation target. Empty string = local CP (default).
+  // Populated with healthy peers when this CP federates from anyone.
+  const [peers, setPeers] = useState<FederationPeer[]>([]);
+  const [targetCP, setTargetCP] = useState('');
+
+  useEffect(() => {
+    api.federationPeers()
+      .then((list) => setPeers(list.filter((p) => p.healthy)))
+      .catch(() => { /* no peers configured — picker hides */ });
+  }, []);
 
   async function handleSubmit() {
     setBusy(true); setError(null);
     try {
-      const node = await api.createNode({ name, hostname, ssh_user: sshUser, ssh_port: sshPort, notes });
+      const node = await api.createNode({
+        name, hostname, ssh_user: sshUser, ssh_port: sshPort, notes,
+        target_cp_instance_id: targetCP || undefined,
+      });
       onCreated(node);
     } catch (e) {
       setError(String(e));
@@ -419,6 +432,28 @@ function AddNodeModal({ onClose, onCreated }: { onClose: () => void; onCreated: 
           <button onClick={onClose} className="p-1 text-ink-dim hover:text-ink rounded-md"><X size={16} /></button>
         </header>
         <div className="p-5 space-y-3 text-sm">
+          {peers.length > 0 && (
+            <Field label="Target CP">
+              <select
+                value={targetCP}
+                onChange={(e) => setTargetCP(e.target.value)}
+                className={inputCls}
+                title="Which Control Plane should own this node? Defaults to this (local) CP."
+              >
+                <option value="">This CP (local)</option>
+                {peers.map((p) => {
+                  const id = p.introspect?.instance_id ?? '';
+                  const label = p.display_name || p.introspect?.display_name || p.url;
+                  const region = p.introspect?.region;
+                  return (
+                    <option key={id} value={id}>
+                      {label}{region ? ` · ${region}` : ''}
+                    </option>
+                  );
+                })}
+              </select>
+            </Field>
+          )}
           <Field label="Name">
             <input value={name} onChange={(e) => setName(e.target.value)} placeholder="prod-web-01" className={inputCls} required />
           </Field>

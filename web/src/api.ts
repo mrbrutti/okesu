@@ -856,6 +856,11 @@ export interface NodeCreateReq {
   ssh_user?: string;
   ssh_port?: number;
   notes?: string;
+  /** Phase 9.7: when set, the parent CP forwards this request to the
+   *  named child CP instead of creating the node locally. The child's
+   *  response is streamed back unchanged so the dialog still gets a
+   *  NodeItem on success. */
+  target_cp_instance_id?: string;
 }
 
 export interface NodeDeployReq {
