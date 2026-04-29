@@ -239,6 +239,13 @@ deploy_fleet() {
 
     # Pass 2 — register + deploy. Now sshd is listening so the deploy
     # job's first ssh dial succeeds.
+    #
+    # On a re-run the nodes table already has rows for these names; the
+    # POST returns a UNIQUE-constraint error and the response carries no
+    # id. We catch that and look the id up by name from /api/nodes so the
+    # deploy still happens — keeps re-runs idempotent.
+    local existing_nodes_json
+    existing_nodes_json=$(curl -sk -b "$cookies" "https://localhost:$ui_port/api/nodes")
     while IFS= read -r line <&3; do
         [[ -z "$line" ]] && continue
         IFS=':' read -r f_name f_distro f_port f_agents <<<"$line"
@@ -260,7 +267,19 @@ print(json.dumps({
         local node_id
         node_id=$(printf '%s' "$node_resp" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("id",""))' 2>/dev/null || true)
         if [[ -z "$node_id" ]]; then
-            warn "register $f_name failed: $node_resp"
+            # Re-run path: registration failed (likely UNIQUE on
+            # nodes.name). Look up the existing row by name from the
+            # snapshot we took above so the deploy can continue.
+            node_id=$(printf '%s' "$existing_nodes_json" | NAME="$f_name" python3 -c '
+import json, os, sys
+target = os.environ["NAME"]
+for r in json.load(sys.stdin):
+    if r.get("name") == target:
+        print(r["id"]); break
+' 2>/dev/null || true)
+        fi
+        if [[ -z "$node_id" ]]; then
+            warn "register $f_name failed and no existing row: $node_resp"
             continue
         fi
 
@@ -288,11 +307,137 @@ print(json.dumps({
     done 3<<<"$fleet"
 }
 
+# ── bulk_start_processes — work around the lab's mocked systemctl ──────
+#
+# The deploy step writes systemd unit files, but the sshtarget images
+# no-op `systemctl enable --now`. So the units land on disk and never
+# launch. This walks every okesu-sshtarget-* container and spawns the
+# two long-running processes the orchestrator needs:
+#
+#   1. okesu-agent-<name>.service  → `okesu daemon --agent <name>`
+#      (one per agent on the node — the per-tick collector loop)
+#   2. okesu-jobs.service          → `okesu jobs --cp-url … --name …`
+#      (the pull-mode receiver for orchestration step dispatches)
+#
+# Idempotent: skips containers where the process is already running.
+# Reads the unit's ExecStart line to recover per-node flags so this
+# stays in lock-step with whatever the deploy code wrote.
+bulk_start_processes() {
+    local container started_d=0 started_j=0 skipped=0
+    # Snapshot the container list up front. If we used a pipe / process
+    # substitution, the inner `nerdctl exec` calls would inherit the
+    # loop's stdin and gobble the heredoc after one iteration.
+    local containers
+    containers=$("${DOCKER_CMD[@]}" ps --filter 'name=okesu-sshtarget-' --format '{{.Names}}')
+    while IFS= read -r container <&3; do
+        [[ -z "$container" ]] && continue
+
+        # ── daimons (one per okesu-agent-*.service file) ─────────────
+        local agent_units
+        agent_units=$("${DOCKER_CMD[@]}" exec "$container" sh -c \
+            'ls /etc/systemd/system/okesu-agent-*.service 2>/dev/null' </dev/null 2>/dev/null || true)
+        local unit
+        for unit in $agent_units; do
+            local agent_name
+            agent_name=$(basename "$unit" .service)
+            agent_name=${agent_name#okesu-agent-}
+            if "${DOCKER_CMD[@]}" exec "$container" pgrep -f "okesu daemon --agent ${agent_name}\b" </dev/null >/dev/null 2>&1; then
+                skipped=$((skipped + 1))
+                continue
+            fi
+            "${DOCKER_CMD[@]}" exec -d "$container" sh -c "
+                set -a
+                [ -f /etc/okesu/agents/${agent_name}.env ] && . /etc/okesu/agents/${agent_name}.env
+                set +a
+                mkdir -p /var/lib/okesu/${agent_name} /var/log/okesu
+                cd /var/lib/okesu/${agent_name}
+                nohup /usr/local/bin/okesu daemon --agent ${agent_name} \
+                    > /var/log/okesu/${agent_name}.log 2>&1 &
+            "
+            started_d=$((started_d + 1))
+        done
+
+        # ── jobs runtime (one per container) ─────────────────────────
+        if "${DOCKER_CMD[@]}" exec "$container" pgrep -f 'okesu jobs' </dev/null >/dev/null 2>&1; then
+            skipped=$((skipped + 1))
+        else
+            local exec_line
+            exec_line=$("${DOCKER_CMD[@]}" exec "$container" sh -c \
+                "grep '^ExecStart=' /etc/systemd/system/okesu-jobs.service 2>/dev/null | cut -d= -f2-" </dev/null 2>/dev/null || true)
+            if [[ -n "$exec_line" ]]; then
+                "${DOCKER_CMD[@]}" exec -d "$container" sh -c "
+                    set -a
+                    [ -f /etc/okesu/jobs.env ] && . /etc/okesu/jobs.env
+                    set +a
+                    mkdir -p /var/log/okesu
+                    nohup ${exec_line} > /var/log/okesu/jobs.log 2>&1 &
+                "
+                started_j=$((started_j + 1))
+            fi
+        fi
+    done 3<<<"$containers"
+
+    printf '  ✓ %d daimon process(es) started, %d jobs runtime(s) started, %d already running\n' \
+        "$started_d" "$started_j" "$skipped"
+}
+
+# wait_for_deploys polls /api/nodes on the given CP until every fleet
+# node's binary has actually landed in its container. The deploy
+# endpoint returns synchronously with a job id but the SSH copy +
+# unit-file write happens in a goroutine, so we have to gate the
+# bulk-start on completion or we'll race and find no service files
+# to read. Times out after 180s with a warning.
+wait_for_deploys() {
+    local fleet="$1"
+    local expected
+    expected=$(printf '%s\n' "$fleet" | grep -c .)
+    local deadline=$((SECONDS + 180))
+    local ready=0
+    while (( SECONDS < deadline )); do
+        ready=0
+        # Read fleet via FD 3 — `nerdctl exec` (and friends) inherit the
+        # caller's stdin, so feeding the loop on stdin gets the heredoc
+        # gobbled up after the first iteration.
+        while IFS= read -r line <&3; do
+            [[ -z "$line" ]] && continue
+            IFS=':' read -r f_name _ _ _ <<<"$line"
+            local probe_rc=0
+            "${DOCKER_CMD[@]}" exec "okesu-sshtarget-$f_name" \
+                test -x /usr/local/bin/okesu </dev/null >/dev/null 2>&1 || probe_rc=$?
+            if (( probe_rc == 0 )); then
+                ready=$((ready + 1))
+            fi
+        done 3<<<"$fleet"
+        if (( ready == expected )); then
+            printf '  ✓ %d/%d nodes have okesu binary in place\n' "$ready" "$expected"
+            return 0
+        fi
+        printf '  · %d/%d ready, waiting…\n' "$ready" "$expected"
+        sleep 5
+    done
+    warn "deploy wait timed out: only $ready/$expected nodes have okesu binary"
+    return 1
+}
+
 log "deploying east fleet (15 nodes → :8443)"
 deploy_fleet 8443 "$EAST_FLEET"
 
 log "deploying west fleet (15 nodes → :9443)"
 deploy_fleet 9443 "$WEST_FLEET"
+
+# Wait for the async deploy goroutines to actually finish copying the
+# binary + unit files before we try to bulk-start anything inside the
+# containers. Without this gate the bulk-start runs against an empty
+# /etc/systemd/system on every container.
+log "waiting for deploys to land binaries + units"
+wait_for_deploys "$EAST_FLEET"
+wait_for_deploys "$WEST_FLEET"
+
+# Lab containers' systemctl is a no-op, so the deploy's `systemctl
+# enable --now` never actually launches anything. Manually spawn the
+# daimon + jobs-runtime processes inside each container.
+log "bulk-starting daimon + jobs processes inside lab containers"
+bulk_start_processes
 
 # ── Register both children as federation peers on the global CP ─────────
 log "registering federation peers on global CP"
