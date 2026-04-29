@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/section9labs/okesu/controlplane/audit"
 	"github.com/section9labs/okesu/controlplane/auth"
 	"github.com/section9labs/okesu/controlplane/db"
+	"github.com/section9labs/okesu/controlplane/ioc/extract"
 	"github.com/section9labs/okesu/controlplane/ports"
 )
 
@@ -169,11 +171,49 @@ func FindingIngest(store *db.Store, eventStore ports.EventStore, bcast Broadcast
 		})
 		_ = audit.Emit // keep the import if the caller is via cookie auth
 
+		// Phase 22.1 Task D2 — auto-extract IOCs from finding text and link
+		// observations to the finding. Synchronous so a smoke test that
+		// asserts "after POST, IOC exists in DB" doesn't need to sleep.
+		extractAndLinkIOCs(store, findingID, &req)
+
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusAccepted)
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"event_id":   eventID,
 			"finding_id": findingID,
 		})
+	}
+}
+
+// extractAndLinkIOCs scans the finding's text fields, upserts each IOC
+// hit as source="observed", and records an observation linking it to
+// the finding. Errors are logged but do not fail the ingest — IOC
+// extraction is best-effort enrichment, not a precondition for the
+// finding being persisted.
+func extractAndLinkIOCs(store *db.Store, findingID int64, req *FindingIngestRequest) {
+	parts := []string{req.Title, req.Evidence, req.Resource, req.RecommendedAction}
+	for _, v := range req.Attributes {
+		if s, ok := v.(string); ok {
+			parts = append(parts, s)
+		}
+	}
+	text := strings.Join(parts, "\n")
+	for _, hit := range extract.Extract(text) {
+		id, _, err := store.UpsertIOC(&db.IOCUpsert{
+			Kind:            hit.Kind,
+			Value:           hit.Value,
+			NormalizedValue: hit.NormalizedValue,
+			Source:          "observed",
+		})
+		if err != nil {
+			log.Printf("ioc upsert (%s/%s): %v", hit.Kind, hit.NormalizedValue, err)
+			continue
+		}
+		if err := store.RecordIOCObservation(id, &db.IOCObservation{
+			FindingID: findingID,
+			Host:      req.Host,
+		}); err != nil {
+			log.Printf("ioc observation (id=%d, finding=%d): %v", id, findingID, err)
+		}
 	}
 }
