@@ -74,6 +74,7 @@ type yamlConfig struct {
 	DaemonBinariesDir *string `yaml:"daemon_binaries_dir"`
 	DaimonFilesDir    *string `yaml:"daimon_files_dir"`
 	AgentFilesDirs    []string `yaml:"agent_files_dirs"`
+	IOCCatalogDirs    []string `yaml:"ioc_catalog_dirs"`
 
 	WebhookPublicURL *string `yaml:"webhook_public_url"`
 	MgmtPublicURL    *string `yaml:"mgmt_public_url"`
@@ -148,6 +149,7 @@ func (y *yamlConfig) mergeInto(cfg *Config) {
 	setStr(y.DaemonBinariesDir, &cfg.DaemonBinariesDir)
 	setStr(y.DaimonFilesDir, &cfg.DaimonFilesDir)
 	setStrSlice(y.AgentFilesDirs, &cfg.AgentFilesDirs)
+	setStrSlice(y.IOCCatalogDirs, &cfg.IOCCatalogDirs)
 
 	setStr(y.WebhookPublicURL, &cfg.WebhookPublicURL)
 	setStr(y.MgmtPublicURL, &cfg.MgmtPublicURL)

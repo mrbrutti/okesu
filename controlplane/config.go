@@ -118,6 +118,18 @@ type Config struct {
 	// operators can extend with --agent-files-dir <path> (repeatable).
 	AgentFilesDirs []string
 
+	// IOCCatalogDirs is the list of directories holding YAML files
+	// that ship curated indicators of compromise (Phase 22). On CP
+	// boot and on SIGHUP, every *.yaml/*.yml file under each dir is
+	// parsed and upserted into the iocs table with source=catalog.
+	// Defaults to ["catalog/iocs"] so a fresh checkout picks up the
+	// example file without extra config; operators can override via
+	// the YAML config (ioc_catalog_dirs) or --ioc-catalog-dir flag
+	// (repeatable). A missing directory is not fatal — the CP boots
+	// with an empty catalog and an operator can drop files in over
+	// time.
+	IOCCatalogDirs []string
+
 	// FleetSSHKeyPath is an optional path to a private SSH key the CP
 	// uses for unattended auto-deploy of the jobs runtime when an
 	// orchestration step targets a node that has neither tunnel nor
@@ -291,6 +303,7 @@ func FromEnv() Config {
 		DaemonBinariesDir: os.Getenv("OKESU_CP_DAEMON_BINARIES_DIR"),
 		DaimonFilesDir:    envAny("OKESU_CP_DAIMON_FILES_DIR", "OKESU_CP_AGENT_FILES_DIR"),
 		AgentFilesDirs:    defaultAgentSearchDirs(envSplitNonEmpty("OKESU_CP_AGENT_FILES_DIRS", ":")),
+		IOCCatalogDirs:    defaultIOCCatalogDirs(envSplitNonEmpty("OKESU_CP_IOC_CATALOG_DIRS", ":")),
 		WebhookPublicURL:  os.Getenv("OKESU_CP_WEBHOOK_PUBLIC_URL"),
 		MgmtPublicURL:     os.Getenv("OKESU_CP_MGMT_PUBLIC_URL"),
 
@@ -416,6 +429,26 @@ func envSplitNonEmpty(key, sep string) []string {
 		if p != "" {
 			out = append(out, p)
 		}
+	}
+	return out
+}
+
+// defaultIOCCatalogDirs returns the canonical list of directories the
+// CP scans for YAML IOC catalog files (Phase 22). Out-of-the-box we
+// include "catalog/iocs" — the in-repo directory shipped with the
+// example.yaml — so a fresh checkout boots with at least one entry
+// and operators see the loader path exercised. Extras come from
+// --ioc-catalog-dir flags or the OKESU_CP_IOC_CATALOG_DIRS env var.
+// Missing directories are kept in the list; LoadAndUpsert tolerates
+// them so an operator can pre-configure paths that don't exist yet.
+func defaultIOCCatalogDirs(extra []string) []string {
+	out := []string{"catalog/iocs"}
+	for _, e := range extra {
+		e = strings.TrimSpace(e)
+		if e == "" {
+			continue
+		}
+		out = append(out, e)
 	}
 	return out
 }

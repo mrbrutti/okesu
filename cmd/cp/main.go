@@ -125,6 +125,7 @@ func serveCmd() *cobra.Command {
 	// one-off Runs. Repeat the flag to add more search paths; ~/.claude/agents
 	// and ~/.codex/agents are always searched in addition to these.
 	cmd.Flags().StringSliceVar(&cfg.AgentFilesDirs, "agent-files-dir", cfg.AgentFilesDirs, "Extra directories to search for short-form agent files (repeatable; ~/.claude/agents and ~/.codex/agents are always included)")
+	cmd.Flags().StringSliceVar(&cfg.IOCCatalogDirs, "ioc-catalog-dir", cfg.IOCCatalogDirs, "Directory holding YAML IOC catalog files (repeatable; loaded on boot + SIGHUP). Defaults to catalog/iocs.")
 	cmd.Flags().StringVar(&cfg.FleetSSHKeyPath, "fleet-ssh-key-path", cfg.FleetSSHKeyPath, "Path to an SSH private key the CP uses for unattended auto-deploy of the jobs runtime to nodes that have neither tunnel nor jobs runtime up. Empty disables auto-deploy.")
 	cmd.Flags().StringVar(&cfg.FleetAnthropicAPIKey, "fleet-anthropic-api-key", cfg.FleetAnthropicAPIKey, "Anthropic API key written to /etc/okesu/jobs.env on auto-deployed nodes so spawned `okesu claude` jobs can authenticate. Falls back to ANTHROPIC_API_KEY env var.")
 	cmd.Flags().StringVar(&cfg.FleetOpenAIAPIKey, "fleet-openai-api-key", cfg.FleetOpenAIAPIKey, "OpenAI API key written to /etc/okesu/jobs.env on auto-deployed nodes. Falls back to OPENAI_API_KEY env var.")
