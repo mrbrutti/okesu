@@ -94,9 +94,19 @@ Given a target, find the truth. Don't stop at the first plausible explanation �
 
 If the prompt explicitly asks you to "emit an orchestration_result
 finding with attributes …", produce that finding as your final
-output (one JSON object on its own line via the harness's
-`emit_finding` tool, or in your normal markdown if no such tool is
-available — the harness extracts both forms).
+assistant output, formatted as **one single-line JSON object on its
+own line**, not inside a markdown code block. The orchestrator
+recognises this exact shape and uses it to drive downstream steps +
+CP-side actions.
+
+Required form — copy verbatim, replace fields:
+
+```
+{"type":"finding","category":"orchestration_result","title":"<your title>","severity":"INFO","attributes":{"verdict":"<noise|confirmed|unknown>","reasoning":"<one sentence>","actions":[{"kind":"update_finding_status","finding_id":<id>,"status":"<status>","reason":"<short reason>"}]}}
+```
+
+Print only that line as your last output (no markdown fences, no
+explanatory text after it).
 
 When the spec's step grants `actions:`, request the appropriate
 mutations in `attributes.actions[]`. The full action protocol — kinds,

@@ -846,7 +846,127 @@ func parseFindingsFromLines(lines []db.RunLine) []orchestrator.DispatchedFinding
 			Attributes: f.Attributes,
 		})
 	}
+	if len(out) == 0 {
+		// Fallback: agents (LLMs) frequently write the orchestration
+		// result as JSON inside a markdown code block in their text
+		// stream rather than as a typed JSONL `finding` event. Scan
+		// the assistant text for a JSON object with the expected
+		// shape (verdict / actions / etc.) and synthesise an
+		// orchestration_result so downstream actions still apply.
+		if synth := synthesizeOrchestrationResult(lines); synth != nil {
+			out = append(out, *synth)
+		}
+	}
 	return out
+}
+
+// synthesizeOrchestrationResult is the fallback path. It walks the
+// agent's text deltas (the harness emits each assistant token as a
+// `{"type":"text","text":"…"}` event), reassembles the full text,
+// and looks for the LAST JSON object containing top-level `verdict`
+// or `actions`. That object becomes the orchestration_result's
+// attributes. This is the LLM-tolerant cousin of the strict-finding
+// path: when an agent outputs the right *content* in the wrong
+// *form*, the engine still routes the actions correctly.
+func synthesizeOrchestrationResult(lines []db.RunLine) *orchestrator.DispatchedFinding {
+	var b strings.Builder
+	for _, ln := range lines {
+		// Quick filter: only text deltas matter for this fallback.
+		if !strings.Contains(ln.Data, `"type":"text"`) {
+			continue
+		}
+		var t struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		}
+		if err := json.Unmarshal([]byte(ln.Data), &t); err != nil || t.Type != "text" {
+			continue
+		}
+		b.WriteString(t.Text)
+	}
+	full := b.String()
+	if full == "" {
+		return nil
+	}
+	obj := lastResultObject(full)
+	if obj == nil {
+		return nil
+	}
+	// Heuristic: the result must mention either an `actions` array
+	// or a `verdict` field — otherwise we'd treat unrelated JSON
+	// (e.g. a tool-output sample) as the result.
+	if _, hasActions := obj["actions"]; !hasActions {
+		if _, hasVerdict := obj["verdict"]; !hasVerdict {
+			return nil
+		}
+	}
+	title, _ := obj["title"].(string)
+	if title == "" {
+		title = "orchestration_result (synthesised)"
+	}
+	return &orchestrator.DispatchedFinding{
+		Severity:   "INFO",
+		Title:      title,
+		Category:   orchestrator.OrchestrationResultCategory,
+		Attributes: obj,
+	}
+}
+
+// lastResultObject scans `s` for the latest JSON object that contains
+// `"actions"` or `"verdict"` at the top level. It walks the string
+// byte-by-byte, tracks balanced braces while respecting quoted
+// strings + escapes, and tries to parse each candidate. Returns the
+// last successful parse — agents often write a working draft and a
+// final block, and the LAST one is the one to honor.
+func lastResultObject(s string) map[string]any {
+	var found map[string]any
+	for start := 0; start < len(s); start++ {
+		if s[start] != '{' {
+			continue
+		}
+		depth := 0
+		inStr := false
+		esc := false
+		for i := start; i < len(s); i++ {
+			c := s[i]
+			if esc {
+				esc = false
+				continue
+			}
+			if c == '\\' {
+				esc = true
+				continue
+			}
+			if c == '"' {
+				inStr = !inStr
+				continue
+			}
+			if inStr {
+				continue
+			}
+			if c == '{' {
+				depth++
+			} else if c == '}' {
+				depth--
+				if depth == 0 {
+					candidate := s[start : i+1]
+					if !looksLikeResult(candidate) {
+						break
+					}
+					var parsed map[string]any
+					if err := json.Unmarshal([]byte(candidate), &parsed); err == nil {
+						found = parsed
+					}
+					break
+				}
+			}
+		}
+	}
+	return found
+}
+
+func looksLikeResult(s string) bool {
+	return strings.Contains(s, `"actions"`) || strings.Contains(s, `"verdict"`)
 }
 
 func joinLineTails(lines []db.RunLine, max int) string {

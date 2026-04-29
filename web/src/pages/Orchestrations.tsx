@@ -527,17 +527,27 @@ function Editor({
       {/* Visual authoring canvas — handles its own header (name +
           description + mode toggle + save/cancel) and palette +
           inspector. The CP picker banner above is the only thing
-          this wrapper adds. */}
+          this wrapper adds.
+
+          Important: don't mount the canvas until `content` is loaded
+          on edit. The canvas captures its initial parsed state via
+          useNodesState/useEdgesState which only read the seed once;
+          mounting with an empty string and *then* updating
+          initialYAML produces a permanently empty canvas. */}
       <div className="flex-1 overflow-hidden">
-        <Suspense fallback={<EditorLoading />}>
-          <OrchestrationEditorCanvas
-            initialYAML={isCreate ? TEMPLATE : content}
-            onSave={(yaml) => { setContent(yaml); return save(yaml); }}
-            onCancel={onClose}
-            busy={busy}
-            saveError={error}
-          />
-        </Suspense>
+        {!isCreate && content === '' ? (
+          <EditorLoading />
+        ) : (
+          <Suspense fallback={<EditorLoading />}>
+            <OrchestrationEditorCanvas
+              initialYAML={isCreate ? TEMPLATE : content}
+              onSave={(yaml) => { setContent(yaml); return save(yaml); }}
+              onCancel={onClose}
+              busy={busy}
+              saveError={error}
+            />
+          </Suspense>
+        )}
       </div>
 
       {/* Delete button is moved to the CP banner on edits; on a
@@ -1474,6 +1484,24 @@ function RunDetail({
     }
   }
 
+  const [cancelling, setCancelling] = useState(false);
+  async function cancelRun() {
+    if (!run) return;
+    if (!window.confirm(`Cancel run #${run.id}? In-flight steps continue but the run won't advance further.`)) return;
+    setCancelling(true);
+    try {
+      await api.orchestrationRunCancel(runID, cpInstanceID);
+      onChanged();
+      refresh();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setCancelling(false);
+    }
+  }
+  // Active runs (anything not terminal) can be cancelled.
+  const cancellable = run && (run.status === 'pending' || run.status === 'running' || run.status === 'approval_required');
+
   // Build agent + node maps from the parsed spec — fed into the run
   // canvas so each card shows what it's running and where.
   const { agentByStepID, nodeByStepID } = useMemo(() => {
@@ -1519,10 +1547,23 @@ function RunDetail({
             {orchestration?.cp_source && <CPSourceChip source={orchestration.cp_source} />}
             {run && <RunStatusPill status={run.status} />}
           </div>
-          <span className="ml-auto text-[11px] text-ink-mute">
-            {run?.started_at && `started ${fmtTime(run.started_at)}`}
-            {run?.ended_at && ` · ended ${fmtTime(run.ended_at)}`}
-          </span>
+          <div className="ml-auto flex items-center gap-2">
+            <span className="text-[11px] text-ink-mute">
+              {run?.started_at && `started ${fmtTime(run.started_at)}`}
+              {run?.ended_at && ` · ended ${fmtTime(run.ended_at)}`}
+            </span>
+            {cancellable && (
+              <button
+                onClick={cancelRun}
+                disabled={cancelling}
+                className="inline-flex items-center gap-1 text-xs px-2.5 py-1 rounded-md ring-1 text-red-700 bg-red-50 ring-red-200 hover:bg-red-100 disabled:opacity-50"
+                title="Cancel this run — in-flight steps continue, but the run will not advance further"
+              >
+                <Square size={11} />
+                {cancelling ? 'Cancelling…' : 'Cancel run'}
+              </button>
+            )}
+          </div>
         </div>
       </header>
 

@@ -8,38 +8,28 @@ them on your behalf, validated against the step's allowlist.
 
 ## How to request actions
 
-Emit ONE `orchestration_result` finding at the end of your work. Put
-your structured outputs and an `actions` array under `attributes`:
+Emit ONE `orchestration_result` finding at the end of your work, as
+a **single-line JSON object** on its own line, **not inside a
+markdown code block**. The orchestrator scans your stdout for a line
+that parses as `{"type":"finding","category":"orchestration_result",…}`
+and pulls the `attributes` from it. Anything wrapped in
+```` ```json … ``` ```` won't be picked up — write the JSON
+directly.
 
-```json
-{
-  "type": "finding",
-  "category": "orchestration_result",
-  "title": "auto-triaged: noise",
-  "severity": "INFO",
-  "attributes": {
-    "verdict": "noise",
-    "reasoning": "internal scanner traffic; matches pattern in /etc/okesu/scanners.yml",
-    "actions": [
-      {
-        "kind": "update_finding_status",
-        "finding_id": 245,
-        "status": "false_positive",
-        "reason": "auto-triaged-noise: internal scanner"
-      },
-      {
-        "kind": "add_finding_tag",
-        "finding_id": 245,
-        "tag": "auto-triaged"
-      },
-      {
-        "kind": "link_run_to_finding",
-        "finding_id": 245
-      }
-    ]
-  }
-}
+The orchestrator has a fallback that scans the assistant text for a
+JSON object containing `actions` or `verdict` even when no proper
+finding event was emitted, but rely on the strict path: it keeps
+the audit trail clean.
+
+Required form (copy this layout):
+
 ```
+{"type":"finding","category":"orchestration_result","title":"auto-triaged: noise","severity":"INFO","attributes":{"verdict":"noise","reasoning":"internal scanner traffic; matches pattern in /etc/okesu/scanners.yml","actions":[{"kind":"update_finding_status","finding_id":245,"status":"false_positive","reason":"auto-triaged-noise: internal scanner"},{"kind":"add_finding_tag","finding_id":245,"tag":"auto-triaged"},{"kind":"link_run_to_finding","finding_id":245}]}}
+```
+
+Yes, on one line. Print it as your last assistant output. The harness
+ships it as a `text` event but the engine recognises the embedded
+finding shape and treats it correctly.
 
 Each step's allowlist is narrow on purpose. If you request an action
 the step isn't allowed to take, the engine logs the rejection and

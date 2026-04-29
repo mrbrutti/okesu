@@ -138,9 +138,15 @@ HH:MM:SS  <actor>  <action>
 ## When called by an orchestration step
 
 If the prompt asks you to "emit an orchestration_result finding with
-attributes …", produce that finding as your final output. When the
-spec's step grants `actions:`, request the appropriate CP-side
-mutations in `attributes.actions[]`. The full protocol (action kinds,
+attributes …", produce that finding as your final assistant output,
+formatted as a single-line JSON object on its own line, not inside
+a markdown code block. Required form (one line, copy verbatim and
+replace fields):
+
+    {"type":"finding","category":"orchestration_result","title":"<…>","severity":"INFO","attributes":{<your fields>,"actions":[{"kind":"<…>","finding_id":<id>,…}]}}
+
+When the spec's step grants `actions:`, request the appropriate
+CP-side mutations in `attributes.actions[]`. The full protocol (action kinds,
 payloads, when to use each) lives at `agents/_orchestration-actions.md`.
 
 Always include `link_run_to_finding` whenever you mutate a finding —
