@@ -476,6 +476,16 @@ func (s *Server) routes() http.Handler {
 	// parent's forwarding handlers proxy to when an operator picks a
 	// target child CP from the Global UI.
 	r.Post("/api/v1/federation/nodes", api.FederationNodeCreate(s.store))
+	r.Post("/api/v1/federation/nodes/{id}/deploy", api.FederationNodeDeploy(s.store, s.jobs, s, api.NodesConfig{
+		DaemonBinaryPath:  s.cfg.DaemonBinaryPath,
+		DaemonBinariesDir: s.cfg.DaemonBinariesDir,
+		DaimonFilesDir:    s.cfg.DaimonFilesDir,
+		WebhookSecret:     s.cfg.WebhookSecret,
+		WebhookURL:        s.cfg.EffectiveWebhookURL(),
+		MgmtURL:           s.cfg.EffectiveMgmtURL(),
+		Secrets:           s.secrets,
+	}))
+	r.Post("/api/v1/federation/runs", api.FederationCreateRun(s.runs, s.tunReg, s.store, s.cfg.AgentFilesDirs))
 
 	r.Get("/api/v1/cp/introspect", api.CPIntrospect(api.CPIntrospectDepsValue{
 		Store:           s.store,
@@ -698,15 +708,15 @@ func (s *Server) routes() http.Handler {
 			r.Post("/api/nodes/{id}/rollback-binary", api.NodeRollbackBinary(s.store, s.jobs, api.NodesConfig{
 				Secrets: s.secrets,
 			}))
-			r.Post("/api/nodes/{id}/deploy", api.NodeDeploy(s.store, s.jobs, s, api.NodesConfig{
+			r.Post("/api/nodes/{id}/deploy", api.ForwardingNodeDeploy(s.store, s.jobs, s, api.NodesConfig{
 				DaemonBinaryPath:  s.cfg.DaemonBinaryPath,
 				DaemonBinariesDir: s.cfg.DaemonBinariesDir,
-				DaimonFilesDir:     s.cfg.DaimonFilesDir,
+				DaimonFilesDir:    s.cfg.DaimonFilesDir,
 				WebhookSecret:     s.cfg.WebhookSecret,
 				WebhookURL:        s.cfg.EffectiveWebhookURL(),
 				MgmtURL:           s.cfg.EffectiveMgmtURL(),
 				Secrets:           s.secrets,
-			}))
+			}, s.fedAgg))
 			// Phase 4: install the host-side jobs runtime on a node.
 			// Operator-triggered (via the Nodes UI) — body carries the
 			// SSH credential, the CP issues a fresh node-cert and runs
@@ -718,7 +728,7 @@ func (s *Server) routes() http.Handler {
 				}
 				return s.cfg.EffectiveMgmtURL(), s.cfg.DaemonBinaryPath, binResolver
 			}))
-			r.Post("/api/runs", api.CreateRun(s.runs, s.tunReg, s.store, s.cfg.AgentFilesDirs))
+			r.Post("/api/runs", api.ForwardingCreateRun(s.runs, s.tunReg, s.store, s.cfg.AgentFilesDirs, s.fedAgg))
 			r.Post("/api/runs/{id}/cancel", api.CancelRun(s.runs, s.tunReg, s.store))
 
 			// Phase 9: S3 dead-drop transport — operators manage

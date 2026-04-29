@@ -1095,6 +1095,10 @@ export interface CreateRunReq {
   /** Optional. Links the run to a finding so the FindingDrawer surfaces
    *  it as an "investigation" attached to that finding. */
   finding_id?: number;
+  /** Phase 9.7: when set, the parent forwards the create call to the
+   *  named child CP. Set this from the node's `cp_source.instance_id`
+   *  when running an agent against a federated node. */
+  target_cp_instance_id?: string;
 }
 
 export interface RunListItem {
@@ -1224,6 +1228,10 @@ export interface NodeDeployReq {
   openai_api_key?: string;
   include_webhook?: boolean;
   include_mgmt_cert?: boolean;
+  /** Phase 9.7: when set, the parent forwards the deploy call to the
+   *  named child CP. Set this from the target node's
+   *  `cp_source.instance_id` when deploying to a federated node. */
+  target_cp_instance_id?: string;
 }
 
 // ── Runs-tab filter shape (Phase 12.1) ──────────────────────────────────────
