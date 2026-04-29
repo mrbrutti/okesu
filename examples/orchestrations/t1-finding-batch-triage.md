@@ -10,46 +10,46 @@ defaults:
   timeout: 5m
 
 steps:
-  # 1. Pull the batch from the CP API. Using state=queue means we
-  #    only see findings the dedup-closure + per-finding triage
-  #    haven't already handled (no auto-* tag).
+  # 1. Classify every untagged INFO/LOW finding currently in the
+  #    operator queue. The engine resolves the `data:` block
+  #    server-side and binds the result into the prompt as
+  #    {{data.findings}} + {{data.summary}} — no curl-and-parse.
   - id: classify_batch
     agent: investigator
     timeout: 4m
+    data:
+      findings:
+        query: findings.list
+        params:
+          state: queue
+          severity: [INFO, LOW]
+          limit: 50
+      summary:
+        query: findings.summary
     actions:
       - update_finding_status
       - set_finding_severity_override
       - add_finding_tag
       - link_run_to_finding
     prompt: |
-      Batch-classify untagged INFO/LOW findings from the operator queue.
+      Batch-classify {{data.findings | length}} untagged INFO/LOW
+      findings from the operator queue.
 
-      You're running on the CP host itself. Authenticate, then pull
-      the batch using bash + curl. The CP exposes its own URL and
-      admin creds via these env vars:
-        $OKESU_CP_URL              e.g. https://localhost:8443
-        $OKESU_CP_ADMIN_EMAIL      e.g. admin@local
-        $OKESU_CP_ADMIN_PASSWORD
+      Findings:
+      {{data.findings | json}}
 
-      Login + fetch (run this verbatim, then read the JSON):
-        curl -sk -c /tmp/cp.cookies -X POST "$OKESU_CP_URL/api/auth/login" \
-          -H 'Content-Type: application/json' \
-          -d "{\"email\":\"$OKESU_CP_ADMIN_EMAIL\",\"password\":\"$OKESU_CP_ADMIN_PASSWORD\"}" \
-          > /dev/null
-        curl -sk -b /tmp/cp.cookies \
-          "$OKESU_CP_URL/api/findings?state=queue&severity=INFO,LOW&limit=50"
+      Cluster context (per-CP rollup):
+      {{data.summary | json}}
 
-      Optional: pull /api/findings/summary if you need cluster context.
-
-      For each finding in the response, decide one verdict:
+      For each finding, decide one verdict:
         - `noise`     — would not be worth a human's 2 minutes
-        - `confirmed` — real but not urgent (stays at LOW for an operator
-                       to pick up later)
+        - `confirmed` — real but not urgent (stays at LOW for an
+                       operator to pick up later)
         - `unknown`   — evidence is ambiguous; tag for human review
 
       Heuristics for `noise` (tighten as needed):
         - The same dedup_key has fired ≥3× in the last 60 min on the
-          same host (use /api/findings/summary if useful).
+          same host (cross-reference {{data.summary}}).
         - Source/title matches a known scanner / monitor /
           background-job pattern (e.g. "scanner", "robotic",
           "background", "test fixture", "monitoring", "healthcheck").
@@ -60,8 +60,8 @@ steps:
 
       Build ONE actions array covering every finding in the batch.
       Each action must carry the right `finding_id` for that
-      candidate. The engine validates each action against this step's
-      allowlist and applies them in order.
+      candidate. The engine validates each action against this
+      step's allowlist and applies them in order.
 
       Per finding, request:
         verdict=noise:
@@ -78,7 +78,7 @@ steps:
 
       Emit ONE orchestration_result finding (one-line JSON, no code
       block) with attributes:
-        scanned    (int — total findings in the API response)
+        scanned    (int — total findings in {{data.findings}})
         noise      (int — count classified as noise)
         confirmed  (int)
         unknown    (int)
@@ -106,7 +106,8 @@ opening the Findings page — anything slower and the queue visibly
 piles up between sweeps. If load grows, drop to `*/2 * * * *` first
 (within concurrency cap), then add severity-tier batches.
 
-The action protocol natively supports per-action `finding_id`, so a
-single emitted `actions` array can mutate every finding in the batch.
-The engine applies each action one-by-one with the same allowlist
-check it uses for single-finding chains — no engine changes needed.
+The `data:` block resolves server-side: the engine fetches the
+matching findings + summary directly from the store, binds them as
+`{{data.findings}}` / `{{data.summary}}` in the prompt, and persists
+the snapshot on the step record so the run can be replayed against
+the same input even after the underlying tables have moved on.

@@ -1,5 +1,5 @@
 import { Link, NavLink, Outlet, useNavigate } from 'react-router-dom';
-import { Activity, AlertTriangle, LayoutDashboard, Network, Server, Layers, Settings, LogOut, Sparkles, Workflow } from 'lucide-react';
+import { Activity, AlertTriangle, BookOpen, LayoutDashboard, Network, Server, Layers, Settings, LogOut, Sparkles, Workflow } from 'lucide-react';
 import { api, type User } from '../api';
 import { cn } from '../lib/cn';
 import CommandPalette from './CommandPalette';
@@ -18,6 +18,7 @@ const nav = [
   { to: '/orchestrations', label: 'Orchestrations', icon: Workflow,  enabled: true },
   { to: '/nodes',      label: 'Nodes',        icon: Server,         enabled: true  },
   { to: '/federation', label: 'Federation',   icon: Network,        enabled: true  },
+  { to: '/docs',       label: 'Documentation', icon: BookOpen,       enabled: true  },
   { to: '/settings',   label: 'Settings',     icon: Settings,       enabled: true  },
 ];
 

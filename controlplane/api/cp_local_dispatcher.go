@@ -111,7 +111,16 @@ func (d *cpLocalDispatcher) Dispatch(ctx context.Context, req orchestrator.Dispa
 	}
 	d.reg.put(run)
 
-	cmd := exec.CommandContext(ctx, d.okesuBinary, "auto", "--agent", req.AgentName, req.Prompt)
+	// Write the rendered prompt to a temp file and pass via
+	// --prompt-file so the orchestration's data: block payload (which
+	// can be MB-scale JSON) doesn't blow past ARG_MAX. The file lives
+	// inside tempDir which gets deleted on return.
+	promptPath := filepath.Join(tempDir, "prompt.txt")
+	if err := os.WriteFile(promptPath, []byte(req.Prompt), 0o600); err != nil {
+		return orchestrator.DispatchResult{}, fmt.Errorf("write prompt file: %w", err)
+	}
+
+	cmd := exec.CommandContext(ctx, d.okesuBinary, "auto", "--agent", req.AgentName, "--prompt-file", promptPath)
 	cmd.Dir = tempDir
 	cmd.Env = append(os.Environ(), d.envExtras...)
 

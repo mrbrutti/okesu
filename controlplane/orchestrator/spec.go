@@ -103,6 +103,37 @@ type StepSpec struct {
 	// kind against this list before applying. Empty list = the step
 	// can request nothing (default deny). See ActionKind* constants.
 	Actions []string `yaml:"actions,omitempty"`
+
+	// Data declares structured CP-side data the engine should fetch
+	// and bind into the prompt template before dispatch. Each map
+	// entry becomes a `{{data.<name>}}` binding visible to the
+	// prompt + when expressions. Replaces the old "have the agent
+	// curl /api/findings" pattern: the engine handles auth + rate
+	// limiting + audit, the agent's prompt stays focused on the
+	// reasoning step.
+	//
+	// Example:
+	//
+	//   data:
+	//     findings:
+	//       query: findings.list
+	//       params: { state: queue, severity: [INFO, LOW], limit: 50 }
+	//     summary:
+	//       query: findings.summary
+	//
+	// See orchestrator.DataResolver and the api-package query
+	// registry for the supported queries.
+	Data map[string]DataSource `yaml:"data,omitempty"`
+}
+
+// DataSource is a single declarative read in a step's `data:` block.
+// Query is a registered handler name (e.g. "findings.list"); Params is
+// a free-form map the handler validates. Both are persisted to the
+// step record on dispatch so a run can be replayed against the same
+// data the agent originally saw.
+type DataSource struct {
+	Query  string         `yaml:"query"`
+	Params map[string]any `yaml:"params,omitempty"`
 }
 
 // EffectiveNodes returns the resolved set of node targets for a step,
@@ -270,6 +301,18 @@ func (s *Spec) Validate() error {
 				return fmt.Errorf("step %q: actions[%q] not a registered kind (allowed: %v)", st.ID, k, AllowedActionKinds)
 			}
 		}
+		// `data:` block — bind names must match the same identifier
+		// shape we use elsewhere; the query name uses the
+		// "namespace.method" convention and is checked at run time
+		// against the data resolver's registry.
+		for name, src := range st.Data {
+			if !inputNameRE.MatchString(name) {
+				return fmt.Errorf("step %q: data.%s: name must match %s", st.ID, name, inputNameRE.String())
+			}
+			if !dataQueryRE.MatchString(src.Query) {
+				return fmt.Errorf("step %q: data.%s.query %q must match %s", st.ID, name, src.Query, dataQueryRE.String())
+			}
+		}
 		// Forward-reference check: a step cannot template-reference a
 		// later step (in linear v1, that's always empty).
 		for _, field := range []struct{ name, value string }{
@@ -352,6 +395,11 @@ var (
 	nameRE      = regexp.MustCompile(`^[a-z][a-z0-9-]*[a-z0-9]$`)
 	stepIDRE    = regexp.MustCompile(`^[a-z][a-z0-9_-]*$`)
 	inputNameRE = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
+	// dataQueryRE matches "namespace.method" handler identifiers
+	// (e.g. "findings.list", "orchestration-runs.list"). The dot
+	// separator is required to make the registry surface obvious
+	// at a glance.
+	dataQueryRE = regexp.MustCompile(`^[a-z][a-z0-9-]*(\.[a-z][a-z0-9-]*)+$`)
 
 	// Captures `{{stepID.field…}}` references inside templated strings.
 	// Only the leading identifier matters for the forward-ref check;
@@ -398,7 +446,7 @@ func validateTemplateRefs(s string, seen map[string]int) error {
 	for _, m := range matches {
 		ref := m[1]
 		switch ref {
-		case "trigger", "defaults", "inputs":
+		case "trigger", "defaults", "inputs", "data":
 			continue
 		}
 		if _, ok := seen[ref]; !ok {

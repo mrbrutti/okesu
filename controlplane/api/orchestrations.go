@@ -137,6 +137,7 @@ func (a *orchestratorStoreAdapter) UpsertOrchestrationStep(rec *orchestrator.Ste
 		Error:              rec.Error,
 		ApprovedAt:         rec.ApprovedAt,
 		ApprovedBy:         rec.ApprovedByUserID,
+		DataSnapshot:       rec.DataSnapshot,
 	})
 }
 
@@ -162,6 +163,7 @@ func dbStepToEngine(r *db.OrchestrationStep) *orchestrator.StepRecord {
 		OutputSummary:      r.OutputSummary.String,
 		Error:              r.Error.String,
 		ApprovedByUserID:   r.ApprovedBy.Int64,
+		DataSnapshot:       r.DataSnapshot.String,
 	}
 	if r.StartedAt.Valid {
 		t := r.StartedAt.Time
@@ -1241,6 +1243,11 @@ func NewOrchestrationCoordinator(
 	// Wire the action applier so agents' orchestration_result.actions
 	// produce real CP mutations (status / tags / severity / run links).
 	engine.SetActionApplier(NewFindingActionApplier(store))
+	// Wire the data resolver so steps with `data:` blocks get their
+	// queries resolved against the CP store and bound into the
+	// prompt template — replaces the old "have the agent curl
+	// /api/findings" pattern. See data_resolver.go for the registry.
+	engine.SetDataResolver(NewDataResolver(store))
 	return &OrchestrationCoordinator{
 		inflight:    map[int64]struct{}{},
 		engine:      engine,
@@ -1797,6 +1804,10 @@ type orchestrationStepJSON struct {
 	EndedAt        string `json:"ended_at,omitempty"`
 	Error          string `json:"error,omitempty"`
 	ApprovedAt     string `json:"approved_at,omitempty"`
+	// Data is the resolved snapshot of the step's `data:` block,
+	// captured at dispatch. The UI surfaces this on the step-detail
+	// panel so operators can see exactly what input the agent saw.
+	Data           any    `json:"data,omitempty"`
 }
 
 func toOrchestrationRunJSON(r *db.OrchestrationRun, steps []*db.OrchestrationStep) orchestrationRunJSON {
@@ -1837,6 +1848,12 @@ func toOrchestrationRunJSON(r *db.OrchestrationRun, steps []*db.OrchestrationSte
 		}
 		if st.ResultJSON.Valid {
 			_ = json.Unmarshal([]byte(st.ResultJSON.String), &s.Result)
+		}
+		if st.DataSnapshot.Valid && st.DataSnapshot.String != "" {
+			var data any
+			if err := json.Unmarshal([]byte(st.DataSnapshot.String), &data); err == nil {
+				s.Data = data
+			}
 		}
 		out.Steps = append(out.Steps, s)
 	}

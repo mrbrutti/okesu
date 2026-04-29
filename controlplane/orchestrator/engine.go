@@ -144,6 +144,11 @@ type StepRecord struct {
 	Error              string
 	ApprovedAt         *time.Time
 	ApprovedByUserID   int64
+	// DataSnapshot is the JSON-encoded result of resolving the step's
+	// `data:` block. Persisted so replays + audits can reconstruct
+	// what the agent actually saw, even if the underlying tables
+	// have moved on. Empty when the step had no data: block.
+	DataSnapshot string
 }
 
 // Dispatcher is the contract between the engine and the run runtime.
@@ -224,6 +229,22 @@ type Engine struct {
 	// outputs are logged and ignored. Production wires this to the
 	// db-backed implementation.
 	applier ActionApplier
+	// data resolves a step's `data:` block before dispatch, binding
+	// the result into the prompt template as `{{data.<name>}}`. Nil
+	// disables the feature — steps with `data:` then fail with a
+	// clear "no data resolver" error rather than silently dropping
+	// the bindings.
+	data DataResolver
+}
+
+// DataResolver fetches structured CP-side data on behalf of a step's
+// `data:` block. The api package implements this with a registry of
+// query handlers (findings.list, runs.list, ...). Each Resolve call
+// is independent — handlers handle their own validation, auth, and
+// rate limiting. The orchestrator package only knows about the
+// interface so the engine itself stays free of CP-specific imports.
+type DataResolver interface {
+	Resolve(ctx context.Context, query string, params map[string]any) (any, error)
 }
 
 func NewEngine(store Store, dispatcher Dispatcher) *Engine {
@@ -235,6 +256,14 @@ func NewEngine(store Store, dispatcher Dispatcher) *Engine {
 // call zero times — the engine then runs in "log-only" mode.
 func (e *Engine) SetActionApplier(a ActionApplier) {
 	e.applier = a
+}
+
+// SetDataResolver installs the read-side handler for step `data:`
+// blocks. Called once at boot from the coordinator. Safe to leave
+// unset — steps that don't declare `data:` are unaffected; steps
+// that do then fail at dispatch with a clear error.
+func (e *Engine) SetDataResolver(d DataResolver) {
+	e.data = d
 }
 
 // Run resumes the orchestration_run identified by runID. It's
@@ -350,6 +379,35 @@ func (e *Engine) Run(ctx context.Context, runID int64) error {
 			_ = e.store.UpsertOrchestrationStep(rec)
 			_ = e.store.UpdateOrchestrationRunStatus(run.ID, RunStatusApprovalRequired, step.ID, "")
 			return nil
+		}
+
+		// Resolve the step's `data:` block before render so the
+		// prompt template can reference `{{data.X}}`. Errors are
+		// terminal for the step — a typo'd query name shouldn't
+		// silently produce an empty binding the agent then tries to
+		// reason about. The audit copy lives on rec.DataSnapshot.
+		if len(step.Data) > 0 {
+			if e.data == nil {
+				rec.Status = StepStatusFailed
+				rec.Error = "step declares data: but no resolver is configured (CP boot misconfiguration)"
+				_ = e.store.UpsertOrchestrationStep(rec)
+				return e.haltFailed(run.ID, step.ID, rec.Error)
+			}
+			bindings := make(map[string]any, len(step.Data))
+			for name, src := range step.Data {
+				val, derr := e.data.Resolve(ctx, src.Query, src.Params)
+				if derr != nil {
+					rec.Status = StepStatusFailed
+					rec.Error = fmt.Sprintf("data.%s (%s): %v", name, src.Query, derr)
+					_ = e.store.UpsertOrchestrationStep(rec)
+					return e.haltFailed(run.ID, step.ID, rec.Error)
+				}
+				bindings[name] = val
+			}
+			env["data"] = bindings
+			if snap, jerr := json.Marshal(bindings); jerr == nil {
+				rec.DataSnapshot = string(snap)
+			}
 		}
 
 		// Render templated fields.

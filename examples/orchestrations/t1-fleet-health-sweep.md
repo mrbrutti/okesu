@@ -16,24 +16,37 @@ steps:
   - id: aggregate
     agent: investigator
     timeout: 5m
+    data:
+      nodes:
+        query: nodes.list
+        params:
+          limit: 500
+      findings:
+        query: findings.list
+        params:
+          state: all
+          limit: 500
+      orchestration_runs:
+        query: orchestration-runs.list
+        params:
+          since: 24h
+          limit: 500
+      summary:
+        query: findings.summary
     prompt: |
       Build the morning fleet briefing.
 
-      You're running on the CP host. The CP exposes its own URL +
-      admin creds via env so you can query the API:
-        $OKESU_CP_URL              e.g. https://localhost:8443
-        $OKESU_CP_ADMIN_EMAIL      e.g. admin@local
-        $OKESU_CP_ADMIN_PASSWORD
+      Nodes ({{data.nodes | length}}):
+      {{data.nodes | json}}
 
-      Login once, then fetch:
-        curl -sk -c /tmp/cp.cookies -X POST "$OKESU_CP_URL/api/auth/login" \
-          -H 'Content-Type: application/json' \
-          -d "{\"email\":\"$OKESU_CP_ADMIN_EMAIL\",\"password\":\"$OKESU_CP_ADMIN_PASSWORD\"}" \
-          > /dev/null
-        curl -sk -b /tmp/cp.cookies "$OKESU_CP_URL/api/nodes"
-        curl -sk -b /tmp/cp.cookies "$OKESU_CP_URL/api/findings?since=24h&limit=500"
-        curl -sk -b /tmp/cp.cookies "$OKESU_CP_URL/api/runs?since=24h"
-        curl -sk -b /tmp/cp.cookies "$OKESU_CP_URL/api/orchestration-runs?since=24h"
+      Findings (last 500):
+      {{data.findings | json}}
+
+      Orchestration runs (last 24h):
+      {{data.orchestration_runs | json}}
+
+      Cluster summary:
+      {{data.summary | json}}
 
       Compute:
         - stale_daimons: hosts with jobs_runtime_seen_at older than 5×poll_interval

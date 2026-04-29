@@ -341,6 +341,7 @@ func sharedFlags(cmd *cobra.Command) {
 	cmd.Flags().Int64("max-tokens", 8192, "Maximum tokens per response")
 	cmd.Flags().String("effort", "", "Thinking depth — claude: low|medium|high|xhigh|max  codex: low|medium|high|xhigh")
 	cmd.Flags().Int("max-turns", 0, "Maximum agentic loop iterations (0 = unlimited; agent file value used if not set)")
+	cmd.Flags().String("prompt-file", "", "Read the user prompt from this file instead of <prompt> argv. Lets callers pass prompts that exceed ARG_MAX (e.g. orchestration data: blocks).")
 }
 
 // resolveAgent loads the agent file (if --agent is set) or wraps --system as a bare AgentDef.
@@ -411,6 +412,16 @@ func buildConfig(cmd *cobra.Command, args []string, provider string, def *agent.
 	prompt := ""
 	if len(args) > 0 {
 		prompt = args[0]
+	}
+	// --prompt-file overrides the positional. Callers (notably the
+	// CP's cp-local dispatcher) use this when the prompt embeds large
+	// data: payloads that would blow past the OS argv limit.
+	if pf, _ := cmd.Flags().GetString("prompt-file"); pf != "" {
+		b, err := os.ReadFile(pf)
+		if err != nil {
+			return agent.Config{}, fmt.Errorf("read --prompt-file: %w", err)
+		}
+		prompt = string(b)
 	}
 
 	return agent.Config{
@@ -572,8 +583,9 @@ API key precedence:
   2. ANTHROPIC_API_KEY or OPENAI_API_KEY (whichever matches the inferred provider)`,
 		Example: `  okesu auto --agent security-reviewer "audit ./api"
   okesu auto --model claude-opus-4-6 "review this code"
-  okesu auto --model gpt-4o --effort high "find bugs in ./src"`,
-		Args: cobra.ExactArgs(1),
+  okesu auto --model gpt-4o --effort high "find bugs in ./src"
+  okesu auto --agent investigator --prompt-file /tmp/prompt.txt`,
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			def, err := resolveAgent(cmd)
 			if err != nil {

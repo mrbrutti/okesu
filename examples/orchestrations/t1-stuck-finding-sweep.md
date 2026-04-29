@@ -10,29 +10,30 @@ defaults:
   timeout: 6m
 
 steps:
-  # 1. Build the candidate list. Read-only — pull via the CP API
-  #    rather than per-host so the sweep stays cheap.
+  # 1. Build the candidate list. Read-only — engine resolves the
+  #    `data:` block server-side so the agent gets structured input
+  #    without curl-and-parse plumbing.
   - id: scan
     agent: investigator
     timeout: 4m
+    data:
+      opens:
+        query: findings.list
+        params:
+          state: open
+          limit: 500
+      summary:
+        query: findings.summary
     prompt: |
       Build the list of "stuck" open findings — opens that the
       Tier-0 dedup closure + per-finding T1 should have closed but
       haven't.
 
-      You're running on the CP host. The CP exposes its own URL +
-      admin creds via env so you can query the API:
-        $OKESU_CP_URL              e.g. https://localhost:8443
-        $OKESU_CP_ADMIN_EMAIL      e.g. admin@local
-        $OKESU_CP_ADMIN_PASSWORD
+      Open findings ({{data.opens | length}}):
+      {{data.opens | json}}
 
-      Login + fetch (run this verbatim, then read the JSON):
-        curl -sk -c /tmp/cp.cookies -X POST "$OKESU_CP_URL/api/auth/login" \
-          -H 'Content-Type: application/json' \
-          -d "{\"email\":\"$OKESU_CP_ADMIN_EMAIL\",\"password\":\"$OKESU_CP_ADMIN_PASSWORD\"}" \
-          > /dev/null
-        curl -sk -b /tmp/cp.cookies "$OKESU_CP_URL/api/findings?state=open&limit=500"
-        curl -sk -b /tmp/cp.cookies "$OKESU_CP_URL/api/findings/summary"
+      Cluster context:
+      {{data.summary | json}}
 
       Identify candidates:
         - Same dedup_key has occurred ≥3 times in the last 24h
