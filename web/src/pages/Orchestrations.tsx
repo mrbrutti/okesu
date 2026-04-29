@@ -45,6 +45,7 @@ import {
 import { cn } from '../lib/cn';
 import { lazy, Suspense } from 'react';
 import { CPSourceChip } from '../components/CPSourceChip';
+import { TabBar, TabButton } from '../components/TabBar';
 import { SectionHeader, type SectionTone } from '../components/lists/SectionHeader';
 import { ListCard } from '../components/lists/ListCard';
 import { parseSpecYAMLLite } from '../lib/orchestrationSpec';
@@ -146,10 +147,10 @@ function OrchestrationsPageInner() {
         </p>
       </header>
 
-      <div className="px-6 py-2.5 border-b border-border bg-panel/40 flex items-center gap-1">
+      <TabBar>
         <TabButton active={tab === 'library'} onClick={() => setTab('library')} icon={GitBranch} label="Library" />
         <TabButton active={tab === 'runs'} onClick={() => setTab('runs')} icon={Clock} label="Runs" />
-      </div>
+      </TabBar>
 
       <div className="flex-1 overflow-hidden">
         {tab === 'library' ? (
@@ -195,28 +196,6 @@ function OrchestrationsPageInner() {
         )}
       </div>
     </div>
-  );
-}
-
-function TabButton({
-  active, onClick, icon: Icon, label,
-}: {
-  active: boolean;
-  onClick: () => void;
-  icon: typeof GitBranch;
-  label: string;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      className={cn(
-        'inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md',
-        active ? 'bg-panel text-ink shadow-sm ring-1 ring-border' : 'text-ink-dim hover:text-ink hover:bg-slate-100',
-      )}
-    >
-      <Icon size={12} />
-      {label}
-    </button>
   );
 }
 

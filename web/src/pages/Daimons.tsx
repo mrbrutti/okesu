@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import {
   Activity,
   AlertTriangle,
@@ -21,38 +21,46 @@ import { useSelection } from '../lib/useSelection';
 import { BulkActionBar, BulkActionButton } from '../components/BulkActionBar';
 import { CPSourceChip } from '../components/CPSourceChip';
 import DaimonsLibrary from '../components/DaimonsLibrary';
+import { TabBar, TabButton } from '../components/TabBar';
 
 const DAIMONS_PAGE_SIZE = 500;
 
-type Tab = 'deployed' | 'library';
+type Tab = 'library' | 'deployed';
+
+function parseTab(s: string | null): Tab {
+  return s === 'deployed' ? 'deployed' : 'library';
+}
 
 export default function DaimonsPage() {
-  const [tab, setTab] = useState<Tab>('deployed');
+  const [params, setParams] = useSearchParams();
+  const tab = parseTab(params.get('tab'));
+  const setTab = (t: Tab) => {
+    const p = new URLSearchParams(params);
+    if (t === 'library') p.delete('tab'); else p.set('tab', t);
+    setParams(p, { replace: true });
+  };
   return (
     <div className="h-full flex flex-col">
-      <nav className="px-6 pt-3 border-b border-border bg-panel flex gap-1">
-        {([
-          ['deployed', 'Deployed', Server],
-          ['library',  'Library',  FileEdit],
-        ] as const).map(([key, label, Icon]) => (
-          <button
-            key={key}
-            onClick={() => setTab(key)}
-            className={cn(
-              'inline-flex items-center gap-1.5 px-3 py-2 text-sm border-b-2 -mb-px',
-              tab === key
-                ? 'border-brand-500 text-brand-700 font-medium'
-                : 'border-transparent text-ink-dim hover:text-ink',
-            )}
-          >
-            <Icon size={14} />
-            {label}
-          </button>
-        ))}
-      </nav>
+      <header className="px-6 py-4 border-b border-border bg-gradient-to-r from-brand-50/60 via-panel to-panel">
+        <h1 className="text-lg font-semibold flex items-center gap-2">
+          <span className="inline-flex items-center justify-center w-7 h-7 rounded-lg bg-gradient-to-br from-brand-500 to-brand-700 text-white shadow-sm">
+            <Cpu size={14} />
+          </span>
+          Daimons
+        </h1>
+        <p className="text-xs text-ink-dim mt-0.5 ml-9">
+          Long-running agents that monitor your fleet on a schedule. Library is the catalog of definitions; Deployed lists running instances.
+        </p>
+      </header>
+
+      <TabBar>
+        <TabButton active={tab === 'library'}  onClick={() => setTab('library')}  icon={FileEdit} label="Library" />
+        <TabButton active={tab === 'deployed'} onClick={() => setTab('deployed')} icon={Server}   label="Deployed" />
+      </TabBar>
+
       <main className="flex-1 overflow-hidden">
+        {tab === 'library'  && <DaimonsLibrary />}
         {tab === 'deployed' && <DaimonsDeployed />}
-        {tab === 'library' && <DaimonsLibrary />}
       </main>
     </div>
   );
