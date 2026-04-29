@@ -481,6 +481,8 @@ func (s *Server) routes() http.Handler {
 		r.Get("/api/dashboard", api.Dashboard(s.store, s.eventStore, s.tunReg, s.cfg.DaimonFilesDir, s.daemonBinaryVersion))
 		r.Get("/api/insights/findings", api.FederatedInsightsFindings(s.store, s.fedAgg))
 		r.Get("/api/insights/events", api.FederatedInsightsEvents(api.InsightsEvents(s.eventStore), s.fedAgg))
+		r.Get("/api/insights/triage-outcomes", api.InsightsTriageOutcomes(s.store))
+		r.Get("/api/insights/orchestrations-top", api.InsightsOrchestrationsTop(s.store))
 		r.Get("/api/system/about", api.AboutHandler(Version(), s.daemonBinaryVersion, api.AboutFeatures{
 			OIDC:          s.oidc != nil,
 			MgmtPlane:     s.mgmtHTTP != nil,

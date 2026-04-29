@@ -251,6 +251,77 @@ func (s *Store) ListOrchestrationRunsFiltered(f OrchestrationRunFilter) ([]*Orch
 	return out, rows.Err()
 }
 
+// TopOrchestrationStat is one row of the dashboard's "Top
+// orchestrations" leaderboard. Built from the orchestration_runs +
+// orchestrations tables, joined and aggregated by orchestration_id.
+type TopOrchestrationStat struct {
+	OrchestrationID int64
+	Name            string
+	Total           int64
+	Completed       int64
+	Failed          int64
+	Running         int64
+	Cancelled       int64
+	Pending         int64
+	ApprovalReq     int64
+	AvgDurationMs   sql.NullInt64 // null when no completed rows in window
+}
+
+// TopOrchestrations returns the orchestrations with the most runs in
+// the given window, sorted by total descending. Used by the dashboard's
+// "Top orchestrations" card so an operator can see which spec is
+// generating the most load + which is failing most without paging
+// through the runs list.
+//
+// avg_duration_ms is computed only over rows where status='completed'
+// (running rows would skew the average; failed rows often abort
+// fast). Empty when no completed rows are in window.
+func (s *Store) TopOrchestrations(sinceMs int64, limit int) ([]TopOrchestrationStat, error) {
+	if limit <= 0 || limit > 50 {
+		limit = 10
+	}
+	const q = `
+SELECT
+  r.orchestration_id,
+  o.name,
+  COUNT(*) AS total,
+  SUM(CASE WHEN r.status='completed'         THEN 1 ELSE 0 END) AS completed,
+  SUM(CASE WHEN r.status='failed'            THEN 1 ELSE 0 END) AS failed,
+  SUM(CASE WHEN r.status='running'           THEN 1 ELSE 0 END) AS running,
+  SUM(CASE WHEN r.status='cancelled'         THEN 1 ELSE 0 END) AS cancelled,
+  SUM(CASE WHEN r.status='pending'           THEN 1 ELSE 0 END) AS pending,
+  SUM(CASE WHEN r.status='approval_required' THEN 1 ELSE 0 END) AS approval_required,
+  CAST(AVG(CASE
+    WHEN r.status='completed' AND r.ended_at IS NOT NULL
+    THEN (CAST(strftime('%s', r.ended_at) AS INTEGER) - CAST(strftime('%s', r.started_at) AS INTEGER)) * 1000
+  END) AS INTEGER) AS avg_duration_ms
+FROM orchestration_runs r
+JOIN orchestrations o ON o.id = r.orchestration_id
+WHERE CAST(strftime('%s', r.started_at) AS INTEGER) * 1000 >= ?
+GROUP BY r.orchestration_id, o.name
+ORDER BY total DESC, completed DESC
+LIMIT ?
+`
+	rows, err := s.Query(q, sinceMs, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []TopOrchestrationStat
+	for rows.Next() {
+		var t TopOrchestrationStat
+		if err := rows.Scan(
+			&t.OrchestrationID, &t.Name, &t.Total,
+			&t.Completed, &t.Failed, &t.Running, &t.Cancelled,
+			&t.Pending, &t.ApprovalReq, &t.AvgDurationMs,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
 // CountOrchestrationRunsByStatus returns one count per status that
 // would match `f` if status were ignored. Used by the runs-tab
 // status pills so each tab shows its own total without a roundtrip

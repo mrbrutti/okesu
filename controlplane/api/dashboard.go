@@ -564,6 +564,198 @@ func InsightsFindings(store *db.Store) http.HandlerFunc {
 	}
 }
 
+// ── /api/insights/orchestrations-top ────────────────────────────────
+
+// orchestrationsTopResp is the shape the dashboard's "Top
+// orchestrations" card consumes — a leaderboard of the most-active
+// orchestrations in the window, with each row's success/failure
+// split + average completed-run duration.
+type orchestrationsTopResp struct {
+	Since string                     `json:"since"`
+	Rows  []orchestrationsTopRow     `json:"rows"`
+}
+
+type orchestrationsTopRow struct {
+	OrchestrationID  int64 `json:"orchestration_id"`
+	Name             string `json:"name"`
+	Total            int64 `json:"total"`
+	Completed        int64 `json:"completed"`
+	Failed           int64 `json:"failed"`
+	Running          int64 `json:"running"`
+	Cancelled        int64 `json:"cancelled"`
+	Pending          int64 `json:"pending"`
+	ApprovalRequired int64 `json:"approval_required"`
+	AvgDurationMs    int64 `json:"avg_duration_ms,omitempty"`
+}
+
+// InsightsOrchestrationsTop handles GET /api/insights/orchestrations-top.
+//
+// Query params:
+//
+//	since=30m|1h|24h|7d|30d   default 24h
+//	limit=N                   default 10, capped at 50
+func InsightsOrchestrationsTop(store *db.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		since := r.URL.Query().Get("since")
+		if since == "" {
+			since = "24h"
+		}
+		var dur time.Duration
+		switch since {
+		case "30m":
+			dur = 30 * time.Minute
+		case "1h":
+			dur = time.Hour
+		case "24h":
+			dur = 24 * time.Hour
+		case "7d":
+			dur = 7 * 24 * time.Hour
+		case "30d":
+			dur = 30 * 24 * time.Hour
+		default:
+			http.Error(w, "since must be 30m, 1h, 24h, 7d, or 30d", http.StatusBadRequest)
+			return
+		}
+		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+		if limit <= 0 {
+			limit = 10
+		}
+
+		sinceMs := time.Now().Add(-dur).UnixMilli()
+		stats, err := store.TopOrchestrations(sinceMs, limit)
+		if err != nil {
+			http.Error(w, "store: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		out := orchestrationsTopResp{
+			Since: since,
+			Rows:  make([]orchestrationsTopRow, len(stats)),
+		}
+		for i, s := range stats {
+			out.Rows[i] = orchestrationsTopRow{
+				OrchestrationID:  s.OrchestrationID,
+				Name:             s.Name,
+				Total:            s.Total,
+				Completed:        s.Completed,
+				Failed:           s.Failed,
+				Running:          s.Running,
+				Cancelled:        s.Cancelled,
+				Pending:          s.Pending,
+				ApprovalRequired: s.ApprovalReq,
+			}
+			if s.AvgDurationMs.Valid {
+				out.Rows[i].AvgDurationMs = s.AvgDurationMs.Int64
+			}
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(out)
+	}
+}
+
+// ── /api/insights/triage-outcomes ───────────────────────────────────
+
+// triageOutcomesResp is the shape the dashboard's "Findings & triage"
+// stacked-area chart consumes. Per bucket, `incoming` is the total
+// findings ingested in the window; the three auto-* fields are the
+// breakdown of outcomes applied during the same window (Tier-0 dedup,
+// Tier-1 status closures, Tier-1 tag-only confirmations).
+type triageOutcomesResp struct {
+	BucketMs int64                   `json:"bucket_ms"`
+	Buckets  []triageOutcomesBucket  `json:"buckets"`
+	Totals   triageOutcomesTotals    `json:"totals"`
+}
+
+type triageOutcomesBucket struct {
+	Ts             int64 `json:"ts"`
+	Incoming       int64 `json:"incoming"`
+	T0Superseded   int64 `json:"t0_superseded"`
+	T1Resolved     int64 `json:"t1_resolved"`
+	T1Tagged       int64 `json:"t1_tagged"`
+}
+
+type triageOutcomesTotals struct {
+	Incoming     int64 `json:"incoming"`
+	AutoHandled  int64 `json:"auto_handled"`  // sum of the three auto-* columns
+	TriageRate   float64 `json:"triage_rate"` // auto_handled / incoming, 0 when incoming==0
+}
+
+// InsightsTriageOutcomes handles GET /api/insights/triage-outcomes.
+//
+// Query params:
+//
+//	since=30m|1h|24h|7d|30d   default 24h
+//
+// Returns a per-bucket time series + the window totals so the
+// dashboard's Triage rate stat tile and the stacked-area chart can be
+// driven by one round-trip.
+func InsightsTriageOutcomes(store *db.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		since := r.URL.Query().Get("since")
+		if since == "" {
+			since = "24h"
+		}
+		var dur time.Duration
+		var bucketMs int64
+		switch since {
+		case "30m":
+			dur = 30 * time.Minute
+			bucketMs = int64(time.Minute / time.Millisecond)
+		case "1h":
+			dur = time.Hour
+			bucketMs = int64(2 * time.Minute / time.Millisecond)
+		case "24h":
+			dur = 24 * time.Hour
+			bucketMs = int64(time.Hour / time.Millisecond)
+		case "7d":
+			dur = 7 * 24 * time.Hour
+			bucketMs = int64(6 * time.Hour / time.Millisecond)
+		case "30d":
+			dur = 30 * 24 * time.Hour
+			bucketMs = int64(24 * time.Hour / time.Millisecond)
+		default:
+			http.Error(w, "since must be 30m, 1h, 24h, 7d, or 30d", http.StatusBadRequest)
+			return
+		}
+
+		now := time.Now().UnixMilli()
+		sinceMs := now - dur.Milliseconds()
+		dbBuckets, err := store.TriageOutcomes(sinceMs, now, bucketMs)
+		if err != nil {
+			http.Error(w, "store: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		out := triageOutcomesResp{
+			BucketMs: bucketMs,
+			Buckets:  make([]triageOutcomesBucket, len(dbBuckets)),
+		}
+		for i, b := range dbBuckets {
+			out.Buckets[i] = triageOutcomesBucket{
+				Ts:           b.Ts,
+				Incoming:     b.Incoming,
+				T0Superseded: b.T0Superseded,
+				T1Resolved:   b.T1Resolved,
+				T1Tagged:     b.T1Tagged,
+			}
+			out.Totals.Incoming += b.Incoming
+			out.Totals.AutoHandled += b.T0Superseded + b.T1Resolved + b.T1Tagged
+		}
+		if out.Totals.Incoming > 0 {
+			out.Totals.TriageRate = float64(out.Totals.AutoHandled) / float64(out.Totals.Incoming)
+		}
+		// Cap at 1.0 so a brief surge of edits processing pre-window
+		// findings doesn't render as 187% triage.
+		if out.Totals.TriageRate > 1.0 {
+			out.Totals.TriageRate = 1.0
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(out)
+	}
+}
+
 // ── /api/insights/events ──────────────────────────────────────────
 
 // eventsTimelineResp is the response shape for the events-over-time

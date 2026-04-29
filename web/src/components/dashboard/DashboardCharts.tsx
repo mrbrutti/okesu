@@ -4,10 +4,12 @@
 
 import { useMemo } from 'react';
 import {
+  Area,
   Bar,
   BarChart,
   CartesianGrid,
   Cell,
+  ComposedChart,
   LabelList,
   Legend,
   Line,
@@ -17,7 +19,7 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
-import type { DashboardResponse, InsightsEventsResponse, InsightsFindingsResponse, OrchestrationRunView, TimeRange } from '../../api';
+import type { DashboardResponse, InsightsEventsResponse, InsightsFindingsResponse, InsightsOrchestrationsTopResponse, InsightsTriageOutcomesResponse, OrchestrationRunView, TimeRange } from '../../api';
 
 export type Scale = 'linear' | 'log' | 'cumulative';
 
@@ -289,6 +291,206 @@ export function OrchestrationRunsTimelineChart({
       </LineChart>
     </ResponsiveContainer>
   );
+}
+
+// ── Findings & Triage (stacked area) ────────────────────────────────
+
+// Color tokens picked so the visual mirrors the operator's mental
+// model: incoming wraps everything as a thin envelope line; the
+// auto-* outcomes stack underneath in cooling colors (T0 darkest,
+// T1 lighter). Anything left between auto-handled and incoming is
+// "still in the operator queue" — visually obvious.
+const TRIAGE_COLOR = {
+  incoming:      '#1f2937', // slate-800 — outline / envelope
+  t0_superseded: '#7c3aed', // brand-500 — Tier-0 dedup
+  t1_resolved:   '#10b981', // emerald-500 — auto-closed
+  t1_tagged:     '#0891b2', // cyan-600 — auto-confirmed (still open)
+  still_open:    '#f97316', // orange-500 — surfaced to operator
+};
+
+export function FindingsTriageChart({
+  data, range,
+}: {
+  data: InsightsTriageOutcomesResponse;
+  range: TimeRange;
+}) {
+  const rows = useMemo(() => {
+    const buckets = data.buckets ?? [];
+    return buckets.map((b) => {
+      const handled = b.t0_superseded + b.t1_resolved + b.t1_tagged;
+      const stillOpen = Math.max(0, b.incoming - handled);
+      return {
+        ts: tsLabel(b.ts, data.bucket_ms),
+        // Stack order matters — Recharts paints in declaration order.
+        // T0 first (closest to baseline), then T1 closures, then T1
+        // tag-only confirmations, then "still open" on top so the
+        // operator's eye lands on the slice they actually own.
+        t0_superseded: b.t0_superseded,
+        t1_resolved:   b.t1_resolved,
+        t1_tagged:     b.t1_tagged,
+        still_open:    stillOpen,
+        incoming:      b.incoming, // separate line, drawn over the stack
+      };
+    });
+  }, [data]);
+
+  const hasData = (data.buckets ?? []).some((b) =>
+    b.incoming + b.t0_superseded + b.t1_resolved + b.t1_tagged > 0,
+  );
+  if (!hasData) {
+    return (
+      <div className="text-xs text-ink-mute py-12 text-center">
+        <div className="inline-flex items-center justify-center w-10 h-10 rounded-full bg-slate-100 text-slate-400 mb-2">·</div>
+        <div>No findings or triage activity in the last {range}.</div>
+      </div>
+    );
+  }
+
+  return (
+    <ResponsiveContainer width="100%" height={220}>
+      <ComposedChart data={rows} margin={{ top: 8, right: 12, left: -12, bottom: 0 }}>
+        <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
+        <XAxis
+          dataKey="ts"
+          tick={{ fontSize: 10, fill: '#94a3b8' }}
+          interval={tickInterval(range)}
+          axisLine={false}
+          tickLine={false}
+        />
+        <YAxis
+          tick={{ fontSize: 10, fill: '#94a3b8' }}
+          allowDecimals={false}
+          axisLine={false}
+          tickLine={false}
+          width={40}
+        />
+        <Tooltip contentStyle={tooltipStyle} labelStyle={{ fontWeight: 600 }} cursor={{ stroke: '#cbd5e1', strokeWidth: 1 }} />
+        <Legend wrapperStyle={{ fontSize: 11, paddingTop: 6 }} iconType="square" />
+        {/* Stack the four outcome categories. stackId ties them. */}
+        <Area
+          type="monotone"
+          dataKey="t0_superseded"
+          name="T0 dedup"
+          stackId="triage"
+          stroke={TRIAGE_COLOR.t0_superseded}
+          fill={TRIAGE_COLOR.t0_superseded}
+          fillOpacity={0.55}
+        />
+        <Area
+          type="monotone"
+          dataKey="t1_resolved"
+          name="T1 resolved"
+          stackId="triage"
+          stroke={TRIAGE_COLOR.t1_resolved}
+          fill={TRIAGE_COLOR.t1_resolved}
+          fillOpacity={0.55}
+        />
+        <Area
+          type="monotone"
+          dataKey="t1_tagged"
+          name="T1 tagged"
+          stackId="triage"
+          stroke={TRIAGE_COLOR.t1_tagged}
+          fill={TRIAGE_COLOR.t1_tagged}
+          fillOpacity={0.55}
+        />
+        <Area
+          type="monotone"
+          dataKey="still_open"
+          name="Still in queue"
+          stackId="triage"
+          stroke={TRIAGE_COLOR.still_open}
+          fill={TRIAGE_COLOR.still_open}
+          fillOpacity={0.6}
+        />
+        {/* Incoming as an outline line so the operator can see the
+            envelope at a glance — the gap between this line and the
+            top of the stack is "auto-handled before close-of-bucket". */}
+        <Line
+          type="monotone"
+          dataKey="incoming"
+          name="Incoming"
+          stroke={TRIAGE_COLOR.incoming}
+          strokeWidth={1.5}
+          dot={false}
+          strokeDasharray="3 2"
+        />
+      </ComposedChart>
+    </ResponsiveContainer>
+  );
+}
+
+// ── Top orchestrations (horizontal stacked bar) ─────────────────────
+
+// Surfaces which orchestration is the busiest, and within that, what
+// fraction is succeeding vs failing. The avg-duration column gives a
+// performance hint without needing a second chart.
+export function TopOrchestrationsChart({
+  data,
+}: {
+  data: InsightsOrchestrationsTopResponse;
+}) {
+  const rows = data.rows ?? [];
+  if (rows.length === 0) {
+    return (
+      <div className="text-xs text-ink-mute py-12 text-center">
+        <div className="inline-flex items-center justify-center w-10 h-10 rounded-full bg-slate-100 text-slate-400 mb-2">·</div>
+        <div>No orchestration runs in the last {data.since}.</div>
+      </div>
+    );
+  }
+  const maxTotal = Math.max(1, ...rows.map((r) => r.total));
+  return (
+    <div className="space-y-2">
+      <div className="flex items-baseline justify-between text-[11px] text-ink-mute">
+        <span>{rows.length} orchestration{rows.length === 1 ? '' : 's'} active</span>
+        <span>since {data.since}</span>
+      </div>
+      <ul className="space-y-1.5">
+        {rows.map((r) => {
+          const completedPct = r.total > 0 ? (r.completed / r.total) * 100 : 0;
+          const failedPct    = r.total > 0 ? (r.failed    / r.total) * 100 : 0;
+          const runningPct   = r.total > 0 ? (r.running   / r.total) * 100 : 0;
+          const otherPct     = Math.max(0, 100 - completedPct - failedPct - runningPct);
+          const widthPct = (r.total / maxTotal) * 100;
+          return (
+            <li key={r.orchestration_id} className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 items-center text-xs">
+              <div className="min-w-0">
+                <div className="flex items-center justify-between gap-2 mb-0.5">
+                  <span className="font-mono truncate text-ink">{r.name}</span>
+                  <span className="tabular-nums text-ink-dim shrink-0">{r.total}</span>
+                </div>
+                <div className="relative h-2 rounded ring-1 ring-border overflow-hidden bg-slate-50">
+                  {/* outer bar — width proportional to total vs the
+                      busiest orchestration in the window */}
+                  <div className="h-full flex" style={{ width: `${widthPct}%` }}>
+                    {r.completed > 0 && <div className="bg-emerald-500" style={{ width: `${completedPct}%` }} title={`${r.completed} completed`} />}
+                    {r.failed    > 0 && <div className="bg-red-500"     style={{ width: `${failedPct}%` }}    title={`${r.failed} failed`} />}
+                    {r.running   > 0 && <div className="bg-cyan-500"    style={{ width: `${runningPct}%` }}   title={`${r.running} running`} />}
+                    {otherPct    > 0 && <div className="bg-slate-300"   style={{ width: `${otherPct}%` }}     title="cancelled / pending / approval" />}
+                  </div>
+                </div>
+              </div>
+              <div className="text-[10px] text-ink-mute tabular-nums whitespace-nowrap min-w-[64px] text-right">
+                {r.avg_duration_ms ? `${formatDuration(r.avg_duration_ms)} avg` : '—'}
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
+function formatDuration(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  if (m < 60) return r === 0 ? `${m}m` : `${m}m${r}s`;
+  const h = Math.floor(m / 60);
+  return `${h}h${m % 60}m`;
 }
 
 // ── Top affected hosts (horizontal bar) ─────────────────────────────

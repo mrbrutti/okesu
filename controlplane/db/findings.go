@@ -1396,6 +1396,88 @@ func (s *Store) OpenFindingCountsByAgentHost() (map[AgentHostKey]int64, error) {
 	return out, rows.Err()
 }
 
+// TriageOutcomeBucket is one row of the triage-over-time time series.
+// Counts in a bucket are mutually exclusive — an "incoming" finding
+// that gets auto-superseded later in the same bucket counts in both
+// the `incoming` and `t0_superseded` columns intentionally; the UI
+// renders `incoming` as the envelope and the rest as the auto-handled
+// breakdown stacked underneath.
+type TriageOutcomeBucket struct {
+	Ts             int64 // bucket start (unix ms)
+	Incoming       int64 // findings.ts in [Ts, Ts+bucket)
+	T0Superseded   int64 // edits: status→superseded, no orchestration_run_id (Tier-0 dedup)
+	T1Resolved     int64 // edits: status→{false_positive,resolved,wontfix}, with orchestration_run_id
+	T1Tagged       int64 // edits: tag_add of an auto-* tag with orchestration_run_id (T1 confirmed-but-open)
+}
+
+// TriageOutcomes builds the per-bucket triage time series for a CP.
+// Used by the /api/insights/triage-outcomes endpoint to drive the
+// "Findings & triage" stacked-area chart on the dashboard.
+//
+// Returns rows ordered ascending by bucket start. Buckets with no
+// activity are NOT included — caller pre-fills a grid so empty
+// windows render as zeros without making the SQL more complex.
+func (s *Store) TriageOutcomes(sinceMs, untilMs, bucketMs int64) ([]TriageOutcomeBucket, error) {
+	// Composite query: incoming counted from findings.ts; the auto-
+	// handled breakdown counted from finding_edits.edited_at.
+	// SQLite's strftime('%s', edited_at)*1000 converts the TIMESTAMP
+	// to unix-ms so it lines up with findings.ts (which is already ms).
+	const q = `
+WITH bucket_grid(ts) AS (
+  SELECT (? / ?) * ?
+  UNION ALL
+  SELECT ts + ? FROM bucket_grid WHERE ts + ? <= ?
+),
+incoming AS (
+  SELECT (ts / ?) * ? AS bts, COUNT(*) AS n
+    FROM findings
+   WHERE ts >= ? AND ts < ?
+   GROUP BY bts
+),
+edits AS (
+  SELECT
+    (CAST(strftime('%s', edited_at) AS INTEGER) * 1000 / ?) * ? AS bts,
+    SUM(CASE WHEN field='status' AND new_value='superseded' AND orchestration_run_id IS NULL THEN 1 ELSE 0 END) AS t0,
+    SUM(CASE WHEN field='status' AND new_value IN ('false_positive','resolved','wontfix') AND orchestration_run_id IS NOT NULL THEN 1 ELSE 0 END) AS t1r,
+    SUM(CASE WHEN field='tag_add' AND new_value LIKE 'auto-%' AND orchestration_run_id IS NOT NULL THEN 1 ELSE 0 END) AS t1t
+  FROM finding_edits
+  WHERE CAST(strftime('%s', edited_at) AS INTEGER) * 1000 >= ?
+    AND CAST(strftime('%s', edited_at) AS INTEGER) * 1000 < ?
+  GROUP BY bts
+)
+SELECT g.ts,
+       COALESCE(i.n,    0) AS incoming,
+       COALESCE(e.t0,   0) AS t0_superseded,
+       COALESCE(e.t1r,  0) AS t1_resolved,
+       COALESCE(e.t1t,  0) AS t1_tagged
+  FROM bucket_grid g
+  LEFT JOIN incoming i ON i.bts = g.ts
+  LEFT JOIN edits    e ON e.bts = g.ts
+ ORDER BY g.ts ASC`
+
+	rows, err := s.Query(q,
+		sinceMs, bucketMs, bucketMs, // first bucket
+		bucketMs, bucketMs, untilMs, // recursive grid
+		bucketMs, bucketMs, // incoming bucketing
+		sinceMs, untilMs, // incoming window
+		bucketMs, bucketMs, // edits bucketing
+		sinceMs, untilMs, // edits window
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []TriageOutcomeBucket
+	for rows.Next() {
+		var b TriageOutcomeBucket
+		if err := rows.Scan(&b.Ts, &b.Incoming, &b.T0Superseded, &b.T1Resolved, &b.T1Tagged); err != nil {
+			return nil, err
+		}
+		out = append(out, b)
+	}
+	return out, rows.Err()
+}
+
 // OpenFindingsByHost returns the top-`limit` hosts by open finding
 // count, descending. Hosts with no findings are excluded. Empty
 // host strings collapse into "(unknown)".

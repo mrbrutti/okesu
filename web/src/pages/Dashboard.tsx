@@ -27,7 +27,7 @@ import {
   Workflow,
   WifiOff,
 } from 'lucide-react';
-import { api, ApiError, type DashboardResponse, type InsightsEventsResponse, type InsightsFindingsResponse, type OrchestrationRunStatus, type OrchestrationRunView, type TimeRange } from '../api';
+import { api, ApiError, type DashboardResponse, type InsightsEventsResponse, type InsightsFindingsResponse, type InsightsOrchestrationsTopResponse, type InsightsTriageOutcomesResponse, type OrchestrationRunStatus, type OrchestrationRunView, type TimeRange } from '../api';
 import { cn } from '../lib/cn';
 
 const EventsTimelineChart = lazy(() =>
@@ -44,6 +44,12 @@ const OSDistributionChart = lazy(() =>
 );
 const OrchestrationRunsTimelineChart = lazy(() =>
   import('../components/dashboard/DashboardCharts').then((m) => ({ default: m.OrchestrationRunsTimelineChart })),
+);
+const FindingsTriageChart = lazy(() =>
+  import('../components/dashboard/DashboardCharts').then((m) => ({ default: m.FindingsTriageChart })),
+);
+const TopOrchestrationsChart = lazy(() =>
+  import('../components/dashboard/DashboardCharts').then((m) => ({ default: m.TopOrchestrationsChart })),
 );
 
 type GroupBy = 'severity' | 'agent' | 'host';
@@ -70,15 +76,19 @@ export default function DashboardPage() {
 
   const range = parseRange(params.get('range'));
   const groupBy = parseGroupBy(params.get('groupBy'));
-  // Two scales — one per timeline chart — so changing one doesn't yank
-  // the other. Reads ?eventsScale=/?findingsScale=, falling back to the
-  // legacy single ?scale= for old bookmarks, then to 'linear'.
+  // Per-chart scales — kept independent so changing one doesn't yank
+  // the others. The page-level range picker is shared (one picker in
+  // the header rather than three duplicates in the cards). Legacy
+  // ?scale= bookmark falls through.
   const legacyScale = params.get('scale');
   const eventsScale = parseScale(params.get('eventsScale') ?? legacyScale);
   const findingsScale = parseScale(params.get('findingsScale') ?? legacyScale);
+  const automationScale = parseScale(params.get('automationScale') ?? legacyScale);
 
   const [events, setEvents] = useState<InsightsEventsResponse | null>(null);
   const [findings, setFindings] = useState<InsightsFindingsResponse | null>(null);
+  const [triage, setTriage] = useState<InsightsTriageOutcomesResponse | null>(null);
+  const [topOrch, setTopOrch] = useState<InsightsOrchestrationsTopResponse | null>(null);
   // Orchestration runs — surfaced on the dashboard so the operator
   // sees pending approval gates and recent automation outcomes
   // without having to navigate. Refreshes on the same 15s tick as
@@ -132,6 +142,25 @@ export default function DashboardPage() {
     return () => { cancelled = true; };
   }, [range, groupBy]);
 
+  // Triage outcomes — drives the Findings & Triage stacked chart in
+  // Row 3 plus the headline Triage rate tile in Row 1.
+  useEffect(() => {
+    let cancelled = false;
+    api.insightsTriageOutcomes({ since: range })
+      .then((d) => { if (!cancelled) setTriage(d); })
+      .catch(() => { /* ignore */ });
+    return () => { cancelled = true; };
+  }, [range]);
+
+  // Top-N orchestrations leaderboard — drives the Row 5 right card.
+  useEffect(() => {
+    let cancelled = false;
+    api.insightsOrchestrationsTop({ since: range, limit: 10 })
+      .then((d) => { if (!cancelled) setTopOrch(d); })
+      .catch(() => { /* ignore */ });
+    return () => { cancelled = true; };
+  }, [range]);
+
   function setRange(r: TimeRange) {
     const p = new URLSearchParams(params);
     p.set('range', r);
@@ -142,7 +171,7 @@ export default function DashboardPage() {
     p.set('groupBy', g);
     setParams(p, { replace: true });
   }
-  function setScale(key: 'eventsScale' | 'findingsScale', s: Scale) {
+  function setScale(key: 'eventsScale' | 'findingsScale' | 'automationScale', s: Scale) {
     const p = new URLSearchParams(params);
     p.set(key, s);
     // Drop the legacy combined ?scale= so it doesn't shadow the per-chart
@@ -153,14 +182,23 @@ export default function DashboardPage() {
 
   return (
     <div className="h-full flex flex-col">
-      <header className="px-6 py-4 border-b border-border bg-gradient-to-r from-brand-50/60 via-panel to-panel">
-        <h1 className="text-lg font-semibold flex items-center gap-2">
-          <span className="inline-flex items-center justify-center w-7 h-7 rounded-lg bg-gradient-to-br from-brand-500 to-brand-700 text-white shadow-sm">
-            <Activity size={14} />
-          </span>
-          Dashboard
-        </h1>
-        <p className="text-xs text-ink-dim mt-0.5 ml-9">Fleet health at a glance — refreshes every 15 seconds.</p>
+      <header className="px-6 py-4 border-b border-border bg-gradient-to-r from-brand-50/60 via-panel to-panel flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-lg font-semibold flex items-center gap-2">
+            <span className="inline-flex items-center justify-center w-7 h-7 rounded-lg bg-gradient-to-br from-brand-500 to-brand-700 text-white shadow-sm">
+              <Activity size={14} />
+            </span>
+            Dashboard
+          </h1>
+          <p className="text-xs text-ink-dim mt-0.5 ml-9">Fleet health at a glance — refreshes every 15 seconds.</p>
+        </div>
+        {/* Page-level time range — every time-series card on this page
+            subscribes to it, so operators flip the whole dashboard at
+            once instead of three separate pickers fighting each other. */}
+        <div className="flex items-center gap-2 text-[11px] text-ink-mute">
+          <span>Range</span>
+          <RangePicker value={range} onChange={setRange} />
+        </div>
       </header>
 
       <div className="flex-1 overflow-auto p-6 space-y-6">
@@ -244,14 +282,30 @@ export default function DashboardPage() {
             accent={data && data.findings.critical > 0 ? 'bad' : data && data.findings.high > 0 ? 'warn' : 'good'}
             sub={data ? `${data.findings.critical} critical · ${data.findings.high} high` : ''}
           />
+          {/* Triage rate — % of findings ingested in the window that
+              the engine + T0/T1 orchestrations auto-handled (T0 dedup
+              + T1 status closures + T1 confirmed-but-tagged). 100%
+              means the queue is fully drained by automation. */}
           <StatTile
-            label="Drift"
+            label="Triage rate"
             icon={TrendingUp}
-            to="/daimons"
-            loading={!data}
-            primary={data ? `${data.drift.total}` : '—'}
-            accent={data && data.drift.total > 0 ? 'warn' : 'good'}
-            sub={data && data.drift.total > 0 ? 'on stale def/binary' : 'all on canonical'}
+            to="/findings"
+            loading={!triage}
+            primary={triage ? `${Math.round((triage.totals.triage_rate ?? 0) * 100)}%` : '—'}
+            accent={
+              !triage ? 'info'
+                : triage.totals.triage_rate >= 0.7 ? 'good'
+                : triage.totals.triage_rate >= 0.3 ? 'warn'
+                : 'bad'
+            }
+            sub={triage ? `${triage.totals.auto_handled} of ${triage.totals.incoming} · ${range}` : ''}
+            // Inline split: the three auto-* paths in the same colors
+            // the Findings & Triage chart uses, so the tile and the
+            // chart visually link.
+            segments={triage ? [
+              { value: triage.totals.auto_handled, color: 'bg-emerald-500', title: `${triage.totals.auto_handled} auto-handled` },
+              { value: Math.max(0, triage.totals.incoming - triage.totals.auto_handled), color: 'bg-orange-400', title: `${Math.max(0, triage.totals.incoming - triage.totals.auto_handled)} surfaced to operator` },
+            ] : undefined}
           />
           <StatTile
             label="Automation"
@@ -272,16 +326,16 @@ export default function DashboardPage() {
           />
         </section>
 
-        {/* Row 2: timelines with shared range picker */}
-        <section className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {/* Row 2: three time-series cards aligned to the page-level
+            range. Per-card controls only carry the chart-specific
+            knobs (scale, groupBy) — the shared range lives in the
+            header so all three flip together. */}
+        <section className="grid grid-cols-1 lg:grid-cols-3 gap-4">
           <Card
             title="Events"
-            subtitle={`${scaleLabel(eventsScale)} / ${range}`}
+            subtitle={scaleLabel(eventsScale)}
             right={
-              <div className="flex items-center gap-1.5">
-                <Picker value={eventsScale} options={SCALES} onChange={(v) => setScale('eventsScale', v as Scale)} />
-                <RangePicker value={range} onChange={setRange} />
-              </div>
+              <Picker value={eventsScale} options={SCALES} onChange={(v) => setScale('eventsScale', v as Scale)} />
             }
           >
             {!events ? <ChartSkeleton /> : (
@@ -292,12 +346,11 @@ export default function DashboardPage() {
           </Card>
           <Card
             title="Findings"
-            subtitle={`${scaleLabel(findingsScale)} / by ${groupBy} / ${range}`}
+            subtitle={`${scaleLabel(findingsScale)} / by ${groupBy}`}
             right={
               <div className="flex items-center gap-1.5">
                 <Picker value={groupBy} options={GROUPS} onChange={(v) => setGroupBy(v as GroupBy)} />
                 <Picker value={findingsScale} options={SCALES} onChange={(v) => setScale('findingsScale', v as Scale)} />
-                <RangePicker value={range} onChange={setRange} />
               </div>
             }
           >
@@ -307,9 +360,39 @@ export default function DashboardPage() {
               </Suspense>
             )}
           </Card>
+          <Card
+            title="Automation"
+            subtitle={`${scaleLabel(automationScale)} · runs by status`}
+            right={
+              <Picker value={automationScale} options={SCALES} onChange={(v) => setScale('automationScale', v as Scale)} />
+            }
+          >
+            {orchRuns === null ? <ChartSkeleton /> : (
+              <Suspense fallback={<ChartSkeleton />}>
+                <OrchestrationRunsTimelineChart runs={orchRuns} range={range} scale={automationScale} />
+              </Suspense>
+            )}
+          </Card>
         </section>
 
-        {/* Row 3: aggregate cards */}
+        {/* Row 3: Findings & Triage. The headline view of "is the
+            queue draining". Stacked area: incoming (envelope) over
+            T0 dedup + T1 closures + T1 tag-only + still-in-queue.
+            Same range as the rest of the page. */}
+        <section>
+          <Card
+            title="Findings & triage"
+            subtitle="How fast T0 + T1 are clearing the operator queue"
+          >
+            {!triage ? <ChartSkeleton /> : (
+              <Suspense fallback={<ChartSkeleton />}>
+                <FindingsTriageChart data={triage} range={range} />
+              </Suspense>
+            )}
+          </Card>
+        </section>
+
+        {/* Row 4: aggregate cards */}
         <section className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           <Card
             title="Top affected hosts"
@@ -337,22 +420,18 @@ export default function DashboardPage() {
           </Card>
         </section>
 
-        {/* Row 5: orchestration outcomes + pending gates. Two columns:
-            left summarises the last 24h's automation outcomes; right
-            surfaces every run currently waiting on operator approval
-            so the on-call sees them without navigating to the
-            orchestrations page. Each pending row is a deep-link
-            into the run-detail panel. */}
+        {/* Row 6: orchestration leaderboard + pending approvals.
+            Top orchestrations is range-scoped (page-level); pending
+            approvals is right-now and doesn't need a range. Two
+            equal columns at lg+. */}
         <section className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           <Card
-            title="Automation (24h)"
-            subtitle="Orchestration runs over time — the queue working itself off"
+            title="Top orchestrations"
+            subtitle="Busiest orchestrations in the window — success / failure split"
           >
-            {orchRuns === null ? <ChartSkeleton /> : (
+            {!topOrch ? <ChartSkeleton /> : (
               <Suspense fallback={<ChartSkeleton />}>
-                <div className="px-3 pt-2">
-                  <OrchestrationRunsTimelineChart runs={orchRuns} range="24h" />
-                </div>
+                <TopOrchestrationsChart data={topOrch} />
               </Suspense>
             )}
           </Card>

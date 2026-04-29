@@ -743,6 +743,17 @@ export const api = {
     if (params.since) qs.set('since', params.since);
     return request<InsightsEventsResponse>(`/api/insights/events?${qs.toString()}`);
   },
+  insightsTriageOutcomes: (params: { since?: TimeRange }) => {
+    const qs = new URLSearchParams();
+    if (params.since) qs.set('since', params.since);
+    return request<InsightsTriageOutcomesResponse>(`/api/insights/triage-outcomes?${qs.toString()}`);
+  },
+  insightsOrchestrationsTop: (params: { since?: TimeRange; limit?: number }) => {
+    const qs = new URLSearchParams();
+    if (params.since) qs.set('since', params.since);
+    if (params.limit) qs.set('limit', String(params.limit));
+    return request<InsightsOrchestrationsTopResponse>(`/api/insights/orchestrations-top?${qs.toString()}`);
+  },
   users: () => request<UserItem[]>('/api/users'),
   user: (id: number) => request<UserItem>(`/api/users/${id}`),
   createUser: (req: { email: string; role: string; password: string }) =>
@@ -1295,6 +1306,38 @@ export interface InsightsFindingsResponse {
 export interface InsightsEventsResponse {
   bucket_ms: number;
   buckets: Array<{ ts: number; count: number }>;
+}
+
+export interface InsightsTriageOutcomesResponse {
+  bucket_ms: number;
+  buckets: Array<{
+    ts: number;
+    incoming: number;
+    t0_superseded: number;
+    t1_resolved: number;
+    t1_tagged: number;
+  }>;
+  totals: {
+    incoming: number;
+    auto_handled: number;
+    triage_rate: number; // 0..1
+  };
+}
+
+export interface InsightsOrchestrationsTopResponse {
+  since: string;
+  rows: Array<{
+    orchestration_id: number;
+    name: string;
+    total: number;
+    completed: number;
+    failed: number;
+    running: number;
+    cancelled: number;
+    pending: number;
+    approval_required: number;
+    avg_duration_ms?: number;
+  }>;
 }
 
 export interface AboutInfo {
