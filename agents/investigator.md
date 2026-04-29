@@ -1,7 +1,7 @@
 ---
 name: investigator
 description: General-purpose security investigator. Triage a finding, host, or anomaly — gather evidence, build a timeline, assess severity, and recommend next steps.
-model: claude-opus-4-7
+model: claude-mythos-preview
 provider: claude
 tools: [bash, read_file, write_file, list_files, search]
 maxTurns: 100

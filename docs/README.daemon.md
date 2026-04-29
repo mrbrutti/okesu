@@ -82,7 +82,7 @@ name: my-agent
 mode: daemon
 interval: 5m              # or cron: "*/5 * * * *"
 provider: claude
-model: claude-sonnet-4-6
+model: claude-mythos-preview
 effort: low
 maxTurns: 10
 stateDir: /var/lib/okesu/my-agent
@@ -188,7 +188,7 @@ Detects unauthorized changes to a host's configuration and software. Runs every 
 | Property | Value |
 |---|---|
 | Schedule | `interval: 3m` |
-| Model | `claude-sonnet-4-6` |
+| Model | `claude-mythos-preview` |
 | Collectors | 5 (2 required, 3 optional) |
 | Tools | bash, read_file, write_file, list_files, search |
 
@@ -213,7 +213,7 @@ Hunts for signs of active compromise on a host. Runs every 2 minutes, checking f
 | Property | Value |
 |---|---|
 | Schedule | `interval: 2m` |
-| Model | `claude-sonnet-4-6` |
+| Model | `claude-mythos-preview` |
 | Collectors | 5 (3 required, 2 optional) |
 | Tools | bash, read_file, write_file, list_files, search |
 
@@ -249,7 +249,7 @@ Audits the security configuration of OCI tenancies: IAM policies, compartment bo
 | Property | Value |
 |---|---|
 | Schedule | `interval: 10m` |
-| Model | `claude-sonnet-4-6` |
+| Model | `claude-mythos-preview` |
 | Collectors | 4 (2 required, 2 optional) |
 | Tools | bash, read_file, write_file, list_files, search |
 
@@ -275,7 +275,7 @@ Correlates OCI audit logs, Cloud Guard findings, and compute activity to detect 
 | Property | Value |
 |---|---|
 | Schedule | `interval: 5m` |
-| Model | `claude-sonnet-4-6` |
+| Model | `claude-mythos-preview` |
 | Collectors | 3 (1 required, 2 optional) |
 | Tools | bash, read_file, write_file, list_files, search |
 
@@ -302,7 +302,7 @@ Daily compliance sweep covering CIS benchmarks, IAM access staleness, resource t
 | Property | Value |
 |---|---|
 | Schedule | `cron: "0 6 * * *"` (daily at 06:00 UTC) |
-| Model | `claude-sonnet-4-6` |
+| Model | `claude-mythos-preview` |
 | Collectors | 4 (2 required, 2 optional) |
 | Tools | bash, read_file, write_file, list_files, search |
 
@@ -332,7 +332,7 @@ Monitors OCI spending for anomalies, identifies idle resources, and tracks budge
 | Property | Value |
 |---|---|
 | Schedule | `cron: "0 * * * *"` (hourly) |
-| Model | `claude-sonnet-4-6` |
+| Model | `claude-mythos-preview` |
 | Collectors | 3 (2 required, 1 optional) |
 | Tools | bash, read_file, write_file, list_files |
 
@@ -357,7 +357,7 @@ Checks service health endpoints, TLS certificate expiry, deployment frequency, a
 | Property | Value |
 |---|---|
 | Schedule | `interval: 10m` |
-| Model | `claude-sonnet-4-6` |
+| Model | `claude-mythos-preview` |
 | Collectors | 4 (1 required, 3 optional) |
 | Tools | bash, read_file, write_file |
 
@@ -388,7 +388,7 @@ Monitors database health for data engineering teams. Checks row counts, null rat
 | Property | Value |
 |---|---|
 | Schedule | `cron: "30 7 * * *"` (daily at 07:30 UTC) |
-| Model | `claude-sonnet-4-6` |
+| Model | `claude-mythos-preview` |
 | Collectors | 3 (2 required, 1 optional) |
 | Tools | bash, read_file, write_file, list_files |
 
