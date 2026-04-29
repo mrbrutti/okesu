@@ -538,6 +538,10 @@ func (s *Server) routes() http.Handler {
 		r.Get("/api/findings/{id}", api.FederatedFindingDetail(s.store, s.fedAgg))
 			r.Get("/api/findings/{id}/runs", api.FederatedRunsForFinding(s.store, s.fedAgg))
 
+			// Phase 22.1 — IOC list. Filter by finding_id (drawer drill-down)
+			// or kind (e.g. all observed sha256s). Local-only for now.
+			r.Get("/api/iocs", api.ListIOCs(s.store))
+
 		// Read endpoints (continued)
 		r.Get("/api/nodes", api.FederatedNodesList(s.store, s.fedAgg))
 		r.Get("/api/nodes/{id}", api.FederatedNodeDetail(s.store, s.fedAgg))

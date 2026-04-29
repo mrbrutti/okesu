@@ -2,6 +2,7 @@ package db
 
 import (
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -193,4 +194,70 @@ func (s *Store) LookupIOC(kind, normalizedValue string) (*IOCRecord, error) {
 		return nil, err
 	}
 	return s.GetIOC(id)
+}
+
+// IOCListFilter narrows ListIOCs. Zero-valued fields disable that
+// constraint. Limit is clamped to (0, 1000]; out-of-range values fall
+// back to the default 100.
+type IOCListFilter struct {
+	Kind      string
+	FindingID int64
+	Limit     int
+}
+
+// ListIOCs returns rows from `iocs`, ordered by last_seen DESC, joined
+// against ioc_observations only when FindingID is set. SELECT DISTINCT
+// is applied so an IOC observed multiple times against the same
+// finding doesn't appear multiple times in the result.
+func (s *Store) ListIOCs(f IOCListFilter) ([]*IOCRecord, error) {
+	if f.Limit <= 0 || f.Limit > 1000 {
+		f.Limit = 100
+	}
+	var (
+		clauses []string
+		args    []any
+		joinObs bool
+	)
+	if f.Kind != "" {
+		clauses = append(clauses, "iocs.kind = ?")
+		args = append(args, f.Kind)
+	}
+	if f.FindingID > 0 {
+		joinObs = true
+		clauses = append(clauses, "ioc_observations.finding_id = ?")
+		args = append(args, f.FindingID)
+	}
+	where := ""
+	if len(clauses) > 0 {
+		where = " WHERE " + strings.Join(clauses, " AND ")
+	}
+	join := ""
+	if joinObs {
+		join = " JOIN ioc_observations ON ioc_observations.ioc_id = iocs.id "
+	}
+	q := `SELECT DISTINCT iocs.id, iocs.kind, iocs.value, iocs.normalized_value, iocs.source,
+	       COALESCE(iocs.definition_path,''), COALESCE(iocs.confidence,''),
+	       COALESCE(iocs.attribution,''), COALESCE(iocs.severity_floor,''),
+	       COALESCE(iocs.classification,''), COALESCE(iocs.notes,''), iocs.observation_count,
+	       iocs.first_seen, iocs.last_seen
+	FROM iocs ` + join + where + ` ORDER BY iocs.last_seen DESC LIMIT ?`
+	args = append(args, f.Limit)
+
+	rows, err := s.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*IOCRecord
+	for rows.Next() {
+		var r IOCRecord
+		if err := rows.Scan(&r.ID, &r.Kind, &r.Value, &r.NormalizedValue, &r.Source,
+			&r.DefinitionPath, &r.Confidence, &r.Attribution, &r.SeverityFloor,
+			&r.Classification, &r.Notes, &r.ObservationCount,
+			&r.FirstSeen, &r.LastSeen); err != nil {
+			return nil, err
+		}
+		out = append(out, &r)
+	}
+	return out, rows.Err()
 }
