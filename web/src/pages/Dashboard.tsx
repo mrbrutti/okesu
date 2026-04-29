@@ -18,19 +18,16 @@ import {
   AlertTriangle,
   CheckCircle2,
   Cpu,
-  GitBranch,
   Loader2,
   Lock,
-  Pause,
   Radio,
   Server,
   ShieldAlert,
   TrendingUp,
   Workflow,
   WifiOff,
-  XCircle,
 } from 'lucide-react';
-import { api, ApiError, type DashboardResponse, type InsightsEventsResponse, type InsightsFindingsResponse, type OrchestrationRunView, type TimeRange } from '../api';
+import { api, ApiError, type DashboardResponse, type InsightsEventsResponse, type InsightsFindingsResponse, type OrchestrationRunStatus, type OrchestrationRunView, type TimeRange } from '../api';
 import { cn } from '../lib/cn';
 
 const EventsTimelineChart = lazy(() =>
@@ -44,6 +41,9 @@ const TopHostsChart = lazy(() =>
 );
 const OSDistributionChart = lazy(() =>
   import('../components/dashboard/DashboardCharts').then((m) => ({ default: m.OSDistributionChart })),
+);
+const OrchestrationRunsTimelineChart = lazy(() =>
+  import('../components/dashboard/DashboardCharts').then((m) => ({ default: m.OrchestrationRunsTimelineChart })),
 );
 
 type GroupBy = 'severity' | 'agent' | 'host';
@@ -84,6 +84,11 @@ export default function DashboardPage() {
   // without having to navigate. Refreshes on the same 15s tick as
   // the rest of the dashboard.
   const [orchRuns, setOrchRuns] = useState<OrchestrationRunView[] | null>(null);
+  // counts_by_status from /api/orchestration-runs?counts=1 — server-side
+  // truthy totals so the Automation tile is right even when there are
+  // more than `limit` runs in the window. The rows array is what feeds
+  // the timeline chart; the counts feed the tile + legend.
+  const [orchCounts, setOrchCounts] = useState<Partial<Record<OrchestrationRunStatus, number>> | null>(null);
 
   // Aggregate dashboard payload — every 15s.
   useEffect(() => {
@@ -92,8 +97,16 @@ export default function DashboardPage() {
       api.dashboard()
         .then((d) => { if (!cancelled) { setData(d); setError(null); } })
         .catch((e) => { if (!cancelled) setError(e instanceof ApiError ? e.message : String(e)); });
-      api.orchestrationRuns()
-        .then((rows) => { if (!cancelled) setOrchRuns(rows); })
+      // 24h window + 1000-row cap. The chart only needs started_at + status,
+      // and 1000 datapoints are plenty to draw 96 buckets cleanly. Totals
+      // come from counts_by_status so the Automation tile stays accurate
+      // even past the row cap.
+      api.orchestrationRunsFiltered({ since: '24h', limit: 1000 }, { withCounts: true })
+        .then(({ rows, counts_by_status }) => {
+          if (cancelled) return;
+          setOrchRuns(rows);
+          setOrchCounts(counts_by_status);
+        })
         .catch(() => { /* keep stale data on transient errors */ });
     };
     refresh();
@@ -181,7 +194,7 @@ export default function DashboardPage() {
         )}
 
         {/* Row 1: stat tiles */}
-        <section className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
+        <section className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
           <StatTile
             label="Daimons"
             icon={Cpu}
@@ -239,6 +252,23 @@ export default function DashboardPage() {
             primary={data ? `${data.drift.total}` : '—'}
             accent={data && data.drift.total > 0 ? 'warn' : 'good'}
             sub={data && data.drift.total > 0 ? 'on stale def/binary' : 'all on canonical'}
+          />
+          <StatTile
+            label="Automation"
+            icon={Workflow}
+            to="/orchestrations?tab=runs"
+            loading={orchCounts === null}
+            primary={orchCounts ? `${automationTotal(orchCounts)}` : '—'}
+            accent={orchCounts && (orchCounts.failed ?? 0) > 0 ? 'warn' : 'info'}
+            sub={orchCounts ? automationSub(orchCounts) : ''}
+            // Inline split: completed (green), failed (red), running (blue) — same
+            // colors the OrchestrationRunsTimelineChart uses below so the eye
+            // links the tile and the chart at a glance.
+            segments={orchCounts ? [
+              { value: orchCounts.completed ?? 0,  color: 'bg-green-500',  title: `${orchCounts.completed ?? 0} completed` },
+              { value: orchCounts.failed ?? 0,     color: 'bg-red-500',    title: `${orchCounts.failed ?? 0} failed` },
+              { value: orchCounts.running ?? 0,    color: 'bg-cyan-500',   title: `${orchCounts.running ?? 0} running` },
+            ] : undefined}
           />
         </section>
 
@@ -314,8 +344,17 @@ export default function DashboardPage() {
             orchestrations page. Each pending row is a deep-link
             into the run-detail panel. */}
         <section className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          <Card title="Automation (24h)" subtitle="Orchestration runs by outcome">
-            <OrchestrationOutcomes runs={orchRuns} />
+          <Card
+            title="Automation (24h)"
+            subtitle="Orchestration runs over time — the queue working itself off"
+          >
+            {orchRuns === null ? <ChartSkeleton /> : (
+              <Suspense fallback={<ChartSkeleton />}>
+                <div className="px-3 pt-2">
+                  <OrchestrationRunsTimelineChart runs={orchRuns} range="24h" />
+                </div>
+              </Suspense>
+            )}
           </Card>
           <Card title="Pending approvals" subtitle="Runs waiting on a human gate">
             <PendingApprovals runs={orchRuns} />
@@ -337,6 +376,33 @@ function formatDaimonsSub(d: { suspended: number; unhealthy: number }): string {
   if (d.suspended > 0) parts.push(`${d.suspended} paused`);
   if (d.unhealthy > 0) parts.push(`${d.unhealthy} unhealthy`);
   if (parts.length === 0) return 'all running';
+  return parts.join(' · ');
+}
+
+// Total runs across the buckets that contribute to "doing things" — we
+// sum every status the engine produces so the tile reflects load, not
+// just outcomes. Pending+approval are quiet states that still cost a
+// run row; we count them too.
+function automationTotal(counts: Partial<Record<OrchestrationRunStatus, number>>): number {
+  return (counts.completed ?? 0)
+       + (counts.failed ?? 0)
+       + (counts.running ?? 0)
+       + (counts.cancelled ?? 0)
+       + (counts.pending ?? 0)
+       + (counts.approval_required ?? 0);
+}
+
+function automationSub(counts: Partial<Record<OrchestrationRunStatus, number>>): string {
+  const parts: string[] = [];
+  const c = counts.completed ?? 0;
+  const f = counts.failed ?? 0;
+  const r = counts.running ?? 0;
+  const a = counts.approval_required ?? 0;
+  if (c > 0) parts.push(`${c} ok`);
+  if (f > 0) parts.push(`${f} failed`);
+  if (r > 0) parts.push(`${r} running`);
+  if (a > 0) parts.push(`${a} approval`);
+  if (parts.length === 0) return 'no runs in 24h';
   return parts.join(' · ');
 }
 
@@ -483,87 +549,6 @@ function ChartSkeleton() {
 
 // ── Orchestration cards ─────────────────────────────────────────────
 
-// 24h cutoff for the dashboard rollup. Older runs go to the
-// orchestrations page's full history view.
-const RUN_24H_MS = 24 * 60 * 60 * 1000;
-
-// OrchestrationOutcomes — per-status counts plus a thin accent bar so
-// the operator gets a one-glance read of whether automation is
-// healthy. Clicking the row jumps to the orchestration runs list.
-function OrchestrationOutcomes({ runs }: { runs: OrchestrationRunView[] | null }) {
-  if (runs === null) return <ChartSkeleton />;
-  const cutoff = Date.now() - RUN_24H_MS;
-  const recent = runs.filter((r) => new Date(r.started_at).getTime() >= cutoff);
-  const buckets = {
-    completed: recent.filter((r) => r.status === 'completed').length,
-    running:   recent.filter((r) => r.status === 'running').length,
-    approval:  recent.filter((r) => r.status === 'approval_required').length,
-    failed:    recent.filter((r) => r.status === 'failed').length,
-    cancelled: recent.filter((r) => r.status === 'cancelled').length,
-  };
-  const total = Object.values(buckets).reduce((a, b) => a + b, 0);
-
-  if (total === 0) {
-    return (
-      <div className="p-6 text-center text-xs text-ink-mute">
-        No orchestration runs in the last 24h.
-        <div className="mt-2">
-          <Link to="/orchestrations" className="text-brand-700 hover:underline">
-            Open orchestrations →
-          </Link>
-        </div>
-      </div>
-    );
-  }
-
-  const rows: { label: string; count: number; tone: string; icon: typeof Workflow }[] = [
-    { label: 'Completed', count: buckets.completed, tone: 'bg-green-500',  icon: CheckCircle2 },
-    { label: 'Running',   count: buckets.running,   tone: 'bg-blue-500',   icon: Loader2 },
-    { label: 'Approval',  count: buckets.approval,  tone: 'bg-amber-500',  icon: Pause },
-    { label: 'Failed',    count: buckets.failed,    tone: 'bg-red-500',    icon: XCircle },
-    { label: 'Cancelled', count: buckets.cancelled, tone: 'bg-slate-400',  icon: GitBranch },
-  ];
-
-  return (
-    <div className="p-4 space-y-3">
-      {/* segmented bar — proportional widths sum to 100% */}
-      <div className="flex h-2 rounded overflow-hidden ring-1 ring-border">
-        {rows.map((r) =>
-          r.count > 0 ? (
-            <div
-              key={r.label}
-              className={r.tone}
-              style={{ width: `${(r.count / total) * 100}%` }}
-              title={`${r.label}: ${r.count}`}
-            />
-          ) : null,
-        )}
-      </div>
-      <ul className="space-y-1.5">
-        {rows.map((r) => (
-          <li key={r.label} className="flex items-center justify-between text-sm">
-            <Link
-              to={`/orchestrations?tab=runs&status=${runStatusQueryParam(r.label)}`}
-              className="flex items-center gap-2 text-ink hover:text-brand-700"
-            >
-              <span className={cn('inline-block w-1.5 h-3 rounded-sm', r.tone)} />
-              <r.icon size={11} className={r.label === 'Running' ? 'animate-spin' : ''} />
-              {r.label}
-            </Link>
-            <span className="text-sm font-medium tabular-nums text-ink-dim">{r.count}</span>
-          </li>
-        ))}
-      </ul>
-      <div className="pt-1 border-t border-border/60 flex items-center justify-between text-[11px] text-ink-mute">
-        <span>{total} runs · 24h</span>
-        <Link to="/orchestrations?tab=runs" className="text-brand-700 hover:underline">
-          full history →
-        </Link>
-      </div>
-    </div>
-  );
-}
-
 // PendingApprovals — every run currently in `approval_required`,
 // sorted by oldest first so the operator handles the longest-waiting
 // gate first. Each row is a one-click deep link into the run detail
@@ -626,20 +611,6 @@ function PendingApprovals({ runs }: { runs: OrchestrationRunView[] | null }) {
     </ul>
   );
 }
-
-// Maps the status pill label to the URL filter the orchestrations
-// page understands. Keep aligned with Orchestrations.tsx's status
-// query handling.
-function runStatusQueryParam(label: string): string {
-  switch (label) {
-    case 'Approval':  return 'approval_required';
-    case 'Cancelled': return 'cancelled';
-    default:          return label.toLowerCase();
-  }
-}
-
-// CheckCircle2 used by FleetStatusKeypoints below.
-void CheckCircle2;
 
 // ── Fleet status keypoints — 4 big-number cells in one card ────────
 

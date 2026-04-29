@@ -17,7 +17,7 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
-import type { DashboardResponse, InsightsEventsResponse, InsightsFindingsResponse, TimeRange } from '../../api';
+import type { DashboardResponse, InsightsEventsResponse, InsightsFindingsResponse, OrchestrationRunView, TimeRange } from '../../api';
 
 export type Scale = 'linear' | 'log' | 'cumulative';
 
@@ -163,6 +163,129 @@ export function FindingsTimelineChart({ data, range, scale = 'linear' }: { data:
             activeDot={{ r: 4, strokeWidth: 0 }}
           />
         ))}
+      </LineChart>
+    </ResponsiveContainer>
+  );
+}
+
+// ── Orchestration runs over time (multi-line) ───────────────────────
+
+// Status colors picked to align with the StatusPill / OrchestrationOutcomes
+// rows so completed-green / failed-red / running-blue read the same on the
+// dashboard, the runs tab, and the run-detail page.
+const RUN_STATUS_COLOR: Record<string, string> = {
+  completed: '#10b981', // emerald-500
+  failed:    '#dc2626', // red-600
+  running:   '#0891b2', // cyan-600
+};
+
+// Per-range bucket size — chosen so each range renders ~30–96 buckets,
+// dense enough to see trends without crushing the X axis.
+function runChartBucketMs(range: TimeRange): number {
+  switch (range) {
+    case '30m': return 60 * 1000;            //  1m  → 30 buckets
+    case '1h':  return 2 * 60 * 1000;        //  2m  → 30 buckets
+    case '24h': return 15 * 60 * 1000;       // 15m  → 96 buckets
+    case '7d':  return 4 * 60 * 60 * 1000;   //  4h  → 42 buckets
+    case '30d': return 24 * 60 * 60 * 1000;  //  1d  → 30 buckets
+  }
+}
+
+function runChartSinceMs(range: TimeRange): number {
+  const now = Date.now();
+  switch (range) {
+    case '30m': return now - 30 * 60 * 1000;
+    case '1h':  return now - 60 * 60 * 1000;
+    case '24h': return now - 24 * 60 * 60 * 1000;
+    case '7d':  return now - 7 * 24 * 60 * 60 * 1000;
+    case '30d': return now - 30 * 24 * 60 * 60 * 1000;
+  }
+}
+
+export function OrchestrationRunsTimelineChart({
+  runs, range, scale = 'linear',
+}: {
+  runs: OrchestrationRunView[];
+  range: TimeRange;
+  scale?: Scale;
+}) {
+  const { rows, totals } = useMemo(() => {
+    const bucketMs = runChartBucketMs(range);
+    const sinceMs = runChartSinceMs(range);
+    const now = Date.now();
+
+    // Pre-build empty buckets so the X axis is continuous and the chart
+    // shows quiet stretches as flat zeros instead of jumping over them.
+    const grid = new Map<number, { completed: number; failed: number; running: number }>();
+    const start = Math.floor(sinceMs / bucketMs) * bucketMs;
+    for (let t = start; t <= now; t += bucketMs) {
+      grid.set(t, { completed: 0, failed: 0, running: 0 });
+    }
+
+    let totalCompleted = 0, totalFailed = 0, totalRunning = 0;
+    for (const r of runs) {
+      const ts = new Date(r.started_at).getTime();
+      if (ts < sinceMs) continue;
+      const bucket = Math.floor(ts / bucketMs) * bucketMs;
+      const slot = grid.get(bucket);
+      if (!slot) continue;
+      if (r.status === 'completed')      { slot.completed++; totalCompleted++; }
+      else if (r.status === 'failed')    { slot.failed++;    totalFailed++; }
+      else if (r.status === 'running')   { slot.running++;   totalRunning++; }
+    }
+
+    let cumC = 0, cumF = 0, cumR = 0;
+    const rows = [...grid.entries()].sort(([a], [b]) => a - b).map(([ts, by]) => {
+      cumC += by.completed; cumF += by.failed; cumR += by.running;
+      const c  = scale === 'cumulative' ? cumC : by.completed;
+      const f  = scale === 'cumulative' ? cumF : by.failed;
+      const rn = scale === 'cumulative' ? cumR : by.running;
+      return {
+        ts: tsLabel(ts, bucketMs),
+        completed: scale === 'log' ? Math.max(c, 0.5)  : c,
+        failed:    scale === 'log' ? Math.max(f, 0.5)  : f,
+        running:   scale === 'log' ? Math.max(rn, 0.5) : rn,
+      };
+    });
+
+    return { rows, totals: { completed: totalCompleted, failed: totalFailed, running: totalRunning } };
+  }, [runs, range, scale]);
+
+  if (totals.completed + totals.failed + totals.running === 0) {
+    return (
+      <div className="text-xs text-ink-mute py-12 text-center">
+        <div className="inline-flex items-center justify-center w-10 h-10 rounded-full bg-slate-100 text-slate-400 mb-2">·</div>
+        <div>No orchestration runs in the last {range}.</div>
+      </div>
+    );
+  }
+
+  return (
+    <ResponsiveContainer width="100%" height={220}>
+      <LineChart data={rows} margin={{ top: 8, right: 12, left: -12, bottom: 0 }}>
+        <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
+        <XAxis
+          dataKey="ts"
+          tick={{ fontSize: 10, fill: '#94a3b8' }}
+          interval={tickInterval(range)}
+          axisLine={false}
+          tickLine={false}
+        />
+        <YAxis
+          tick={{ fontSize: 10, fill: '#94a3b8' }}
+          allowDecimals={false}
+          axisLine={false}
+          tickLine={false}
+          width={40}
+          scale={scale === 'log' ? 'log' : 'auto'}
+          domain={scale === 'log' ? [0.5, 'auto'] : undefined}
+          allowDataOverflow={scale === 'log'}
+        />
+        <Tooltip contentStyle={tooltipStyle} labelStyle={{ fontWeight: 600 }} cursor={{ stroke: '#cbd5e1', strokeWidth: 1 }} />
+        <Legend wrapperStyle={{ fontSize: 11, paddingTop: 6 }} iconType="line" />
+        <Line type="monotone" dataKey="completed" stroke={RUN_STATUS_COLOR.completed} strokeWidth={2} dot={false} activeDot={{ r: 4, strokeWidth: 0 }} />
+        <Line type="monotone" dataKey="failed"    stroke={RUN_STATUS_COLOR.failed}    strokeWidth={2} dot={false} activeDot={{ r: 4, strokeWidth: 0 }} />
+        <Line type="monotone" dataKey="running"   stroke={RUN_STATUS_COLOR.running}   strokeWidth={2} strokeDasharray="4 3" dot={false} activeDot={{ r: 4, strokeWidth: 0 }} />
       </LineChart>
     </ResponsiveContainer>
   );
