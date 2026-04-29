@@ -66,6 +66,10 @@ type Server struct {
 	notify     *notify.Worker
 	fedPoller  *federation.Poller     // Phase 9 parent-side federation
 	fedAgg     *federation.Aggregator // Phase 9.6 federated reads
+	// fedFindingFanout polls child CPs for newly-projected findings
+	// and routes them through the local orchestration coordinator's
+	// OnFinding hook. See controlplane/api/federation_finding_fanout.go.
+	fedFindingFanout *api.FederationFindingFanout
 	// cpProvisioners is the registry of per-cloud CP-provisioning
 	// implementations. Per-cloud impls (OCI in 21.3b, AWS in 21.3c)
 	// register against this from server.New() below.
@@ -367,6 +371,14 @@ func New(cfg Config) (*Server, error) {
 			log.Printf("eventpipeline worker exited: %v", err)
 		}
 	}()
+
+	// Federated finding fan-out (#155): poll each child CP's findings
+	// and route newly-projected ones through the local OnFinding hook
+	// so orchestrations installed on the parent fire for findings
+	// projected anywhere in the federation. No-op when there are no
+	// peers; cheap when there are.
+	srv.fedFindingFanout = api.NewFederationFindingFanout(srv.fedAgg, srv.orchestra.OnFinding, 0)
+	go srv.fedFindingFanout.Run(pipelineCtx)
 
 	// Phase 4: OIDC. Optional — boot continues if discovery fails so the CP
 	// stays available with password auth even when the IDP is unreachable.
