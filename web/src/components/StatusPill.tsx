@@ -58,6 +58,12 @@ export const STATUS_STYLES: Record<FindingStatus, StatusStyle> = {
     dot: 'bg-slate-400',
     icon: Eye,
   },
+  superseded: {
+    label: 'Superseded',
+    cls: 'bg-slate-100 text-slate-600 ring-slate-200',
+    dot: 'bg-slate-400',
+    icon: Eye,
+  },
 };
 
 export function StatusPill({

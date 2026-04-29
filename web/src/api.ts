@@ -210,10 +210,15 @@ export type FindingStatus =
   | 'investigating'
   | 'resolved'
   | 'false_positive'
-  | 'wontfix';
+  | 'wontfix'
+  /** Engine-level Tier-0 dedup closure status. Set by the
+   *  eventpipeline when a newer finding with the same dedup_key
+   *  lands. Operators almost never want to see these; the
+   *  Operator-queue filter hides them by default. */
+  | 'superseded';
 
 export const ALL_FINDING_STATUSES: FindingStatus[] = [
-  'open', 'acknowledged', 'investigating', 'resolved', 'false_positive', 'wontfix',
+  'open', 'acknowledged', 'investigating', 'resolved', 'false_positive', 'wontfix', 'superseded',
 ];
 
 export interface FindingsSummary {
@@ -276,7 +281,10 @@ export interface FindingsFilter {
   host?: string;
   category?: string;     // process|file|network|cert|cloud|identity|config|other
   tag?: string;          // exact match against any of the comma-separated tags
-  state?: 'open' | 'acked' | 'all';
+  /** open: status='open'. acked: anything triaged (any non-open).
+   *  all: every status. queue: status='open' AND no auto-* tag — i.e.
+   *  the operator queue (Phase 13). */
+  state?: 'open' | 'acked' | 'all' | 'queue';
   since?: number;        // unix ms
   until?: number;        // unix ms
   limit?: number;

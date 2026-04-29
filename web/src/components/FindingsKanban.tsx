@@ -57,6 +57,7 @@ const COL_ACCENT: Record<FindingStatus, string> = {
   resolved:       'bg-green-500',
   false_positive: 'bg-amber-500',
   wontfix:        'bg-slate-300',
+  superseded:     'bg-slate-300',
 };
 
 export default function FindingsKanban({
@@ -95,7 +96,7 @@ export default function FindingsKanban({
   const columns = useMemo(() => {
     const out: Record<FindingStatus, Finding[]> = {
       open: [], acknowledged: [], investigating: [],
-      resolved: [], false_positive: [], wontfix: [],
+      resolved: [], false_positive: [], wontfix: [], superseded: [],
     };
     for (const f of findings ?? []) {
       const s = (f.status ?? 'open') as FindingStatus;

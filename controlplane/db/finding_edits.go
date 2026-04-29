@@ -217,6 +217,123 @@ func (s *Store) ApplyFindingRemoveTag(findingID int64, tag, reason string, origi
 	return tx.Commit()
 }
 
+// SupersedeOpenDedups closes every previously-open finding sharing
+// `dedupKey` (other than `keepID` — the one that just landed) and
+// stamps each with a `rolled-up-by-#N` reason + `auto-rolled-up`
+// tag. The supersede is engine-level (no LLM in the loop), atomic
+// per-finding, and idempotent — re-running with the same arguments
+// is a no-op once the originals are already in `superseded`.
+//
+// Returns the number of findings closed. Callers (eventpipeline)
+// log the count so operators can see the queue collapsing.
+//
+// Opt-out: a finding tagged `keep-history` is left untouched. That
+// gives an orchestration a way to pin an evidence chain when the
+// dedup_key would otherwise be too coarse.
+func (s *Store) SupersedeOpenDedups(keepID int64, dedupKey string) (int, error) {
+	if dedupKey == "" {
+		return 0, nil
+	}
+	// Pull the open siblings first so we can write one audit row each.
+	rows, err := s.Query(`
+		SELECT id, COALESCE(tags, '') FROM findings
+		 WHERE dedup_key = ? AND id != ?
+		   AND (status IS NULL OR status = 'open')`, dedupKey, keepID)
+	if err != nil {
+		return 0, err
+	}
+	type cand struct {
+		id   int64
+		tags string
+	}
+	var candidates []cand
+	for rows.Next() {
+		var c cand
+		if err := rows.Scan(&c.id, &c.tags); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		candidates = append(candidates, c)
+	}
+	rows.Close()
+
+	closed := 0
+	for _, c := range candidates {
+		// Honour the keep-history opt-out.
+		if hasTag(c.tags, "keep-history") {
+			continue
+		}
+		reason := fmt.Sprintf("rolled-up-by-#%d", keepID)
+		// One transaction per finding so a single failure doesn't
+		// leak partial state across the rest.
+		tx, err := s.Begin()
+		if err != nil {
+			return closed, err
+		}
+		if _, err := tx.Exec(`
+			UPDATE findings
+			   SET status = 'superseded', triaged_at = CURRENT_TIMESTAMP,
+			       triage_note = ?
+			 WHERE id = ? AND (status IS NULL OR status = 'open')`,
+			reason, c.id); err != nil {
+			tx.Rollback()
+			return closed, err
+		}
+		// Audit the status change.
+		if err := writeFindingEdit(tx, c.id, "status", "open", "superseded", reason, EditOrigin{Reason: reason}); err != nil {
+			tx.Rollback()
+			return closed, err
+		}
+		// Tag for UI-side filtering.
+		newTags := appendTag(c.tags, "auto-rolled-up")
+		if newTags != c.tags {
+			if _, err := tx.Exec(`UPDATE findings SET tags = ? WHERE id = ?`, newTags, c.id); err != nil {
+				tx.Rollback()
+				return closed, err
+			}
+			if err := writeFindingEdit(tx, c.id, "tag_add", "", "auto-rolled-up", reason, EditOrigin{Reason: reason}); err != nil {
+				tx.Rollback()
+				return closed, err
+			}
+		}
+		// Cross-link the surviving finding ↔ closed sibling so the
+		// audit panel surfaces "rolled up by #N" with a deep link.
+		if _, err := tx.Exec(`
+			INSERT INTO finding_run_links (finding_id, orchestration_run_id, step_id)
+			VALUES (?, 0, ?)
+			ON CONFLICT (finding_id, orchestration_run_id, step_id) DO NOTHING`,
+			c.id, fmt.Sprintf("supersede:%d", keepID)); err != nil {
+			// Non-fatal; the audit row above is already in.
+			_ = err
+		}
+		if err := tx.Commit(); err != nil {
+			return closed, err
+		}
+		closed++
+	}
+	return closed, nil
+}
+
+// hasTag returns true if the comma-separated tag list contains tag.
+func hasTag(csv, tag string) bool {
+	for _, t := range splitTags(csv) {
+		if t == tag {
+			return true
+		}
+	}
+	return false
+}
+
+// appendTag adds tag if not already present. Returns the updated CSV.
+func appendTag(csv, tag string) string {
+	if hasTag(csv, tag) {
+		return csv
+	}
+	cur := splitTags(csv)
+	cur = append(cur, tag)
+	return strings.Join(cur, ",")
+}
+
 // LinkRunToFinding records a finding ↔ orchestration_run association.
 // Idempotent (PRIMARY KEY collision = no-op). Writes an audit row on
 // first link only.

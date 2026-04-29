@@ -123,6 +123,11 @@ type FindingFilter struct {
 	UntilMs    int64    // ts <
 	OnlyOpen   bool     // acknowledged = 0
 	OnlyAcked  bool     // acknowledged = 1
+	// OnlyQueue is the operator-queue filter: open AND no auto-* tag.
+	// Drives the default Findings landing — operators see only what
+	// the engine + T1 hasn't already auto-handled. Mutually exclusive
+	// with OnlyOpen / OnlyAcked.
+	OnlyQueue  bool
 	Limit      int      // 1..1000, default 100
 	Offset     int
 }
@@ -245,6 +250,14 @@ func (s *Store) ListFindings(f FindingFilter) ([]*Finding, error) {
 		clauses = append(clauses, "acknowledged = 0")
 	} else if f.OnlyAcked {
 		clauses = append(clauses, "acknowledged = 1")
+	} else if f.OnlyQueue {
+		// Operator queue: open AND not auto-handled. The engine's
+		// Tier-0 dedup closure tags `auto-rolled-up`; T1 noise
+		// classify tags `auto-triaged-noise`; auto-recovered T1s
+		// tag `auto-recovered`. Excluding any auto-* tag collapses
+		// the open list to "needs human attention".
+		clauses = append(clauses, "acknowledged = 0")
+		clauses = append(clauses, "(tags IS NULL OR tags NOT LIKE '%auto-%')")
 	}
 
 	q := `SELECT id, event_id, ts, agent, host, severity, title,

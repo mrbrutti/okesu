@@ -192,6 +192,8 @@ func FindingsList(store *db.Store) http.HandlerFunc {
 			f.OnlyAcked = true
 		case "all":
 			// no filter
+		case "queue":
+			f.OnlyQueue = true
 		}
 
 		findings, err := store.ListFindings(f)

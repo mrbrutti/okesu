@@ -47,7 +47,13 @@ const SEV_TONE: Record<Sev, SectionTone> = {
   INFO:     'muted',
 };
 
-type State = 'open' | 'acked' | 'all';
+// State pill identities. `queue` is the new default landing — only
+// open findings the engine + T1 hasn't already auto-handled.
+// `open` is the unfiltered open list (includes auto-tagged rows).
+// `acked` is everything the operator has triaged. `all` is the
+// firehose. Pre-existing query strings (?state=open / acked / all)
+// keep working; queue is the only new value.
+type State = 'queue' | 'open' | 'acked' | 'all';
 type Sev = 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW' | 'INFO';
 type View = 'grouped' | 'recent' | 'kanban';
 
@@ -58,7 +64,7 @@ export default function FindingsPage() {
   const [groups, setGroups] = useState<FindingGroup[] | null>(null);
   const [summary, setSummary] = useState<FindingsSummary | null>(null);
   const [view, setView] = useState<View>('grouped');
-  const [state, setState] = useState<State>('open');
+  const [state, setState] = useState<State>('queue');
   const [selectedSevs, setSelectedSevs] = useState<Sev[]>([]);
   const [agentFilter, setAgentFilter] = useState('');
   const [hostFilter, setHostFilter] = useState('');
@@ -257,16 +263,21 @@ export default function FindingsPage() {
 
         {view === 'recent' && (
         <div className="flex items-center gap-1 rounded-lg bg-slate-100 p-0.5">
-          {(['open', 'acked', 'all'] as State[]).map((s) => (
+          {(['queue', 'open', 'acked', 'all'] as State[]).map((s) => (
             <button
               key={s}
               onClick={() => setState(s)}
               className={cn(
                 'px-2.5 py-1 text-xs font-medium rounded-md capitalize',
-                state === s ? 'bg-panel text-ink shadow-sm' : 'text-ink-dim hover:text-ink'
+                state === s ? 'bg-panel text-ink shadow-sm' : 'text-ink-dim hover:text-ink',
+                // Operator-queue tab is the default landing — give it
+                // the same brand accent the dashboard pending-approvals
+                // card uses so operators recognise the action surface.
+                s === 'queue' && state === s && 'bg-brand-50 text-brand-700 ring-1 ring-brand-200',
               )}
+              title={s === 'queue' ? 'Open findings the engine + T1 has not auto-handled' : undefined}
             >
-              {s}
+              {s === 'queue' ? 'Operator queue' : s}
             </button>
           ))}
         </div>

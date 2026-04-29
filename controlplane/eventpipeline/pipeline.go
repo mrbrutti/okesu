@@ -184,6 +184,18 @@ func (w *Worker) Run(ctx context.Context) error {
 				log.Printf("eventpipeline: finding projection failed (event_id=%d): %v", id, ferr)
 				continue
 			}
+			// Tier-0 dedup closure: when a new finding lands sharing
+			// a dedup_key with older opens, supersede the siblings so
+			// the operator queue stays small. Engine-level: no LLM
+			// in the loop, deterministic, free. The Audit + run-link
+			// rows make the rolled-up siblings easy to find later.
+			if fi.DedupKey != "" {
+				if n, err := w.store.SupersedeOpenDedups(fid, fi.DedupKey); err != nil {
+					log.Printf("eventpipeline: supersede on dedup_key %q: %v", fi.DedupKey, err)
+				} else if n > 0 {
+					log.Printf("eventpipeline: rolled up %d sibling finding(s) by dedup_key %q (kept #%d)", n, fi.DedupKey, fid)
+				}
+			}
 			if w.onFindingProjected != nil {
 				// Best-effort: any panic in the callback is
 				// recovered so a buggy hook can't kill the worker.
