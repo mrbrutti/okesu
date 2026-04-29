@@ -130,6 +130,17 @@ type Config struct {
 	// time.
 	IOCCatalogDirs []string
 
+	// Policy carries operator-set per-class auto-approve toggles
+	// consumed by the orchestrator engine's approval gate. Keys are
+	// the action-class names from controlplane/orchestrator
+	// (read | enrich | fetch | create | modify); values true mean
+	// "engine may execute steps whose `actions:` allowlist is fully
+	// covered by auto-approved classes without a separate operator
+	// approval gate." Empty map (the default) preserves today's
+	// gate-everything behaviour. See agents/_orchestration-actions.md
+	// for the operator-facing reference.
+	Policy PolicyConfig
+
 	// FleetSSHKeyPath is an optional path to a private SSH key the CP
 	// uses for unattended auto-deploy of the jobs runtime when an
 	// orchestration step targets a node that has neither tunnel nor
@@ -254,6 +265,14 @@ type Config struct {
 	// endpoint then only accepts authenticated session callers (useful
 	// for local discovery).
 	FederationToken string
+}
+
+// PolicyConfig is the YAML-loadable shape of the per-class
+// auto-approve toggle. Lives on Config.Policy and is threaded into
+// the orchestrator engine at boot. Keys are action-class names; an
+// absent key means "not auto-approved" (the safe default).
+type PolicyConfig struct {
+	AutoApprove map[string]bool
 }
 
 // OIDCEnabled reports whether OIDC is configured.

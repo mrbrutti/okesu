@@ -329,6 +329,7 @@ func New(cfg Config) (*Server, error) {
 	srv.orchestra = api.NewOrchestrationCoordinator(store, srv.runs, srv.tunReg, cfg.AgentFilesDirs, srv.fedAgg, api.CoordinatorOpts{
 		AutoDeployer:     autoDep,
 		CPLocalEnvExtras: cpLocalEnv,
+		ActionPolicy:     orchestrator.Policy{AutoApprove: cfg.Policy.AutoApprove},
 	})
 
 	// Wire the finding-trigger hook before the pipeline starts so we

@@ -235,6 +235,12 @@ type Engine struct {
 	// clear "no data resolver" error rather than silently dropping
 	// the bindings.
 	data DataResolver
+	// actionPolicy is the operator-set per-class auto-approve toggle.
+	// When every kind in a step's `actions:` allowlist falls in an
+	// auto-approved class, the engine bypasses the step-level
+	// approval gate. Zero value (empty AutoApprove) means "gate as
+	// today" — strictly additive, never relaxes existing constraints.
+	actionPolicy Policy
 }
 
 // DataResolver fetches structured CP-side data on behalf of a step's
@@ -264,6 +270,15 @@ func (e *Engine) SetActionApplier(a ActionApplier) {
 // that do then fail at dispatch with a clear error.
 func (e *Engine) SetDataResolver(d DataResolver) {
 	e.data = d
+}
+
+// SetActionPolicy installs the per-class auto-approve toggle the
+// engine consults at the step-approval gate. Called once at boot from
+// the coordinator with values lifted out of the YAML config. Safe to
+// leave unset — the zero value preserves today's "every approval-
+// required step gates" behaviour.
+func (e *Engine) SetActionPolicy(p Policy) {
+	e.actionPolicy = p
 }
 
 // Run resumes the orchestration_run identified by runID. It's
@@ -369,16 +384,25 @@ func (e *Engine) Run(ctx context.Context, runID int64) error {
 			}
 		}
 
-		// Approval gate — pause the run if not yet approved.
+		// Approval gate — pause the run if not yet approved, unless
+		// the operator-set action-class policy auto-approves every
+		// kind in the step's `actions:` allowlist. The bypass only
+		// kicks in for steps that declare a non-empty allowlist; a
+		// bare `approval: required` (no actions) always gates.
 		if step.Approval == "required" && rec.ApprovedAt == nil {
-			rec.Status = StepStatusWaitingApproval
-			// Render the prompt now so the operator sees what they're
-			// approving in the UI before clicking Approve.
-			renderedPrompt, _ := Render(step.Prompt, env)
-			rec.RenderedPrompt = renderedPrompt
-			_ = e.store.UpsertOrchestrationStep(rec)
-			_ = e.store.UpdateOrchestrationRunStatus(run.ID, RunStatusApprovalRequired, step.ID, "")
-			return nil
+			if policyBypassesGate(step, e.actionPolicy) {
+				log.Printf("orchestrator: step %q approval bypassed by action-class policy (allowlist=%v)",
+					step.ID, step.Actions)
+			} else {
+				rec.Status = StepStatusWaitingApproval
+				// Render the prompt now so the operator sees what
+				// they're approving in the UI before clicking Approve.
+				renderedPrompt, _ := Render(step.Prompt, env)
+				rec.RenderedPrompt = renderedPrompt
+				_ = e.store.UpsertOrchestrationStep(rec)
+				_ = e.store.UpdateOrchestrationRunStatus(run.ID, RunStatusApprovalRequired, step.ID, "")
+				return nil
+			}
 		}
 
 		// Resolve the step's `data:` block before render so the
@@ -582,6 +606,31 @@ func isTerminal(s string) bool {
 		return true
 	}
 	return false
+}
+
+// policyBypassesGate reports whether the engine's action-class
+// auto-approve policy fully covers a step's allowlist. Bypass requires:
+//
+//  1. The step declares a non-empty actions: allowlist. A bare
+//     `approval: required` step (no actions) cannot be bypassed —
+//     there's nothing for the class taxonomy to evaluate, so the
+//     operator-intent of "this step needs human eyes" wins.
+//  2. EVERY kind in the allowlist resolves to a class the policy
+//     auto-approves. A single restricted-class kind keeps the gate.
+//
+// Unknown kinds map to ClassModify via ClassFor — registering a new
+// kind without updating the registry results in continued gating
+// (safe default), not a silent auto-apply.
+func policyBypassesGate(step StepSpec, policy Policy) bool {
+	if len(step.Actions) == 0 {
+		return false
+	}
+	for _, kind := range step.Actions {
+		if !policy.AllowsClass(ClassFor(kind)) {
+			return false
+		}
+	}
+	return true
 }
 
 // applyStepActions reads the agent's `actions:` array from the

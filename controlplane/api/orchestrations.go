@@ -1207,6 +1207,13 @@ type CoordinatorOpts struct {
 	// provider. Format: "KEY=value". Inherited env from the CP
 	// process is used as the base.
 	CPLocalEnvExtras []string
+
+	// ActionPolicy carries the operator-set per-class auto-approve
+	// toggle — the orchestrator engine consults it at the
+	// step-approval gate. Zero value (empty AutoApprove) preserves
+	// today's gate-everything behaviour. See
+	// controlplane/orchestrator/action_class.go.
+	ActionPolicy orchestrator.Policy
 }
 
 func NewOrchestrationCoordinator(
@@ -1248,6 +1255,10 @@ func NewOrchestrationCoordinator(
 	// prompt template — replaces the old "have the agent curl
 	// /api/findings" pattern. See data_resolver.go for the registry.
 	engine.SetDataResolver(NewDataResolver(store))
+	// Action-class auto-approve policy. Zero value = today's
+	// gate-everything behaviour, so passing through unchanged is safe
+	// even when the operator hasn't configured `policy:` in the YAML.
+	engine.SetActionPolicy(opts.ActionPolicy)
 	return &OrchestrationCoordinator{
 		inflight:    map[int64]struct{}{},
 		engine:      engine,

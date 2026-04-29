@@ -316,6 +316,115 @@ steps:
 	}
 }
 
+// TestEngine_ApprovalGate_PolicyBypass exercises the action-class
+// auto-approve policy: a step that would normally pause for operator
+// approval is allowed to execute when every kind in its allowlist
+// falls in an auto-approved class. Backwards-compat sibling test
+// below confirms the bypass requires *every* listed kind to be
+// auto-approved.
+func TestEngine_ApprovalGate_PolicyBypass(t *testing.T) {
+	spec := mustParse(t, `---
+name: gated
+description: pauses for approval unless policy auto-approves the action class
+steps:
+  - id: contain
+    approval: required
+    actions:
+      - link_run_to_finding
+    agent: x
+    prompt: x
+---`)
+	store := newFakeStore(
+		&Orchestration{ID: 1, Spec: spec},
+		&RunRecord{ID: 1, OrchestrationID: 1, Status: RunStatusPending, TriggerKind: "manual"},
+	)
+	disp := &fakeDispatcher{}
+	engine := NewEngine(store, disp)
+	// Auto-approve every "create" class action; link_run_to_finding is
+	// the only kind in the step's allowlist and it's class=create.
+	engine.SetActionPolicy(Policy{AutoApprove: map[string]bool{ClassCreate: true}})
+
+	if err := engine.Run(context.Background(), 1); err != nil {
+		t.Fatal(err)
+	}
+	if store.run.Status != RunStatusCompleted {
+		t.Errorf("run.Status = %q, want %q (policy should have bypassed the gate)", store.run.Status, RunStatusCompleted)
+	}
+	if len(disp.calls) != 1 {
+		t.Errorf("step should have dispatched directly, got %d calls", len(disp.calls))
+	}
+	if store.steps["contain"].Status != StepStatusCompleted {
+		t.Errorf("contain.Status = %q, want %q", store.steps["contain"].Status, StepStatusCompleted)
+	}
+}
+
+// TestEngine_ApprovalGate_PolicyMixedActionsStillGates confirms the
+// bypass requires every kind in the step's allowlist to be
+// auto-approved — a single non-auto-approved kind keeps the gate.
+func TestEngine_ApprovalGate_PolicyMixedActionsStillGates(t *testing.T) {
+	spec := mustParse(t, `---
+name: gated
+description: gate stays when allowlist mixes auto-approved + restricted classes
+steps:
+  - id: contain
+    approval: required
+    actions:
+      - link_run_to_finding
+      - update_finding_status
+    agent: x
+    prompt: x
+---`)
+	store := newFakeStore(
+		&Orchestration{ID: 1, Spec: spec},
+		&RunRecord{ID: 1, OrchestrationID: 1, Status: RunStatusPending, TriggerKind: "manual"},
+	)
+	disp := &fakeDispatcher{}
+	engine := NewEngine(store, disp)
+	// Only "create" is auto-approved. update_finding_status is class
+	// "modify", which is NOT auto-approved → gate must stay.
+	engine.SetActionPolicy(Policy{AutoApprove: map[string]bool{ClassCreate: true}})
+
+	if err := engine.Run(context.Background(), 1); err != nil {
+		t.Fatal(err)
+	}
+	if store.run.Status != RunStatusApprovalRequired {
+		t.Errorf("run.Status = %q, want %q (modify-class action keeps gate)", store.run.Status, RunStatusApprovalRequired)
+	}
+	if len(disp.calls) != 0 {
+		t.Errorf("step should NOT have dispatched, got %d calls", len(disp.calls))
+	}
+}
+
+// TestEngine_ApprovalGate_EmptyPolicy confirms backwards-compat: a
+// zero-value Policy preserves today's gate-everything behaviour.
+func TestEngine_ApprovalGate_EmptyPolicy(t *testing.T) {
+	spec := mustParse(t, `---
+name: gated
+description: empty policy keeps existing approval gate
+steps:
+  - id: contain
+    approval: required
+    actions:
+      - link_run_to_finding
+    agent: x
+    prompt: x
+---`)
+	store := newFakeStore(
+		&Orchestration{ID: 1, Spec: spec},
+		&RunRecord{ID: 1, OrchestrationID: 1, Status: RunStatusPending, TriggerKind: "manual"},
+	)
+	disp := &fakeDispatcher{}
+	engine := NewEngine(store, disp)
+	// No SetActionPolicy call → zero Policy → no class is auto-approved.
+
+	if err := engine.Run(context.Background(), 1); err != nil {
+		t.Fatal(err)
+	}
+	if store.run.Status != RunStatusApprovalRequired {
+		t.Errorf("run.Status = %q, want %q (empty policy must gate)", store.run.Status, RunStatusApprovalRequired)
+	}
+}
+
 func TestEngine_TriggerPayloadInTemplate(t *testing.T) {
 	spec := mustParse(t, `---
 name: triggered

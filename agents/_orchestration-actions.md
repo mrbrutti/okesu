@@ -48,6 +48,25 @@ orchestration author scoped permission deliberately.
 | `link_run_to_finding` | `{ finding_id, reason? }` | Record this orchestration run as having handled the finding. Surfaces in the finding-detail page as "auto-handled by run #N". |
 | `escalate` | `{ reason, severity? }` | Soft signal that the on-call should review the run even though it ran cleanly. v1: logged; v2: surfaces on the dashboard's "needs review" tile. |
 
+## Action classes
+
+Each action kind is internally classified into one of:
+
+| Class | Meaning | Examples |
+|---|---|---|
+| read   | Pure read; no CP state change | (none yet) |
+| enrich | Outbound vendor call (no CP write) | (Phase 22.4: enrich_ioc) |
+| fetch  | Inbound content fetch | (none yet) |
+| create | New row inserted / link created | link_run_to_finding |
+| modify | Existing row mutated | update_finding_status, set_finding_severity_override, add_finding_tag |
+
+CP operators can set per-class auto-approve toggles in CP settings
+(`policy.auto_approve.<class>`). When a class is auto-approved, the
+engine applies the action directly instead of queuing an operator gate.
+
+Default: no class is auto-approved. Unknown action kinds map to
+`modify` (most-restrictive).
+
 ## Conventions
 
 - Always include `link_run_to_finding` when you mutate a finding —
