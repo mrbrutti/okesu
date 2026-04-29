@@ -259,6 +259,9 @@ chmod 0755 /usr/local/bin/okesu
 //
 // Order of attempts:
 //
+//  0. If the SSH session is already root, skip sudo entirely. Saves
+//     two RTTs and avoids targets where root's `sudo` errors out
+//     because of a broken PAM stack (notably the Fedora test images).
 //  1. If sudoPassword is non-empty, run `sudo -S -p '' bash -c …`
 //     and feed `sudoPassword + \n` to stdin. Mac developer machines
 //     and other targets without passwordless sudo land here. A bad
@@ -268,6 +271,9 @@ chmod 0755 /usr/local/bin/okesu
 //  3. Fall through to plain `bash -c …` (root SSH user — sudo isn't
 //     available but isn't needed either).
 func runWithSudo(c *Client, sudoPassword, script string) (string, error) {
+	if c.IsRoot() {
+		return c.Run("bash -c " + shellQuote(script))
+	}
 	if sudoPassword != "" {
 		// `-p ''` suppresses sudo's "[sudo] password for X:" prompt
 		// from going to stderr; we already know it wants a password.

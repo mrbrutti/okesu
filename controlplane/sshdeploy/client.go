@@ -17,6 +17,8 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/pkg/sftp"
@@ -48,6 +50,35 @@ type Credential struct {
 type Client struct {
 	ssh  *ssh.Client
 	sftp *sftp.Client
+
+	// rootProbed / isRoot cache one-shot `id -u` so writeWithSudo +
+	// runWithSudo can skip the `sudo --` prefix when we're already
+	// connected as root. Some target images (notably the Fedora test
+	// containers, but also bare-bones cloud-init AMIs) ship a broken
+	// PAM config that makes even passwordless `sudo` fail when the
+	// process is already privileged — skipping the wrapper avoids it.
+	rootMu     sync.Mutex
+	rootProbed bool
+	isRoot     bool
+}
+
+// IsRoot reports whether the SSH session is connected as uid 0.
+// First call probes via `id -u`; result is cached for the lifetime
+// of the Client. Errors during the probe are treated as "unknown,
+// not root" to keep the conservative path (sudo) when we can't tell.
+func (c *Client) IsRoot() bool {
+	c.rootMu.Lock()
+	defer c.rootMu.Unlock()
+	if c.rootProbed {
+		return c.isRoot
+	}
+	c.rootProbed = true
+	out, err := c.Run("id -u")
+	if err != nil {
+		return false
+	}
+	c.isRoot = strings.TrimSpace(out) == "0"
+	return c.isRoot
 }
 
 // Dial opens an SSH connection using the supplied credential.

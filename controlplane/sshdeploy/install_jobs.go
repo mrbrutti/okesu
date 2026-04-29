@@ -223,11 +223,20 @@ func writeCertBundle(c *Client, sudoPassword string, clientCert, clientKey, caCe
 // writeWithSudo writes a file with sudo by piping through a heredoc
 // to `tee` — keeps the data off the SSH command line so binaries +
 // keys with awkward characters don't have to be shell-escaped.
+//
+// When the SSH session is already connected as root (Client.IsRoot)
+// the sudo wrapper is skipped entirely. Some target images ship a
+// broken PAM stack that fails even passwordless sudo for root, so
+// invoking the install binary directly is both faster and more
+// robust.
 func writeWithSudo(c *Client, sudoPassword, path, content, mode string) error {
 	cmd := fmt.Sprintf("install -m %s /dev/stdin %s", mode, path)
-	if sudoPassword != "" {
+	switch {
+	case c.IsRoot():
+		// already root — no need (and no benefit) to wrap in sudo
+	case sudoPassword != "":
 		cmd = "sudo -S -- " + cmd
-	} else {
+	default:
 		cmd = "sudo -- " + cmd
 	}
 	_, err := c.RunWithStdin(cmd, content)
