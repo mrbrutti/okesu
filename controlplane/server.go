@@ -578,6 +578,14 @@ func (s *Server) routes() http.Handler {
 			r.Post("/api/tokens", api.TokenCreate(s.store))
 			r.Delete("/api/tokens/{id}", api.TokenRevoke(s.store))
 
+			// Phase 21.2 — cloud credentials. Admin-only because the
+			// payloads are encrypted secrets that, once decrypted,
+			// authorise spending on the operator's cloud account.
+			r.Get("/api/cloud-credentials", api.CloudCredentialsList(s.store))
+			r.Post("/api/cloud-credentials", api.CloudCredentialCreate(s.store))
+			r.Delete("/api/cloud-credentials/{id}", api.CloudCredentialDelete(s.store))
+			r.Post("/api/cloud-credentials/{id}/test", api.CloudCredentialTest(s.store))
+
 			// Phase 9.5: federation peers — admin-only because adding a
 			// peer means storing a credential for an outbound CP.
 			r.Get("/api/federation/peers", api.FederationListPeers(s.store))
