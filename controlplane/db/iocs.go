@@ -1,7 +1,6 @@
 package db
 
 import (
-	"database/sql"
 	"fmt"
 	"time"
 )
@@ -53,7 +52,15 @@ type IOCObservation struct {
 // Reconciliation: a catalog upsert overrides an existing observed row's
 // metadata (source, definition_path, confidence, attribution,
 // severity_floor, classification, notes); observation_count and
-// last_seen are preserved.
+// last_seen are preserved. An observed upsert against a catalog row
+// only refreshes last_seen — curated metadata is never clobbered.
+//
+// Race-safety: the dedup is done by the database via INSERT … ON
+// CONFLICT DO NOTHING on the (kind, normalized_value) UNIQUE index, so
+// two concurrent upserts of the same IOC can't both succeed and one
+// can't see "no row" while the other is mid-insert. The follow-up
+// UPDATE/SELECT runs unconditionally after the row is guaranteed to
+// exist.
 func (s *Store) UpsertIOC(in *IOCUpsert) (id int64, created bool, err error) {
 	if in.Kind == "" || in.NormalizedValue == "" {
 		return 0, false, fmt.Errorf("UpsertIOC: kind and normalized_value are required")
@@ -63,48 +70,59 @@ func (s *Store) UpsertIOC(in *IOCUpsert) (id int64, created bool, err error) {
 		source = "observed"
 	}
 
-	row := s.QueryRow(`SELECT id, source FROM iocs WHERE kind = ? AND normalized_value = ?`, in.Kind, in.NormalizedValue)
-	var existingID int64
-	var existingSource string
-	switch err := row.Scan(&existingID, &existingSource); err {
-	case nil:
+	// 1. Race-safe insert. If a row with the same (kind, normalized_value)
+	//    already exists, this is a no-op.
+	res, err := s.Exec(`
+		INSERT INTO iocs (kind, value, normalized_value, source, definition_path,
+		                  confidence, attribution, severity_floor, classification, notes)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT (kind, normalized_value) DO NOTHING`,
+		in.Kind, in.Value, in.NormalizedValue, source,
+		nullable(in.DefinitionPath), nullable(in.Confidence), nullable(in.Attribution),
+		nullable(in.SeverityFloor), nullable(in.Classification), nullable(in.Notes))
+	if err != nil {
+		return 0, false, err
+	}
+	rowsAffected, err := res.RowsAffected()
+	if err != nil {
+		return 0, false, err
+	}
+	created = rowsAffected == 1
+
+	// 2. Apply metadata reconciliation on conflict. A catalog upsert
+	//    overwrites observed metadata; an observed upsert only refreshes
+	//    timestamps so curated catalog metadata is never clobbered.
+	if !created {
 		if source == "catalog" {
-			_, err := s.Exec(`
+			if _, err := s.Exec(`
 				UPDATE iocs
 				SET source = ?, definition_path = ?, confidence = ?, attribution = ?,
 				    severity_floor = ?, classification = ?, notes = ?, updated_at = CURRENT_TIMESTAMP
-				WHERE id = ?`,
+				WHERE kind = ? AND normalized_value = ?`,
 				source, nullable(in.DefinitionPath), nullable(in.Confidence), nullable(in.Attribution),
-				nullable(in.SeverityFloor), nullable(in.Classification), nullable(in.Notes), existingID)
-			if err != nil {
+				nullable(in.SeverityFloor), nullable(in.Classification), nullable(in.Notes),
+				in.Kind, in.NormalizedValue); err != nil {
 				return 0, false, err
 			}
 		} else {
-			_, err := s.Exec(`UPDATE iocs SET last_seen = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, existingID)
-			if err != nil {
+			if _, err := s.Exec(`
+				UPDATE iocs SET last_seen = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+				WHERE kind = ? AND normalized_value = ?`,
+				in.Kind, in.NormalizedValue); err != nil {
 				return 0, false, err
 			}
 		}
-		return existingID, false, nil
-	case sql.ErrNoRows:
-		res, err := s.Exec(`
-			INSERT INTO iocs (kind, value, normalized_value, source, definition_path,
-			                  confidence, attribution, severity_floor, classification, notes)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			in.Kind, in.Value, in.NormalizedValue, source,
-			nullable(in.DefinitionPath), nullable(in.Confidence), nullable(in.Attribution),
-			nullable(in.SeverityFloor), nullable(in.Classification), nullable(in.Notes))
-		if err != nil {
-			return 0, false, err
-		}
-		newID, err := res.LastInsertId()
-		if err != nil {
-			return 0, false, err
-		}
-		return newID, true, nil
-	default:
+	}
+
+	// 3. Fetch the row id. Safe regardless of whether we inserted or
+	//    conflicted because the row exists either way after step 1.
+	if err := s.QueryRow(
+		`SELECT id FROM iocs WHERE kind = ? AND normalized_value = ?`,
+		in.Kind, in.NormalizedValue,
+	).Scan(&id); err != nil {
 		return 0, false, err
 	}
+	return id, created, nil
 }
 
 func (s *Store) GetIOC(id int64) (*IOCRecord, error) {
