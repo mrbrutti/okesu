@@ -904,7 +904,41 @@ export const api = {
     request<void>(`/api/federation/peers/${id}`, { method: 'DELETE' }),
   refreshFederationPeer: (id: number) =>
     request<FederationPeer>(`/api/federation/peers/${id}/refresh`, { method: 'POST' }),
+
+  // Phase 21.1 — generate a bootstrap bundle for a fresh child CP.
+  // Returns the tar.gz response as a Blob the caller hands to the
+  // browser's download flow. The endpoint sends Content-Disposition
+  // with the right filename; we read it off the headers so the
+  // saved file matches what the server emitted.
+  cpBundle: async (req: CPBundleRequest): Promise<{ blob: Blob; filename: string }> => {
+    const resp = await fetch('/api/federation/cp-bundle', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(req),
+    });
+    if (!resp.ok) {
+      const text = await resp.text();
+      throw new ApiError(resp.status, text || resp.statusText);
+    }
+    const cd = resp.headers.get('Content-Disposition') || '';
+    const m = /filename="([^"]+)"/.exec(cd);
+    const filename = m ? m[1] : 'okesu-cp-bundle.tar.gz';
+    const blob = await resp.blob();
+    return { blob, filename };
+  },
 };
+
+export interface CPBundleRequest {
+  display_name: string;
+  region: string;
+  format: 'dockerfile-tarball' | 'compose-tarball' | 'terraform';
+  parent_url?: string;
+  child_host?: string;
+  child_port?: number;
+  mgmt_port?: number;
+  with_api_keys?: boolean;
+}
 
 // ── Phase 9 — Notifications ────────────────────────────────────────────────
 

@@ -132,6 +132,21 @@ func New(cfg Config) (*Server, error) {
 		return nil, fmt.Errorf("seed admin: %w", err)
 	}
 
+	// Phase 21.1 — first-boot bootstrap from a parent-issued bundle.
+	// When OKESU_CP_BOOTSTRAP_TOKEN is set AND cp_meta has no
+	// federation token yet, exchange the bootstrap token for a
+	// long-lived rotating peer token. Failures fall through to the
+	// normal flag/env path; the bootstrap token is one-shot at the
+	// parent regardless.
+	if bootToken, berr := MaybeBootstrapFromEnv(store, cfg.EffectiveMgmtURL()); berr != nil {
+		log.Printf("bootstrap: %v (continuing without federation)", berr)
+	} else if bootToken != "" {
+		// Override cfg.FederationToken so the cp_meta update below
+		// stores the parent-minted token rather than whatever was
+		// passed via --federation-token.
+		cfg.FederationToken = bootToken
+	}
+
 	// Phase 9: bootstrap / refresh cp_meta. The first call ensures a
 	// stable instance_id is generated; subsequent calls overwrite the
 	// operator-tunable fields (region, display name, federation token)
@@ -458,6 +473,11 @@ func (s *Server) routes() http.Handler {
 		MgmtURL:    s.cfg.EffectiveMgmtURL(),
 	}))
 
+	// Phase 21.1 — child CPs call this exactly once with the
+	// bootstrap token from their bundle. Public on purpose: the
+	// token is the auth, and after this single exchange it's burned.
+	r.Post("/api/v1/cp/bootstrap", api.CPBootstrapHandler(s.store, s.fedPoller))
+
 	// Public auth endpoints.
 	r.Post("/api/auth/login", api.LoginHandler(s.store, s.mgr))
 	r.Get("/api/auth/config", api.AuthConfigHandler(s.oidc != nil, s.cfg.OIDCLabel))
@@ -564,6 +584,18 @@ func (s *Server) routes() http.Handler {
 			r.Post("/api/federation/peers", api.FederationAddPeer(s.store, s.fedPoller))
 			r.Delete("/api/federation/peers/{id}", api.FederationDeletePeer(s.store))
 			r.Post("/api/federation/peers/{id}/refresh", api.FederationRefreshPeer(s.store, s.fedPoller))
+			// Phase 21.1 — generate a bootstrap bundle for a new
+			// child CP. Admin-only because the response embeds a
+			// one-time bootstrap token + a fresh admin password.
+			r.Post("/api/federation/cp-bundle", api.CPBundleHandler(s.store, api.CPBundleConfig{
+				// Bootstrap target is the UI port — that's where
+				// /api/v1/cp/bootstrap lives. Mgmt port is mTLS-only
+				// and the new child has no client cert yet.
+				ParentMgmtURL:     s.cfg.EffectivePublicURL(),
+				LinuxBinaryPath:   s.cfg.CPBootstrapBinaryPath,
+				LinuxImageTarPath: s.cfg.CPBootstrapImageTarPath,
+				Version:           Version(),
+			}))
 
 			// System / database (admin)
 			r.Get("/api/system/db/stats", api.DBStats(s.store, api.SystemDBConfig{

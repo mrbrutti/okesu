@@ -221,6 +221,19 @@ type Config struct {
 	// Cosmetic only; set what reads well in the parent CP's UI.
 	CPDisplayName string
 
+	// CPBootstrapBinaryPath is the linux build of `okesu-cp` this
+	// parent embeds in dockerfile-format CP bootstrap bundles. Empty
+	// disables the dockerfile bundle (operators can still use the
+	// compose+image-tar bundle, when CPBootstrapImageTarPath is set,
+	// or the terraform module). Required to issue dockerfile bundles.
+	CPBootstrapBinaryPath string
+
+	// CPBootstrapImageTarPath is a `docker save`-format tarball of
+	// the okesu-cp container image, embedded in compose-format
+	// bundles so the operator can `docker load` and run without a
+	// registry roundtrip. Empty disables the compose bundle.
+	CPBootstrapImageTarPath string
+
 	// FederationToken is a shared secret a parent CP presents on the
 	// introspect endpoint via the X-Okesu-Federation-Token header. The
 	// CP stores its bcrypt hash in cp_meta.federation_token_hash on
@@ -355,6 +368,21 @@ func (c Config) EffectiveMgmtURL() string {
 		return c.MgmtPublicURL
 	}
 	return "https://localhost" + c.MgmtListen
+}
+
+// EffectivePublicURL returns the public URL of this CP's UI / cookie-
+// auth API surface (NOT the management plane). Used by features like
+// the CP bootstrap bundle where the new child has to call back to
+// /api/v1/cp/bootstrap — that endpoint lives on the UI port because
+// the mgmt port requires mTLS and the new child has no client cert
+// yet. Derived by stripping the /api/webhooks/events suffix off
+// EffectiveWebhookURL when present.
+func (c Config) EffectivePublicURL() string {
+	u := c.EffectiveWebhookURL()
+	if i := strings.Index(u, "/api/webhooks/events"); i >= 0 {
+		return u[:i]
+	}
+	return u
 }
 
 func envOr(key, fallback string) string {

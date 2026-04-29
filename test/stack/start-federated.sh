@@ -69,6 +69,14 @@ esac
 DAEMON_LINUX_BIN="$ROOT/okesu-linux-${GO_TARGET_ARCH}"
 log "cross-compiling daemon for linux/$GO_TARGET_ARCH (make detects up-to-date)"
 ( cd "$ROOT" && make -s daemon DAEMON_GOOS=linux DAEMON_GOARCH=$GO_TARGET_ARCH )
+
+# Phase 21.1 — cross-compile a linux okesu-cp so the bundle endpoint
+# can hand fresh child CPs a runnable binary inside the dockerfile
+# format. CGO disabled because runtime/cgo's setresgid macro requires
+# a Linux SDK we don't ship with the macOS toolchain. Skips
+# silently when the binary is up-to-date.
+log "cross-compiling okesu-cp for linux/$GO_TARGET_ARCH (CP bootstrap bundle)"
+( cd "$ROOT" && CGO_ENABLED=0 GOOS=linux GOARCH=$GO_TARGET_ARCH go build -o "okesu-cp-linux-${GO_TARGET_ARCH}" ./cmd/cp ) || warn "cp linux cross-compile failed; bundle endpoint will be disabled"
 [[ -f "$ROOT/controlplane/ui/dist/index.html" ]] || {
     log "building web UI"
     have npm || fail "npm required to build web UI"
@@ -114,6 +122,15 @@ boot_cp() {
     log "starting CP \"$name\" on https://localhost:$ui_port (region=$region)"
     local fed_flag=""
     if [[ -n "$fed_tok" ]]; then fed_flag=(--federation-token "$fed_tok"); fi
+    # Phase 21.1 bundle generator wants a linux build of okesu-cp it
+    # can embed in dockerfile-format CP bootstrap bundles. We
+    # cross-compile once at the top of start-federated.sh; pass the
+    # path here when present so the bundle endpoint is enabled.
+    local cp_bootstrap_args=()
+    if [[ -f "$ROOT/okesu-cp-linux-${GO_TARGET_ARCH}" ]]; then
+        cp_bootstrap_args+=(--cp-bootstrap-binary "$ROOT/okesu-cp-linux-${GO_TARGET_ARCH}")
+    fi
+
     "$ROOT/okesu-cp" serve \
         --db "$run_dir/cp.db" \
         --listen ":$ui_port" \
@@ -128,6 +145,7 @@ boot_cp() {
         --mgmt-public-url "https://$PUBLIC_HOST:$mgmt_port" \
         --cp-region "$region" \
         --cp-display-name "$disp" \
+        ${cp_bootstrap_args[@]+"${cp_bootstrap_args[@]}"} \
         ${fed_flag[@]+"${fed_flag[@]}"} \
         > "$run_dir/cp.log" 2>&1 &
     local pid=$!

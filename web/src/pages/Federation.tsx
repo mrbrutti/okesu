@@ -286,6 +286,51 @@ function SumTile({ label, value, sub, accent }: { label: string; value: string; 
 }
 
 function AddPeerDialog({ onClose, onAdded }: { onClose: () => void; onAdded: (p: FederationPeer) => void }) {
+  // Two flows live under the same dialog because they share the same
+  // mental model ("get a child CP into this federation"). "Connect"
+  // is the manual case where the child already exists; "Generate"
+  // is the parent-issued bundle path that auto-registers on first boot.
+  const [mode, setMode] = useState<'connect' | 'generate'>('generate');
+
+  return (
+    <div className="fixed inset-0 bg-black/30 flex items-center justify-center p-4 z-50">
+      <div className="bg-panel border border-border rounded-xl shadow-card w-full max-w-lg">
+        <header className="px-5 py-3 border-b border-border flex items-center justify-between">
+          <h2 className="text-sm font-semibold flex items-center gap-2">
+            <Network size={14} className="text-brand-500" /> Add child CP
+          </h2>
+          <button onClick={onClose} className="p-1 text-ink-dim hover:text-ink rounded-md">
+            <X size={16} />
+          </button>
+        </header>
+
+        <div className="px-5 pt-3 flex items-center gap-1 border-b border-border/60">
+          <ModeTab active={mode === 'generate'} onClick={() => setMode('generate')} label="Generate bundle" />
+          <ModeTab active={mode === 'connect'}  onClick={() => setMode('connect')}  label="Connect existing" />
+        </div>
+
+        {mode === 'generate' && <GenerateBundlePanel onClose={onClose} />}
+        {mode === 'connect'  && <ConnectExistingPanel onClose={onClose} onAdded={onAdded} />}
+      </div>
+    </div>
+  );
+}
+
+function ModeTab({ active, onClick, label }: { active: boolean; onClick: () => void; label: string }) {
+  return (
+    <button
+      onClick={onClick}
+      className={cn(
+        'px-3 py-2 text-xs font-medium border-b-2 -mb-px',
+        active ? 'border-brand-500 text-brand-700' : 'border-transparent text-ink-dim hover:text-ink',
+      )}
+    >
+      {label}
+    </button>
+  );
+}
+
+function ConnectExistingPanel({ onClose, onAdded }: { onClose: () => void; onAdded: (p: FederationPeer) => void }) {
   const [url, setUrl] = useState('');
   const [token, setToken] = useState('');
   const [displayName, setDisplayName] = useState('');
@@ -303,69 +348,175 @@ function AddPeerDialog({ onClose, onAdded }: { onClose: () => void; onAdded: (p:
       setBusy(false);
     }
   }
+  return (
+    <>
+      <div className="p-5 space-y-3 text-sm">
+        <p className="text-xs text-ink-dim">
+          The child CP must already be running with <code className="bg-slate-100 px-1 rounded">--federation-token</code> set.
+          We'll verify the URL + token before saving.
+        </p>
+        <Field label="Child CP URL">
+          <input
+            type="url"
+            value={url}
+            onChange={(e) => setUrl(e.target.value)}
+            placeholder="https://child.example:8443"
+            className="w-full px-3 py-1.5 text-sm border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500/30"
+          />
+        </Field>
+        <Field label="Federation token">
+          <input
+            type="password"
+            value={token}
+            onChange={(e) => setToken(e.target.value)}
+            placeholder="shared-secret"
+            className="w-full px-3 py-1.5 text-sm border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500/30"
+          />
+        </Field>
+        <Field label="Display name (optional)">
+          <input
+            type="text"
+            value={displayName}
+            onChange={(e) => setDisplayName(e.target.value)}
+            placeholder="defaults to remote display_name"
+            className="w-full px-3 py-1.5 text-sm border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500/30"
+          />
+        </Field>
+        {error && (
+          <div className="text-xs text-red-700 bg-red-50 border border-red-200 px-3 py-2 rounded-md">
+            {error}
+          </div>
+        )}
+      </div>
+      <footer className="px-5 py-3 border-t border-border flex items-center justify-end gap-2">
+        <button onClick={onClose} className="text-xs px-3 py-1.5 border border-border rounded-md">Cancel</button>
+        <button
+          onClick={submit}
+          disabled={busy || !url || !token}
+          className="text-xs px-3 py-1.5 bg-brand-500 hover:bg-brand-600 disabled:opacity-50 text-white rounded-md font-medium inline-flex items-center gap-1.5"
+        >
+          {busy && <Loader2 size={12} className="animate-spin" />}
+          Verify & add
+        </button>
+      </footer>
+    </>
+  );
+}
+
+function GenerateBundlePanel({ onClose }: { onClose: () => void }) {
+  const [displayName, setDisplayName] = useState('');
+  const [region, setRegion] = useState('');
+  const [format, setFormat] = useState<'dockerfile-tarball' | 'compose-tarball' | 'terraform'>('dockerfile-tarball');
+  const [parentURL, setParentURL] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [done, setDone] = useState<string | null>(null);
+
+  async function submit() {
+    setBusy(true); setError(null); setDone(null);
+    try {
+      const { blob, filename } = await api.cpBundle({
+        display_name: displayName,
+        region,
+        format,
+        parent_url: parentURL || undefined,
+      });
+      // Trigger the browser's save-as flow.
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = filename;
+      document.body.appendChild(a); a.click(); a.remove();
+      URL.revokeObjectURL(url);
+      setDone(filename);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
 
   return (
-    <div className="fixed inset-0 bg-black/30 flex items-center justify-center p-4 z-50">
-      <div className="bg-panel border border-border rounded-xl shadow-card w-full max-w-lg">
-        <header className="px-5 py-3 border-b border-border flex items-center justify-between">
-          <h2 className="text-sm font-semibold flex items-center gap-2">
-            <Network size={14} className="text-brand-500" /> Add child CP
-          </h2>
-          <button onClick={onClose} className="p-1 text-ink-dim hover:text-ink rounded-md">
-            <X size={16} />
-          </button>
-        </header>
-        <div className="p-5 space-y-3 text-sm">
-          <p className="text-xs text-ink-dim">
-            The child CP must have <code className="bg-slate-100 px-1 rounded">--federation-token</code> set.
-            We'll verify the URL + token before saving.
-          </p>
-          <Field label="Child CP URL">
-            <input
-              type="url"
-              value={url}
-              onChange={(e) => setUrl(e.target.value)}
-              placeholder="https://child.example:8443"
-              className="w-full px-3 py-1.5 text-sm border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500/30"
-            />
-          </Field>
-          <Field label="Federation token">
-            <input
-              type="password"
-              value={token}
-              onChange={(e) => setToken(e.target.value)}
-              placeholder="shared-secret"
-              className="w-full px-3 py-1.5 text-sm border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500/30"
-            />
-          </Field>
-          <Field label="Display name (optional)">
-            <input
-              type="text"
-              value={displayName}
-              onChange={(e) => setDisplayName(e.target.value)}
-              placeholder="defaults to remote display_name"
-              className="w-full px-3 py-1.5 text-sm border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500/30"
-            />
-          </Field>
-          {error && (
-            <div className="text-xs text-red-700 bg-red-50 border border-red-200 px-3 py-2 rounded-md">
-              {error}
-            </div>
-          )}
-        </div>
-        <footer className="px-5 py-3 border-t border-border flex items-center justify-end gap-2">
-          <button onClick={onClose} className="text-xs px-3 py-1.5 border border-border rounded-md">Cancel</button>
-          <button
-            onClick={submit}
-            disabled={busy || !url || !token}
-            className="text-xs px-3 py-1.5 bg-brand-500 hover:bg-brand-600 disabled:opacity-50 text-white rounded-md font-medium inline-flex items-center gap-1.5"
-          >
-            {busy && <Loader2 size={12} className="animate-spin" />}
-            Verify & add
-          </button>
-        </footer>
+    <>
+      <div className="p-5 space-y-3 text-sm">
+        <p className="text-xs text-ink-dim">
+          Mints a one-time-use bootstrap token + drops it in a downloadable bundle. The new CP
+          auto-registers with this parent on first boot — no manual peer add required.
+        </p>
+        <Field label="Display name">
+          <input
+            type="text"
+            value={displayName}
+            onChange={(e) => setDisplayName(e.target.value)}
+            placeholder="us-east-prod"
+            className="w-full px-3 py-1.5 text-sm border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500/30"
+          />
+        </Field>
+        <Field label="Region">
+          <input
+            type="text"
+            value={region}
+            onChange={(e) => setRegion(e.target.value)}
+            placeholder="us-east-1"
+            className="w-full px-3 py-1.5 text-sm border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500/30"
+          />
+        </Field>
+        <Field label="Format">
+          <div className="space-y-1.5">
+            <label className="flex items-start gap-2 cursor-pointer">
+              <input type="radio" checked={format === 'dockerfile-tarball'} onChange={() => setFormat('dockerfile-tarball')} className="mt-0.5" />
+              <div className="text-xs">
+                <div className="font-medium text-ink">Dockerfile + binary</div>
+                <div className="text-ink-mute">Operator's host builds the image locally. Works air-gapped.</div>
+              </div>
+            </label>
+            <label className="flex items-start gap-2 cursor-pointer">
+              <input type="radio" checked={format === 'compose-tarball'} onChange={() => setFormat('compose-tarball')} className="mt-0.5" />
+              <div className="text-xs">
+                <div className="font-medium text-ink">docker-compose + image tarball</div>
+                <div className="text-ink-mute"><code>docker load</code> ships the parent's image — fastest first-boot.</div>
+              </div>
+            </label>
+            <label className="flex items-start gap-2 cursor-pointer text-ink-dim">
+              <input type="radio" checked={format === 'terraform'} onChange={() => setFormat('terraform')} className="mt-0.5" disabled />
+              <div className="text-xs">
+                <div className="font-medium">Terraform module</div>
+                <div className="text-ink-mute">Coming in Phase 21.4 — IaC-friendly export.</div>
+              </div>
+            </label>
+          </div>
+        </Field>
+        <Field label="Parent URL (optional)">
+          <input
+            type="url"
+            value={parentURL}
+            onChange={(e) => setParentURL(e.target.value)}
+            placeholder="defaults to this CP's --mgmt-public-url"
+            className="w-full px-3 py-1.5 text-sm border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500/30"
+          />
+        </Field>
+        {error && (
+          <div className="text-xs text-red-700 bg-red-50 border border-red-200 px-3 py-2 rounded-md">
+            {error}
+          </div>
+        )}
+        {done && (
+          <div className="text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 px-3 py-2 rounded-md">
+            Downloaded <code>{done}</code>. Bootstrap token expires in 24h — apply it on the new host before then.
+          </div>
+        )}
       </div>
-    </div>
+      <footer className="px-5 py-3 border-t border-border flex items-center justify-end gap-2">
+        <button onClick={onClose} className="text-xs px-3 py-1.5 border border-border rounded-md">Close</button>
+        <button
+          onClick={submit}
+          disabled={busy || !displayName || !region || format === 'terraform'}
+          className="text-xs px-3 py-1.5 bg-brand-500 hover:bg-brand-600 disabled:opacity-50 text-white rounded-md font-medium inline-flex items-center gap-1.5"
+        >
+          {busy && <Loader2 size={12} className="animate-spin" />}
+          Generate & download
+        </button>
+      </footer>
+    </>
   );
 }
 
