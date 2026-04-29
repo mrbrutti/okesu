@@ -50,7 +50,12 @@ type CPBootstrapResponse struct {
 // returns that token to the caller. No auth on the endpoint itself —
 // the bootstrap token IS the auth, and after this single exchange
 // it's burned.
-func CPBootstrapHandler(store *db.Store, poller *federation.Poller) http.HandlerFunc {
+//
+// When the burned token belongs to a managed-deploy cp_provisions
+// row, the handler advances that row to ready and evicts the cached
+// bundle (the new CP has it). Manual-bundle exchanges have no
+// matching provision row; the advance is a no-op for them.
+func CPBootstrapHandler(store *db.Store, poller *federation.Poller, bundleCache *BundleCache) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req CPBootstrapRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -112,6 +117,14 @@ func CPBootstrapHandler(store *db.Store, poller *federation.Poller) http.Handler
 			_ = store.DeleteFederationPeer(peer.ID)
 			http.Error(w, "burn token: "+err.Error(), http.StatusInternalServerError)
 			return
+		}
+
+		// Phase 21.3b — managed-deploy advancement. If this token
+		// was minted for a cp_provisions row, flip that row to
+		// ready and drop the cached bundle (the new CP has it).
+		// No-op for manual-bundle exchanges where there's no row.
+		if bundleCache != nil {
+			AdvanceCPProvisionOnBootstrap(store, bundleCache, bt.ID, peer.ID)
 		}
 
 		w.Header().Set("Content-Type", "application/json")
