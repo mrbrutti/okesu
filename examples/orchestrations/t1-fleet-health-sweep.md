@@ -19,11 +19,21 @@ steps:
     prompt: |
       Build the morning fleet briefing.
 
-      Pull from the CP's own API (use the bash tool with curl):
-        - GET /api/nodes — heartbeat freshness, status buckets
-        - GET /api/findings?since=24h&limit=500 — last 24h of findings
-        - GET /api/runs?since=24h — last 24h of orchestration + ad-hoc runs
-        - GET /api/orchestration-runs?since=24h — last 24h of orchestration outcomes
+      You're running on the CP host. The CP exposes its own URL +
+      admin creds via env so you can query the API:
+        $OKESU_CP_URL              e.g. https://localhost:8443
+        $OKESU_CP_ADMIN_EMAIL      e.g. admin@local
+        $OKESU_CP_ADMIN_PASSWORD
+
+      Login once, then fetch:
+        curl -sk -c /tmp/cp.cookies -X POST "$OKESU_CP_URL/api/auth/login" \
+          -H 'Content-Type: application/json' \
+          -d "{\"email\":\"$OKESU_CP_ADMIN_EMAIL\",\"password\":\"$OKESU_CP_ADMIN_PASSWORD\"}" \
+          > /dev/null
+        curl -sk -b /tmp/cp.cookies "$OKESU_CP_URL/api/nodes"
+        curl -sk -b /tmp/cp.cookies "$OKESU_CP_URL/api/findings?since=24h&limit=500"
+        curl -sk -b /tmp/cp.cookies "$OKESU_CP_URL/api/runs?since=24h"
+        curl -sk -b /tmp/cp.cookies "$OKESU_CP_URL/api/orchestration-runs?since=24h"
 
       Compute:
         - stale_daimons: hosts with jobs_runtime_seen_at older than 5×poll_interval

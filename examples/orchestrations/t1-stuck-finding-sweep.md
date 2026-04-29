@@ -20,9 +20,19 @@ steps:
       Tier-0 dedup closure + per-finding T1 should have closed but
       haven't.
 
-      Pull from the CP's own API (use bash + curl):
-        - GET /api/findings?state=open&limit=500
-        - GET /api/findings/summary
+      You're running on the CP host. The CP exposes its own URL +
+      admin creds via env so you can query the API:
+        $OKESU_CP_URL              e.g. https://localhost:8443
+        $OKESU_CP_ADMIN_EMAIL      e.g. admin@local
+        $OKESU_CP_ADMIN_PASSWORD
+
+      Login + fetch (run this verbatim, then read the JSON):
+        curl -sk -c /tmp/cp.cookies -X POST "$OKESU_CP_URL/api/auth/login" \
+          -H 'Content-Type: application/json' \
+          -d "{\"email\":\"$OKESU_CP_ADMIN_EMAIL\",\"password\":\"$OKESU_CP_ADMIN_PASSWORD\"}" \
+          > /dev/null
+        curl -sk -b /tmp/cp.cookies "$OKESU_CP_URL/api/findings?state=open&limit=500"
+        curl -sk -b /tmp/cp.cookies "$OKESU_CP_URL/api/findings/summary"
 
       Identify candidates:
         - Same dedup_key has occurred ≥3 times in the last 24h
