@@ -787,6 +787,7 @@ function CreateTransportInline({
   const [name, setName] = useState('');
   const [bucket, setBucket] = useState('');
   const [endpoint, setEndpoint] = useState('s3.us-west-2.amazonaws.com');
+  const [endpointInternal, setEndpointInternal] = useState('');
   const [region, setRegion] = useState('us-west-2');
   const [accessKey, setAccessKey] = useState('');
   const [secretKey, setSecretKey] = useState('');
@@ -798,7 +799,9 @@ function CreateTransportInline({
     setBusy(true); setError(null);
     try {
       const c = await api.transportConfigCreate({
-        name, kind: 's3', bucket, endpoint, region,
+        name, kind: 's3', bucket, endpoint,
+        endpoint_internal: endpointInternal || undefined,
+        region,
         use_ssl: useSSL, access_key: accessKey, secret_key: secretKey,
         generate_fleet_keys: true,
         scanner_interval_ms: 10_000,
@@ -830,6 +833,20 @@ function CreateTransportInline({
         <Field label="Region">
           <input value={region} onChange={(e) => setRegion(e.target.value)} className={inputCls} />
         </Field>
+        <div className="col-span-2">
+          <Field label="Internal endpoint (optional)">
+            <input
+              value={endpointInternal}
+              onChange={(e) => setEndpointInternal(e.target.value)}
+              placeholder="leave blank to dial the public endpoint above"
+              className={inputCls}
+            />
+            <p className="text-[10px] text-ink-mute mt-1">
+              CP scanner uses this when set; nodes always embed the public endpoint. Use for split-horizon DNS / VPC private endpoints (e.g.{' '}
+              <code>vpce-…-s3.s3.us-east-1.vpce.amazonaws.com</code>).
+            </p>
+          </Field>
+        </div>
         <Field label="Access key">
           <input value={accessKey} onChange={(e) => setAccessKey(e.target.value)} className={inputCls} />
         </Field>

@@ -801,8 +801,12 @@ func resolvePackageBinary(s *Server, target string) ([]byte, error) {
 // hooks so the rest of the CP doesn't need to know which transport
 // the data arrived through.
 func (s *Server) startS3Scanner(ctx context.Context, c db.TransportConfig) {
+	// ScannerEndpoint resolves to endpoint_internal when set, else
+	// the public endpoint — operators in split-horizon VPCs save
+	// egress here, while everyone else gets the same single-endpoint
+	// behavior the scanner had pre-Phase-9.x.
 	cli, err := s3transport.NewClient(ctx, s3transport.ClientConfig{
-		Endpoint:  c.Endpoint,
+		Endpoint:  c.ScannerEndpoint(),
 		Region:    c.Region.String,
 		Bucket:    c.Bucket,
 		AccessKey: c.AccessKey.String,
