@@ -626,6 +626,7 @@ function GenerateBundlePanel({ onClose }: { onClose: () => void }) {
   const [displayName, setDisplayName] = useState('');
   const [region, setRegion] = useState('');
   const [format, setFormat] = useState<'dockerfile-tarball' | 'compose-tarball' | 'terraform'>('dockerfile-tarball');
+  const [cloud, setCloud] = useState<'oci' | 'aws'>('oci');
   const [parentURL, setParentURL] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -638,6 +639,7 @@ function GenerateBundlePanel({ onClose }: { onClose: () => void }) {
         display_name: displayName,
         region,
         format,
+        cloud: format === 'terraform' ? cloud : undefined,
         parent_url: parentURL || undefined,
       });
       // Trigger the browser's save-as flow.
@@ -695,15 +697,27 @@ function GenerateBundlePanel({ onClose }: { onClose: () => void }) {
                 <div className="text-ink-mute"><code>docker load</code> ships the parent's image — fastest first-boot.</div>
               </div>
             </label>
-            <label className="flex items-start gap-2 cursor-pointer text-ink-dim">
-              <input type="radio" checked={format === 'terraform'} onChange={() => setFormat('terraform')} className="mt-0.5" disabled />
+            <label className="flex items-start gap-2 cursor-pointer">
+              <input type="radio" checked={format === 'terraform'} onChange={() => setFormat('terraform')} className="mt-0.5" />
               <div className="text-xs">
-                <div className="font-medium">Terraform module</div>
-                <div className="text-ink-mute">Coming in Phase 21.4 — IaC-friendly export.</div>
+                <div className="font-medium text-ink">Terraform module</div>
+                <div className="text-ink-mute">IaC export — operator runs <code>terraform apply</code> with their own cloud creds.</div>
               </div>
             </label>
           </div>
         </Field>
+        {format === 'terraform' && (
+          <Field label="Cloud" hint="Provider the rendered module targets. The cloud-init script is identical; only the instance resource shape differs.">
+            <select
+              value={cloud}
+              onChange={(e) => setCloud(e.target.value as 'oci' | 'aws')}
+              className="w-full px-3 py-1.5 text-sm border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500/30 bg-panel"
+            >
+              <option value="oci">OCI (oracle/oci)</option>
+              <option value="aws">AWS (hashicorp/aws)</option>
+            </select>
+          </Field>
+        )}
         <Field label="Parent URL (optional)">
           <input
             type="url"
@@ -728,7 +742,7 @@ function GenerateBundlePanel({ onClose }: { onClose: () => void }) {
         <button onClick={onClose} className="text-xs px-3 py-1.5 border border-border rounded-md">Close</button>
         <button
           onClick={submit}
-          disabled={busy || !displayName || !region || format === 'terraform'}
+          disabled={busy || !displayName || !region}
           className="text-xs px-3 py-1.5 bg-brand-500 hover:bg-brand-600 disabled:opacity-50 text-white rounded-md font-medium inline-flex items-center gap-1.5"
         >
           {busy && <Loader2 size={12} className="animate-spin" />}

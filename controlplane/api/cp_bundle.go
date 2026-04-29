@@ -83,21 +83,30 @@ type CPBundleConfig struct {
 
 // cpBundleReq is the JSON body shape for POST /api/federation/cp-bundle.
 type cpBundleReq struct {
-	DisplayName  string       `json:"display_name"`
-	Region       string       `json:"region"`
-	Format       BundleFormat `json:"format"`
-	ParentURL    string       `json:"parent_url,omitempty"`     // override for the embedded bootstrap target
-	ChildHost    string       `json:"child_host,omitempty"`     // optional — operator can pre-set the child's hostname for the README
-	ChildPort    int          `json:"child_port,omitempty"`     // optional — defaults to 8443
-	MgmtPort     int          `json:"mgmt_port,omitempty"`      // optional — defaults to 8444
-	WithAPIKeys  bool         `json:"with_api_keys,omitempty"`  // include parent's Fleet API keys in the .env (off by default)
+	DisplayName string       `json:"display_name"`
+	Region      string       `json:"region"`
+	Format      BundleFormat `json:"format"`
+	// Cloud is required for Format == terraform (the rendered module
+	// is provider-specific). Ignored for the Docker formats.
+	Cloud       string `json:"cloud,omitempty"`
+	ParentURL   string `json:"parent_url,omitempty"`    // override for the embedded bootstrap target
+	ChildHost   string `json:"child_host,omitempty"`    // optional — operator can pre-set the child's hostname for the README
+	ChildPort   int    `json:"child_port,omitempty"`    // optional — defaults to 8443
+	MgmtPort    int    `json:"mgmt_port,omitempty"`     // optional — defaults to 8444
+	WithAPIKeys bool   `json:"with_api_keys,omitempty"` // include parent's Fleet API keys in the .env (off by default)
 }
 
 // CPBundleHandler issues a bootstrap token, generates a tar.gz with
 // the requested format, and streams it back. Admin-only — the token
 // is sensitive enough that adding it to a viewer's surface would be
 // a privilege bump.
-func CPBundleHandler(store *db.Store, cfg CPBundleConfig) http.HandlerFunc {
+//
+// `cache` and `parentBaseURL` are only used for Format == terraform:
+// the rendered module's cloud-init script fetches the actual Docker
+// bundle from /api/federation/cp-bundle/download (same path the
+// managed-deploy worker uses). They can be nil/empty for deployments
+// that disable the Terraform format.
+func CPBundleHandler(store *db.Store, cfg CPBundleConfig, cache *BundleCache, parentBaseURL string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req cpBundleReq
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -143,8 +152,19 @@ func CPBundleHandler(store *db.Store, cfg CPBundleConfig) http.HandlerFunc {
 				return
 			}
 		case BundleFormatTerraform:
-			http.Error(w, "terraform bundle: not yet implemented (Phase 21.4)", http.StatusNotImplemented)
-			return
+			req.Cloud = strings.ToLower(strings.TrimSpace(req.Cloud))
+			if !isSupportedTerraformCloud(req.Cloud) {
+				http.Error(w, "terraform bundle: cloud must be one of: oci, aws", http.StatusBadRequest)
+				return
+			}
+			if cache == nil || strings.TrimSpace(parentBaseURL) == "" {
+				http.Error(w, "terraform bundle: parent CP missing public URL or bundle cache (server config error)", http.StatusServiceUnavailable)
+				return
+			}
+			if cfg.LinuxBinaryPath == "" && cfg.LinuxImageTarPath == "" {
+				http.Error(w, "terraform bundle: parent has no daemon binary or image tarball — the rendered cloud-init has nothing to fetch. Configure --daemon-binary or run the parent in Docker.", http.StatusServiceUnavailable)
+				return
+			}
 		default:
 			http.Error(w, fmt.Sprintf("unsupported format %q", req.Format), http.StatusBadRequest)
 			return
@@ -209,12 +229,22 @@ func CPBundleHandler(store *db.Store, cfg CPBundleConfig) http.HandlerFunc {
 			err = writeDockerfileBundle(w, bundle, cfg.LinuxBinaryPath)
 		case BundleFormatCompose:
 			err = writeComposeBundle(w, bundle, cfg.LinuxImageTarPath)
+		case BundleFormatTerraform:
+			err = writeTerraformBundle(w, bundle, req.Cloud, cfg, cache, parentBaseURL, tokenID)
 		}
 		if err != nil {
 			// Tarball stream may have started — best we can do is log.
 			_ = err
 		}
 	}
+}
+
+func isSupportedTerraformCloud(c string) bool {
+	switch c {
+	case "oci", "aws":
+		return true
+	}
+	return false
 }
 
 // bundleVars carries everything the bundle's templates need. Filled

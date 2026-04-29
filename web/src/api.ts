@@ -970,6 +970,7 @@ export interface CPBundleRequest {
   display_name: string;
   region: string;
   format: 'dockerfile-tarball' | 'compose-tarball' | 'terraform';
+  cloud?: 'oci' | 'aws';
   parent_url?: string;
   child_host?: string;
   child_port?: number;
