@@ -1286,7 +1286,10 @@ export interface TransportConfigSummary {
   name: string;
   kind: string;            // 's3'
   bucket: string;
+  /** Public/external endpoint nodes embed in their bootstrap.json. */
   endpoint: string;
+  /** Optional private endpoint the CP scanner dials; empty falls back to `endpoint`. */
+  endpoint_internal?: string;
   region?: string;
   use_ssl: boolean;
   access_key?: string;
@@ -1304,6 +1307,7 @@ export interface TransportConfigCreateReq {
   kind: string;            // 's3'
   bucket: string;
   endpoint: string;
+  endpoint_internal?: string;
   region?: string;
   use_ssl: boolean;
   access_key?: string;

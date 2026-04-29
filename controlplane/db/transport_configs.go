@@ -15,12 +15,26 @@ import (
 )
 
 // TransportConfig mirrors a transport_configs row.
+//
+// Endpoint vs EndpointInternal:
+//
+//   - Endpoint is the host:port that gets baked into the package
+//     bootstrap.json, i.e. what remote nodes use to talk to the bucket.
+//     Always set; this is the public/external name.
+//   - EndpointInternal, when set, is the host:port the CP scanner
+//     dials. Defaults to Endpoint when null. Useful for split-horizon
+//     setups where the CP sits inside a VPC and reaches the bucket
+//     over a private endpoint that nodes cannot resolve.
+//
+// Use ScannerEndpoint() to read the right value from scanner-side
+// code so the fallback rule lives in one place.
 type TransportConfig struct {
 	ID                  int64
 	Name                string
 	Kind                string // 's3'
 	Bucket              string
 	Endpoint            string
+	EndpointInternal    sql.NullString
 	Region              sql.NullString
 	UseSSL              bool
 	AccessKey           sql.NullString
@@ -33,16 +47,27 @@ type TransportConfig struct {
 	UpdatedAt           time.Time
 }
 
+// ScannerEndpoint returns the host:port the CP scanner should dial.
+// Falls back to the public Endpoint when EndpointInternal isn't set —
+// matches the migration's "NULL = use public" behavior so legacy rows
+// keep working without an operator touching them.
+func (c TransportConfig) ScannerEndpoint() string {
+	if c.EndpointInternal.Valid && c.EndpointInternal.String != "" {
+		return c.EndpointInternal.String
+	}
+	return c.Endpoint
+}
+
 // CreateTransportConfig inserts a new config and returns its id.
 func (s *Store) CreateTransportConfig(c TransportConfig) (int64, error) {
 	res, err := s.Exec(`
 		INSERT INTO transport_configs
-			(name, kind, bucket, endpoint, region, use_ssl,
+			(name, kind, bucket, endpoint, endpoint_internal, region, use_ssl,
 			 access_key, secret_key,
 			 fleet_pubkey_pem, fleet_privkey_pem,
 			 scanner_interval_ms, cp_id)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		c.Name, c.Kind, c.Bucket, c.Endpoint, c.Region, boolToInt(c.UseSSL),
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		c.Name, c.Kind, c.Bucket, c.Endpoint, c.EndpointInternal, c.Region, boolToInt(c.UseSSL),
 		c.AccessKey, c.SecretKey,
 		c.FleetPubkeyPEM, c.FleetPrivkeyPEM,
 		c.ScannerIntervalMs, c.CPID)
@@ -55,7 +80,7 @@ func (s *Store) CreateTransportConfig(c TransportConfig) (int64, error) {
 // GetTransportConfig returns one row by id.
 func (s *Store) GetTransportConfig(id int64) (TransportConfig, error) {
 	row := s.QueryRow(`
-		SELECT id, name, kind, bucket, endpoint, region, use_ssl,
+		SELECT id, name, kind, bucket, endpoint, endpoint_internal, region, use_ssl,
 		       access_key, secret_key, fleet_pubkey_pem, fleet_privkey_pem,
 		       scanner_interval_ms, cp_id, created_at, updated_at
 		  FROM transport_configs WHERE id = ?`, id)
@@ -66,7 +91,7 @@ func (s *Store) GetTransportConfig(id int64) (TransportConfig, error) {
 // bound to a given CP. Returns sql.ErrNoRows if absent.
 func (s *Store) GetTransportConfigByCPID(cpID string) (TransportConfig, error) {
 	row := s.QueryRow(`
-		SELECT id, name, kind, bucket, endpoint, region, use_ssl,
+		SELECT id, name, kind, bucket, endpoint, endpoint_internal, region, use_ssl,
 		       access_key, secret_key, fleet_pubkey_pem, fleet_privkey_pem,
 		       scanner_interval_ms, cp_id, created_at, updated_at
 		  FROM transport_configs WHERE cp_id = ? LIMIT 1`, cpID)
@@ -76,7 +101,7 @@ func (s *Store) GetTransportConfigByCPID(cpID string) (TransportConfig, error) {
 // ListTransportConfigs returns all rows. Small table; no pagination.
 func (s *Store) ListTransportConfigs() ([]TransportConfig, error) {
 	rows, err := s.Query(`
-		SELECT id, name, kind, bucket, endpoint, region, use_ssl,
+		SELECT id, name, kind, bucket, endpoint, endpoint_internal, region, use_ssl,
 		       access_key, secret_key, fleet_pubkey_pem, fleet_privkey_pem,
 		       scanner_interval_ms, cp_id, created_at, updated_at
 		  FROM transport_configs ORDER BY id`)
@@ -102,13 +127,13 @@ func (s *Store) ListTransportConfigs() ([]TransportConfig, error) {
 func (s *Store) UpdateTransportConfig(c TransportConfig) error {
 	_, err := s.Exec(`
 		UPDATE transport_configs SET
-			name = ?, kind = ?, bucket = ?, endpoint = ?, region = ?, use_ssl = ?,
+			name = ?, kind = ?, bucket = ?, endpoint = ?, endpoint_internal = ?, region = ?, use_ssl = ?,
 			access_key = ?, secret_key = ?,
 			fleet_pubkey_pem = ?, fleet_privkey_pem = ?,
 			scanner_interval_ms = ?, cp_id = ?,
 			updated_at = CURRENT_TIMESTAMP
 		WHERE id = ?`,
-		c.Name, c.Kind, c.Bucket, c.Endpoint, c.Region, boolToInt(c.UseSSL),
+		c.Name, c.Kind, c.Bucket, c.Endpoint, c.EndpointInternal, c.Region, boolToInt(c.UseSSL),
 		c.AccessKey, c.SecretKey,
 		c.FleetPubkeyPEM, c.FleetPrivkeyPEM,
 		c.ScannerIntervalMs, c.CPID,
@@ -130,7 +155,7 @@ func scanTransportConfig(r rowScanner) (TransportConfig, error) {
 	var c TransportConfig
 	var useSSL int
 	if err := r.Scan(
-		&c.ID, &c.Name, &c.Kind, &c.Bucket, &c.Endpoint, &c.Region, &useSSL,
+		&c.ID, &c.Name, &c.Kind, &c.Bucket, &c.Endpoint, &c.EndpointInternal, &c.Region, &useSSL,
 		&c.AccessKey, &c.SecretKey, &c.FleetPubkeyPEM, &c.FleetPrivkeyPEM,
 		&c.ScannerIntervalMs, &c.CPID, &c.CreatedAt, &c.UpdatedAt,
 	); err != nil {
