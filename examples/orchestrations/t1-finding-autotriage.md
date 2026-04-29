@@ -1,13 +1,13 @@
 ---
 name: t1-finding-autotriage
-description: Tier-1 auto-triage for every new finding. Decides real-issue vs known noise; suppresses noise, summarises the rest, and only escalates to a human-visible state when the finding survives both checks. Runs autonomously — no approval gate.
+description: Tier-1 auto-triage fast-lane for HIGH/CRITICAL findings. Decides real-issue vs known noise; suppresses noise, summarises the rest, and escalates when the finding survives both checks. INFO/LOW findings are handled in batches by `t1-finding-batch-triage` instead — per-finding triage there saturated the API under noise bursts.
 
-# Fires on every new finding regardless of severity. The filter is
-# intentionally permissive — the work happens inside the orchestration,
-# not in the trigger condition.
+# Fires only on HIGH/CRITICAL — the per-finding fast-lane. INFO/LOW
+# go through the batched `t1-finding-batch-triage` (cron 5min) so we
+# don't pay one LLM startup per noise event.
 trigger:
   on: finding
-  filter: "finding.severity != 'INFO'"
+  filter: "finding.severity in ['HIGH', 'CRITICAL']"
 
 inputs:
   host:

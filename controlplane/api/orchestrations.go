@@ -30,6 +30,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"strconv"
@@ -1160,10 +1161,25 @@ type OrchestrationCoordinator struct {
 	engine   *orchestrator.Engine
 	store    *db.Store
 
+	// runSlots is a buffered channel acting as a global semaphore that
+	// caps the number of concurrently executing engine.Run goroutines.
+	// A burst of finding triggers (we saw 700+ in 12h) saturated the
+	// shared Anthropic key and produced cascading "context deadline
+	// exceeded" failures; the cap shapes the load before it reaches
+	// the API. Run rows still exist in the DB while waiting — only
+	// the engine.Run call is gated.
+	runSlots chan struct{}
+
 	// triggerStop closes when StopTriggers is called — the cron tick
 	// goroutine selects on it to exit cleanly on CP shutdown.
 	triggerStop chan struct{}
 }
+
+// MaxConcurrentRuns is the global ceiling on simultaneously running
+// orchestration runs. Sized empirically: the lab's single Anthropic
+// key starts queueing past ~30 in-flight requests, and most runs
+// have 2–3 steps each.
+const MaxConcurrentRuns = 20
 
 // CoordinatorOpts bundles the pluggable deps the coordinator needs
 // beyond the core stores. Built up in server.go from the CP config
@@ -1198,6 +1214,7 @@ func NewOrchestrationCoordinator(
 		inflight:    map[int64]struct{}{},
 		engine:      engine,
 		store:       store,
+		runSlots:    make(chan struct{}, MaxConcurrentRuns),
 		triggerStop: make(chan struct{}),
 	}
 }
@@ -1362,6 +1379,16 @@ func (c *OrchestrationCoordinator) kick(runID int64) {
 			delete(c.inflight, runID)
 			c.mu.Unlock()
 		}()
+		// Acquire a global run slot before invoking the engine. When
+		// the cap is reached, this send blocks until a running goroutine
+		// releases its slot. Run rows stay queued in the DB; engine.Run
+		// honours per-step timeouts only after we hand control to it.
+		waitStart := time.Now()
+		c.runSlots <- struct{}{}
+		if waited := time.Since(waitStart); waited > 5*time.Second {
+			log.Printf("orchestration run %d waited %s for a concurrency slot (cap=%d)", runID, waited.Round(time.Millisecond), MaxConcurrentRuns)
+		}
+		defer func() { <-c.runSlots }()
 		_ = c.engine.Run(context.Background(), runID)
 	}()
 }

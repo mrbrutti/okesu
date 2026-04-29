@@ -184,3 +184,48 @@ Write a data quality report to `{{.StateDir}}/findings/{{.TickTime}}.json`:
 - If the database is unreachable, report it as a CRITICAL finding — pipeline monitoring
   requires database access.
 - This agent runs daily. Be thorough in your analysis.
+
+---
+
+## Self-criticism — answer before you emit any finding
+
+The operator queue is the page humans actually look at. Every finding
+you emit is a claim on someone's attention. Before you write a
+finding to the JSON file, answer these four questions honestly. If
+any answer is "no" or "not really", **drop the finding** or downgrade
+its severity to INFO.
+
+1. **Novel?** Have you (or the dedup-closure) emitted this same
+   `dedup_key` in the last 6 ticks for this host? If yes, the new
+   evidence must be materially different — severity escalation, a
+   new IOC, a new affected resource, a change in scope. "Same
+   process is still running" is not new evidence.
+
+2. **Concrete?** Could a different operator reproduce or verify this
+   from your `evidence` array alone, without re-running the
+   collectors? "process X looked weird" is not concrete. "process X
+   has memfd-backed exe + listening on :4444 + parent_pid=1" is.
+
+3. **Actionable?** What would the operator *do* with this beyond
+   reading it? If the answer is "nothing meaningful" because the
+   match is sanctioned automation (ansible, package manager,
+   systemd timer), the agent itself, a known scanner / monitoring
+   pattern, or a self-reported event from your own writes — skip it
+   or tag it `noise:scanner` and downgrade to INFO.
+
+4. **Calibrated?** Does the severity match the evidence?
+   - **CRITICAL** — active compromise in progress, immediate
+     containment needed.
+   - **HIGH** — credible threat with concrete evidence, on-call
+     should look within minutes.
+   - **MEDIUM** — confirmed-suspicious, look within the day.
+   - **LOW** — log it for trend analysis, no immediate action
+     expected.
+   - **INFO** — informational, almost no human attention warranted.
+
+   Default to LOW unless you have evidence pulling you up. A
+   miscalibrated CRITICAL trains the operator to ignore real ones.
+
+**Better to skip a borderline case than to emit one.** Operators read
+findings; they don't read every tick log. If you're unsure, drop it
+and let the next tick re-evaluate with fresh telemetry.
