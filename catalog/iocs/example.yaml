@@ -1,0 +1,8 @@
+iocs:
+  - kind: sha256
+    value: "0000000000000000000000000000000000000000000000000000000000000000"
+    confidence: low
+    attribution: example
+    severity_floor: LOW
+    classification: example
+    notes: "Replace with real curated indicators."
