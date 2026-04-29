@@ -905,6 +905,24 @@ export const api = {
   refreshFederationPeer: (id: number) =>
     request<FederationPeer>(`/api/federation/peers/${id}/refresh`, { method: 'POST' }),
 
+  // Phase 21.2 — cloud credentials. Payload-only fields (the cloud-
+  // specific secrets) are write-only at this layer: list/get/test
+  // never roundtrip the plaintext through the browser. Editing means
+  // re-entering the secrets from scratch.
+  cloudCredentialsList: (cloud?: string) => {
+    const qs = cloud ? `?cloud=${encodeURIComponent(cloud)}` : '';
+    return request<CloudCredential[]>(`/api/cloud-credentials${qs}`);
+  },
+  cloudCredentialCreate: (req: CloudCredentialCreateRequest) =>
+    request<CloudCredential>('/api/cloud-credentials', {
+      method: 'POST',
+      body: JSON.stringify(req),
+    }),
+  cloudCredentialDelete: (id: number) =>
+    request<void>(`/api/cloud-credentials/${id}`, { method: 'DELETE' }),
+  cloudCredentialTest: (id: number) =>
+    request<{ ok: boolean; message: string }>(`/api/cloud-credentials/${id}/test`, { method: 'POST' }),
+
   // Phase 21.1 — generate a bootstrap bundle for a fresh child CP.
   // Returns the tar.gz response as a Blob the caller hands to the
   // browser's download flow. The endpoint sends Content-Disposition
@@ -1558,4 +1576,27 @@ export interface FederationPeerAddReq {
   url: string;
   token: string;
   display_name?: string;
+}
+
+// Phase 21.2 — cloud credentials.
+export type CloudKind = 'oci' | 'aws' | 'gcp' | 'azure' | 'digitalocean';
+
+export interface CloudCredential {
+  id: number;
+  cloud: CloudKind;
+  name: string;
+  region?: string;
+  created_at: string;
+  created_by_email?: string;
+  last_used_at?: string;
+  last_test_at?: string;
+  last_test_ok?: boolean;
+  last_test_error?: string;
+}
+
+export interface CloudCredentialCreateRequest {
+  cloud: CloudKind;
+  name: string;
+  region?: string;
+  payload: Record<string, string>;
 }
