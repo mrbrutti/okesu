@@ -2,6 +2,7 @@ package db
 
 import (
 	"testing"
+	"time"
 )
 
 func TestUpsertIOC_InsertsNewRow(t *testing.T) {
@@ -91,5 +92,55 @@ func TestRecordObservation_CreatesLink(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].FindingID != findingID {
 		t.Errorf("expected one observation for finding %d; got %+v", findingID, got)
+	}
+
+	ioc, err := s.GetIOC(iocID)
+	if err != nil {
+		t.Fatalf("GetIOC after observation: %v", err)
+	}
+	if ioc.ObservationCount != 1 {
+		t.Errorf("expected observation_count=1 after one observation; got %d", ioc.ObservationCount)
+	}
+	if time.Since(ioc.LastSeen) > 5*time.Second {
+		t.Errorf("expected last_seen to be refreshed within 5s; got %v (now=%v)", ioc.LastSeen, time.Now())
+	}
+}
+
+func TestUpsertIOC_ObservedDoesNotOverwriteCatalog(t *testing.T) {
+	s := openTempStore(t)
+	// Seed a catalog row with curated metadata.
+	id1, _, err := s.UpsertIOC(&IOCUpsert{
+		Kind: "sha256", Value: "abc", NormalizedValue: "abc",
+		Source:         "catalog",
+		DefinitionPath: "catalog/iocs/test.yaml",
+		SeverityFloor:  "HIGH",
+		Attribution:    "apt-foo",
+	})
+	if err != nil {
+		t.Fatalf("seed catalog: %v", err)
+	}
+	// Observe the same IOC (e.g., as if a finding extracted it).
+	id2, created, err := s.UpsertIOC(&IOCUpsert{
+		Kind: "sha256", Value: "abc", NormalizedValue: "abc",
+		Source: "observed",
+	})
+	if err != nil {
+		t.Fatalf("observed upsert: %v", err)
+	}
+	if id1 != id2 {
+		t.Errorf("expected same row id; got %d vs %d", id1, id2)
+	}
+	if created {
+		t.Errorf("expected created=false on duplicate")
+	}
+	got, err := s.GetIOC(id1)
+	if err != nil {
+		t.Fatalf("GetIOC: %v", err)
+	}
+	if got.Source != "catalog" {
+		t.Errorf("observed upsert clobbered source: got %q want catalog", got.Source)
+	}
+	if got.SeverityFloor != "HIGH" || got.Attribution != "apt-foo" || got.DefinitionPath == "" {
+		t.Errorf("observed upsert clobbered catalog metadata: %+v", got)
 	}
 }
