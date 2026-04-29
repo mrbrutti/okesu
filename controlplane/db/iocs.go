@@ -137,8 +137,8 @@ func (s *Store) RecordIOCObservation(iocID int64, obs *IOCObservation) error {
 		INSERT INTO ioc_observations (ioc_id, finding_id, orchestration_run_id, host)
 		VALUES (?, ?, ?, ?)`,
 		iocID,
-		nullableObsInt(obs.FindingID),
-		nullableObsInt(obs.OrchestrationRunID),
+		nullableInt64(obs.FindingID),
+		nullableInt64(obs.OrchestrationRunID),
 		nullable(obs.Host)); err != nil {
 		return err
 	}
@@ -175,16 +175,4 @@ func (s *Store) LookupIOC(kind, normalizedValue string) (*IOCRecord, error) {
 		return nil, err
 	}
 	return s.GetIOC(id)
-}
-
-// nullableObsInt returns nil for v == 0 so observation rows can store
-// NULL in the finding_id / orchestration_run_id columns when the
-// observation isn't linked to one. The package's existing nullableInt64
-// returns sql.NullInt64; this variant returns any so it slots
-// directly into Exec's variadic args.
-func nullableObsInt(v int64) any {
-	if v == 0 {
-		return nil
-	}
-	return v
 }
