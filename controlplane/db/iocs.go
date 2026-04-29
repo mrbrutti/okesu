@@ -3,6 +3,7 @@ package db
 import (
 	"database/sql"
 	"fmt"
+	"time"
 )
 
 // IOCUpsert is the input to UpsertIOC. NormalizedValue is the dedup key
@@ -34,6 +35,8 @@ type IOCRecord struct {
 	Classification   string
 	Notes            string
 	ObservationCount int64
+	FirstSeen        time.Time
+	LastSeen         time.Time
 }
 
 // IOCObservation links an IOC to a finding and/or run.
@@ -109,12 +112,14 @@ func (s *Store) GetIOC(id int64) (*IOCRecord, error) {
 		SELECT id, kind, value, normalized_value, source,
 		       COALESCE(definition_path,''), COALESCE(confidence,''),
 		       COALESCE(attribution,''), COALESCE(severity_floor,''),
-		       COALESCE(classification,''), COALESCE(notes,''), observation_count
+		       COALESCE(classification,''), COALESCE(notes,''), observation_count,
+		       first_seen, last_seen
 		FROM iocs WHERE id = ?`, id)
 	var r IOCRecord
 	if err := row.Scan(&r.ID, &r.Kind, &r.Value, &r.NormalizedValue, &r.Source,
 		&r.DefinitionPath, &r.Confidence, &r.Attribution, &r.SeverityFloor,
-		&r.Classification, &r.Notes, &r.ObservationCount); err != nil {
+		&r.Classification, &r.Notes, &r.ObservationCount,
+		&r.FirstSeen, &r.LastSeen); err != nil {
 		return nil, err
 	}
 	return &r, nil
