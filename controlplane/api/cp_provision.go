@@ -66,6 +66,28 @@ type cpProvisionReq struct {
 	// for /api/v1/cp/bootstrap. Optional — defaults to the parent's
 	// EffectivePublicURL when empty, same as the manual bundle path.
 	ParentURL string `json:"parent_url,omitempty"`
+	// ForceOverBudget bypasses the per-credential monthly_budget_usd
+	// check. The handler returns 409 with a structured payload if a
+	// submit would breach the budget; the operator can then re-submit
+	// with this flag once they've acked the overage. Default false —
+	// the goal of the budget is to make exceeding it require a
+	// deliberate second click, not to make it impossible.
+	ForceOverBudget bool `json:"force_over_budget,omitempty"`
+}
+
+// cpProvisionBudgetExceededResp is the structured 409 the handler
+// returns when a submit would push a credential's projected monthly
+// spend past its cap. The frontend uses this to show the budget
+// callout + "Override budget" checkbox.
+type cpProvisionBudgetExceededResp struct {
+	Error              string  `json:"error"`
+	Reason             string  `json:"reason"` // "budget_exceeded"
+	CredentialID       int64   `json:"credential_id"`
+	MonthlyBudgetUSD   float64 `json:"monthly_budget_usd"`
+	CurrentMonthlyUSD  float64 `json:"current_monthly_usd"`
+	ProjectedMonthlyUSD float64 `json:"projected_monthly_usd"`
+	NewMonthlyUSD      float64 `json:"new_monthly_usd"`
+	UnknownActiveCount int     `json:"unknown_active_count"`
 }
 
 // CPProvisionCreateHandler validates the request, mints a bootstrap
@@ -115,6 +137,44 @@ func CPProvisionCreateHandler(store *db.Store, reg *cpprovision.Registry, parent
 			return
 		}
 
+		// Cost estimate + budget check. We do this BEFORE minting the
+		// bootstrap token so a budget-exceeded 409 doesn't burn one.
+		// Unknown shapes (catalog miss) contribute zero — the operator
+		// might still want to proceed; the UI flags it.
+		shape := cpprovision.ExtractInstanceShape(req.Cloud, req.CloudParams)
+		flex := cpprovision.ExtractFlexInputs(req.Cloud, req.CloudParams)
+		var newHourlyUSD *float64
+		var newMonthlyUSD float64
+		if est, ok := cpprovision.Estimate(req.Cloud, shape, flex); ok {
+			usd := est.USD
+			newHourlyUSD = &usd
+			newMonthlyUSD = cpprovision.MonthlyUSD(usd)
+		}
+
+		if cred.MonthlyBudgetUSD.Valid && !req.ForceOverBudget {
+			currentUSD, unknowns, sumErr := store.SumActiveMonthlyCostUSDByCredential(cred.ID)
+			if sumErr != nil {
+				http.Error(w, "budget rollup: "+sumErr.Error(), http.StatusInternalServerError)
+				return
+			}
+			projected := currentUSD + newMonthlyUSD
+			if projected > cred.MonthlyBudgetUSD.Float64 {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusConflict)
+				_ = json.NewEncoder(w).Encode(cpProvisionBudgetExceededResp{
+					Error:               fmt.Sprintf("would exceed credential's monthly budget (%.2f > %.2f USD)", projected, cred.MonthlyBudgetUSD.Float64),
+					Reason:              "budget_exceeded",
+					CredentialID:        cred.ID,
+					MonthlyBudgetUSD:    cred.MonthlyBudgetUSD.Float64,
+					CurrentMonthlyUSD:   currentUSD,
+					ProjectedMonthlyUSD: projected,
+					NewMonthlyUSD:       newMonthlyUSD,
+					UnknownActiveCount:  unknowns,
+				})
+				return
+			}
+		}
+
 		// Mint the bootstrap token now, attached to this provision.
 		// The worker will pass it to the cloud-init script + the
 		// child CP's bootstrap call burns it.
@@ -140,15 +200,17 @@ func CPProvisionCreateHandler(store *db.Store, reg *cpprovision.Registry, parent
 			credName = cred.Name
 		}
 		row, err := store.InsertCPProvision(db.CPProvisionInsert{
-			DisplayName:     req.DisplayName,
-			Region:          req.Region,
-			Cloud:           req.Cloud,
-			CredentialID:    cred.ID,
-			CredentialName:  credName,
-			CloudParamsJSON: string(paramsJSON),
-			BundleTokenID:   tokenID,
-			CreatedByUserID: userID,
-			CreatedByEmail:  userEmail,
+			DisplayName:       req.DisplayName,
+			Region:            req.Region,
+			Cloud:             req.Cloud,
+			CredentialID:      cred.ID,
+			CredentialName:    credName,
+			CloudParamsJSON:   string(paramsJSON),
+			BundleTokenID:     tokenID,
+			EstCostPerHourUSD: newHourlyUSD,
+			InstanceShape:     shape,
+			CreatedByUserID:   userID,
+			CreatedByEmail:    userEmail,
 		})
 		if err != nil {
 			http.Error(w, "insert: "+err.Error(), http.StatusInternalServerError)
@@ -238,6 +300,8 @@ type cpProvisionJSON struct {
 	PeerID            int64          `json:"peer_id,omitempty"`
 	Log               string         `json:"log,omitempty"`
 	Error             string         `json:"error,omitempty"`
+	EstCostPerHourUSD *float64       `json:"est_cost_per_hour_usd,omitempty"`
+	InstanceShape     string         `json:"instance_shape,omitempty"`
 	CreatedAt         string         `json:"created_at"`
 	StartedAt         string         `json:"started_at,omitempty"`
 	EndedAt           string         `json:"ended_at,omitempty"`
@@ -280,6 +344,13 @@ func toCPProvisionJSON(p *db.CPProvision) cpProvisionJSON {
 	}
 	if p.CloudParamsJSON != "" && p.CloudParamsJSON != "{}" {
 		_ = json.Unmarshal([]byte(p.CloudParamsJSON), &out.CloudParams)
+	}
+	if p.EstCostPerHourUSD.Valid {
+		v := p.EstCostPerHourUSD.Float64
+		out.EstCostPerHourUSD = &v
+	}
+	if p.InstanceShape.Valid {
+		out.InstanceShape = p.InstanceShape.String
 	}
 	return out
 }

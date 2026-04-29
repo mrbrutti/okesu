@@ -40,17 +40,18 @@ import (
 // the encrypted payload stays in the DB; callers fetch it on demand
 // via Decrypt and the Store passes them the master key.
 type CloudCredential struct {
-	ID            int64
-	Cloud         string
-	Name          string
-	Region        sql.NullString
-	CreatedAt     time.Time
-	CreatedByUser sql.NullInt64
-	CreatedByEmail sql.NullString
-	LastUsedAt    sql.NullTime
-	LastTestAt    sql.NullTime
-	LastTestOK    sql.NullBool
-	LastTestError sql.NullString
+	ID               int64
+	Cloud            string
+	Name             string
+	Region           sql.NullString
+	MonthlyBudgetUSD sql.NullFloat64
+	CreatedAt        time.Time
+	CreatedByUser    sql.NullInt64
+	CreatedByEmail   sql.NullString
+	LastUsedAt       sql.NullTime
+	LastTestAt       sql.NullTime
+	LastTestOK       sql.NullBool
+	LastTestError    sql.NullString
 }
 
 // CloudCredentialInsert is the input shape for InsertCloudCredential.
@@ -118,7 +119,8 @@ func (s *Store) InsertCloudCredential(in CloudCredentialInsert, masterKey []byte
 // only available via DecryptCloudCredential.
 func (s *Store) GetCloudCredential(id int64) (*CloudCredential, error) {
 	row := s.QueryRow(`
-		SELECT id, cloud, name, region, created_at, created_by_user_id, created_by_email,
+		SELECT id, cloud, name, region, monthly_budget_usd,
+		       created_at, created_by_user_id, created_by_email,
 		       last_used_at, last_test_at, last_test_ok, last_test_error
 		FROM cloud_credentials WHERE id = ?
 	`, id)
@@ -128,7 +130,8 @@ func (s *Store) GetCloudCredential(id int64) (*CloudCredential, error) {
 // ListCloudCredentials returns metadata for all rows, newest first.
 // Filters by cloud when set; pass empty to get every cloud.
 func (s *Store) ListCloudCredentials(cloud string) ([]CloudCredential, error) {
-	q := `SELECT id, cloud, name, region, created_at, created_by_user_id, created_by_email,
+	q := `SELECT id, cloud, name, region, monthly_budget_usd,
+	             created_at, created_by_user_id, created_by_email,
 	             last_used_at, last_test_at, last_test_ok, last_test_error
 	      FROM cloud_credentials`
 	args := []any{}
@@ -204,7 +207,8 @@ func (s *Store) RecordCloudCredentialTest(id int64, ok bool, errMsg string) erro
 func scanCloudCredential(s rowScanner) (*CloudCredential, error) {
 	c := &CloudCredential{}
 	if err := s.Scan(
-		&c.ID, &c.Cloud, &c.Name, &c.Region, &c.CreatedAt,
+		&c.ID, &c.Cloud, &c.Name, &c.Region, &c.MonthlyBudgetUSD,
+		&c.CreatedAt,
 		&c.CreatedByUser, &c.CreatedByEmail,
 		&c.LastUsedAt, &c.LastTestAt, &c.LastTestOK, &c.LastTestError,
 	); err != nil {
@@ -214,6 +218,43 @@ func scanCloudCredential(s rowScanner) (*CloudCredential, error) {
 		return nil, err
 	}
 	return c, nil
+}
+
+// SetCloudCredentialBudget updates the per-credential monthly USD
+// budget. Pass nil to clear (no cap).
+func (s *Store) SetCloudCredentialBudget(id int64, budget *float64) error {
+	var arg sql.NullFloat64
+	if budget != nil {
+		arg = sql.NullFloat64{Float64: *budget, Valid: true}
+	}
+	_, err := s.Exec(`UPDATE cloud_credentials SET monthly_budget_usd = ? WHERE id = ?`, arg, id)
+	return err
+}
+
+// SumActiveMonthlyCostUSDByCredential adds up est_cost_per_hour_usd
+// (× 730 hours/mo) across non-terminal cp_provisions rows linked to
+// the credential. Used by the budget check + the Federation page's
+// "current spend" tile. Rows with NULL est_cost_per_hour_usd
+// contribute zero — the catalog had no entry for that shape, so we
+// can't truthfully account for them. The handler surfaces those
+// counts separately so the operator isn't fooled by a too-low total.
+//
+// Active = anything NOT in (failed, cancelled). A "ready" CP keeps
+// charging until the operator destroys the underlying VM, so we
+// count it.
+func (s *Store) SumActiveMonthlyCostUSDByCredential(credentialID int64) (totalUSD float64, unknownCount int, err error) {
+	row := s.QueryRow(`
+		SELECT
+		    COALESCE(SUM(est_cost_per_hour_usd), 0) * 730.0 AS monthly_usd,
+		    COUNT(CASE WHEN est_cost_per_hour_usd IS NULL THEN 1 END) AS unknowns
+		FROM cp_provisions
+		WHERE credential_id = ?
+		  AND status NOT IN ('failed', 'cancelled')
+	`, credentialID)
+	if err := row.Scan(&totalUSD, &unknownCount); err != nil {
+		return 0, 0, err
+	}
+	return totalUSD, unknownCount, nil
 }
 
 func isAllowedCloud(c string) bool {

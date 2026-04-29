@@ -922,6 +922,14 @@ export const api = {
     request<void>(`/api/cloud-credentials/${id}`, { method: 'DELETE' }),
   cloudCredentialTest: (id: number) =>
     request<{ ok: boolean; message: string }>(`/api/cloud-credentials/${id}/test`, { method: 'POST' }),
+  // Phase 21.5 — set or clear the per-credential monthly USD budget.
+  // Pass null to clear; the budget enforcement on cp_provision.create
+  // re-reads this value on every submit.
+  cloudCredentialBudget: (id: number, monthlyBudgetUSD: number | null) =>
+    request<CloudCredential>(`/api/cloud-credentials/${id}/budget`, {
+      method: 'PUT',
+      body: JSON.stringify({ monthly_budget_usd: monthlyBudgetUSD }),
+    }),
 
   // Phase 21.3 — managed CP provisioning. The registry is empty in
   // 21.3a (the framework PR); per-cloud impls register against it in
@@ -938,6 +946,12 @@ export const api = {
     request<CPProvision>(`/api/federation/cp-provisions/${id}`),
   cpProvisionCreate: (req: CPProvisionRequest) =>
     request<CPProvision>('/api/federation/cp-provision', {
+      method: 'POST',
+      body: JSON.stringify(req),
+    }),
+  // Phase 21.5 — read-only cost preview for the +Add CP modal.
+  cpProvisionEstimate: (req: CPProvisionEstimateRequest) =>
+    request<CPProvisionEstimate>('/api/federation/cp-provision/estimate', {
       method: 'POST',
       body: JSON.stringify(req),
     }),
@@ -1606,6 +1620,7 @@ export interface CloudCredential {
   cloud: CloudKind;
   name: string;
   region?: string;
+  monthly_budget_usd?: number;
   created_at: string;
   created_by_email?: string;
   last_used_at?: string;
@@ -1644,6 +1659,8 @@ export interface CPProvision {
   peer_id?: number;
   log?: string;
   error?: string;
+  est_cost_per_hour_usd?: number;
+  instance_shape?: string;
   created_at: string;
   started_at?: string;
   ended_at?: string;
@@ -1657,4 +1674,38 @@ export interface CPProvisionRequest {
   credential_id: number;
   cloud_params?: Record<string, unknown>;
   parent_url?: string;
+  /** Phase 21.5 — bypasses the budget check; submit returns 409 otherwise. */
+  force_over_budget?: boolean;
+}
+
+// Phase 21.5 — cost estimate preview body + response.
+export interface CPProvisionEstimateRequest {
+  cloud: CloudKind;
+  credential_id?: number;
+  cloud_params?: Record<string, unknown>;
+}
+
+export interface CPProvisionEstimate {
+  hourly_usd?: number;
+  monthly_usd?: number;
+  instance_shape?: string;
+  catalog_version: string;
+  note?: string;
+  monthly_budget_usd?: number;
+  current_monthly_usd?: number;
+  projected_monthly_usd?: number;
+  unknown_active_count?: number;
+  would_exceed_budget?: boolean;
+}
+
+// Phase 21.5 — structured 409 from cp-provision when over budget.
+export interface CPProvisionBudgetExceeded {
+  error: string;
+  reason: 'budget_exceeded';
+  credential_id: number;
+  monthly_budget_usd: number;
+  current_monthly_usd: number;
+  projected_monthly_usd: number;
+  new_monthly_usd: number;
+  unknown_active_count: number;
 }
