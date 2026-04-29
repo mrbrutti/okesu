@@ -28,16 +28,17 @@ import (
 // editing the credential, in which case they re-enter the secrets
 // from scratch (we never roundtrip plaintext through the browser).
 type cloudCredentialJSON struct {
-	ID             int64  `json:"id"`
-	Cloud          string `json:"cloud"`
-	Name           string `json:"name"`
-	Region         string `json:"region,omitempty"`
-	CreatedAt      string `json:"created_at"`
-	CreatedByEmail string `json:"created_by_email,omitempty"`
-	LastUsedAt     string `json:"last_used_at,omitempty"`
-	LastTestAt     string `json:"last_test_at,omitempty"`
-	LastTestOK     *bool  `json:"last_test_ok,omitempty"`
-	LastTestError  string `json:"last_test_error,omitempty"`
+	ID               int64    `json:"id"`
+	Cloud            string   `json:"cloud"`
+	Name             string   `json:"name"`
+	Region           string   `json:"region,omitempty"`
+	MonthlyBudgetUSD *float64 `json:"monthly_budget_usd,omitempty"`
+	CreatedAt        string   `json:"created_at"`
+	CreatedByEmail   string   `json:"created_by_email,omitempty"`
+	LastUsedAt       string   `json:"last_used_at,omitempty"`
+	LastTestAt       string   `json:"last_test_at,omitempty"`
+	LastTestOK       *bool    `json:"last_test_ok,omitempty"`
+	LastTestError    string   `json:"last_test_error,omitempty"`
 }
 
 func toCloudCredentialJSON(c *db.CloudCredential) cloudCredentialJSON {
@@ -49,6 +50,10 @@ func toCloudCredentialJSON(c *db.CloudCredential) cloudCredentialJSON {
 	}
 	if c.Region.Valid {
 		out.Region = c.Region.String
+	}
+	if c.MonthlyBudgetUSD.Valid {
+		v := c.MonthlyBudgetUSD.Float64
+		out.MonthlyBudgetUSD = &v
 	}
 	if c.CreatedByEmail.Valid {
 		out.CreatedByEmail = c.CreatedByEmail.String
@@ -156,6 +161,61 @@ func CloudCredentialCreate(store *db.Store) http.HandlerFunc {
 		w.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(w).Encode(toCloudCredentialJSON(c))
 	}
+}
+
+// cloudCredentialBudgetReq is the body for PUT /api/cloud-credentials/{id}/budget.
+// Pass `monthly_budget_usd: null` to clear the cap; a number to set
+// it. Negative numbers and NaN/Infinity are rejected so the budget
+// check can't be bypassed by feeding it nonsense.
+type cloudCredentialBudgetReq struct {
+	MonthlyBudgetUSD *float64 `json:"monthly_budget_usd"`
+}
+
+// CloudCredentialBudgetUpdate — PUT /api/cloud-credentials/{id}/budget.
+// Admin-only. Records the new cap; the cp_provision handler reads it
+// fresh on every submit, so the cap takes effect immediately.
+func CloudCredentialBudgetUpdate(store *db.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+		if err != nil {
+			http.Error(w, "bad id", http.StatusBadRequest)
+			return
+		}
+		var req cloudCredentialBudgetReq
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "bad json", http.StatusBadRequest)
+			return
+		}
+		if req.MonthlyBudgetUSD != nil {
+			v := *req.MonthlyBudgetUSD
+			if v < 0 || isNaNOrInf(v) {
+				http.Error(w, "monthly_budget_usd must be >= 0 and finite", http.StatusBadRequest)
+				return
+			}
+		}
+		if _, err := store.GetCloudCredential(id); err != nil {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		if err := store.SetCloudCredentialBudget(id, req.MonthlyBudgetUSD); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		audit.Emit(r, store, db.AuditEntry{
+			Action: "cloud_credential.budget.update",
+			Target: fmt.Sprintf("cloud_credential:%d", id),
+			Metadata: map[string]any{
+				"monthly_budget_usd": req.MonthlyBudgetUSD,
+			},
+		})
+		c, _ := store.GetCloudCredential(id)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(toCloudCredentialJSON(c))
+	}
+}
+
+func isNaNOrInf(f float64) bool {
+	return f != f || f > 1e308 || f < -1e308
 }
 
 // CloudCredentialDelete — DELETE /api/cloud-credentials/{id}

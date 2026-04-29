@@ -16,7 +16,7 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
-import { api, type CloudCredential, type CloudKind, type FederationPeer } from '../api';
+import { api, type CloudCredential, type CloudKind, type CPProvisionEstimate, type FederationPeer } from '../api';
 import { cn } from '../lib/cn';
 
 export default function FederationPage() {
@@ -341,6 +341,39 @@ function ManagedDeployPanel({ onClose }: { onClose: () => void }) {
   const [busy, setBusy] = useState(false);
   const [submitted, setSubmitted] = useState<{ id: number; status: string } | null>(null);
 
+  // Phase 21.5 — live cost preview + budget context. Re-fetched
+  // (debounced) on every change to (cloud, credential, params).
+  const [estimate, setEstimate] = useState<CPProvisionEstimate | null>(null);
+  const [overrideBudget, setOverrideBudget] = useState(false);
+
+  useEffect(() => {
+    if (!cloud || !credentialID) {
+      setEstimate(null);
+      return;
+    }
+    let cancelled = false;
+    let parsed: Record<string, unknown> = {};
+    try {
+      parsed = paramsJSON.trim() ? JSON.parse(paramsJSON) : {};
+    } catch {
+      setEstimate(null);
+      return;
+    }
+    const handle = setTimeout(() => {
+      api.cpProvisionEstimate({ cloud, credential_id: credentialID, cloud_params: parsed })
+        .then((est) => { if (!cancelled) setEstimate(est); })
+        .catch(() => { if (!cancelled) setEstimate(null); });
+    }, 250);
+    return () => { cancelled = true; clearTimeout(handle); };
+  }, [cloud, credentialID, paramsJSON]);
+
+  // Re-allow submit when budget context shifts back under the cap.
+  useEffect(() => {
+    if (estimate && !estimate.would_exceed_budget) {
+      setOverrideBudget(false);
+    }
+  }, [estimate]);
+
   useEffect(() => {
     api.cpProvisionersList()
       .then((r) => setProvisioners(r.clouds))
@@ -389,6 +422,7 @@ function ManagedDeployPanel({ onClose }: { onClose: () => void }) {
         cloud,
         credential_id: credentialID,
         cloud_params: cloudParams,
+        force_over_budget: overrideBudget || undefined,
       });
       setSubmitted({ id: row.id, status: row.status });
     } catch (e) {
@@ -505,6 +539,22 @@ function ManagedDeployPanel({ onClose }: { onClose: () => void }) {
             placeholder={cloudParamsPlaceholder(cloud)}
           />
         </Field>
+        {estimate && <CostEstimateLine estimate={estimate} />}
+        {estimate?.would_exceed_budget && (
+          <label className="flex items-start gap-2 text-xs text-red-700 bg-red-50 border border-red-200 px-3 py-2 rounded-md cursor-pointer">
+            <input
+              type="checkbox"
+              checked={overrideBudget}
+              onChange={(e) => setOverrideBudget(e.target.checked)}
+              className="mt-0.5"
+            />
+            <span>
+              I acknowledge this would push the credential's projected monthly spend to{' '}
+              <strong>${estimate.projected_monthly_usd?.toFixed(2)}</strong>, over the{' '}
+              <strong>${estimate.monthly_budget_usd?.toFixed(2)}</strong> cap. Provision anyway.
+            </span>
+          </label>
+        )}
         {error && (
           <div className="text-xs text-red-700 bg-red-50 border border-red-200 px-3 py-2 rounded-md">{error}</div>
         )}
@@ -513,7 +563,10 @@ function ManagedDeployPanel({ onClose }: { onClose: () => void }) {
         <button onClick={onClose} className="text-xs px-3 py-1.5 border border-border rounded-md">Cancel</button>
         <button
           onClick={submit}
-          disabled={busy || !displayName || !cloud || !credentialID || !region}
+          disabled={
+            busy || !displayName || !cloud || !credentialID || !region ||
+            (estimate?.would_exceed_budget === true && !overrideBudget)
+          }
           className="text-xs px-3 py-1.5 bg-brand-500 hover:bg-brand-600 disabled:opacity-50 text-white rounded-md font-medium inline-flex items-center gap-1.5"
         >
           {busy && <Loader2 size={12} className="animate-spin" />}
@@ -521,6 +574,42 @@ function ManagedDeployPanel({ onClose }: { onClose: () => void }) {
         </button>
       </footer>
     </>
+  );
+}
+
+function CostEstimateLine({ estimate }: { estimate: CPProvisionEstimate }) {
+  const fmt = (v?: number) => v != null ? `$${v.toFixed(2)}` : '—';
+  const noEstimate = estimate.hourly_usd == null;
+  return (
+    <div className={cn(
+      'text-xs px-3 py-2 rounded-md border',
+      estimate.would_exceed_budget
+        ? 'bg-red-50 border-red-200 text-red-700'
+        : 'bg-slate-50 border-border text-ink-dim',
+    )}>
+      <div className="flex items-center justify-between gap-3">
+        <span>
+          <strong className="text-ink">Estimated cost:</strong>{' '}
+          {noEstimate
+            ? <span className="italic">no catalog entry for {estimate.instance_shape || 'this shape'} — submit will not enforce budget.</span>
+            : <>{fmt(estimate.hourly_usd)}/hr · {fmt(estimate.monthly_usd)}/mo</>
+          }
+        </span>
+        <span className="text-[11px] text-ink-mute">catalog {estimate.catalog_version}</span>
+      </div>
+      {estimate.monthly_budget_usd != null && (
+        <div className="mt-1 text-[11px]">
+          credential budget: {fmt(estimate.current_monthly_usd)} current
+          {' '}+ {fmt(estimate.monthly_usd ?? 0)} new
+          {' '}= <strong>{fmt(estimate.projected_monthly_usd)}</strong>
+          {' '}of {fmt(estimate.monthly_budget_usd)} cap
+          {estimate.unknown_active_count ? ` (+${estimate.unknown_active_count} active w/o catalog data)` : ''}
+        </div>
+      )}
+      {estimate.note && !estimate.would_exceed_budget && (
+        <div className="mt-1 text-[11px] text-ink-mute">{estimate.note}</div>
+      )}
+    </div>
   );
 }
 

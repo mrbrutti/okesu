@@ -44,25 +44,27 @@ const (
 // here — the provisioner re-decrypts on demand from cloud_credentials
 // using the linked credential_id.
 type CPProvision struct {
-	ID               int64
-	DisplayName      string
-	Region           string
-	Cloud            string
-	CredentialID     sql.NullInt64
-	CredentialName   sql.NullString
-	CloudParamsJSON  string
-	Status           CPProvisionStatus
-	CloudResourceID  sql.NullString
-	CloudResourceURL sql.NullString
-	BundleTokenID    sql.NullInt64
-	PeerID           sql.NullInt64
-	Log              string
-	Error            sql.NullString
-	CreatedAt        time.Time
-	StartedAt        sql.NullTime
-	EndedAt          sql.NullTime
-	CreatedByUserID  sql.NullInt64
-	CreatedByEmail   sql.NullString
+	ID                 int64
+	DisplayName        string
+	Region             string
+	Cloud              string
+	CredentialID       sql.NullInt64
+	CredentialName     sql.NullString
+	CloudParamsJSON    string
+	Status             CPProvisionStatus
+	CloudResourceID    sql.NullString
+	CloudResourceURL   sql.NullString
+	BundleTokenID      sql.NullInt64
+	PeerID             sql.NullInt64
+	Log                string
+	Error              sql.NullString
+	EstCostPerHourUSD  sql.NullFloat64
+	InstanceShape      sql.NullString
+	CreatedAt          time.Time
+	StartedAt          sql.NullTime
+	EndedAt            sql.NullTime
+	CreatedByUserID    sql.NullInt64
+	CreatedByEmail     sql.NullString
 }
 
 // CPProvisionInsert is the input shape for InsertCPProvision. Operator
@@ -76,24 +78,36 @@ type CPProvisionInsert struct {
 	CredentialName  string
 	CloudParamsJSON string
 	BundleTokenID   int64
-	CreatedByUserID int64
-	CreatedByEmail  string
+	// Cost-catalog snapshot at insert time. EstCostPerHourUSD nil =
+	// catalog had no entry for InstanceShape; the row exists but
+	// contributes 0 to the budget rollup. InstanceShape is preserved
+	// even when the rate is unknown so an operator can grep for it.
+	EstCostPerHourUSD *float64
+	InstanceShape     string
+	CreatedByUserID   int64
+	CreatedByEmail    string
 }
 
 func (s *Store) InsertCPProvision(in CPProvisionInsert) (*CPProvision, error) {
 	if in.CloudParamsJSON == "" {
 		in.CloudParamsJSON = "{}"
 	}
+	var costArg sql.NullFloat64
+	if in.EstCostPerHourUSD != nil {
+		costArg = sql.NullFloat64{Float64: *in.EstCostPerHourUSD, Valid: true}
+	}
 	res, err := s.Exec(`
 		INSERT INTO cp_provisions (
 		    display_name, region, cloud, credential_id, credential_name,
 		    cloud_params_json, bundle_token_id, status,
+		    est_cost_per_hour_usd, instance_shape,
 		    created_by_user_id, created_by_email
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, in.DisplayName, in.Region, in.Cloud,
 		nullableInt64(in.CredentialID), nullable(in.CredentialName),
 		in.CloudParamsJSON, nullableInt64(in.BundleTokenID),
 		string(CPProvisionQueued),
+		costArg, nullable(in.InstanceShape),
 		nullableInt64(in.CreatedByUserID), nullable(in.CreatedByEmail))
 	if err != nil {
 		return nil, fmt.Errorf("insert: %w", err)
@@ -110,6 +124,7 @@ func (s *Store) GetCPProvision(id int64) (*CPProvision, error) {
 		SELECT id, display_name, region, cloud, credential_id, credential_name,
 		       cloud_params_json, status, cloud_resource_id, cloud_resource_url,
 		       bundle_token_id, peer_id, log, error,
+		       est_cost_per_hour_usd, instance_shape,
 		       created_at, started_at, ended_at,
 		       created_by_user_id, created_by_email
 		FROM cp_provisions WHERE id = ?
@@ -128,6 +143,7 @@ func (s *Store) ListCPProvisions(limit int) ([]CPProvision, error) {
 		SELECT id, display_name, region, cloud, credential_id, credential_name,
 		       cloud_params_json, status, cloud_resource_id, cloud_resource_url,
 		       bundle_token_id, peer_id, log, error,
+		       est_cost_per_hour_usd, instance_shape,
 		       created_at, started_at, ended_at,
 		       created_by_user_id, created_by_email
 		FROM cp_provisions ORDER BY created_at DESC LIMIT ?
@@ -214,6 +230,7 @@ func (s *Store) FindCPProvisionByBundleToken(tokenID int64) (*CPProvision, error
 		SELECT id, display_name, region, cloud, credential_id, credential_name,
 		       cloud_params_json, status, cloud_resource_id, cloud_resource_url,
 		       bundle_token_id, peer_id, log, error,
+		       est_cost_per_hour_usd, instance_shape,
 		       created_at, started_at, ended_at,
 		       created_by_user_id, created_by_email
 		FROM cp_provisions WHERE bundle_token_id = ?
@@ -237,6 +254,7 @@ func scanCPProvision(s rowScanner) (*CPProvision, error) {
 		&c.CloudParamsJSON, &status,
 		&c.CloudResourceID, &c.CloudResourceURL,
 		&c.BundleTokenID, &c.PeerID, &c.Log, &c.Error,
+		&c.EstCostPerHourUSD, &c.InstanceShape,
 		&c.CreatedAt, &c.StartedAt, &c.EndedAt,
 		&c.CreatedByUserID, &c.CreatedByEmail,
 	); err != nil {

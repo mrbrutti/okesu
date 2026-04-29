@@ -609,6 +609,9 @@ func (s *Server) routes() http.Handler {
 			r.Post("/api/cloud-credentials", api.CloudCredentialCreate(s.store))
 			r.Delete("/api/cloud-credentials/{id}", api.CloudCredentialDelete(s.store))
 			r.Post("/api/cloud-credentials/{id}/test", api.CloudCredentialTest(s.store))
+			// Phase 21.5 — per-credential monthly USD budget. Empty body
+			// (or {"monthly_budget_usd": null}) clears the cap.
+			r.Put("/api/cloud-credentials/{id}/budget", api.CloudCredentialBudgetUpdate(s.store))
 
 			// Phase 9.5: federation peers — admin-only because adding a
 			// peer means storing a credential for an outbound CP.
@@ -651,6 +654,10 @@ func (s *Server) routes() http.Handler {
 			))
 			r.Get("/api/federation/cp-provisions", api.CPProvisionsListHandler(s.store))
 			r.Get("/api/federation/cp-provisions/{id}", api.CPProvisionGetHandler(s.store))
+			// Phase 21.5 — read-only cost preview the +Add CP modal
+			// hits on every form change. Same body shape as the
+			// create endpoint; never mints tokens or inserts rows.
+			r.Post("/api/federation/cp-provision/estimate", api.CPProvisionEstimateHandler(s.store))
 
 			// System / database (admin)
 			r.Get("/api/system/db/stats", api.DBStats(s.store, api.SystemDBConfig{
