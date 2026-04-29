@@ -16,6 +16,10 @@
 // records, each annotated with the source DefinitionPath. The CP boots
 // with an empty catalog if the directory is missing — operators can drop
 // files in over time.
+//
+// LoadAndUpsert calls LoadDir and pushes every entry through an IOCStore
+// (the *db.Store in production, a stub in tests). Used at CP boot and on
+// SIGHUP to (re)hydrate the iocs table from the on-disk catalog.
 package catalog
 
 import (
@@ -25,6 +29,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/section9labs/okesu/controlplane/db"
 	"github.com/section9labs/okesu/controlplane/ioc/normalize"
 )
 
@@ -173,4 +178,40 @@ func NormalizeForKind(kind, value string) string {
 	// fallback when a typed normalizer rejected the input — the row
 	// still goes in, just keyed off the trimmed form.
 	return normalize.NormalizeHash(value)
+}
+
+// IOCStore is the subset of *db.Store this package needs. Defined here
+// so tests can stub it without pulling in the full store. Keep this
+// interface narrow — adding methods couples every test to extra
+// machinery. Group G's iocs.lookup will define its own read interface.
+type IOCStore interface {
+	UpsertIOC(in *db.IOCUpsert) (id int64, created bool, err error)
+}
+
+// LoadAndUpsert walks the catalog dir and upserts every entry into the
+// store. Returns the number of entries processed (NOT the number of
+// new rows — db.UpsertIOC handles the create-vs-update split itself,
+// and a "5 entries refreshed" log is enough for operator visibility).
+func LoadAndUpsert(dir string, store IOCStore) (int, error) {
+	entries, err := LoadDir(dir)
+	if err != nil {
+		return 0, err
+	}
+	for _, e := range entries {
+		if _, _, err := store.UpsertIOC(&db.IOCUpsert{
+			Kind:            e.Kind,
+			Value:           e.Value,
+			NormalizedValue: e.NormalizedValue,
+			Source:          e.Source,
+			DefinitionPath:  e.DefinitionPath,
+			Confidence:      e.Confidence,
+			Attribution:     e.Attribution,
+			SeverityFloor:   e.SeverityFloor,
+			Classification:  e.Classification,
+			Notes:           e.Notes,
+		}); err != nil {
+			return 0, fmt.Errorf("upsert %s/%s: %w", e.Kind, e.NormalizedValue, err)
+		}
+	}
+	return len(entries), nil
 }
