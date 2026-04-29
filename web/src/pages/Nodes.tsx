@@ -912,6 +912,10 @@ function DeployDrawer({ node, onClose }: { node: NodeItem; onClose: () => void }
         openai_api_key: openaiKey || undefined,
         include_webhook: includeWebhook,
         include_mgmt_cert: includeMgmtCert,
+        // Phase 9.7: when this node belongs to a federated child, the
+        // parent's ForwardingNodeDeploy proxies the request there. The
+        // node id is preserved (federated rows keep their child-side id).
+        target_cp_instance_id: node.cp_source?.instance_id,
       });
       const unsubscribe = subscribeJobLog(
         job_id,

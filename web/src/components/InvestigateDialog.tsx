@@ -63,6 +63,11 @@ export function InvestigateDialog({
         agent,
         prompt,
         finding_id: finding.id,
+        // Phase 9.7: when investigating a federated finding, the run
+        // must be created on the CP that owns the host's tunnel — the
+        // parent has no inbound path into a child's nodes. The
+        // ForwardingCreateRun handler proxies to that child.
+        target_cp_instance_id: finding.cp_source?.instance_id,
       });
       localStorage.setItem(PREF_LAST_AGENT, agent);
       localStorage.setItem(PREF_LAST_NODE, node);
