@@ -13,7 +13,7 @@ func TestLoadDir_ParsesSingleFile(t *testing.T) {
 	dir := t.TempDir()
 	yaml := []byte(`iocs:
   - kind: sha256
-    value: ABC
+    value: DeadBeefDeadBeefDeadBeefDeadBeefDeadBeefDeadBeefDeadBeefDeadBeef
     confidence: high
     attribution: apt-foo
     severity_floor: HIGH
@@ -31,7 +31,8 @@ func TestLoadDir_ParsesSingleFile(t *testing.T) {
 		t.Fatalf("expected 1 entry; got %d", len(entries))
 	}
 	e := entries[0]
-	if e.Kind != "sha256" || e.Value != "ABC" || e.NormalizedValue != "abc" {
+	wantNorm := "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+	if e.Kind != "sha256" || e.NormalizedValue != wantNorm {
 		t.Errorf("entry mismatch: %+v", e)
 	}
 	if e.SeverityFloor != "HIGH" || e.Attribution != "apt-foo" {
@@ -121,7 +122,7 @@ func (f *fakeStore) lookup(kind, normalized string) (*db.IOCRecord, error) {
 
 func TestLoadAndUpsert_FedersStoreFromYAML(t *testing.T) {
 	dir := t.TempDir()
-	yaml := []byte("iocs:\n  - kind: sha256\n    value: ABC\n    severity_floor: HIGH\n")
+	yaml := []byte("iocs:\n  - kind: sha256\n    value: DeadBeefDeadBeefDeadBeefDeadBeefDeadBeefDeadBeefDeadBeefDeadBeef\n    severity_floor: HIGH\n")
 	if err := os.WriteFile(filepath.Join(dir, "x.yaml"), yaml, 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +134,7 @@ func TestLoadAndUpsert_FedersStoreFromYAML(t *testing.T) {
 	if n != 1 {
 		t.Errorf("expected 1 upserted; got %d", n)
 	}
-	got, err := st.lookup("sha256", "abc")
+	got, err := st.lookup("sha256", "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef")
 	if err != nil {
 		t.Fatalf("lookup: %v", err)
 	}

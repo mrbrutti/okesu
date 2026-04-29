@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 
@@ -124,16 +125,21 @@ func loadFile(path string) ([]CatalogEntry, error) {
 	}
 	var out []CatalogEntry
 	for i, e := range shape.IOCs {
-		if !validKinds[e.Kind] {
+		kind := strings.ToLower(strings.TrimSpace(e.Kind))
+		if !validKinds[kind] {
 			return nil, fmt.Errorf("entry %d: unknown kind %q", i, e.Kind)
 		}
 		if e.Value == "" {
 			return nil, fmt.Errorf("entry %d: value is required", i)
 		}
+		norm, ok := normalize.NormalizeForKind(kind, e.Value)
+		if !ok {
+			return nil, fmt.Errorf("entry %d: value %q does not match kind %q's expected shape", i, e.Value, kind)
+		}
 		out = append(out, CatalogEntry{
-			Kind:            e.Kind,
+			Kind:            kind,
 			Value:           e.Value,
-			NormalizedValue: NormalizeForKind(e.Kind, e.Value),
+			NormalizedValue: norm,
 			Source:          "catalog",
 			DefinitionPath:  path,
 			Confidence:      e.Confidence,
@@ -144,40 +150,6 @@ func loadFile(path string) ([]CatalogEntry, error) {
 		})
 	}
 	return out, nil
-}
-
-// NormalizeForKind dispatches to the right normalizer based on kind.
-// Unknown kinds fall back to lowercase+trim. Exported so other packages
-// (e.g., the api package's iocs.lookup data resolver in Group G) use
-// the same canonical form as the catalog loader — divergent
-// normalization between writer and reader silently breaks lookups.
-func NormalizeForKind(kind, value string) string {
-	value = normalize.Refang(value)
-	switch kind {
-	case "sha256", "sha1", "md5":
-		return normalize.NormalizeHash(value)
-	case "ipv4":
-		if v, ok := normalize.NormalizeIPv4(value); ok {
-			return v
-		}
-	case "ipv6":
-		if v, ok := normalize.NormalizeIPv6(value); ok {
-			return v
-		}
-	case "domain":
-		if v, ok := normalize.NormalizeDomain(value); ok {
-			return v
-		}
-	case "url":
-		if v, ok := normalize.NormalizeURL(value); ok {
-			return v
-		}
-	}
-	// Default: lowercase+trim. Covers cve / mitre / yara_rule / sigma_rule
-	// where there's no purpose-built canonicalizer, and is a safe
-	// fallback when a typed normalizer rejected the input — the row
-	// still goes in, just keyed off the trimmed form.
-	return normalize.NormalizeHash(value)
 }
 
 // IOCStore is the subset of *db.Store this package needs. Defined here
