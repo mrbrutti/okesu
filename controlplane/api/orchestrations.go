@@ -551,6 +551,7 @@ type routingDispatcher struct {
 	local     *localDispatcher
 	federated *federatedDispatcher
 	jobs      *jobsDispatcher
+	cpLocal   *cpLocalDispatcher // nil when no okesu binary was resolvable
 	tunReg    *tunnel.Registry
 	agg       *federation.Aggregator
 	store     *db.Store
@@ -685,9 +686,16 @@ func (d *routingDispatcher) Dispatch(ctx context.Context, req orchestrator.Dispa
 		return d.federated.Dispatch(ctx, req)
 	}
 
-	// CP-only step (no node target).
+	// CP-only step (no node target). Cron-triggered orchestrations
+	// that just read/write the CP's own API run here — see
+	// cpLocalDispatcher for why this exists.
 	if req.NodeSelector == "" {
-		return d.local.Dispatch(ctx, req)
+		if d.cpLocal == nil {
+			return orchestrator.DispatchResult{}, errors.New(
+				"step has no node target. Set `node:` (single host) or `nodes:` (fan-out) on the step. " +
+					"CP-local execution is unavailable: no okesu binary resolved on the CP host.")
+		}
+		return d.cpLocal.Dispatch(ctx, req)
 	}
 
 	mode := strings.TrimSpace(req.DispatchMode)
@@ -1186,6 +1194,17 @@ const MaxConcurrentRuns = 20
 // — the orchestrator package itself doesn't depend on any of these.
 type CoordinatorOpts struct {
 	AutoDeployer AutoDeployer // nil disables auto-deploy
+
+	// CPLocalOkesuBinary is an explicit path to the okesu CLI used by
+	// the cp-local dispatcher (for cron orchestrations with no node:).
+	// Empty means "auto-resolve" (PATH lookup, then dir-of-CP-binary).
+	CPLocalOkesuBinary string
+
+	// CPLocalEnvExtras are env vars merged into the cp-local
+	// subprocess's environment — typically API keys for the agent
+	// provider. Format: "KEY=value". Inherited env from the CP
+	// process is used as the base.
+	CPLocalEnvExtras []string
 }
 
 func NewOrchestrationCoordinator(
@@ -1197,10 +1216,22 @@ func NewOrchestrationCoordinator(
 	local := newLocalDispatcher(reg, tunReg, store, agentDirs)
 	fed := newFederatedDispatcher(agg)
 	jobs := newJobsDispatcher(store, agentDirs)
+	// CP-local dispatcher — only constructed when an okesu binary is
+	// resolvable. Without one, the routing layer returns a clear
+	// "no okesu binary" error on cp-local dispatch attempts rather
+	// than silently failing the run.
+	var cpLocal *cpLocalDispatcher
+	if okesuBin := resolveOkesuBinary(opts.CPLocalOkesuBinary); okesuBin != "" {
+		cpLocal = newCPLocalDispatcher(reg, store, agentDirs, okesuBin, opts.CPLocalEnvExtras)
+		log.Printf("orchestrator: cp-local dispatcher enabled (okesu binary: %s)", okesuBin)
+	} else {
+		log.Printf("orchestrator: cp-local dispatcher disabled — no okesu binary on PATH or next to the CP binary")
+	}
 	disp := &routingDispatcher{
 		local:        local,
 		federated:    fed,
 		jobs:         jobs,
+		cpLocal:      cpLocal,
 		tunReg:       tunReg,
 		agg:          agg,
 		store:        store,

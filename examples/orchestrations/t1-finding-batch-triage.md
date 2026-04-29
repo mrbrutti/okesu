@@ -24,9 +24,22 @@ steps:
     prompt: |
       Batch-classify untagged INFO/LOW findings from the operator queue.
 
-      Pull the batch from the CP API:
-        - GET /api/findings?state=queue&severity=INFO,LOW&limit=50
-        - GET /api/findings/summary  (use if you need cluster context)
+      You're running on the CP host itself. Authenticate, then pull
+      the batch using bash + curl. The CP exposes its own URL and
+      admin creds via these env vars:
+        $OKESU_CP_URL              e.g. https://localhost:8443
+        $OKESU_CP_ADMIN_EMAIL      e.g. admin@local
+        $OKESU_CP_ADMIN_PASSWORD
+
+      Login + fetch (run this verbatim, then read the JSON):
+        curl -sk -c /tmp/cp.cookies -X POST "$OKESU_CP_URL/api/auth/login" \
+          -H 'Content-Type: application/json' \
+          -d "{\"email\":\"$OKESU_CP_ADMIN_EMAIL\",\"password\":\"$OKESU_CP_ADMIN_PASSWORD\"}" \
+          > /dev/null
+        curl -sk -b /tmp/cp.cookies \
+          "$OKESU_CP_URL/api/findings?state=queue&severity=INFO,LOW&limit=50"
+
+      Optional: pull /api/findings/summary if you need cluster context.
 
       For each finding in the response, decide one verdict:
         - `noise`     — would not be worth a human's 2 minutes

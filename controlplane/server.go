@@ -291,8 +291,30 @@ func New(cfg Config) (*Server, error) {
 
 	// Orchestrator coordinator — needs fedAgg in scope so its
 	// federatedDispatcher can resolve `cp: <child_id>` step targets.
+	//
+	// CPLocalEnvExtras forwards a few things into any cp-local
+	// subprocess (cron orchestration steps with no node: target):
+	//   - Fleet API keys, mirroring how the auto-deployer drops keys
+	//     into /etc/okesu/jobs.env on fleet nodes.
+	//   - The CP's own self-URL + admin creds so the agent can log
+	//     in to /api/auth/login and use the resulting cookie to call
+	//     read/write endpoints. Cron orchestrations like
+	//     t1-finding-batch-triage need this to query findings.
+	var cpLocalEnv []string
+	if cfg.FleetAnthropicAPIKey != "" {
+		cpLocalEnv = append(cpLocalEnv, "ANTHROPIC_API_KEY="+cfg.FleetAnthropicAPIKey)
+	}
+	if cfg.FleetOpenAIAPIKey != "" {
+		cpLocalEnv = append(cpLocalEnv, "OPENAI_API_KEY="+cfg.FleetOpenAIAPIKey)
+	}
+	cpLocalEnv = append(cpLocalEnv,
+		"OKESU_CP_URL=https://localhost"+cfg.Listen,
+		"OKESU_CP_ADMIN_EMAIL="+cfg.AdminEmail,
+		"OKESU_CP_ADMIN_PASSWORD="+cfg.AdminPassword,
+	)
 	srv.orchestra = api.NewOrchestrationCoordinator(store, srv.runs, srv.tunReg, cfg.AgentFilesDirs, srv.fedAgg, api.CoordinatorOpts{
-		AutoDeployer: autoDep,
+		AutoDeployer:     autoDep,
+		CPLocalEnvExtras: cpLocalEnv,
 	})
 
 	// Wire the finding-trigger hook before the pipeline starts so we
