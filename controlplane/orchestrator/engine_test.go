@@ -319,9 +319,11 @@ steps:
 // TestEngine_ApprovalGate_PolicyBypass exercises the action-class
 // auto-approve policy: a step that would normally pause for operator
 // approval is allowed to execute when every kind in its allowlist
-// falls in an auto-approved class. Backwards-compat sibling test
-// below confirms the bypass requires *every* listed kind to be
-// auto-approved.
+// falls in an auto-approved class. The dispatcher returns an
+// orchestration_result carrying a link_run_to_finding action; a fake
+// applier asserts the action was actually delivered (not just the
+// dispatch). Backwards-compat sibling test below confirms the bypass
+// requires *every* listed kind to be auto-approved.
 func TestEngine_ApprovalGate_PolicyBypass(t *testing.T) {
 	spec := mustParse(t, `---
 name: gated
@@ -338,8 +340,34 @@ steps:
 		&Orchestration{ID: 1, Spec: spec},
 		&RunRecord{ID: 1, OrchestrationID: 1, Status: RunStatusPending, TriggerKind: "manual"},
 	)
-	disp := &fakeDispatcher{}
+	disp := &fakeDispatcher{
+		resultByStep: map[string]DispatchResult{
+			"contain": {
+				Status:       StepStatusCompleted,
+				RunID:        "run-contain",
+				CPInstanceID: "local",
+				HostResolved: "h1",
+				Findings: []DispatchedFinding{
+					{
+						Category: OrchestrationResultCategory,
+						Title:    "result",
+						Attributes: map[string]any{
+							"actions": []any{
+								map[string]any{
+									"kind":       "link_run_to_finding",
+									"finding_id": float64(42),
+									"reason":     "auto-linked by policy bypass",
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	applier := &fakeActionApplier{}
 	engine := NewEngine(store, disp)
+	engine.SetActionApplier(applier)
 	// Auto-approve every "create" class action; link_run_to_finding is
 	// the only kind in the step's allowlist and it's class=create.
 	engine.SetActionPolicy(Policy{AutoApprove: map[string]bool{ClassCreate: true}})
@@ -356,7 +384,43 @@ steps:
 	if store.steps["contain"].Status != StepStatusCompleted {
 		t.Errorf("contain.Status = %q, want %q", store.steps["contain"].Status, StepStatusCompleted)
 	}
+	if len(applier.linkCalls) != 1 {
+		t.Fatalf("expected exactly one LinkRunToFinding call after bypass; got %d", len(applier.linkCalls))
+	}
+	if applier.linkCalls[0].findingID != 42 {
+		t.Errorf("LinkRunToFinding finding_id = %d, want 42", applier.linkCalls[0].findingID)
+	}
 }
+
+// fakeActionApplier records every action it receives so tests can
+// assert the engine actually applied (not just dispatched) an action.
+type fakeActionApplier struct {
+	linkCalls []struct {
+		findingID int64
+		runID     int64
+		stepID    string
+		reason    string
+	}
+}
+
+func (f *fakeActionApplier) UpdateFindingStatus(int64, string, string, int64, string) error {
+	return nil
+}
+func (f *fakeActionApplier) AddFindingTag(int64, string, string, int64, string) error    { return nil }
+func (f *fakeActionApplier) RemoveFindingTag(int64, string, string, int64, string) error { return nil }
+func (f *fakeActionApplier) SetFindingSeverityOverride(int64, string, string, int64, string) error {
+	return nil
+}
+func (f *fakeActionApplier) LinkRunToFinding(findingID, runID int64, stepID, reason string) error {
+	f.linkCalls = append(f.linkCalls, struct {
+		findingID int64
+		runID     int64
+		stepID    string
+		reason    string
+	}{findingID, runID, stepID, reason})
+	return nil
+}
+func (f *fakeActionApplier) EscalateRun(int64, string, string) error { return nil }
 
 // TestEngine_ApprovalGate_PolicyMixedActionsStillGates confirms the
 // bypass requires every kind in the step's allowlist to be

@@ -58,14 +58,16 @@ Each action kind is internally classified into one of:
 | enrich | Outbound vendor call (no CP write) | (Phase 22.4: enrich_ioc) |
 | fetch  | Inbound content fetch | (none yet) |
 | create | New row inserted / link created | link_run_to_finding |
-| modify | Existing row mutated | update_finding_status, set_finding_severity_override, add_finding_tag |
+| modify | Existing row mutated | update_finding_status, set_finding_severity_override, add_finding_tag, remove_finding_tag |
 
 CP operators can set per-class auto-approve toggles in CP settings
 (`policy.auto_approve.<class>`). When a class is auto-approved, the
 engine applies the action directly instead of queuing an operator gate.
 
 Default: no class is auto-approved. Unknown action kinds map to
-`modify` (most-restrictive).
+`modify` (most-restrictive). `escalate_run` is intentionally absent
+from the registry — it's a soft signal, not a state mutation, and
+falls through to the `modify` default so it never auto-applies.
 
 ## Conventions
 
