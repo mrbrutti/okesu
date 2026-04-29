@@ -497,12 +497,12 @@ function ManagedDeployPanel({ onClose }: { onClose: () => void }) {
             className="w-full px-3 py-1.5 text-sm border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500/30"
           />
         </Field>
-        <Field label="Cloud params (JSON)" hint="Per-cloud knobs the Provisioner needs (subnet OCID, AMI id, shape, ...). Schema is provisioner-specific.">
+        <Field label="Cloud params (JSON)" hint="Per-cloud knobs the Provisioner needs (subnet, image, shape/instance_type, ...). Schema is provisioner-specific.">
           <textarea
             value={paramsJSON} onChange={(e) => setParamsJSON(e.target.value)}
             rows={4}
             className="w-full px-3 py-1.5 text-xs font-mono border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500/30"
-            placeholder='{ "subnet_id": "ocid1.subnet.oc1..xxx", "shape": "VM.Standard.E4.Flex" }'
+            placeholder={cloudParamsPlaceholder(cloud)}
           />
         </Field>
         {error && (
@@ -522,6 +522,17 @@ function ManagedDeployPanel({ onClose }: { onClose: () => void }) {
       </footer>
     </>
   );
+}
+
+function cloudParamsPlaceholder(cloud: string): string {
+  switch (cloud) {
+    case 'oci':
+      return '{ "compartment_id": "ocid1.compartment.oc1..xxx", "availability_domain": "Uocm:US-ASHBURN-AD-1", "subnet_id": "ocid1.subnet.oc1..xxx", "image_id": "ocid1.image.oc1..xxx", "shape": "VM.Standard.E4.Flex", "ocpus": 1, "memory_in_gbs": 8 }';
+    case 'aws':
+      return '{ "ami_id": "ami-0abcd1234efgh", "instance_type": "t3.small", "subnet_id": "subnet-0abc1234", "security_group_ids": ["sg-0abc1234"] }';
+    default:
+      return '{ }';
+  }
 }
 
 function ModeTab({ active, onClick, label }: { active: boolean; onClick: () => void; label: string }) {

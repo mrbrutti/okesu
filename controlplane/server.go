@@ -29,6 +29,7 @@ import (
 	"github.com/section9labs/okesu/controlplane/adapters/sqliteevents"
 	"github.com/section9labs/okesu/controlplane/api"
 	"github.com/section9labs/okesu/controlplane/cpprovision"
+	awsprovisioner "github.com/section9labs/okesu/controlplane/cpprovision/aws"
 	ociprovisioner "github.com/section9labs/okesu/controlplane/cpprovision/oci"
 	"github.com/section9labs/okesu/controlplane/eventpipeline"
 	"github.com/section9labs/okesu/controlplane/auth"
@@ -283,10 +284,11 @@ func New(cfg Config) (*Server, error) {
 		cpProvisioners: cpprovision.NewRegistry(),
 		bundleCache:    api.NewBundleCache(),
 	}
-	// Phase 21.3b — register the OCI Provisioner. Per-cloud
-	// implementations live in their own subpackages so adding AWS
-	// later is one import + one Register() call.
+	// Phase 21.3b/c — register per-cloud provisioners. Each cloud
+	// implementation lives in its own subpackage so adding a new one
+	// is one import + one Register() call.
 	srv.cpProvisioners.Register(ociprovisioner.New())
+	srv.cpProvisioners.Register(awsprovisioner.New())
 	srv.notify = &notify.Worker{
 		Store:      store,
 		Subscriber: bcast,
