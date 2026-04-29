@@ -64,6 +64,9 @@ interface BaseRow {
   to: string;
   /** Phase 9.6: federated source CP, when this row came from a child. */
   cpSource?: CPSourceRef;
+  /** Numeric id when the row's underlying object has one (findings,
+   *  nodes, orchestrations, runs). Powers the `#<num>` lookup mode. */
+  idNumber?: number;
 }
 
 interface CacheBundle {
@@ -157,6 +160,7 @@ export default function CommandPalette() {
         title: 'approve run #' + r.id + (r.current_step_id ? ' — ' + r.current_step_id : ''),
         subtitle: ageMin < 1 ? 'just now' : ageMin + 'm waiting',
         to: '/orchestrations?tab=runs&run=' + r.id,
+        idNumber: r.id,
       });
     }
     for (const o of cache.orchestrations) {
@@ -167,6 +171,7 @@ export default function CommandPalette() {
         subtitle: o.description || ('trigger: ' + o.trigger_kind),
         to: '/orchestrations?tab=library&id=' + o.id + (o.cp_source ? '&cp=' + encodeURIComponent(o.cp_source.instance_id) : ''),
         cpSource: o.cp_source,
+        idNumber: o.id,
       });
     }
     for (const f of cache.findings) {
@@ -178,6 +183,7 @@ export default function CommandPalette() {
         severity: f.severity,
         to: '/findings?id=' + f.id + (f.cp_source ? '&cp=' + encodeURIComponent(f.cp_source.instance_id) : ''),
         cpSource: f.cp_source,
+        idNumber: f.id,
       });
     }
     for (const d of cache.daimons) {
@@ -213,6 +219,7 @@ export default function CommandPalette() {
         subtitle: n.hostname || undefined,
         to: '/nodes/' + n.id,
         cpSource: n.cp_source,
+        idNumber: n.id,
       });
     }
     return rows;
@@ -237,6 +244,34 @@ export default function CommandPalette() {
       }
       return byKind;
     }
+    // ID-lookup mode: `#<digits>` (or `<digits>` alone) returns every
+    // row whose underlying object's id matches exactly. Useful when
+    // an operator has a finding id from a chat / paged alert and just
+    // wants to jump to it without thinking about which surface owns
+    // it. Plain numeric queries (no #) also trigger this mode for
+    // muscle-memory pasting; non-id rows still show via fuzzy match.
+    const idQuery = parseIDQuery(q);
+    if (idQuery !== null) {
+      // Match every row whose idNumber === idQuery; rank exact-id
+      // hits above name/title fuzzy matches that happen to contain
+      // the digits.
+      for (const row of allRows) {
+        if (row.idNumber === idQuery) {
+          // Score 10000 keeps id matches above any fuzzy result.
+          byKind[row.kind].push({ row, score: 10_000, matched: [] });
+          continue;
+        }
+        // Fall through to a weaker fuzzy pass so daimons/agents
+        // (no numeric id) can still match by their name containing
+        // the digits.
+        const m = fuzzyMatch(q, row.title, row.subtitle);
+        if (m) byKind[row.kind].push({ row, score: m.score, matched: m.matched });
+      }
+      for (const k of Object.keys(byKind) as Kind[]) {
+        byKind[k].sort((a, b) => b.score - a.score);
+      }
+      return byKind;
+    }
     for (const row of allRows) {
       const m = fuzzyMatch(q, row.title, row.subtitle);
       if (m) byKind[row.kind].push({ row, score: m.score, matched: m.matched });
@@ -246,6 +281,11 @@ export default function CommandPalette() {
     }
     return byKind;
   }, [query, allRows]);
+
+  // parseIDQuery accepts `#123`, `# 123`, or plain `123`. Returns
+  // the parsed integer or null when the query isn't a numeric id
+  // lookup. Limited to ≤12 digits so a paste of a long uuid-ish
+  // string doesn't accidentally count.
 
   // Flat ordered list used for keyboard navigation. Order follows the
   // visual order of the groups so ↓ moves to the next visible row.
@@ -305,7 +345,7 @@ export default function CommandPalette() {
             value={query}
             onChange={(e) => { setQuery(e.target.value); setActive(0); }}
             onKeyDown={onInputKey}
-            placeholder="Search findings, daimons, agents, nodes, orchestrations…"
+            placeholder="Search… (try `#245` to jump to any item by id)"
             className="flex-1 bg-transparent outline-none text-sm placeholder:text-ink-mute"
             spellCheck={false}
             autoComplete="off"
@@ -511,9 +551,10 @@ function Hint({ k, label }: { k: string; label: string }) {
 
 function EmptyHint() {
   return (
-    <div className="px-4 py-6 text-xs text-ink-mute">
-      Type to search across findings, daimons, agents, nodes, and orchestrations.
-      Pending operator gates surface at the top automatically.
+    <div className="px-4 py-6 text-xs text-ink-mute space-y-1">
+      <div>Type to search across findings, daimons, agents, nodes, and orchestrations.</div>
+      <div>Tip: <code className="px-1 rounded bg-slate-100 text-ink-dim">#245</code> jumps to any item with that numeric id (finding, run, node, orchestration).</div>
+      <div>Pending operator gates surface at the top automatically.</div>
     </div>
   );
 }
@@ -532,6 +573,13 @@ function NoMatches() {
 }
 
 // ── helpers ────────────────────────────────────────────────────────
+
+function parseIDQuery(q: string): number | null {
+  const m = q.match(/^#?\s*(\d{1,12})$/);
+  if (!m) return null;
+  const n = Number(m[1]);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
 
 function iconFor(kind: Kind) {
   switch (kind) {
