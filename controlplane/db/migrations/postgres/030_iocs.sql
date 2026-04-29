@@ -25,14 +25,14 @@ CREATE INDEX IF NOT EXISTS idx_iocs_source        ON iocs(source);
 CREATE INDEX IF NOT EXISTS idx_iocs_last_seen     ON iocs(last_seen DESC);
 CREATE INDEX IF NOT EXISTS idx_iocs_attribution   ON iocs(attribution) WHERE attribution IS NOT NULL;
 
+-- finding_id / orchestration_run_id are SET NULL on delete so observations outlive the source records that linked them.
 CREATE TABLE IF NOT EXISTS ioc_observations (
   id                   BIGSERIAL PRIMARY KEY,
   ioc_id               BIGINT NOT NULL REFERENCES iocs(id) ON DELETE CASCADE,
-  finding_id           BIGINT REFERENCES findings(id) ON DELETE CASCADE,
-  orchestration_run_id BIGINT,
+  finding_id           BIGINT REFERENCES findings(id) ON DELETE SET NULL,
+  orchestration_run_id BIGINT REFERENCES orchestration_runs(id) ON DELETE SET NULL,
   host                 TEXT,
-  observed_at          TIMESTAMPTZ DEFAULT NOW(),
-  CHECK (finding_id IS NOT NULL OR orchestration_run_id IS NOT NULL)
+  observed_at          TIMESTAMPTZ DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS idx_ioc_obs_ioc      ON ioc_observations(ioc_id, observed_at DESC);
