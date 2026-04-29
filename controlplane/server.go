@@ -29,6 +29,7 @@ import (
 	"github.com/section9labs/okesu/controlplane/adapters/sqliteevents"
 	"github.com/section9labs/okesu/controlplane/api"
 	"github.com/section9labs/okesu/controlplane/cpprovision"
+	ociprovisioner "github.com/section9labs/okesu/controlplane/cpprovision/oci"
 	"github.com/section9labs/okesu/controlplane/eventpipeline"
 	"github.com/section9labs/okesu/controlplane/auth"
 	"github.com/section9labs/okesu/controlplane/db"
@@ -65,10 +66,14 @@ type Server struct {
 	fedPoller  *federation.Poller     // Phase 9 parent-side federation
 	fedAgg     *federation.Aggregator // Phase 9.6 federated reads
 	// cpProvisioners is the registry of per-cloud CP-provisioning
-	// implementations. Phase 21.3a leaves it empty — per-cloud impls
-	// (OCI in 21.3b, AWS in 21.3c, ...) call Register() at server boot
-	// to install themselves.
+	// implementations. Per-cloud impls (OCI in 21.3b, AWS in 21.3c)
+	// register against this from server.New() below.
 	cpProvisioners *cpprovision.Registry
+	// bundleCache holds the generated child-CP bundle bytes the
+	// cloud-init script fetches via /api/federation/cp-bundle/download.
+	// Populated by RunCPProvisionWorker, drained by the bootstrap
+	// handler when the new CP completes its bootstrap exchange.
+	bundleCache    *api.BundleCache
 	http       *http.Server
 	mgmtHTTP *http.Server       // mTLS-protected management plane
 }
@@ -276,7 +281,12 @@ func New(cfg Config) (*Server, error) {
 		tunReg:         tunnel.NewRegistry(),
 		runs:           api.NewRunRegistry(),
 		cpProvisioners: cpprovision.NewRegistry(),
+		bundleCache:    api.NewBundleCache(),
 	}
+	// Phase 21.3b — register the OCI Provisioner. Per-cloud
+	// implementations live in their own subpackages so adding AWS
+	// later is one import + one Register() call.
+	srv.cpProvisioners.Register(ociprovisioner.New())
 	srv.notify = &notify.Worker{
 		Store:      store,
 		Subscriber: bcast,
@@ -483,7 +493,12 @@ func (s *Server) routes() http.Handler {
 	// Phase 21.1 — child CPs call this exactly once with the
 	// bootstrap token from their bundle. Public on purpose: the
 	// token is the auth, and after this single exchange it's burned.
-	r.Post("/api/v1/cp/bootstrap", api.CPBootstrapHandler(s.store, s.fedPoller))
+	r.Post("/api/v1/cp/bootstrap", api.CPBootstrapHandler(s.store, s.fedPoller, s.bundleCache))
+	// Phase 21.3b — bundle download for managed deploys. The
+	// cloud-init script in the launched VM uses Bearer auth via
+	// the bootstrap token to fetch the cached tar.gz. Public on
+	// the UI port (no cookie auth needed; the token is the auth).
+	r.Get("/api/federation/cp-bundle/download", api.CPBundleDownloadHandler(s.store, s.bundleCache))
 
 	// Public auth endpoints.
 	r.Post("/api/auth/login", api.LoginHandler(s.store, s.mgr))
@@ -613,11 +628,25 @@ func (s *Server) routes() http.Handler {
 			}))
 
 			// Phase 21.3 — managed CP provisioning. Admin-only.
-			// The Provisioner registry is empty in 21.3a; per-cloud
-			// impls register against it from server.New() below as
-			// they ship in 21.3b (OCI), 21.3c (AWS), etc.
+			// The Provisioner registry is populated by per-cloud
+			// impls registered in server.New() below — OCI ships in
+			// 21.3b, AWS in 21.3c, etc.
 			r.Get("/api/federation/cp-provisioners", api.CPProvisionersListHandler(s.cpProvisioners))
-			r.Post("/api/federation/cp-provision", api.CPProvisionCreateHandler(s.store, s.cpProvisioners, s.cfg.EffectivePublicURL()))
+			r.Post("/api/federation/cp-provision", api.CPProvisionCreateHandler(
+				s.store, s.cpProvisioners, s.cfg.EffectivePublicURL(),
+				api.CPProvisionWorkerConfig{
+					Store:    s.store,
+					Registry: s.cpProvisioners,
+					Cache:    s.bundleCache,
+					Bundle: api.CPBundleConfig{
+						ParentMgmtURL:     s.cfg.EffectivePublicURL(),
+						LinuxBinaryPath:   s.cfg.CPBootstrapBinaryPath,
+						LinuxImageTarPath: s.cfg.CPBootstrapImageTarPath,
+						Version:           Version(),
+					},
+					ParentBaseURL: s.cfg.EffectivePublicURL(),
+				},
+			))
 			r.Get("/api/federation/cp-provisions", api.CPProvisionsListHandler(s.store))
 			r.Get("/api/federation/cp-provisions/{id}", api.CPProvisionGetHandler(s.store))
 

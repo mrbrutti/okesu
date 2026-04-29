@@ -32,6 +32,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -238,7 +239,7 @@ type bundleVars struct {
 // builds + runs it, the .env, and a README. Operator runs:
 //
 //	tar -xzf okesu-cp-*.tar.gz && cd okesu-cp-* && docker compose up -d
-func writeDockerfileBundle(w http.ResponseWriter, b bundleVars, binaryPath string) error {
+func writeDockerfileBundle(w io.Writer, b bundleVars, binaryPath string) error {
 	binaryBytes, err := os.ReadFile(binaryPath)
 	if err != nil {
 		return fmt.Errorf("read parent binary: %w", err)
@@ -274,7 +275,7 @@ func writeDockerfileBundle(w http.ResponseWriter, b bundleVars, binaryPath strin
 //
 // (The compose file's `image:` line points at the same tag that
 // `docker load` produces, so up -d picks it up without re-pulling.)
-func writeComposeBundle(w http.ResponseWriter, b bundleVars, imageTarPath string) error {
+func writeComposeBundle(w io.Writer, b bundleVars, imageTarPath string) error {
 	imageBytes, err := os.ReadFile(imageTarPath)
 	if err != nil {
 		return fmt.Errorf("read image tarball: %w", err)

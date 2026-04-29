@@ -25,6 +25,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -69,9 +70,15 @@ type cpProvisionReq struct {
 
 // CPProvisionCreateHandler validates the request, mints a bootstrap
 // token, creates a cp_provisions row, and launches the per-cloud
-// Provisioner. Errors are surfaced verbatim — the worker copies
-// them into cp_provisions.error on failure.
-func CPProvisionCreateHandler(store *db.Store, reg *cpprovision.Registry, parentMgmtURL string) http.HandlerFunc {
+// Provisioner via a background worker. Errors are surfaced verbatim
+// — the worker copies them into cp_provisions.error on failure.
+//
+// workerCfg is the full worker dependency bag (cache, bundle config,
+// parent base URL). When workerCfg is the zero value (no workerCfg
+// configured at the call site), the handler still inserts the row
+// but no worker is kicked — useful for debugging the API surface
+// without burning a real cloud account.
+func CPProvisionCreateHandler(store *db.Store, reg *cpprovision.Registry, parentMgmtURL string, workerCfg CPProvisionWorkerConfig) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req cpProvisionReq
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -121,7 +128,7 @@ func CPProvisionCreateHandler(store *db.Store, reg *cpprovision.Registry, parent
 		if parentURL == "" {
 			parentURL = parentMgmtURL
 		}
-		_, tokenID, err := store.IssueCPBootstrapToken(req.DisplayName, req.Region, parentURL, userID, userEmail)
+		plaintext, tokenID, err := store.IssueCPBootstrapToken(req.DisplayName, req.Region, parentURL, userID, userEmail)
 		if err != nil {
 			http.Error(w, "issue token: "+err.Error(), http.StatusInternalServerError)
 			return
@@ -159,9 +166,16 @@ func CPProvisionCreateHandler(store *db.Store, reg *cpprovision.Registry, parent
 			},
 		})
 
-		// Phase 21.3b will start a worker goroutine here. For 21.3a,
-		// the row is queued and the operator's UI shows
-		// status=queued; until 21.3b ships, the worker is a no-op.
+		// Stash the plaintext token where the worker can pick it up
+		// (it's not in the DB after this — only the bcrypt hash is)
+		// and kick the goroutine. Worker is detached from the HTTP
+		// request lifetime; ctx.Background() so a slow LaunchInstance
+		// API call doesn't get cancelled when the operator's POST
+		// returns 202.
+		StashBootstrapTokenPlaintext(row.ID, plaintext)
+		if workerCfg.Store != nil {
+			go RunCPProvisionWorker(context.Background(), workerCfg, row.ID)
+		}
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusAccepted)
