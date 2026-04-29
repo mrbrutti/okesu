@@ -190,6 +190,18 @@ func FindingIngest(store *db.Store, eventStore ports.EventStore, bcast Broadcast
 // the finding. Errors are logged but do not fail the ingest — IOC
 // extraction is best-effort enrichment, not a precondition for the
 // finding being persisted.
+//
+// TODO(phase-22.x): currently synchronous so smoke tests can assert
+// "after POST, IOC exists in DB" without sleeps. A finding with N IOCs
+// adds N × (UpsertIOC + RecordIOCObservation) round-trips to the
+// request path (~1ms each on sqlite). Move to a worker queue once the
+// expected per-finding hit counts justify the indirection.
+//
+// TODO(phase-22.x): if UpsertIOC succeeds but RecordIOCObservation
+// fails, the IOC row exists with no link to the finding that surfaced
+// it. Acceptable for v1 (the IOC is still queryable by kind), but
+// worth fixing once we have the worker queue — wrap both in one
+// retry-on-failure unit.
 func extractAndLinkIOCs(store *db.Store, findingID int64, req *FindingIngestRequest) {
 	parts := []string{req.Title, req.Evidence, req.Resource, req.RecommendedAction}
 	for _, v := range req.Attributes {

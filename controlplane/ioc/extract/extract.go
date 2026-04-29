@@ -87,9 +87,18 @@ func Extract(text string) []Hit {
 	}
 
 	// URLs (extract before domains so we capture the full URL).
+	// trimTrailingPunct strips characters that are usually sentence
+	// punctuation rather than part of the URL — `https://example.com/foo,`
+	// in `"see https://example.com/foo, then click"` should yield the
+	// URL without the trailing comma.
 	urlSpans := reURL.FindAllStringIndex(text, -1)
-	for _, span := range urlSpans {
+	for i, span := range urlSpans {
 		m := text[span[0]:span[1]]
+		trimmed := strings.TrimRight(m, ".,;:!?]}>)")
+		if trimmed != m {
+			urlSpans[i] = []int{span[0], span[0] + len(trimmed)}
+			m = trimmed
+		}
 		if v, ok := normalize.NormalizeURL(m); ok {
 			add("url", m, v)
 		}

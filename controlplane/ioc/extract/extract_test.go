@@ -46,3 +46,25 @@ func TestExtract_DedupesWithinInput(t *testing.T) {
 		t.Errorf("expected one ipv4 hit; got %d", count)
 	}
 }
+
+func TestExtract_URLTrimsTrailingPunctuation(t *testing.T) {
+	cases := []struct {
+		in, wantNorm string
+	}{
+		{"see https://example.com/foo, then click", "https://example.com/foo"},
+		{"check [https://example.com/foo] also", "https://example.com/foo"},
+		{"the link is https://example.com/foo.", "https://example.com/foo"},
+	}
+	for _, c := range cases {
+		got := Extract(c.in)
+		var found bool
+		for _, h := range got {
+			if h.Kind == "url" && h.NormalizedValue == c.wantNorm {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("Extract(%q) did not yield a URL hit normalized to %q; got hits=%+v", c.in, c.wantNorm, got)
+		}
+	}
+}
