@@ -48,6 +48,9 @@
 # Operator-local CLI scheduler state (Claude Code internals).
 /.claude/scheduled_tasks.lock
 
+# Local git worktrees used for feature isolation.
+/.claude/worktrees/
+
 # OS / editor noise.
 .DS_Store
 *.swp
