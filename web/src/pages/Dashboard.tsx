@@ -628,6 +628,19 @@ function ChartSkeleton() {
 
 // ── Orchestration cards ─────────────────────────────────────────────
 
+// runDetailLink builds the deep-link URL for a single run, carrying
+// the cp= query param when the run came from a federated child CP.
+// Without that, /orchestrations on the parent looks the run id up
+// locally and 404s — same id space exists on each CP, so id
+// uniqueness only holds within one CP.
+function runDetailLink(r: OrchestrationRunView): string {
+  const params = new URLSearchParams({ tab: 'runs', run: String(r.id) });
+  if (r.cp_source?.instance_id) {
+    params.set('cp', r.cp_source.instance_id);
+  }
+  return `/orchestrations?${params.toString()}`;
+}
+
 // PendingApprovals — every run currently in `approval_required`,
 // sorted by oldest first so the operator handles the longest-waiting
 // gate first. Each row is a one-click deep link into the run detail
@@ -659,7 +672,7 @@ function PendingApprovals({ runs }: { runs: OrchestrationRunView[] | null }) {
         return (
           <li key={r.id}>
             <Link
-              to={`/orchestrations?tab=runs&run=${r.id}`}
+              to={runDetailLink(r)}
               className="flex items-center gap-2 px-4 py-2 text-sm hover:bg-amber-50/40"
             >
               <span className={cn(
