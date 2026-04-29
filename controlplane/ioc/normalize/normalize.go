@@ -87,17 +87,26 @@ func NormalizeDomain(in string) (string, bool) {
 	}
 	out, err := idna.Lookup.ToASCII(in)
 	if err != nil {
-		return in, false
+		return "", false
 	}
 	return out, true
 }
 
 // NormalizeURL returns a string with scheme + host normalized; path is
-// preserved as-is. Returns ok=false if url.Parse fails.
+// preserved as-is. Returns ok=false if url.Parse fails or the input has
+// no scheme/host (url.Parse accepts bare paths like "example.com" as
+// valid; we reject those because we expect callers to canonicalize
+// fully-qualified URLs only).
 func NormalizeURL(in string) (string, bool) {
 	in = strings.TrimSpace(in)
+	if in == "" {
+		return "", false
+	}
 	u, err := url.Parse(in)
 	if err != nil {
+		return "", false
+	}
+	if u.Scheme == "" || u.Host == "" {
 		return "", false
 	}
 	u.Scheme = strings.ToLower(u.Scheme)

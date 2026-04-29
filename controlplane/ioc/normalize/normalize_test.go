@@ -67,3 +67,41 @@ func TestRefang(t *testing.T) {
 		}
 	}
 }
+
+func TestNormalizeIPv6(t *testing.T) {
+	cases := []struct {
+		in, want string
+		ok       bool
+	}{
+		{"2001:DB8::1", "2001:db8::1", true},
+		{"::ffff:1.2.3.4", "", false}, // IPv4-mapped — reject
+		{"not-v6", "", false},
+		{"", "", false},
+	}
+	for _, c := range cases {
+		got, ok := NormalizeIPv6(c.in)
+		if ok != c.ok || got != c.want {
+			t.Errorf("NormalizeIPv6(%q) = (%q, %v), want (%q, %v)", c.in, got, ok, c.want, c.ok)
+		}
+	}
+}
+
+func TestNormalizeURL(t *testing.T) {
+	cases := []struct {
+		in, want string
+		ok       bool
+	}{
+		{"https://Example.COM/Path", "https://example.com/Path", true},
+		{"HTTP://Example.com", "http://example.com", true},
+		{"", "", false},
+		{"example.com", "", false},        // no scheme — reject
+		{"https://", "", false},           // no host — reject
+		{"  ", "", false},                 // whitespace-only — reject
+	}
+	for _, c := range cases {
+		got, ok := NormalizeURL(c.in)
+		if ok != c.ok || got != c.want {
+			t.Errorf("NormalizeURL(%q) = (%q, %v), want (%q, %v)", c.in, got, ok, c.want, c.ok)
+		}
+	}
+}
