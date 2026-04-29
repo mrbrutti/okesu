@@ -16,7 +16,7 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
-import { api, type FederationPeer } from '../api';
+import { api, type CloudCredential, type CloudKind, type FederationPeer } from '../api';
 import { cn } from '../lib/cn';
 
 export default function FederationPage() {
@@ -286,11 +286,15 @@ function SumTile({ label, value, sub, accent }: { label: string; value: string; 
 }
 
 function AddPeerDialog({ onClose, onAdded }: { onClose: () => void; onAdded: (p: FederationPeer) => void }) {
-  // Two flows live under the same dialog because they share the same
-  // mental model ("get a child CP into this federation"). "Connect"
-  // is the manual case where the child already exists; "Generate"
-  // is the parent-issued bundle path that auto-registers on first boot.
-  const [mode, setMode] = useState<'connect' | 'generate'>('generate');
+  // Three flows live under the same dialog because they share the same
+  // mental model ("get a child CP into this federation"):
+  //   • "Managed deploy" — parent provisions the VM via cloud APIs +
+  //     the new CP auto-registers (Phase 21.3+).
+  //   • "Generate bundle" — parent emits a tar.gz the operator drops
+  //     on a host they manage (Phase 21.1).
+  //   • "Connect existing" — the child is already running with a
+  //     federation token; we just probe + add the peer row.
+  const [mode, setMode] = useState<'managed' | 'generate' | 'connect'>('managed');
 
   return (
     <div className="fixed inset-0 bg-black/30 flex items-center justify-center p-4 z-50">
@@ -305,14 +309,218 @@ function AddPeerDialog({ onClose, onAdded }: { onClose: () => void; onAdded: (p:
         </header>
 
         <div className="px-5 pt-3 flex items-center gap-1 border-b border-border/60">
+          <ModeTab active={mode === 'managed'}  onClick={() => setMode('managed')}  label="Managed deploy" />
           <ModeTab active={mode === 'generate'} onClick={() => setMode('generate')} label="Generate bundle" />
           <ModeTab active={mode === 'connect'}  onClick={() => setMode('connect')}  label="Connect existing" />
         </div>
 
+        {mode === 'managed'  && <ManagedDeployPanel onClose={onClose} />}
         {mode === 'generate' && <GenerateBundlePanel onClose={onClose} />}
         {mode === 'connect'  && <ConnectExistingPanel onClose={onClose} onAdded={onAdded} />}
       </div>
     </div>
+  );
+}
+
+// ManagedDeployPanel collects {cloud, credential, region, cloud-specific
+// params} and submits a /api/federation/cp-provision request that
+// kicks the per-cloud Provisioner. Phase 21.3a ships the framework:
+// the cloud picker is gated on the parent's provisioner registry,
+// which is empty in 21.3a — operators see a "no clouds available
+// yet" panel with a pointer to the bundle / connect flows.
+function ManagedDeployPanel({ onClose }: { onClose: () => void }) {
+  const [provisioners, setProvisioners] = useState<string[] | null>(null);
+  const [credentials, setCredentials] = useState<CloudCredential[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const [cloud, setCloud] = useState<CloudKind | ''>('');
+  const [credentialID, setCredentialID] = useState<number | null>(null);
+  const [displayName, setDisplayName] = useState('');
+  const [region, setRegion] = useState('');
+  const [paramsJSON, setParamsJSON] = useState('{}');
+  const [busy, setBusy] = useState(false);
+  const [submitted, setSubmitted] = useState<{ id: number; status: string } | null>(null);
+
+  useEffect(() => {
+    api.cpProvisionersList()
+      .then((r) => setProvisioners(r.clouds))
+      .catch((e) => setError(String(e)));
+    api.cloudCredentialsList()
+      .then(setCredentials)
+      .catch((e) => setError(String(e)));
+  }, []);
+
+  // Auto-pick the first registered cloud + first credential of that
+  // cloud as a usability nicety.
+  useEffect(() => {
+    if (cloud === '' && provisioners && provisioners.length > 0) {
+      setCloud(provisioners[0] as CloudKind);
+    }
+  }, [provisioners, cloud]);
+  useEffect(() => {
+    if (cloud && credentials) {
+      const match = credentials.find((c) => c.cloud === cloud);
+      if (match) {
+        setCredentialID(match.id);
+        if (!region && match.region) setRegion(match.region);
+      } else {
+        setCredentialID(null);
+      }
+    }
+  }, [cloud, credentials, region]);
+
+  const usableCreds = (credentials ?? []).filter((c) => c.cloud === cloud);
+
+  async function submit() {
+    if (!cloud || !credentialID) return;
+    setBusy(true); setError(null);
+    let cloudParams: Record<string, unknown>;
+    try {
+      cloudParams = paramsJSON.trim() ? JSON.parse(paramsJSON) : {};
+    } catch (e) {
+      setError('cloud_params is not valid JSON: ' + String(e));
+      setBusy(false);
+      return;
+    }
+    try {
+      const row = await api.cpProvisionCreate({
+        display_name: displayName,
+        region,
+        cloud,
+        credential_id: credentialID,
+        cloud_params: cloudParams,
+      });
+      setSubmitted({ id: row.id, status: row.status });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // Loading state — registry + creds in flight.
+  if (provisioners === null || credentials === null) {
+    return (
+      <div className="p-5 text-xs text-ink-mute flex items-center gap-2">
+        <Loader2 size={12} className="animate-spin" /> Loading provisioners…
+      </div>
+    );
+  }
+
+  // No registered clouds — Phase 21.3a default state. Help the operator
+  // toward the working alternatives.
+  if (provisioners.length === 0) {
+    return (
+      <>
+        <div className="p-5 text-sm space-y-3">
+          <div className="text-xs text-ink-dim">
+            No cloud provisioners are registered on this CP yet. Phase 21.3a ships the framework;
+            per-cloud impls land in upcoming releases (OCI in 21.3b, AWS in 21.3c).
+          </div>
+          <div className="text-xs bg-amber-50 border border-amber-200 rounded-md px-3 py-2 text-ink">
+            For now, use <strong>Generate bundle</strong> to download a tar.gz you can run on a
+            VM you provisioned manually, or <strong>Connect existing</strong> if the child CP
+            is already running.
+          </div>
+        </div>
+        <footer className="px-5 py-3 border-t border-border flex items-center justify-end">
+          <button onClick={onClose} className="text-xs px-3 py-1.5 border border-border rounded-md">Close</button>
+        </footer>
+      </>
+    );
+  }
+
+  // Submitted — show the job-id + status, point at the Federation page
+  // for the live job log.
+  if (submitted) {
+    return (
+      <>
+        <div className="p-5 text-sm space-y-3">
+          <div className="text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-md px-3 py-2">
+            Provision job <strong>#{submitted.id}</strong> created (status: <code>{submitted.status}</code>).
+            Watch its progress in the Federation page's "Managed deploys" panel.
+          </div>
+        </div>
+        <footer className="px-5 py-3 border-t border-border flex items-center justify-end">
+          <button onClick={onClose} className="text-xs px-3 py-1.5 border border-border rounded-md">Close</button>
+        </footer>
+      </>
+    );
+  }
+
+  return (
+    <>
+      <div className="p-5 space-y-3 text-sm max-h-[70vh] overflow-y-auto">
+        <p className="text-xs text-ink-dim">
+          Provisions a child CP via your stored cloud credentials. The new VM auto-registers
+          with this parent on first boot — no manual intervention.
+        </p>
+        <Field label="Display name">
+          <input
+            type="text" value={displayName}
+            onChange={(e) => setDisplayName(e.target.value)}
+            placeholder="us-east-prod"
+            className="w-full px-3 py-1.5 text-sm border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500/30"
+          />
+        </Field>
+        <Field label="Cloud">
+          <select
+            value={cloud}
+            onChange={(e) => setCloud(e.target.value as CloudKind)}
+            className="w-full px-3 py-1.5 text-sm border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500/30 bg-panel"
+          >
+            {provisioners.map((c) => <option key={c} value={c}>{c}</option>)}
+          </select>
+        </Field>
+        <Field label="Credential">
+          <select
+            value={credentialID ?? ''}
+            onChange={(e) => setCredentialID(e.target.value ? Number(e.target.value) : null)}
+            className="w-full px-3 py-1.5 text-sm border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500/30 bg-panel"
+          >
+            <option value="">— select —</option>
+            {usableCreds.map((c) => (
+              <option key={c.id} value={c.id}>{c.name}{c.region ? ` (${c.region})` : ''}</option>
+            ))}
+          </select>
+          {usableCreds.length === 0 && (
+            <div className="text-[11px] text-amber-700 mt-1">
+              No credentials saved for {cloud}. Add one under Settings → Cloud first.
+            </div>
+          )}
+        </Field>
+        <Field label="Region">
+          <input
+            type="text" value={region}
+            onChange={(e) => setRegion(e.target.value)}
+            placeholder="defaults to credential's region"
+            className="w-full px-3 py-1.5 text-sm border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500/30"
+          />
+        </Field>
+        <Field label="Cloud params (JSON)" hint="Per-cloud knobs the Provisioner needs (subnet OCID, AMI id, shape, ...). Schema is provisioner-specific.">
+          <textarea
+            value={paramsJSON} onChange={(e) => setParamsJSON(e.target.value)}
+            rows={4}
+            className="w-full px-3 py-1.5 text-xs font-mono border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500/30"
+            placeholder='{ "subnet_id": "ocid1.subnet.oc1..xxx", "shape": "VM.Standard.E4.Flex" }'
+          />
+        </Field>
+        {error && (
+          <div className="text-xs text-red-700 bg-red-50 border border-red-200 px-3 py-2 rounded-md">{error}</div>
+        )}
+      </div>
+      <footer className="px-5 py-3 border-t border-border flex items-center justify-end gap-2">
+        <button onClick={onClose} className="text-xs px-3 py-1.5 border border-border rounded-md">Cancel</button>
+        <button
+          onClick={submit}
+          disabled={busy || !displayName || !cloud || !credentialID || !region}
+          className="text-xs px-3 py-1.5 bg-brand-500 hover:bg-brand-600 disabled:opacity-50 text-white rounded-md font-medium inline-flex items-center gap-1.5"
+        >
+          {busy && <Loader2 size={12} className="animate-spin" />}
+          Provision
+        </button>
+      </footer>
+    </>
   );
 }
 
@@ -520,11 +728,12 @@ function GenerateBundlePanel({ onClose }: { onClose: () => void }) {
   );
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
   return (
     <div>
       <div className="text-[11px] uppercase tracking-wide text-ink-mute font-medium mb-1">{label}</div>
       {children}
+      {hint && <div className="text-[11px] text-ink-mute mt-1">{hint}</div>}
     </div>
   );
 }

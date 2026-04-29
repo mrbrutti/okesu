@@ -923,6 +923,25 @@ export const api = {
   cloudCredentialTest: (id: number) =>
     request<{ ok: boolean; message: string }>(`/api/cloud-credentials/${id}/test`, { method: 'POST' }),
 
+  // Phase 21.3 — managed CP provisioning. The registry is empty in
+  // 21.3a (the framework PR); per-cloud impls register against it in
+  // 21.3b (OCI), 21.3c (AWS), etc. Until then cpProvisionersList()
+  // returns {clouds: []} and the +Add CP modal's Managed-deploy tab
+  // shows a "no clouds yet" message.
+  cpProvisionersList: () =>
+    request<{ clouds: string[] }>('/api/federation/cp-provisioners'),
+  cpProvisionsList: (limit?: number) => {
+    const qs = limit ? `?limit=${limit}` : '';
+    return request<CPProvision[]>(`/api/federation/cp-provisions${qs}`);
+  },
+  cpProvision: (id: number) =>
+    request<CPProvision>(`/api/federation/cp-provisions/${id}`),
+  cpProvisionCreate: (req: CPProvisionRequest) =>
+    request<CPProvision>('/api/federation/cp-provision', {
+      method: 'POST',
+      body: JSON.stringify(req),
+    }),
+
   // Phase 21.1 — generate a bootstrap bundle for a fresh child CP.
   // Returns the tar.gz response as a Blob the caller hands to the
   // browser's download flow. The endpoint sends Content-Disposition
@@ -1599,4 +1618,42 @@ export interface CloudCredentialCreateRequest {
   name: string;
   region?: string;
   payload: Record<string, string>;
+}
+
+// Phase 21.3 — managed CP provisioning.
+export type CPProvisionStatus =
+  | 'queued'
+  | 'starting'
+  | 'cloud_init_running'
+  | 'bootstrap_pending'
+  | 'ready'
+  | 'failed'
+  | 'cancelled';
+
+export interface CPProvision {
+  id: number;
+  display_name: string;
+  region: string;
+  cloud: CloudKind;
+  credential_name?: string;
+  cloud_params?: Record<string, unknown>;
+  status: CPProvisionStatus;
+  cloud_resource_id?: string;
+  cloud_resource_url?: string;
+  peer_id?: number;
+  log?: string;
+  error?: string;
+  created_at: string;
+  started_at?: string;
+  ended_at?: string;
+  created_by_email?: string;
+}
+
+export interface CPProvisionRequest {
+  display_name: string;
+  region: string;
+  cloud: CloudKind;
+  credential_id: number;
+  cloud_params?: Record<string, unknown>;
+  parent_url?: string;
 }
