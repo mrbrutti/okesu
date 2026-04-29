@@ -28,6 +28,7 @@ import (
 	"github.com/section9labs/okesu/controlplane/adapters/redispubsub"
 	"github.com/section9labs/okesu/controlplane/adapters/sqliteevents"
 	"github.com/section9labs/okesu/controlplane/api"
+	"github.com/section9labs/okesu/controlplane/cpprovision"
 	"github.com/section9labs/okesu/controlplane/eventpipeline"
 	"github.com/section9labs/okesu/controlplane/auth"
 	"github.com/section9labs/okesu/controlplane/db"
@@ -63,6 +64,11 @@ type Server struct {
 	notify     *notify.Worker
 	fedPoller  *federation.Poller     // Phase 9 parent-side federation
 	fedAgg     *federation.Aggregator // Phase 9.6 federated reads
+	// cpProvisioners is the registry of per-cloud CP-provisioning
+	// implementations. Phase 21.3a leaves it empty — per-cloud impls
+	// (OCI in 21.3b, AWS in 21.3c, ...) call Register() at server boot
+	// to install themselves.
+	cpProvisioners *cpprovision.Registry
 	http       *http.Server
 	mgmtHTTP *http.Server       // mTLS-protected management plane
 }
@@ -258,17 +264,18 @@ func New(cfg Config) (*Server, error) {
 	db.SetCertFingerprintFn(packaging.CertFingerprint)
 
 	srv := &Server{
-		cfg:        cfg,
-		store:      store,
-		eventStore: eventStore,
-		queue:      queue,
-		secrets:    secrets,
-		mgr:        mgr,
-		bcast:      bcast,
-		ca:         ca,
-		jobs:       jobs.New(500),
-		tunReg:     tunnel.NewRegistry(),
-		runs:       api.NewRunRegistry(),
+		cfg:            cfg,
+		store:          store,
+		eventStore:     eventStore,
+		queue:          queue,
+		secrets:        secrets,
+		mgr:            mgr,
+		bcast:          bcast,
+		ca:             ca,
+		jobs:           jobs.New(500),
+		tunReg:         tunnel.NewRegistry(),
+		runs:           api.NewRunRegistry(),
+		cpProvisioners: cpprovision.NewRegistry(),
 	}
 	srv.notify = &notify.Worker{
 		Store:      store,
@@ -604,6 +611,15 @@ func (s *Server) routes() http.Handler {
 				LinuxImageTarPath: s.cfg.CPBootstrapImageTarPath,
 				Version:           Version(),
 			}))
+
+			// Phase 21.3 — managed CP provisioning. Admin-only.
+			// The Provisioner registry is empty in 21.3a; per-cloud
+			// impls register against it from server.New() below as
+			// they ship in 21.3b (OCI), 21.3c (AWS), etc.
+			r.Get("/api/federation/cp-provisioners", api.CPProvisionersListHandler(s.cpProvisioners))
+			r.Post("/api/federation/cp-provision", api.CPProvisionCreateHandler(s.store, s.cpProvisioners, s.cfg.EffectivePublicURL()))
+			r.Get("/api/federation/cp-provisions", api.CPProvisionsListHandler(s.store))
+			r.Get("/api/federation/cp-provisions/{id}", api.CPProvisionGetHandler(s.store))
 
 			// System / database (admin)
 			r.Get("/api/system/db/stats", api.DBStats(s.store, api.SystemDBConfig{
