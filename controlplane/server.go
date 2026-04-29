@@ -627,7 +627,7 @@ func (s *Server) routes() http.Handler {
 				LinuxBinaryPath:   s.cfg.CPBootstrapBinaryPath,
 				LinuxImageTarPath: s.cfg.CPBootstrapImageTarPath,
 				Version:           Version(),
-			}))
+			}, s.bundleCache, s.cfg.EffectivePublicURL()))
 
 			// Phase 21.3 — managed CP provisioning. Admin-only.
 			// The Provisioner registry is populated by per-cloud
