@@ -460,6 +460,31 @@ export const api = {
       body: JSON.stringify({ inputs: inputs ?? {} }),
     }),
   orchestrationRuns: () => request<OrchestrationRunView[]>('/api/orchestration-runs'),
+  /** Filter-aware variant. When `withCounts:true`, returns the
+   *  wrapper shape `{rows, counts_by_status}` so the runs-tab status
+   *  pills can populate from the same call. Filter values that match
+   *  the URL params on the server side: status (csv), trigger_kind
+   *  (csv), orchestration_id (csv), since ('30m'|'1h'|'24h'|'7d' or
+   *  unix-ms), q (free-text), limit, offset. */
+  orchestrationRunsFiltered: (
+    f: OrchestrationRunsFilter,
+    opts: { withCounts?: boolean } = {},
+  ) => {
+    const qs = new URLSearchParams();
+    if (f.status?.length) qs.set('status', f.status.join(','));
+    if (f.trigger_kind?.length) qs.set('trigger_kind', f.trigger_kind.join(','));
+    if (f.orchestration_id?.length) qs.set('orchestration_id', f.orchestration_id.join(','));
+    if (f.since) qs.set('since', f.since);
+    if (f.q) qs.set('q', f.q);
+    if (f.limit) qs.set('limit', String(f.limit));
+    if (f.offset) qs.set('offset', String(f.offset));
+    if (opts.withCounts) qs.set('counts', '1');
+    const path = `/api/orchestration-runs${qs.size ? '?' + qs.toString() : ''}`;
+    if (opts.withCounts) {
+      return request<OrchestrationRunsListResponse>(path);
+    }
+    return request<OrchestrationRunView[]>(path).then((rows) => ({ rows, counts_by_status: {} }));
+  },
   orchestrationRunDetail: (id: number, cp?: string) =>
     request<OrchestrationRunView>(cpQuery(`/api/orchestration-runs/${id}`, cp)),
   orchestrationRunCancel: (id: number, cp?: string) =>
@@ -1082,6 +1107,26 @@ export interface NodeDeployReq {
   openai_api_key?: string;
   include_webhook?: boolean;
   include_mgmt_cert?: boolean;
+}
+
+// ── Runs-tab filter shape (Phase 12.1) ──────────────────────────────────────
+
+export interface OrchestrationRunsFilter {
+  /** OR'd status pills — server: any-of. */
+  status?: OrchestrationRunStatus[];
+  trigger_kind?: ('manual' | 'finding' | 'cron')[];
+  orchestration_id?: number[];
+  /** Relative alias ('30m'|'1h'|'24h'|'7d') or raw unix-ms. */
+  since?: string;
+  /** Free-text against run id, current step id, host / finding_id in payload. */
+  q?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export interface OrchestrationRunsListResponse {
+  rows: OrchestrationRunView[];
+  counts_by_status: Partial<Record<OrchestrationRunStatus, number>>;
 }
 
 // ── Finding history + run linkage (Phase 11.4) ──────────────────────────────

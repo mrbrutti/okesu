@@ -102,33 +102,45 @@ func (a *Aggregator) HealthyPeers() ([]Peer, error) {
 // type. Errors are wrapped with the peer's display_name so the
 // parent's logs identify the offender.
 func (a *Aggregator) FetchJSON(ctx context.Context, peer Peer, path string, out any) error {
+	body, err := a.FetchRaw(ctx, peer, path)
+	if err != nil {
+		return err
+	}
+	if err := json.Unmarshal(body, out); err != nil {
+		return fmt.Errorf("%s: invalid JSON: %w", peer.Snapshot.DisplayName, err)
+	}
+	return nil
+}
+
+// FetchRaw is like FetchJSON but returns the raw response body. Used
+// by handlers that have to decide how to unmarshal based on a query
+// param (e.g. /api/orchestration-runs?counts=1 returns a wrapper
+// object instead of an array). Same auth + size cap.
+func (a *Aggregator) FetchRaw(ctx context.Context, peer Peer, path string) ([]byte, error) {
 	url := strings.TrimRight(peer.Row.URL, "/") + path
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return fmt.Errorf("%s: build request: %w", peer.Snapshot.DisplayName, err)
+		return nil, fmt.Errorf("%s: build request: %w", peer.Snapshot.DisplayName, err)
 	}
 	req.Header.Set("X-Okesu-Federation-Token", peer.Row.Token)
 	req.Header.Set("Accept", "application/json")
 	resp, err := a.client.Do(req)
 	if err != nil {
-		return fmt.Errorf("%s: dial: %w", peer.Snapshot.DisplayName, err)
+		return nil, fmt.Errorf("%s: dial: %w", peer.Snapshot.DisplayName, err)
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 4*1024*1024)) // 4MB cap
 	if err != nil {
-		return fmt.Errorf("%s: read body: %w", peer.Snapshot.DisplayName, err)
+		return nil, fmt.Errorf("%s: read body: %w", peer.Snapshot.DisplayName, err)
 	}
 	if resp.StatusCode != http.StatusOK {
 		snippet := strings.TrimSpace(string(body))
 		if len(snippet) > 120 {
 			snippet = snippet[:120] + "…"
 		}
-		return fmt.Errorf("%s: HTTP %d: %s", peer.Snapshot.DisplayName, resp.StatusCode, snippet)
+		return nil, fmt.Errorf("%s: HTTP %d: %s", peer.Snapshot.DisplayName, resp.StatusCode, snippet)
 	}
-	if err := json.Unmarshal(body, out); err != nil {
-		return fmt.Errorf("%s: invalid JSON: %w", peer.Snapshot.DisplayName, err)
-	}
-	return nil
+	return body, nil
 }
 
 // FanOutResult is one peer's outcome — either parsed rows (caller

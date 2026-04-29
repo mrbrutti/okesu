@@ -1318,22 +1318,99 @@ func OrchestrationRunCreate(store *db.Store, coord *OrchestrationCoordinator) ht
 }
 
 // OrchestrationRunsList — GET /api/orchestration-runs
+//
+// Query string filters (any combination):
+//
+//   status=running,failed         CSV — multi-select pill
+//   orchestration_id=3,7          CSV
+//   trigger_kind=manual,finding   CSV
+//   since=30m | 1h | 24h | 7d     relative-time alias (or unix-ms)
+//   q=needle                      free-text against id/step/host/finding_id
+//   limit=N                       page size; clamped to 1000, default 100
+//   offset=M                      page offset
+//   counts=1                      return wrapper with {rows, counts_by_status}
+//                                 so the runs-tab pills don't need a separate
+//                                 round-trip.
 func OrchestrationRunsList(store *db.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-		offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
-		rows, err := store.ListOrchestrationRuns(limit, offset)
+		f := db.OrchestrationRunFilter{
+			Status:           splitCSV(r.URL.Query().Get("status")),
+			OrchestrationIDs: parseInt64CSV(r.URL.Query().Get("orchestration_id")),
+			TriggerKinds:     splitCSV(r.URL.Query().Get("trigger_kind")),
+			SinceMs:          parseSinceMs(r.URL.Query().Get("since")),
+			Search:           r.URL.Query().Get("q"),
+		}
+		f.Limit, _ = strconv.Atoi(r.URL.Query().Get("limit"))
+		f.Offset, _ = strconv.Atoi(r.URL.Query().Get("offset"))
+
+		rows, err := store.ListOrchestrationRunsFiltered(f)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		out := make([]orchestrationRunJSON, 0, len(rows))
-		for _, r := range rows {
-			out = append(out, toOrchestrationRunJSON(r, nil))
+		jsonRows := make([]orchestrationRunJSON, 0, len(rows))
+		for _, run := range rows {
+			jsonRows = append(jsonRows, toOrchestrationRunJSON(run, nil))
 		}
+
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(out)
+		if r.URL.Query().Get("counts") == "1" {
+			counts, _ := store.CountOrchestrationRunsByStatus(f)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"rows":             jsonRows,
+				"counts_by_status": counts,
+			})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(jsonRows)
 	}
+}
+
+// splitCSV trims and drops empty entries.
+func splitCSV(s string) []string {
+	if s == "" {
+		return nil
+	}
+	var out []string
+	for _, p := range strings.Split(s, ",") {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// parseInt64CSV is splitCSV + ParseInt; bad entries are silently
+// dropped so a stray ?orchestration_id=,7,abc still works.
+func parseInt64CSV(s string) []int64 {
+	parts := splitCSV(s)
+	if len(parts) == 0 {
+		return nil
+	}
+	out := make([]int64, 0, len(parts))
+	for _, p := range parts {
+		n, err := strconv.ParseInt(p, 10, 64)
+		if err == nil && n > 0 {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// parseSinceMs accepts either a relative alias ("30m", "1h", "24h",
+// "7d") or a raw unix-ms timestamp. Returns 0 ⇒ no filter.
+func parseSinceMs(s string) int64 {
+	if s == "" {
+		return 0
+	}
+	if d, err := time.ParseDuration(s); err == nil {
+		return time.Now().Add(-d).UnixMilli()
+	}
+	if n, err := strconv.ParseInt(s, 10, 64); err == nil && n > 0 {
+		return n
+	}
+	return 0
 }
 
 // OrchestrationRunDetail — GET /api/orchestration-runs/{id}

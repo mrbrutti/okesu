@@ -182,14 +182,60 @@ func (s *Store) GetOrchestrationRun(id int64) (*OrchestrationRun, error) {
 }
 
 func (s *Store) ListOrchestrationRuns(limit, offset int) ([]*OrchestrationRun, error) {
-	if limit <= 0 || limit > 1000 {
-		limit = 100
+	return s.ListOrchestrationRunsFiltered(OrchestrationRunFilter{Limit: limit, Offset: offset})
+}
+
+// OrchestrationRunFilter narrows the rows returned by
+// ListOrchestrationRunsFiltered. Empty values mean "don't filter on
+// this dimension"; the runs page passes a populated struct from URL
+// params so each filter chip / status pill maps to one field.
+type OrchestrationRunFilter struct {
+	// Status is OR'd: any row matching any value passes. Empty = all.
+	Status []string
+
+	// OrchestrationIDs is OR'd. Empty = all.
+	OrchestrationIDs []int64
+
+	// TriggerKinds is OR'd: manual | finding | cron. Empty = all.
+	TriggerKinds []string
+
+	// SinceMs filters started_at >= this Unix-ms timestamp. 0 = no filter.
+	// The UI's range picker (30m / 1h / 24h / 7d) maps to this.
+	SinceMs int64
+
+	// Search matches the run id (string), trigger payload host, or
+	// trigger payload finding_id (numeric). Cheap LIKE on the JSON
+	// payload — small table, no need for a fancy index.
+	Search string
+
+	// Pagination. Limit caps at 1000; default 100 when ≤0.
+	Limit  int
+	Offset int
+}
+
+// ListOrchestrationRunsFiltered runs the same query as the
+// pagination-only variant but with optional filters applied. Kept as
+// a sibling method so the existing call sites (federation aggregator,
+// dashboard) can continue using the simple form.
+func (s *Store) ListOrchestrationRunsFiltered(f OrchestrationRunFilter) ([]*OrchestrationRun, error) {
+	if f.Limit <= 0 || f.Limit > 1000 {
+		f.Limit = 100
 	}
-	rows, err := s.Query(`
-		SELECT id, orchestration_id, status, trigger_kind, trigger_payload,
-		       current_step_id, started_at, ended_at, started_by, error
-		  FROM orchestration_runs ORDER BY started_at DESC LIMIT ? OFFSET ?
-	`, limit, offset)
+	if f.Offset < 0 {
+		f.Offset = 0
+	}
+
+	q := `SELECT id, orchestration_id, status, trigger_kind, trigger_payload,
+	             current_step_id, started_at, ended_at, started_by, error
+	        FROM orchestration_runs`
+	where, args := buildRunsWhere(f)
+	if where != "" {
+		q += " WHERE " + where
+	}
+	q += ` ORDER BY started_at DESC LIMIT ? OFFSET ?`
+	args = append(args, f.Limit, f.Offset)
+
+	rows, err := s.Query(q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -203,6 +249,100 @@ func (s *Store) ListOrchestrationRuns(limit, offset int) ([]*OrchestrationRun, e
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// CountOrchestrationRunsByStatus returns one count per status that
+// would match `f` if status were ignored. Used by the runs-tab
+// status pills so each tab shows its own total without a roundtrip
+// per pill.
+func (s *Store) CountOrchestrationRunsByStatus(f OrchestrationRunFilter) (map[string]int, error) {
+	g := f
+	g.Status = nil // we project this dimension out
+	q := `SELECT status, COUNT(*) FROM orchestration_runs`
+	where, args := buildRunsWhere(g)
+	if where != "" {
+		q += " WHERE " + where
+	}
+	q += ` GROUP BY status`
+	rows, err := s.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]int{}
+	for rows.Next() {
+		var status string
+		var n int
+		if err := rows.Scan(&status, &n); err != nil {
+			return nil, err
+		}
+		out[status] = n
+	}
+	return out, rows.Err()
+}
+
+// buildRunsWhere is shared between the list + count queries so a
+// status pill's count always reflects the same filter set as the
+// list it pages through.
+func buildRunsWhere(f OrchestrationRunFilter) (string, []any) {
+	var clauses []string
+	var args []any
+
+	if len(f.Status) > 0 {
+		ph := placeholders(len(f.Status))
+		clauses = append(clauses, "status IN ("+ph+")")
+		for _, s := range f.Status {
+			args = append(args, s)
+		}
+	}
+	if len(f.OrchestrationIDs) > 0 {
+		ph := placeholders(len(f.OrchestrationIDs))
+		clauses = append(clauses, "orchestration_id IN ("+ph+")")
+		for _, id := range f.OrchestrationIDs {
+			args = append(args, id)
+		}
+	}
+	if len(f.TriggerKinds) > 0 {
+		ph := placeholders(len(f.TriggerKinds))
+		clauses = append(clauses, "trigger_kind IN ("+ph+")")
+		for _, k := range f.TriggerKinds {
+			args = append(args, k)
+		}
+	}
+	if f.SinceMs > 0 {
+		// started_at is stored as ISO timestamp. Compare against the
+		// formatted value rather than parsing per-row — rough but fast
+		// for our scale, and the UI's resolution doesn't need ms.
+		clauses = append(clauses, "started_at >= datetime(?/1000.0, 'unixepoch')")
+		args = append(args, f.SinceMs)
+	}
+	if f.Search != "" {
+		// LIKE across id, current_step_id, and the trigger_payload
+		// JSON blob — covers run_id search, step name, host, and
+		// finding_id all in one expression.
+		clauses = append(clauses, "(CAST(id AS TEXT) LIKE ? OR current_step_id LIKE ? OR trigger_payload LIKE ?)")
+		needle := "%" + f.Search + "%"
+		args = append(args, needle, needle, needle)
+	}
+	if len(clauses) == 0 {
+		return "", nil
+	}
+	out := clauses[0]
+	for _, c := range clauses[1:] {
+		out += " AND " + c
+	}
+	return out, args
+}
+
+func placeholders(n int) string {
+	if n <= 0 {
+		return ""
+	}
+	out := "?"
+	for i := 1; i < n; i++ {
+		out += ",?"
+	}
+	return out
 }
 
 func scanOrchestrationRun(s orchestrationRowScanner) (*OrchestrationRun, error) {

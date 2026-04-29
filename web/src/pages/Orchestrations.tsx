@@ -23,7 +23,6 @@ import {
   Pause,
   Play,
   Plus,
-  RefreshCw,
   Trash2,
   Workflow,
   X,
@@ -36,6 +35,7 @@ import {
   type Orchestration,
   type OrchestrationRunView,
   type OrchestrationRunStatus,
+  type OrchestrationRunsFilter,
   type OrchestrationStepView,
 } from '../api';
 import { cn } from '../lib/cn';
@@ -46,6 +46,7 @@ import { ListCard } from '../components/lists/ListCard';
 import { parseSpecYAMLLite } from '../lib/orchestrationSpec';
 import { HarnessOutput } from '../components/HarnessOutput';
 import { StructuredView } from '../components/StructuredView';
+import { useInfiniteScroll } from '../lib/useInfiniteScroll';
 
 // Lazy-load the canvases — react-flow + js-yaml together add ~120KB
 // gzipped. Operators viewing the Library/Runs lists shouldn't pay
@@ -563,6 +564,71 @@ function EditorLoading() {
 
 // ── Runs tab ────────────────────────────────────────────────────────
 
+// Status pill identities. "Active" is a virtual tab grouping
+// pending+running+approval_required so the operator's default view
+// is the smallest bucket they actually need to act on.
+type RunsStatusPill = 'all' | 'active' | 'approval' | 'failed' | 'completed' | 'cancelled';
+
+const PILL_LABEL: Record<RunsStatusPill, string> = {
+  all:        'All',
+  active:     'Active',
+  approval:   'Approval',
+  failed:     'Failed',
+  completed:  'Completed',
+  cancelled:  'Cancelled',
+};
+
+const PILL_TONE: Record<RunsStatusPill, string> = {
+  all:        'text-ink bg-slate-100 ring-slate-200',
+  active:     'text-blue-700 bg-blue-50 ring-blue-200',
+  approval:   'text-amber-700 bg-amber-50 ring-amber-200',
+  failed:     'text-red-700 bg-red-50 ring-red-200',
+  completed:  'text-green-700 bg-green-50 ring-green-200',
+  cancelled:  'text-ink-dim bg-slate-100 ring-slate-200',
+};
+
+const PILLS_ORDER: RunsStatusPill[] = ['active', 'approval', 'failed', 'completed', 'cancelled', 'all'];
+
+// pillToServerStatuses maps a UI pill to the OrchestrationRunStatus
+// values it should request server-side. The "active" bucket folds
+// pending+running together; "all" omits the filter.
+function pillToServerStatuses(pill: RunsStatusPill): OrchestrationRunStatus[] | undefined {
+  switch (pill) {
+    case 'active':    return ['pending', 'running'];
+    case 'approval':  return ['approval_required'];
+    case 'failed':    return ['failed'];
+    case 'completed': return ['completed'];
+    case 'cancelled': return ['cancelled'];
+    case 'all':       return undefined;
+  }
+}
+
+// Sum the counts the server returned into UI-pill totals. Server
+// counts are by raw status; the active pill sums pending+running.
+function sumPillCount(pill: RunsStatusPill, counts: Partial<Record<OrchestrationRunStatus, number>>): number {
+  const get = (s: OrchestrationRunStatus) => counts[s] ?? 0;
+  switch (pill) {
+    case 'active':    return get('pending') + get('running');
+    case 'approval':  return get('approval_required');
+    case 'failed':    return get('failed');
+    case 'completed': return get('completed');
+    case 'cancelled': return get('cancelled');
+    case 'all':
+      // Sum every recognized status. Don't over-count by also
+      // adding "active" — the server returned each row exactly once.
+      return Object.values(counts).reduce((a, b) => a + (b ?? 0), 0);
+  }
+}
+
+const PAGE_SIZE = 50;
+const RANGES: { value: string; label: string }[] = [
+  { value: '30m',  label: '30m' },
+  { value: '1h',   label: '1h' },
+  { value: '24h',  label: '24h' },
+  { value: '7d',   label: '7d' },
+  { value: '',     label: 'all time' },
+];
+
 function Runs({
   selectedRunID,
   selectedCP,
@@ -572,130 +638,256 @@ function Runs({
   selectedCP?: string;
   onSelectRun: (id: number | null, cp?: string) => void;
 }) {
-  const [list, setList] = useState<OrchestrationRunView[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  const refresh = () => {
-    api.orchestrationRuns()
-      .then(setList)
-      .catch((e) => setError(String(e)));
-  };
-  useEffect(() => {
-    refresh();
-    const t = setInterval(refresh, 5000);
-    return () => clearInterval(t);
-  }, []);
-
-  // When a run is selected, take over the whole content area so the
-  // left-to-right canvas has room. Otherwise show the runs list.
+  // Run-detail view takes over the whole pane.
   if (selectedRunID !== null) {
     return (
-      <RunDetail
+      <RunDetailWithRefresh
         runID={selectedRunID}
         cpInstanceID={selectedCP}
         onClose={() => onSelectRun(null)}
-        onChanged={refresh}
       />
     );
   }
+  return <RunsList onSelectRun={onSelectRun} />;
+}
 
-  // Bucket runs by activity state — operators almost always care
-  // first about what's happening NOW (running, gated for approval),
-  // then recent completions, then failures. Same rhythm Daimons /
-  // Findings use to surface the most-actionable rows first.
-  const buckets = useMemo(() => {
-    const out: Record<'active' | 'completed' | 'failed' | 'cancelled', OrchestrationRunView[]> = {
-      active: [], completed: [], failed: [], cancelled: [],
-    };
-    for (const r of list ?? []) {
-      switch (r.status) {
-        case 'running':
-        case 'pending':
-        case 'approval_required':
-          out.active.push(r); break;
-        case 'completed':
-          out.completed.push(r); break;
-        case 'failed':
-          out.failed.push(r); break;
-        case 'cancelled':
-          out.cancelled.push(r); break;
+// RunDetailWithRefresh is a wrapper that holds the refresh function
+// shared between the detail view and any operator action that needs
+// to invalidate the list (cancel, approve). Kept here so the Runs
+// component above stays purely a router.
+function RunDetailWithRefresh({
+  runID,
+  cpInstanceID,
+  onClose,
+}: {
+  runID: number;
+  cpInstanceID?: string;
+  onClose: () => void;
+}) {
+  // The list refresh is controlled inside RunsList; this view just
+  // needs to bounce its own internal reload via the existing prop.
+  return (
+    <RunDetail
+      runID={runID}
+      cpInstanceID={cpInstanceID}
+      onClose={onClose}
+      onChanged={() => { /* list re-fetches on tab return */ }}
+    />
+  );
+}
+
+function RunsList({
+  onSelectRun,
+}: {
+  onSelectRun: (id: number | null, cp?: string) => void;
+}) {
+  const [params, setParams] = useSearchParams();
+
+  const pill = (params.get('status') as RunsStatusPill) || 'active';
+  const triggerKindCsv = params.get('trigger_kind') || '';
+  const sinceParam = params.get('since') ?? '24h';
+  const search = params.get('q') || '';
+  const orchID = params.get('orch') || '';
+
+  const [orchestrations, setOrchestrations] = useState<Orchestration[]>([]);
+  const [counts, setCounts] = useState<Partial<Record<OrchestrationRunStatus, number>>>({});
+  const [rows, setRows] = useState<OrchestrationRunView[] | null>(null);
+  const [hasMore, setHasMore] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  // Orchestration list — populates the picker dropdown. Cheap;
+  // already fetched on the Library tab too but the cache between
+  // tabs is per-component.
+  useEffect(() => {
+    api.orchestrations().then(setOrchestrations).catch(() => { /* ignore */ });
+  }, []);
+
+  const filter: OrchestrationRunsFilter = useMemo(() => ({
+    status:           pillToServerStatuses(pill),
+    trigger_kind:     triggerKindCsv ? triggerKindCsv.split(',') as ('manual' | 'finding' | 'cron')[] : undefined,
+    orchestration_id: orchID ? [Number(orchID)] : undefined,
+    since:            sinceParam || undefined,
+    q:                search || undefined,
+  }), [pill, triggerKindCsv, sinceParam, search, orchID]);
+
+  // Fetch first page + counts whenever any filter changes.
+  useEffect(() => {
+    setRows(null);
+    setHasMore(true);
+    api.orchestrationRunsFiltered({ ...filter, limit: PAGE_SIZE, offset: 0 }, { withCounts: true })
+      .then((res) => {
+        setRows(res.rows);
+        setCounts(res.counts_by_status);
+        setHasMore(res.rows.length >= PAGE_SIZE);
+        setError(null);
+      })
+      .catch((e) => setError(String(e)));
+  }, [filter]);
+
+  // Auto-refresh on a slow tick so the list reflects newly-arrived
+  // runs without aggressive polling. Active/Approval/Failed buckets
+  // bump every 5s (operator likely watching); All/Completed every 30s.
+  useEffect(() => {
+    const fastBucket = pill === 'active' || pill === 'approval' || pill === 'failed';
+    const interval = fastBucket ? 5_000 : 30_000;
+    const t = setInterval(() => {
+      api.orchestrationRunsFiltered({ ...filter, limit: PAGE_SIZE, offset: 0 }, { withCounts: true })
+        .then((res) => {
+          setRows(res.rows);
+          setCounts(res.counts_by_status);
+          setHasMore(res.rows.length >= PAGE_SIZE);
+        })
+        .catch(() => { /* ignore — keep stale data on transient errors */ });
+    }, interval);
+    return () => clearInterval(t);
+  }, [filter, pill]);
+
+  // Infinite scroll — the existing useInfiniteScroll hook calls a
+  // load function when the sentinel scrolls into view; we issue
+  // limit/offset paginated fetches and concat onto rows.
+  const scroll = useInfiniteScroll({
+    hasMore: !!rows && hasMore,
+    loadMore: async () => {
+      if (!rows) return;
+      const next = await api.orchestrationRunsFiltered(
+        { ...filter, limit: PAGE_SIZE, offset: rows.length },
+      );
+      if (next.rows.length === 0) {
+        setHasMore(false);
+        return;
       }
-    }
-    return out;
-  }, [list]);
+      setRows((prev) => [...(prev ?? []), ...next.rows]);
+      if (next.rows.length < PAGE_SIZE) setHasMore(false);
+    },
+  });
+
+  function setParam(key: string, value: string) {
+    const next = new URLSearchParams(params);
+    if (value === '') next.delete(key);
+    else next.set(key, value);
+    setParams(next, { replace: true });
+  }
 
   return (
-    <div className="h-full flex">
-      <div className="flex-1 overflow-auto p-6 space-y-5">
-        <div className="flex items-center justify-between">
-          <p className="text-xs text-ink-dim">
-            {list ? `${list.length} run${list.length === 1 ? '' : 's'}` : 'Loading…'}
-          </p>
+    <div className="h-full flex flex-col overflow-hidden">
+      {/* Status pill row */}
+      <div className="px-6 pt-4 pb-2 border-b border-border bg-panel flex items-center gap-2 flex-wrap">
+        {PILLS_ORDER.map((p) => {
+          const active = p === pill;
+          const count = sumPillCount(p, counts);
+          return (
+            <button
+              key={p}
+              onClick={() => setParam('status', p === 'active' ? '' : p)}
+              className={cn(
+                'inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-md ring-1',
+                active ? PILL_TONE[p] + ' ring-2' : 'text-ink-dim bg-white ring-border hover:bg-slate-50',
+              )}
+            >
+              {PILL_LABEL[p]}
+              <span className={cn(
+                'text-[10px] tabular-nums px-1 rounded',
+                active ? 'bg-white/40' : 'bg-slate-100',
+              )}>
+                {count}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Filter row */}
+      <div className="px-6 py-2 border-b border-border bg-panel flex items-center gap-2 flex-wrap text-xs">
+        <input
+          value={search}
+          onChange={(e) => setParam('q', e.target.value)}
+          placeholder="Search run id, host, finding id…"
+          className="px-2 py-1 border border-border rounded-md bg-white w-64"
+        />
+        <select
+          value={orchID}
+          onChange={(e) => setParam('orch', e.target.value)}
+          className="px-2 py-1 border border-border rounded-md bg-white"
+        >
+          <option value="">All orchestrations</option>
+          {orchestrations.map((o) => (
+            <option key={o.id} value={o.id}>{o.name}</option>
+          ))}
+        </select>
+        <select
+          value={triggerKindCsv}
+          onChange={(e) => setParam('trigger_kind', e.target.value)}
+          className="px-2 py-1 border border-border rounded-md bg-white"
+        >
+          <option value="">Any trigger</option>
+          <option value="manual">Manual</option>
+          <option value="finding">Finding</option>
+          <option value="cron">Cron</option>
+        </select>
+        <select
+          value={sinceParam}
+          onChange={(e) => setParam('since', e.target.value)}
+          className="px-2 py-1 border border-border rounded-md bg-white"
+        >
+          {RANGES.map((r) => (
+            <option key={r.value} value={r.value}>{r.label}</option>
+          ))}
+        </select>
+        {(search || orchID || triggerKindCsv || pill !== 'active' || sinceParam !== '24h') && (
           <button
-            onClick={refresh}
-            className="inline-flex items-center gap-1 text-xs text-ink-dim hover:text-ink hover:bg-slate-100 px-2 py-1 rounded-md"
-            title="Refresh"
+            onClick={() => setParams({}, { replace: true })}
+            className="text-ink-dim hover:text-ink underline"
           >
-            <RefreshCw size={11} />
-            Refresh
+            clear filters
           </button>
-        </div>
+        )}
+      </div>
+
+      {/* List */}
+      <div className="flex-1 overflow-auto p-6">
         {error && (
-          <div className="text-xs text-red-700 bg-red-50 border border-red-200 px-3 py-2 rounded-md">
+          <div className="text-xs text-red-700 bg-red-50 border border-red-200 px-3 py-2 rounded-md mb-3">
             {error}
           </div>
         )}
-        {list && list.length === 0 && (
+        {!rows && (
+          <div className="text-xs text-ink-mute">Loading…</div>
+        )}
+        {rows && rows.length === 0 && (
           <div className="text-center py-16 text-ink-mute bg-panel border border-border rounded-xl shadow-card">
             <Clock size={32} className="mx-auto mb-2 opacity-40" />
-            <p className="text-sm font-medium text-ink mb-1">No orchestration runs yet.</p>
-            <p className="text-xs">Trigger one from the Library tab — auto-trigger orchestrations also fire here.</p>
+            <p className="text-sm font-medium text-ink mb-1">No runs match.</p>
+            <p className="text-xs">
+              Try widening the time range, switching to the All tab, or clearing filters.
+            </p>
           </div>
         )}
-        {list && list.length > 0 && (
-          <>
-            {(['active', 'failed', 'completed', 'cancelled'] as const).map((bucket) => {
-              const items = buckets[bucket];
-              if (items.length === 0) return null;
-              return (
-                <section key={bucket}>
-                  <SectionHeader
-                    tone={RUNS_BUCKET_TONE[bucket]}
-                    label={RUNS_BUCKET_LABEL[bucket]}
-                    count={items.length}
-                  />
-                  <ListCard>
-                    {items.map((r) => (
-                      <RunRow
-                        key={`${r.cp_source?.instance_id ?? 'local'}-${r.id}`}
-                        run={r}
-                        selected={selectedRunID === r.id && (selectedCP ?? '') === (r.cp_source?.instance_id ?? '')}
-                        onSelect={() => onSelectRun(r.id, r.cp_source?.instance_id)}
-                      />
-                    ))}
-                  </ListCard>
-                </section>
-              );
-            })}
-          </>
+        {rows && rows.length > 0 && (
+          <ListCard>
+            {rows.map((r) => (
+              <RunRow
+                key={`${r.cp_source?.instance_id ?? 'local'}-${r.id}`}
+                run={r}
+                selected={false}
+                onSelect={() => onSelectRun(r.id, r.cp_source?.instance_id)}
+              />
+            ))}
+          </ListCard>
+        )}
+        {/* Sentinel for infinite scroll. ref hooks into IntersectionObserver. */}
+        {rows && rows.length > 0 && (
+          <div ref={scroll.sentinelRef} className="px-4 py-3 text-[11px] text-ink-mute text-center">
+            {scroll.loading
+              ? 'Loading older runs…'
+              : hasMore
+                ? 'Scroll for more'
+                : `— end of ${rows.length} runs —`}
+          </div>
         )}
       </div>
     </div>
   );
 }
-
-const RUNS_BUCKET_TONE: Record<'active' | 'completed' | 'failed' | 'cancelled', SectionTone> = {
-  active:    'progress',
-  completed: 'good',
-  failed:    'bad',
-  cancelled: 'muted',
-};
-const RUNS_BUCKET_LABEL: Record<'active' | 'completed' | 'failed' | 'cancelled', string> = {
-  active:    'Active',
-  completed: 'Completed',
-  failed:    'Failed',
-  cancelled: 'Cancelled',
-};
 
 function RunRow({
   run, selected, onSelect,

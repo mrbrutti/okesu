@@ -483,8 +483,20 @@ func FederationOrchestrationRunCreate(store *db.Store, coord *OrchestrationCoord
 
 // FederatedOrchestrationRunsList federates the runs history. Each
 // peer's runs are tagged with cp_source and merged with local rows.
+//
+// Two response shapes follow the local handler:
+//   - default      → JSON array of runs
+//   - ?counts=1    → { rows: [...], counts_by_status: { status: int } }
+//                   counts are summed across local + every reachable
+//                   peer so the runs-tab status pills are fleet-wide.
+//
+// The query string is forwarded verbatim to each peer so all filter
+// params (status, orchestration_id, trigger_kind, since, q, limit,
+// offset) propagate.
 func FederatedOrchestrationRunsList(store *db.Store, agg *federation.Aggregator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		wantCounts := r.URL.Query().Get("counts") == "1"
+
 		localRR := httpRecorder()
 		OrchestrationRunsList(store).ServeHTTP(localRR, r)
 		if localRR.code != http.StatusOK {
@@ -492,28 +504,37 @@ func FederatedOrchestrationRunsList(store *db.Store, agg *federation.Aggregator)
 			_, _ = w.Write(localRR.body)
 			return
 		}
-		var localRows []map[string]any
-		_ = json.Unmarshal(localRR.body, &localRows)
+
+		merged, mergedCounts := unmarshalRunsListBody(localRR.body, wantCounts)
+
+		// Forward the same query string to every peer.
+		peerPath := "/api/v1/federation/orchestration-runs"
+		if rq := r.URL.RawQuery; rq != "" {
+			peerPath += "?" + rq
+		}
 
 		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 		defer cancel()
 		var mu sync.Mutex
-		merged := append([]map[string]any{}, localRows...)
 		results, _ := agg.FanOut(ctx, func(ctx context.Context, peer federation.Peer) error {
-			var rows []map[string]any
-			if err := agg.FetchJSON(ctx, peer, "/api/v1/federation/orchestration-runs", &rows); err != nil {
+			rawBytes, err := agg.FetchRaw(ctx, peer, peerPath)
+			if err != nil {
 				return err
 			}
+			peerRows, peerCounts := unmarshalRunsListBody(rawBytes, wantCounts)
 			tag := map[string]any{
 				"instance_id":  peer.Snapshot.InstanceID,
 				"display_name": peer.Snapshot.DisplayName,
 				"region":       peer.Snapshot.Region,
 			}
-			for i := range rows {
-				rows[i]["cp_source"] = tag
+			for i := range peerRows {
+				peerRows[i]["cp_source"] = tag
 			}
 			mu.Lock()
-			merged = append(merged, rows...)
+			merged = append(merged, peerRows...)
+			for k, v := range peerCounts {
+				mergedCounts[k] += v
+			}
 			mu.Unlock()
 			return nil
 		})
@@ -527,8 +548,43 @@ func FederatedOrchestrationRunsList(store *db.Store, agg *federation.Aggregator)
 			return si > sj
 		})
 		w.Header().Set("Content-Type", "application/json")
+		if wantCounts {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"rows":             merged,
+				"counts_by_status": mergedCounts,
+			})
+			return
+		}
 		_ = json.NewEncoder(w).Encode(merged)
 	}
+}
+
+// unmarshalRunsListBody handles both response shapes — bare JSON
+// array (default) or wrapped object when ?counts=1 was requested.
+// Always returns a non-nil rows slice + counts map so callers can
+// merge without nil checks.
+func unmarshalRunsListBody(body []byte, wantCounts bool) ([]map[string]any, map[string]int) {
+	rows := []map[string]any{}
+	counts := map[string]int{}
+	if wantCounts {
+		var wrapped struct {
+			Rows           []map[string]any `json:"rows"`
+			CountsByStatus map[string]int   `json:"counts_by_status"`
+		}
+		if err := json.Unmarshal(body, &wrapped); err == nil {
+			rows = wrapped.Rows
+			counts = wrapped.CountsByStatus
+		}
+	} else {
+		_ = json.Unmarshal(body, &rows)
+	}
+	if rows == nil {
+		rows = []map[string]any{}
+	}
+	if counts == nil {
+		counts = map[string]int{}
+	}
+	return rows, counts
 }
 
 func FederationOrchestrationRunsList(store *db.Store) http.HandlerFunc {
