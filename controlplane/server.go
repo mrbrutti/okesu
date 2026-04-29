@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -14,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -32,7 +34,13 @@ import (
 	"github.com/section9labs/okesu/controlplane/federation"
 	"github.com/section9labs/okesu/controlplane/jobs"
 	"github.com/section9labs/okesu/controlplane/notify"
+	"github.com/section9labs/okesu/agent"
+	"github.com/section9labs/okesu/agent/s3transport"
+	"github.com/section9labs/okesu/controlplane/orchestrator"
+	"github.com/section9labs/okesu/controlplane/packaging"
+	"github.com/section9labs/okesu/controlplane/transport/s3scanner"
 	"github.com/section9labs/okesu/controlplane/ports"
+	"github.com/section9labs/okesu/controlplane/sshdeploy"
 	"github.com/section9labs/okesu/controlplane/tunnel"
 	"github.com/section9labs/okesu/controlplane/ui"
 )
@@ -51,6 +59,7 @@ type Server struct {
 	jobs       *jobs.Registry
 	tunReg     *tunnel.Registry
 	runs       *api.RunRegistry
+	orchestra  *api.OrchestrationCoordinator // Phase A orchestrator
 	notify     *notify.Worker
 	fedPoller  *federation.Poller     // Phase 9 parent-side federation
 	fedAgg     *federation.Aggregator // Phase 9.6 federated reads
@@ -220,13 +229,18 @@ func New(cfg Config) (*Server, error) {
 	// One per CP replica; consumer-group coordination handles fanout
 	// when multiple replicas run.
 	pipelineCtx, pipelineCancel := context.WithCancel(context.Background())
-	go func() {
-		w := eventpipeline.NewWorker(queue, eventStore, store, eventpipeline.Config{})
-		if err := w.Run(pipelineCtx); err != nil && pipelineCtx.Err() == nil {
-			log.Printf("eventpipeline worker exited: %v", err)
-		}
-	}()
+	pipelineWorker := eventpipeline.NewWorker(queue, eventStore, store, eventpipeline.Config{})
+	// Worker.Run is started below, after the orchestrator coordinator
+	// is constructed — that lets us install the finding-trigger hook
+	// before any events flow through.
 	_ = pipelineCancel // wired into Server.Stop in a follow-up
+
+	// Phase 9: install the cert-fingerprint helper that lets the
+	// db package look up enrollment_packages by their embedded
+	// signing certificate. The packaging package owns the actual
+	// hash logic; we route through this hook to avoid an import
+	// cycle (db → packaging would pull a lot more in).
+	db.SetCertFingerprintFn(packaging.CertFingerprint)
 
 	srv := &Server{
 		cfg:        cfg,
@@ -254,6 +268,53 @@ func New(cfg Config) (*Server, error) {
 	// chance to fail-stop.
 	srv.fedPoller = federation.NewPoller(store, nil)
 	srv.fedAgg = federation.NewAggregator(store)
+
+	// Optional fleet auto-deployer: when --fleet-ssh-key-path is
+	// set, the orchestrator can install the jobs runtime
+	// unattended via SSH. Failure to load the key is non-fatal —
+	// the CP boots without auto-deploy and operators install
+	// manually from the Nodes UI.
+	var autoDep api.AutoDeployer
+	if cfg.FleetSSHKeyPath != "" {
+		var binResolver sshdeploy.DaemonBinaryResolver
+		if cfg.DaemonBinariesDir != "" {
+			binResolver = api.NewDBBinaryResolver(store)
+		}
+		dep, derr := api.NewFleetAutoDeployer(store, srv, cfg.FleetSSHKeyPath, cfg.EffectiveMgmtURL(), cfg.DaemonBinaryPath, binResolver, cfg.FleetAnthropicAPIKey, cfg.FleetOpenAIAPIKey)
+		if derr != nil {
+			log.Printf("orchestrator auto-deploy disabled: %v", derr)
+		} else if dep != nil {
+			autoDep = dep
+			log.Printf("orchestrator auto-deploy enabled: ssh-key=%s", cfg.FleetSSHKeyPath)
+		}
+	}
+
+	// Orchestrator coordinator — needs fedAgg in scope so its
+	// federatedDispatcher can resolve `cp: <child_id>` step targets.
+	srv.orchestra = api.NewOrchestrationCoordinator(store, srv.runs, srv.tunReg, cfg.AgentFilesDirs, srv.fedAgg, api.CoordinatorOpts{
+		AutoDeployer: autoDep,
+	})
+
+	// Wire the finding-trigger hook before the pipeline starts so we
+	// don't miss the first projected finding after boot.
+	pipelineWorker.SetFindingHook(func(e eventpipeline.FindingProjectedEvent) {
+		srv.orchestra.OnFinding(orchestrator.FindingPayload{
+			ID:         e.FindingID,
+			Severity:   e.Severity,
+			Title:      e.Title,
+			Agent:      e.Agent,
+			Host:       e.Host,
+			Category:   e.Category,
+			DedupKey:   e.DedupKey,
+			Resource:   e.Resource,
+			Attributes: e.Attributes,
+		})
+	})
+	go func() {
+		if err := pipelineWorker.Run(pipelineCtx); err != nil && pipelineCtx.Err() == nil {
+			log.Printf("eventpipeline worker exited: %v", err)
+		}
+	}()
 
 	// Phase 4: OIDC. Optional — boot continues if discovery fails so the CP
 	// stays available with password auth even when the IDP is unreachable.
@@ -329,9 +390,25 @@ func (s *Server) routes() http.Handler {
 	// Phase 9.6: federation read endpoints. Token-authed siblings of
 	// the local read endpoints — the parent CP fans out to these to
 	// build merged Findings / Daimons / Nodes / Events views.
-	r.Get("/api/v1/federation/findings",         api.FederationFindings(s.store))
-	r.Get("/api/v1/federation/findings/summary", api.FederationFindingsSummary(s.store))
-	r.Get("/api/v1/federation/findings/grouped", api.FederationFindingsGrouped(s.store))
+	r.Get("/api/v1/federation/findings",            api.FederationFindings(s.store))
+	r.Get("/api/v1/federation/findings/summary",    api.FederationFindingsSummary(s.store))
+	r.Get("/api/v1/federation/findings/grouped",    api.FederationFindingsGrouped(s.store))
+	r.Get("/api/v1/federation/findings/{id}",        api.FederationFindingDetail(s.store))
+	r.Get("/api/v1/federation/findings/{id}/runs",   api.FederationRunsForFinding(s.store))
+	r.Post("/api/v1/federation/findings/{id}/status", api.FederationFindingSetStatus(s.store))
+
+	// Phase B: orchestration federation endpoints.
+	r.Get("/api/v1/federation/orchestrations",                                              api.FederationOrchestrationsList(s.store))
+	r.Get("/api/v1/federation/orchestrations/{id}",                                         api.FederationOrchestrationDetail(s.store))
+	r.Post("/api/v1/federation/orchestrations",                                             api.FederationOrchestrationCreate(s.store))
+	r.Put("/api/v1/federation/orchestrations/{id}",                                         api.FederationOrchestrationUpdate(s.store))
+	r.Delete("/api/v1/federation/orchestrations/{id}",                                      api.FederationOrchestrationDelete(s.store))
+	r.Post("/api/v1/federation/orchestrations/{id}/run",                                    api.FederationOrchestrationRunCreate(s.store, s.orchestra))
+	r.Get("/api/v1/federation/orchestration-runs",                                          api.FederationOrchestrationRunsList(s.store))
+	r.Get("/api/v1/federation/orchestration-runs/{id}",                                     api.FederationOrchestrationRunDetail(s.store))
+	r.Post("/api/v1/federation/orchestration-runs/{id}/cancel",                             api.FederationOrchestrationRunCancel(s.store))
+	r.Post("/api/v1/federation/orchestration-runs/{id}/steps/{stepID}/approve",             api.FederationOrchestrationStepApprove(s.store, s.orchestra))
+	r.Post("/api/v1/federation/runs/sync",                                                  api.FederationRunSync(s.runs, s.tunReg, s.store, s.cfg.AgentFilesDirs))
 	r.Get("/api/v1/federation/daimons",          api.FederationDaimons(s.store))
 	r.Get("/api/v1/federation/daimons/{name}",   api.FederationAgentDetail(s.store))
 	r.Get("/api/v1/federation/nodes",            api.FederationNodes(s.store))
@@ -404,8 +481,8 @@ func (s *Server) routes() http.Handler {
 		r.Get("/api/findings", api.FederatedFindingsList(s.store, s.fedAgg))
 		r.Get("/api/findings/summary", api.FederatedFindingsSummary(s.store, s.fedAgg))
 		r.Get("/api/findings/grouped", api.FederatedFindingsGrouped(s.store, s.fedAgg))
-		r.Get("/api/findings/{id}", api.FindingDetail(s.store))
-			r.Get("/api/findings/{id}/runs", api.RunsForFinding(s.store))
+		r.Get("/api/findings/{id}", api.FederatedFindingDetail(s.store, s.fedAgg))
+			r.Get("/api/findings/{id}/runs", api.FederatedRunsForFinding(s.store, s.fedAgg))
 
 		// Read endpoints (continued)
 		r.Get("/api/nodes", api.FederatedNodesList(s.store, s.fedAgg))
@@ -480,7 +557,7 @@ func (s *Server) routes() http.Handler {
 			r.Patch("/api/agents/{name}/config", api.AgentConfigUpdate(s.store))
 			r.Post("/api/findings/{id}/acknowledge", api.FindingAcknowledge(s.store))
 			r.Post("/api/findings/group/acknowledge", api.FindingsGroupAcknowledge(s.store))
-			r.Post("/api/findings/{id}/status", api.FindingSetStatus(s.store))
+			r.Post("/api/findings/{id}/status", api.FederatedFindingSetStatus(s.store, s.fedAgg))
 			r.Post("/api/findings/group/status", api.FindingsGroupSetStatus(s.store))
 			r.Put("/api/daimons/library/{name}", api.DaimonLibraryPut(s.store, s.cfg.DaimonFilesDir))
 			r.Post("/api/daimons/library/{name}/rollback", api.DaimonLibraryRollback(s.store, s.cfg.DaimonFilesDir))
@@ -514,8 +591,57 @@ func (s *Server) routes() http.Handler {
 				MgmtURL:           s.cfg.EffectiveMgmtURL(),
 				Secrets:           s.secrets,
 			}))
+			// Phase 4: install the host-side jobs runtime on a node.
+			// Operator-triggered (via the Nodes UI) — body carries the
+			// SSH credential, the CP issues a fresh node-cert and runs
+			// the SSH install in a background job.
+			r.Post("/api/nodes/{id}/install-jobs-runtime", api.InstallJobsRuntime(s.store, s.jobs, s, func() (string, string, sshdeploy.DaemonBinaryResolver) {
+				var binResolver sshdeploy.DaemonBinaryResolver
+				if s.cfg.DaemonBinariesDir != "" {
+					binResolver = api.NewDBBinaryResolver(s.store)
+				}
+				return s.cfg.EffectiveMgmtURL(), s.cfg.DaemonBinaryPath, binResolver
+			}))
 			r.Post("/api/runs", api.CreateRun(s.runs, s.tunReg, s.store, s.cfg.AgentFilesDirs))
 			r.Post("/api/runs/{id}/cancel", api.CancelRun(s.runs, s.tunReg, s.store))
+
+			// Phase 9: S3 dead-drop transport — operators manage
+			// bucket credentials + fleet keypairs via transport-configs,
+			// and mint enrollment packages that auto-register N nodes.
+			// Phase 11.4: finding history (audit trail) + run↔finding
+			// linkage. Read-only — writes flow through the action
+			// dispatcher or the existing triage handler.
+			r.Get("/api/findings/{id}/history", api.FindingHistory(s.store))
+			r.Get("/api/findings/{id}/runs", api.FindingLinkedRuns(s.store))
+			r.Get("/api/orchestration-runs/{id}/findings", api.RunLinkedFindings(s.store))
+
+			r.Get("/api/transport-configs", api.TransportConfigsList(s.store))
+			r.Get("/api/transport-configs/{id}", api.TransportConfigDetail(s.store))
+			r.Post("/api/transport-configs", api.TransportConfigCreate(s.store))
+			r.Put("/api/transport-configs/{id}", api.TransportConfigUpdate(s.store))
+			r.Delete("/api/transport-configs/{id}", api.TransportConfigDelete(s.store))
+			r.Get("/api/enrollment-packages", api.EnrollmentPackagesList(s.store))
+			r.Post("/api/enrollment-packages", api.EnrollmentPackageCreate(s.store))
+			r.Get("/api/enrollment-packages/{id}/download", api.EnrollmentPackageDownload(s.store, func(target string) ([]byte, error) {
+				// Look up via daemon_binaries by os/arch. Falls back
+				// to the configured DaemonBinaryPath when the multi-
+				// arch resolver has nothing for the target.
+				return resolvePackageBinary(s, target)
+			}))
+			r.Post("/api/enrollment-packages/{id}/revoke", api.EnrollmentPackageRevoke(s.store))
+
+			// Orchestrations (Phase A + B — local + federated).
+			r.Get("/api/orchestrations", api.FederatedOrchestrationsList(s.store, s.fedAgg))
+			r.Get("/api/orchestrations/{id}", api.FederatedOrchestrationDetail(s.store, s.fedAgg))
+			r.Post("/api/orchestrations", api.FederatedOrchestrationCreate(s.store, s.fedAgg))
+			r.Put("/api/orchestrations/{id}", api.FederatedOrchestrationUpdate(s.store, s.fedAgg))
+			r.Delete("/api/orchestrations/{id}", api.FederatedOrchestrationDelete(s.store, s.fedAgg))
+			r.Post("/api/orchestrations/{id}/run", api.FederatedOrchestrationRunCreate(s.store, s.orchestra, s.fedAgg))
+
+			r.Get("/api/orchestration-runs", api.FederatedOrchestrationRunsList(s.store, s.fedAgg))
+			r.Get("/api/orchestration-runs/{id}", api.FederatedOrchestrationRunDetail(s.store, s.fedAgg))
+			r.Post("/api/orchestration-runs/{id}/cancel", api.FederatedOrchestrationRunCancel(s.store, s.fedAgg))
+			r.Post("/api/orchestration-runs/{id}/steps/{stepID}/approve", api.FederatedOrchestrationStepApprove(s.store, s.orchestra, s.fedAgg))
 		})
 	})
 
@@ -523,6 +649,94 @@ func (s *Server) routes() http.Handler {
 	r.NotFound(ui.Handler().ServeHTTP)
 
 	return r
+}
+
+// resolvePackageBinary returns the daemon binary bytes for a given
+// "<os>-<arch>" target. Used by the package download endpoint to
+// embed multi-arch okesu binaries in the generated archive.
+//
+// Resolution order:
+//  1. daemon_binaries table (operator uploaded one for the os/arch)
+//  2. configured DaemonBinaryPath when target matches local arch
+//  3. nothing — caller surfaces a 412 to the operator
+func resolvePackageBinary(s *Server, target string) ([]byte, error) {
+	osName, archName := splitTargetTriple(target)
+	if osName == "" || archName == "" {
+		return nil, fmt.Errorf("bad target %q (want os-arch)", target)
+	}
+	if s.cfg.DaemonBinariesDir != "" {
+		resolver := api.NewDBBinaryResolver(s.store)
+		path, err := resolver.Resolve(osName, archName)
+		if err == nil && path != "" {
+			return os.ReadFile(path)
+		}
+	}
+	// Fallback: local default binary, only if it matches the request.
+	if s.cfg.DaemonBinaryPath != "" && osName == runtime.GOOS && archName == runtime.GOARCH {
+		return os.ReadFile(s.cfg.DaemonBinaryPath)
+	}
+	return nil, nil
+}
+
+// startS3Scanner spins up one s3scanner.Scanner against a transport
+// config. Forwards events into the existing eventpipeline + findings
+// hooks so the rest of the CP doesn't need to know which transport
+// the data arrived through.
+func (s *Server) startS3Scanner(ctx context.Context, c db.TransportConfig) {
+	cli, err := s3transport.NewClient(ctx, s3transport.ClientConfig{
+		Endpoint:  c.Endpoint,
+		Region:    c.Region.String,
+		Bucket:    c.Bucket,
+		AccessKey: c.AccessKey.String,
+		SecretKey: c.SecretKey.String,
+		UseSSL:    c.UseSSL,
+	})
+	if err != nil {
+		log.Printf("s3 scanner cfg=%d: connect: %v", c.ID, err)
+		return
+	}
+	scanner := s3scanner.New(s.store, cli, c.CPID.String, c.ID, c.ScannerIntervalMs)
+	scanner.IssueClientCert = func(commonName string) (cert, key, ca []byte, err error) {
+		return s.IssueClientCert(commonName)
+	}
+	publish := func(e agent.Event, raw []byte) {
+		// Reuse the webhook ingest path — publish to the events
+		// queue and let the pipeline handle batching, persistence,
+		// and SSE fan-out. Same shape webhooks land in.
+		rec := ports.EventRecord{
+			Ts:       e.Ts,
+			Type:     string(e.Type),
+			Agent:    e.Agent,
+			Host:     e.Host,
+			Severity: e.Severity,
+			Title:    e.Title,
+			RawJSON:  string(raw),
+		}
+		payload, err := json.Marshal(rec)
+		if err != nil {
+			return
+		}
+		_ = s.queue.Publish(ctx, eventpipeline.TopicEventsRaw, payload)
+	}
+	scanner.OnEvent = func(nodeID int64, e agent.Event) {
+		raw, _ := json.Marshal(e)
+		publish(e, raw)
+	}
+	scanner.OnFinding = func(nodeID int64, e agent.Event) {
+		raw, _ := json.Marshal(e)
+		publish(e, raw)
+	}
+	go scanner.Run(ctx)
+	log.Printf("s3 scanner started: cfg=%d cp=%s bucket=%s every=%dms", c.ID, c.CPID.String, c.Bucket, c.ScannerIntervalMs)
+}
+
+func splitTargetTriple(t string) (string, string) {
+	for i := len(t) - 1; i >= 0; i-- {
+		if t[i] == '-' {
+			return t[:i], t[i+1:]
+		}
+	}
+	return "", ""
 }
 
 // mgmtRoutes wires the mTLS-protected agent management plane.
@@ -539,6 +753,14 @@ func (s *Server) mgmtRoutes() http.Handler {
 	r.Get("/api/v1/agents/{name}/definition", api.MgmtDefinition(s.cfg.DaimonFilesDir))
 	r.Get("/api/v1/agents/{name}/known-issues", api.MgmtKnownIssues(s.store))
 	r.Get("/api/v1/agents/{name}/findings/search", api.MgmtFindingsLookup(s.store))
+
+	// Pull-mode jobs queue (Phase D). The jobs runtime on each node
+	// polls /jobs, claims work, streams output via /output, and
+	// reports terminal state via /exit. Same mTLS gate as everything
+	// else here — cert CN identifies the node.
+	r.Get("/api/v1/agents/jobs", api.MgmtJobsPoll(s.store))
+	r.Post("/api/v1/agents/jobs/{id}/output", api.MgmtJobOutput(s.store))
+	r.Post("/api/v1/agents/jobs/{id}/exit", api.MgmtJobExit(s.store))
 
 	// Reverse mTLS tunnel from `okesu node` clients (Phase 6).
 	tunSrv := tunnel.NewServer(s.tunReg)
@@ -558,6 +780,25 @@ func (s *Server) Run(ctx context.Context) error {
 	go s.sessionGC(ctx)
 	go s.notify.Run(ctx)
 	s.fedPoller.Start(ctx)
+	// Phase D: cron-driven orchestration runs. The scheduler ticks
+	// every minute and fires due orchestrations through the same
+	// engine path as manual + finding triggers.
+	s.orchestra.StartCronScheduler(ctx)
+
+	// Phase 9: launch one S3 scanner per configured transport
+	// config. Each scanner runs independently, sharing nothing
+	// except the (read) DB store. Failures in one scanner don't
+	// affect the others.
+	if cfgs, err := s.store.ListTransportConfigs(); err != nil {
+		log.Printf("s3 scanners: list transport_configs: %v", err)
+	} else {
+		for _, c := range cfgs {
+			if c.Kind != "s3" || !c.AccessKey.Valid || !c.SecretKey.Valid {
+				continue
+			}
+			s.startS3Scanner(ctx, c)
+		}
+	}
 
 	// Reconcile any runs left in 'running' state from a previous CP process —
 	// the child on the node may have finished while we were down, or be

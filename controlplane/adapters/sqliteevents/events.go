@@ -72,6 +72,18 @@ func (a *Adapter) Recent(_ context.Context, limit int, beforeTs int64) ([]ports.
 	return out, nil
 }
 
+func (a *Adapter) RecentFiltered(_ context.Context, f ports.EventFilter, limit int, beforeTs int64) ([]ports.EventRecord, error) {
+	rows, err := a.store.RecentEventsFiltered(f.Agent, f.Host, limit, beforeTs)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]ports.EventRecord, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, fromDB(r))
+	}
+	return out, nil
+}
+
 func toDB(e *ports.EventRecord) *db.Event {
 	return &db.Event{
 		Ts:       e.Ts,

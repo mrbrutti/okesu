@@ -18,15 +18,19 @@ import {
   AlertTriangle,
   CheckCircle2,
   Cpu,
+  GitBranch,
   Loader2,
   Lock,
+  Pause,
   Radio,
   Server,
   ShieldAlert,
   TrendingUp,
+  Workflow,
   WifiOff,
+  XCircle,
 } from 'lucide-react';
-import { api, ApiError, type DashboardResponse, type InsightsEventsResponse, type InsightsFindingsResponse, type TimeRange } from '../api';
+import { api, ApiError, type DashboardResponse, type InsightsEventsResponse, type InsightsFindingsResponse, type OrchestrationRunView, type TimeRange } from '../api';
 import { cn } from '../lib/cn';
 
 const EventsTimelineChart = lazy(() =>
@@ -75,6 +79,11 @@ export default function DashboardPage() {
 
   const [events, setEvents] = useState<InsightsEventsResponse | null>(null);
   const [findings, setFindings] = useState<InsightsFindingsResponse | null>(null);
+  // Orchestration runs — surfaced on the dashboard so the operator
+  // sees pending approval gates and recent automation outcomes
+  // without having to navigate. Refreshes on the same 15s tick as
+  // the rest of the dashboard.
+  const [orchRuns, setOrchRuns] = useState<OrchestrationRunView[] | null>(null);
 
   // Aggregate dashboard payload — every 15s.
   useEffect(() => {
@@ -83,6 +92,9 @@ export default function DashboardPage() {
       api.dashboard()
         .then((d) => { if (!cancelled) { setData(d); setError(null); } })
         .catch((e) => { if (!cancelled) setError(e instanceof ApiError ? e.message : String(e)); });
+      api.orchestrationRuns()
+        .then((rows) => { if (!cancelled) setOrchRuns(rows); })
+        .catch(() => { /* keep stale data on transient errors */ });
     };
     refresh();
     const t = setInterval(refresh, 15_000);
@@ -294,6 +306,21 @@ export default function DashboardPage() {
             {!data ? <ChartSkeleton /> : <FleetStatusKeypoints data={data.fleet_status} />}
           </Card>
         </section>
+
+        {/* Row 5: orchestration outcomes + pending gates. Two columns:
+            left summarises the last 24h's automation outcomes; right
+            surfaces every run currently waiting on operator approval
+            so the on-call sees them without navigating to the
+            orchestrations page. Each pending row is a deep-link
+            into the run-detail panel. */}
+        <section className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <Card title="Automation (24h)" subtitle="Orchestration runs by outcome">
+            <OrchestrationOutcomes runs={orchRuns} />
+          </Card>
+          <Card title="Pending approvals" subtitle="Runs waiting on a human gate">
+            <PendingApprovals runs={orchRuns} />
+          </Card>
+        </section>
       </div>
     </div>
   );
@@ -452,6 +479,163 @@ function ChartSkeleton() {
       loading…
     </div>
   );
+}
+
+// ── Orchestration cards ─────────────────────────────────────────────
+
+// 24h cutoff for the dashboard rollup. Older runs go to the
+// orchestrations page's full history view.
+const RUN_24H_MS = 24 * 60 * 60 * 1000;
+
+// OrchestrationOutcomes — per-status counts plus a thin accent bar so
+// the operator gets a one-glance read of whether automation is
+// healthy. Clicking the row jumps to the orchestration runs list.
+function OrchestrationOutcomes({ runs }: { runs: OrchestrationRunView[] | null }) {
+  if (runs === null) return <ChartSkeleton />;
+  const cutoff = Date.now() - RUN_24H_MS;
+  const recent = runs.filter((r) => new Date(r.started_at).getTime() >= cutoff);
+  const buckets = {
+    completed: recent.filter((r) => r.status === 'completed').length,
+    running:   recent.filter((r) => r.status === 'running').length,
+    approval:  recent.filter((r) => r.status === 'approval_required').length,
+    failed:    recent.filter((r) => r.status === 'failed').length,
+    cancelled: recent.filter((r) => r.status === 'cancelled').length,
+  };
+  const total = Object.values(buckets).reduce((a, b) => a + b, 0);
+
+  if (total === 0) {
+    return (
+      <div className="p-6 text-center text-xs text-ink-mute">
+        No orchestration runs in the last 24h.
+        <div className="mt-2">
+          <Link to="/orchestrations" className="text-brand-700 hover:underline">
+            Open orchestrations →
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
+  const rows: { label: string; count: number; tone: string; icon: typeof Workflow }[] = [
+    { label: 'Completed', count: buckets.completed, tone: 'bg-green-500',  icon: CheckCircle2 },
+    { label: 'Running',   count: buckets.running,   tone: 'bg-blue-500',   icon: Loader2 },
+    { label: 'Approval',  count: buckets.approval,  tone: 'bg-amber-500',  icon: Pause },
+    { label: 'Failed',    count: buckets.failed,    tone: 'bg-red-500',    icon: XCircle },
+    { label: 'Cancelled', count: buckets.cancelled, tone: 'bg-slate-400',  icon: GitBranch },
+  ];
+
+  return (
+    <div className="p-4 space-y-3">
+      {/* segmented bar — proportional widths sum to 100% */}
+      <div className="flex h-2 rounded overflow-hidden ring-1 ring-border">
+        {rows.map((r) =>
+          r.count > 0 ? (
+            <div
+              key={r.label}
+              className={r.tone}
+              style={{ width: `${(r.count / total) * 100}%` }}
+              title={`${r.label}: ${r.count}`}
+            />
+          ) : null,
+        )}
+      </div>
+      <ul className="space-y-1.5">
+        {rows.map((r) => (
+          <li key={r.label} className="flex items-center justify-between text-sm">
+            <Link
+              to={`/orchestrations?tab=runs&status=${runStatusQueryParam(r.label)}`}
+              className="flex items-center gap-2 text-ink hover:text-brand-700"
+            >
+              <span className={cn('inline-block w-1.5 h-3 rounded-sm', r.tone)} />
+              <r.icon size={11} className={r.label === 'Running' ? 'animate-spin' : ''} />
+              {r.label}
+            </Link>
+            <span className="text-sm font-medium tabular-nums text-ink-dim">{r.count}</span>
+          </li>
+        ))}
+      </ul>
+      <div className="pt-1 border-t border-border/60 flex items-center justify-between text-[11px] text-ink-mute">
+        <span>{total} runs · 24h</span>
+        <Link to="/orchestrations?tab=runs" className="text-brand-700 hover:underline">
+          full history →
+        </Link>
+      </div>
+    </div>
+  );
+}
+
+// PendingApprovals — every run currently in `approval_required`,
+// sorted by oldest first so the operator handles the longest-waiting
+// gate first. Each row is a one-click deep link into the run detail
+// where the Approve button lives.
+function PendingApprovals({ runs }: { runs: OrchestrationRunView[] | null }) {
+  if (runs === null) return <ChartSkeleton />;
+  const pending = runs
+    .filter((r) => r.status === 'approval_required')
+    .sort((a, b) => new Date(a.started_at).getTime() - new Date(b.started_at).getTime());
+
+  if (pending.length === 0) {
+    return (
+      <div className="p-6 text-center text-xs text-ink-mute">
+        <div className="inline-flex items-center gap-1.5 text-green-700">
+          <CheckCircle2 size={14} />
+          No gates waiting.
+        </div>
+        <div className="mt-1">Operator queue is clear.</div>
+      </div>
+    );
+  }
+
+  return (
+    <ul className="divide-y divide-border max-h-72 overflow-auto">
+      {pending.map((r) => {
+        const startedMs = new Date(r.started_at).getTime();
+        const ageMin = Math.max(0, Math.round((Date.now() - startedMs) / 60_000));
+        const stale = ageMin >= 60;
+        return (
+          <li key={r.id}>
+            <Link
+              to={`/orchestrations?tab=runs&run=${r.id}`}
+              className="flex items-center gap-2 px-4 py-2 text-sm hover:bg-amber-50/40"
+            >
+              <span className={cn(
+                'w-1 h-6 rounded-sm shrink-0',
+                stale ? 'bg-red-500' : 'bg-amber-500',
+              )} />
+              <Workflow size={12} className="text-amber-700 shrink-0" />
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2">
+                  <span className="font-medium truncate">Run #{r.id}</span>
+                  {r.current_step_id && (
+                    <code className="text-[10px] text-ink-dim font-mono truncate">
+                      step: {r.current_step_id}
+                    </code>
+                  )}
+                </div>
+                <div className="text-[11px] text-ink-mute">
+                  {ageMin < 1 ? 'just now' : `${ageMin}m waiting`}{stale && ' · stale'}
+                </div>
+              </div>
+              <span className="text-[10px] uppercase tracking-wide font-medium px-1.5 py-0.5 rounded ring-1 text-amber-700 bg-amber-50 ring-amber-200 shrink-0">
+                approve
+              </span>
+            </Link>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+// Maps the status pill label to the URL filter the orchestrations
+// page understands. Keep aligned with Orchestrations.tsx's status
+// query handling.
+function runStatusQueryParam(label: string): string {
+  switch (label) {
+    case 'Approval':  return 'approval_required';
+    case 'Cancelled': return 'cancelled';
+    default:          return label.toLowerCase();
+  }
 }
 
 // CheckCircle2 used by FleetStatusKeypoints below.

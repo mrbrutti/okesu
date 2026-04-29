@@ -79,6 +79,14 @@ func resolvePrivateKey(ctx context.Context, requestKey string, secrets ports.Sec
 
 // dbBinaryResolver looks up the daemon binary path for an os/arch from the
 // daemon_binaries table. Implements sshdeploy.DaemonBinaryResolver.
+// NewDBBinaryResolver constructs the multi-arch daemon-binary
+// resolver backed by the daemon_binaries table. Exported so the
+// install-jobs-runtime endpoint can build the same resolver the
+// daimon Deploy flow uses.
+func NewDBBinaryResolver(store *db.Store) sshdeploy.DaemonBinaryResolver {
+	return &dbBinaryResolver{store: store}
+}
+
 type dbBinaryResolver struct {
 	store *db.Store
 }
@@ -128,6 +136,12 @@ type nodeJSON struct {
 	// the audit log and surfaces as a UI badge.
 	AutoUpdatePaused bool `json:"auto_update_paused"`
 
+	// Phase 4 — runtime liveness reported by the jobs runtime via
+	// its mgmt-plane poll. Drive the Node-detail "Runtimes" panel.
+	JobsRuntimeSeenAt string `json:"jobs_runtime_seen_at,omitempty"`
+	TunnelRunning     bool   `json:"tunnel_running"`
+	PreferredDispatch string `json:"preferred_dispatch,omitempty"` // "" | "tunnel" | "jobs"
+
 	// Phase 9.6: federation source. Non-nil iff this row was federated
 	// from a child CP. Nil for local rows.
 	CPSource *CPSourceRef `json:"cp_source,omitempty"`
@@ -143,8 +157,13 @@ func toNodeJSON(n *db.Node) nodeJSON {
 		SSHPort:          n.SSHPort,
 		Status:           n.Status,
 		Notes:            n.Notes.String,
-		AutoUpdatePaused: n.AutoUpdatePaused,
-		CreatedAt:        n.CreatedAt.UTC().Format(time.RFC3339),
+		AutoUpdatePaused:  n.AutoUpdatePaused,
+		TunnelRunning:     n.TunnelRunning,
+		PreferredDispatch: n.PreferredDispatch,
+		CreatedAt:         n.CreatedAt.UTC().Format(time.RFC3339),
+	}
+	if n.JobsRuntimeSeenAt.Valid {
+		out.JobsRuntimeSeenAt = n.JobsRuntimeSeenAt.Time.UTC().Format(time.RFC3339)
 	}
 	if n.StatusMessage.Valid {
 		out.StatusMessage = n.StatusMessage.String
@@ -724,6 +743,18 @@ func NodeDeploy(store *db.Store, reg *jobs.Registry, deployer NodeDeployer, cfg 
 			}
 		}
 
+		// Phase 6: always issue a node-level cert + ship the jobs
+		// runtime alongside the daimons. This keeps the deploy
+		// footprint coherent — every fresh node lands ready to
+		// receive orchestration step jobs without operators having
+		// to run a separate install. Failure is non-fatal: if the
+		// CP can't issue a cert (no CA configured), we skip and
+		// the daimon-only path still completes.
+		var jobsRuntime *sshdeploy.MgmtCertBundle
+		if jc, jk, jca, jerr := deployer.IssueClientCert(n.Name); jerr == nil {
+			jobsRuntime = &sshdeploy.MgmtCertBundle{ClientCert: jc, ClientKey: jk, CACert: jca}
+		}
+
 		webhookSecret := ""
 		if req.IncludeWebhook {
 			webhookSecret = cfg.WebhookSecret
@@ -783,6 +814,8 @@ func NodeDeploy(store *db.Store, reg *jobs.Registry, deployer NodeDeployer, cfg 
 			MgmtURL:              cfg.MgmtURL,
 			AnthropicAPIKey:      req.AnthropicKey,
 			OpenAIAPIKey:         req.OpenAIKey,
+			JobsRuntime:          jobsRuntime,
+			NodeName:             n.Name,
 		}
 
 		job := reg.Create("deploy", id)

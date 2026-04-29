@@ -1,0 +1,345 @@
+package orchestrator
+
+import (
+	"context"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+)
+
+// fakeStore is an in-memory implementation of the engine's Store
+// interface — enough surface area to drive a run end-to-end without
+// touching SQLite. The real wiring lives in db/orchestrations.go.
+type fakeStore struct {
+	mu     sync.Mutex
+	orch   *Orchestration
+	run    *RunRecord
+	steps  map[string]*StepRecord
+	stepOrder []string // preserve insert order for ListOrchestrationSteps
+}
+
+func newFakeStore(orch *Orchestration, run *RunRecord) *fakeStore {
+	return &fakeStore{
+		orch:  orch,
+		run:   run,
+		steps: map[string]*StepRecord{},
+	}
+}
+
+func (f *fakeStore) GetOrchestration(_ int64) (*Orchestration, error) { return f.orch, nil }
+func (f *fakeStore) GetOrchestrationRun(_ int64) (*RunRecord, error)  { return f.run, nil }
+
+func (f *fakeStore) UpdateOrchestrationRunStatus(_ int64, status string, currentStepID, errMsg string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.run.Status = status
+	if currentStepID != "" {
+		f.run.CurrentStepID = currentStepID
+	}
+	if errMsg != "" {
+		f.run.Error = errMsg
+	}
+	return nil
+}
+
+func (f *fakeStore) FinishOrchestrationRun(_ int64, status, errMsg string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.run.Status = status
+	if errMsg != "" {
+		f.run.Error = errMsg
+	}
+	now := time.Now().UTC()
+	f.run.EndedAt = &now
+	return nil
+}
+
+func (f *fakeStore) ListOrchestrationSteps(_ int64) ([]*StepRecord, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]*StepRecord, 0, len(f.stepOrder))
+	for _, id := range f.stepOrder {
+		out = append(out, f.steps[id])
+	}
+	return out, nil
+}
+
+func (f *fakeStore) UpsertOrchestrationStep(s *StepRecord) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, exists := f.steps[s.StepID]; !exists {
+		f.stepOrder = append(f.stepOrder, s.StepID)
+	}
+	cp := *s
+	f.steps[s.StepID] = &cp
+	return nil
+}
+
+func (f *fakeStore) GetOrchestrationStep(_ int64, stepID string) (*StepRecord, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.steps[stepID], nil
+}
+
+// fakeDispatcher returns canned results per step. Useful for testing
+// the engine's halt / advance / skip / approve transitions without
+// actually running an agent.
+type fakeDispatcher struct {
+	resultByStep map[string]DispatchResult
+	errByStep    map[string]error
+	calls        []DispatchRequest
+}
+
+func (d *fakeDispatcher) Dispatch(_ context.Context, req DispatchRequest) (DispatchResult, error) {
+	d.calls = append(d.calls, req)
+	if err, ok := d.errByStep[req.StepID]; ok {
+		return DispatchResult{}, err
+	}
+	if r, ok := d.resultByStep[req.StepID]; ok {
+		return r, nil
+	}
+	// Default: succeed with empty output.
+	return DispatchResult{Status: StepStatusCompleted, RunID: "run-" + req.StepID, CPInstanceID: req.CPInstanceID}, nil
+}
+
+func mustParse(t *testing.T, src string) *Spec {
+	t.Helper()
+	s, err := Parse(src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	return s
+}
+
+func TestEngine_HappyPath(t *testing.T) {
+	spec := mustParse(t, `---
+name: simple
+description: two-step chain
+steps:
+  - id: a
+    agent: investigator
+    node: h1
+    prompt: "scan"
+  - id: b
+    agent: binary-analyzer
+    node: "{{a.host}}"
+    prompt: "analyze {{a.result.path}}"
+---`)
+	orch := &Orchestration{ID: 1, Name: "simple", Spec: spec, Enabled: true}
+	run := &RunRecord{ID: 10, OrchestrationID: 1, Status: RunStatusPending, TriggerKind: "manual"}
+	store := newFakeStore(orch, run)
+	disp := &fakeDispatcher{
+		resultByStep: map[string]DispatchResult{
+			"a": {
+				Status:       StepStatusCompleted,
+				RunID:        "run-a",
+				CPInstanceID: "local",
+				HostResolved: "h1",
+				OutputTail:   "scan output",
+				Findings: []DispatchedFinding{
+					{Category: OrchestrationResultCategory, Title: "result", Attributes: map[string]any{"path": "/tmp/m"}},
+				},
+			},
+			// b uses the default fakeDispatcher response (success)
+		},
+	}
+
+	engine := NewEngine(store, disp)
+	if err := engine.Run(context.Background(), run.ID); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if run.Status != RunStatusCompleted {
+		t.Errorf("run.Status = %q, want %q", run.Status, RunStatusCompleted)
+	}
+	if len(disp.calls) != 2 {
+		t.Fatalf("want 2 dispatch calls, got %d", len(disp.calls))
+	}
+	// Step b should have rendered the path from step a's result.
+	if !strings.Contains(disp.calls[1].Prompt, "/tmp/m") {
+		t.Errorf("step b prompt didn't pick up step a's result: %q", disp.calls[1].Prompt)
+	}
+	// Step b's node selector should template-resolve to step a's host.
+	if disp.calls[1].NodeSelector != "h1" {
+		t.Errorf("step b node = %q, want h1", disp.calls[1].NodeSelector)
+	}
+}
+
+func TestEngine_HaltOnError(t *testing.T) {
+	spec := mustParse(t, `---
+name: halts
+description: stops after first failure
+steps:
+  - id: a
+    agent: x
+    prompt: x
+  - id: b
+    agent: x
+    prompt: x
+---`)
+	store := newFakeStore(
+		&Orchestration{ID: 1, Spec: spec},
+		&RunRecord{ID: 1, OrchestrationID: 1, Status: RunStatusPending, TriggerKind: "manual"},
+	)
+	disp := &fakeDispatcher{
+		resultByStep: map[string]DispatchResult{
+			"a": {Status: StepStatusFailed, Error: "boom"},
+		},
+	}
+	if err := NewEngine(store, disp).Run(context.Background(), 1); err != nil {
+		t.Fatal(err)
+	}
+	if store.run.Status != RunStatusFailed {
+		t.Errorf("run.Status = %q, want %q", store.run.Status, RunStatusFailed)
+	}
+	if len(disp.calls) != 1 {
+		t.Errorf("step b should not have been dispatched, got %d calls", len(disp.calls))
+	}
+}
+
+func TestEngine_ContinueOnError(t *testing.T) {
+	spec := mustParse(t, `---
+name: continues
+description: advances past a failure
+steps:
+  - id: a
+    agent: x
+    prompt: x
+    continue_on_error: true
+  - id: b
+    agent: x
+    prompt: x
+---`)
+	store := newFakeStore(
+		&Orchestration{ID: 1, Spec: spec},
+		&RunRecord{ID: 1, OrchestrationID: 1, Status: RunStatusPending, TriggerKind: "manual"},
+	)
+	disp := &fakeDispatcher{
+		resultByStep: map[string]DispatchResult{
+			"a": {Status: StepStatusFailed, Error: "boom"},
+		},
+	}
+	if err := NewEngine(store, disp).Run(context.Background(), 1); err != nil {
+		t.Fatal(err)
+	}
+	if store.run.Status != RunStatusCompleted {
+		t.Errorf("run.Status = %q, want %q", store.run.Status, RunStatusCompleted)
+	}
+	if len(disp.calls) != 2 {
+		t.Errorf("want 2 dispatch calls, got %d", len(disp.calls))
+	}
+}
+
+func TestEngine_WhenSkipsStep(t *testing.T) {
+	spec := mustParse(t, `---
+name: gated
+description: skip second step when first has no findings
+steps:
+  - id: a
+    agent: x
+    prompt: x
+  - id: b
+    when: "a.findings | length > 0"
+    agent: x
+    prompt: x
+---`)
+	store := newFakeStore(
+		&Orchestration{ID: 1, Spec: spec},
+		&RunRecord{ID: 1, OrchestrationID: 1, Status: RunStatusPending, TriggerKind: "manual"},
+	)
+	disp := &fakeDispatcher{
+		resultByStep: map[string]DispatchResult{
+			"a": {Status: StepStatusCompleted, Findings: nil},
+		},
+	}
+	if err := NewEngine(store, disp).Run(context.Background(), 1); err != nil {
+		t.Fatal(err)
+	}
+	if store.run.Status != RunStatusCompleted {
+		t.Errorf("run.Status = %q, want %q", store.run.Status, RunStatusCompleted)
+	}
+	if len(disp.calls) != 1 {
+		t.Errorf("step b should have been skipped, got %d total calls", len(disp.calls))
+	}
+	if store.steps["b"].Status != StepStatusSkipped {
+		t.Errorf("step b.Status = %q, want %q", store.steps["b"].Status, StepStatusSkipped)
+	}
+}
+
+func TestEngine_ApprovalGate(t *testing.T) {
+	spec := mustParse(t, `---
+name: gated
+description: pauses for approval
+steps:
+  - id: triage
+    agent: x
+    prompt: x
+  - id: contain
+    approval: required
+    agent: x
+    prompt: x
+---`)
+	store := newFakeStore(
+		&Orchestration{ID: 1, Spec: spec},
+		&RunRecord{ID: 1, OrchestrationID: 1, Status: RunStatusPending, TriggerKind: "manual"},
+	)
+	disp := &fakeDispatcher{}
+	engine := NewEngine(store, disp)
+
+	// First Run: triage executes, contain pauses.
+	if err := engine.Run(context.Background(), 1); err != nil {
+		t.Fatal(err)
+	}
+	if store.run.Status != RunStatusApprovalRequired {
+		t.Errorf("run.Status = %q, want %q", store.run.Status, RunStatusApprovalRequired)
+	}
+	if store.steps["contain"].Status != StepStatusWaitingApproval {
+		t.Errorf("contain.Status = %q, want %q", store.steps["contain"].Status, StepStatusWaitingApproval)
+	}
+	if len(disp.calls) != 1 {
+		t.Errorf("only triage should have dispatched, got %d", len(disp.calls))
+	}
+
+	// Approve and run again — contain dispatches, run completes.
+	if err := engine.Approve(context.Background(), 1, "contain", 99); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+	if store.run.Status != RunStatusCompleted {
+		t.Errorf("after approve: run.Status = %q, want %q", store.run.Status, RunStatusCompleted)
+	}
+	if len(disp.calls) != 2 {
+		t.Errorf("want 2 dispatch calls after approve, got %d", len(disp.calls))
+	}
+	if store.steps["contain"].ApprovedByUserID != 99 {
+		t.Errorf("ApprovedByUserID = %d, want 99", store.steps["contain"].ApprovedByUserID)
+	}
+}
+
+func TestEngine_TriggerPayloadInTemplate(t *testing.T) {
+	spec := mustParse(t, `---
+name: triggered
+description: trigger inputs reach prompts
+steps:
+  - id: triage
+    agent: x
+    prompt: "scan host {{trigger.host}} finding {{trigger.finding_id}}"
+---`)
+	store := newFakeStore(
+		&Orchestration{ID: 1, Spec: spec},
+		&RunRecord{
+			ID:              1,
+			OrchestrationID: 1,
+			Status:          RunStatusPending,
+			TriggerKind:     "finding",
+			TriggerPayload:  `{"host":"edr-fedora-3","finding_id":42}`,
+		},
+	)
+	disp := &fakeDispatcher{}
+	if err := NewEngine(store, disp).Run(context.Background(), 1); err != nil {
+		t.Fatal(err)
+	}
+	if got := disp.calls[0].Prompt; !strings.Contains(got, "edr-fedora-3") || !strings.Contains(got, "42") {
+		t.Errorf("rendered prompt didn't pick up trigger context: %q", got)
+	}
+}

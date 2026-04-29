@@ -6,6 +6,7 @@ import {
   CheckCircle2,
   ChevronRight,
   Clock,
+  Columns,
   Cpu,
   ExternalLink,
   Hash,
@@ -22,6 +23,7 @@ import {
   X,
 } from 'lucide-react';
 import { api, type Finding, type FindingGroup, type FindingsSummary, type FindingStatus, type RunListItem } from '../api';
+import { FindingHistory, History as HistoryIcon } from '../components/FindingHistory';
 import { cn } from '../lib/cn';
 import { SectionHeader, type SectionTone } from '../components/lists/SectionHeader';
 import { ListCard } from '../components/lists/ListCard';
@@ -33,6 +35,7 @@ import { useInfiniteScroll } from '../lib/useInfiniteScroll';
 import { useSelection } from '../lib/useSelection';
 import { BulkActionBar, BulkActionButton } from '../components/BulkActionBar';
 import { CPSourceChip } from '../components/CPSourceChip';
+import FindingsKanban from '../components/FindingsKanban';
 
 const PAGE_SIZE = 250;
 
@@ -46,7 +49,7 @@ const SEV_TONE: Record<Sev, SectionTone> = {
 
 type State = 'open' | 'acked' | 'all';
 type Sev = 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW' | 'INFO';
-type View = 'grouped' | 'recent';
+type View = 'grouped' | 'recent' | 'kanban';
 
 const ALL_SEVS: Sev[] = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO'];
 
@@ -66,10 +69,20 @@ export default function FindingsPage() {
   const [params, setParams] = useSearchParams();
   const idParam = params.get('id');
   const selectedId = idParam !== null ? Number(idParam) : null;
-  const setSelectedId = (id: number | null) => {
+  // ?cp=<instance_id> identifies which federated child a finding came
+  // from; finding ids are scoped per-CP, so without this the parent's
+  // /api/findings/{id} 404s on rows that originated on a child.
+  const selectedCp = params.get('cp') || undefined;
+  const setSelectedId = (id: number | null, cpInstanceID?: string) => {
     const p = new URLSearchParams(params);
-    if (id === null) p.delete('id');
-    else p.set('id', String(id));
+    if (id === null) {
+      p.delete('id');
+      p.delete('cp');
+    } else {
+      p.set('id', String(id));
+      if (cpInstanceID) p.set('cp', cpInstanceID);
+      else p.delete('cp');
+    }
     setParams(p, { replace: true });
   };
   const [error, setError] = useState<string | null>(null);
@@ -230,6 +243,16 @@ export default function FindingsPage() {
           >
             <List size={11} /> Recent
           </button>
+          <button
+            onClick={() => setView('kanban')}
+            className={cn(
+              'inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded-md',
+              view === 'kanban' ? 'bg-panel text-ink shadow-sm' : 'text-ink-dim hover:text-ink',
+            )}
+            title="Drag-and-drop board: move issues between status columns"
+          >
+            <Columns size={11} /> Kanban
+          </button>
         </div>
 
         {view === 'recent' && (
@@ -297,11 +320,21 @@ export default function FindingsPage() {
 
       {/* Body: list + drawer */}
       <div className="flex-1 flex overflow-hidden">
-        <div className="flex-1 overflow-auto">
-          {error && (
+        <div className={cn('flex-1', view === 'kanban' ? 'overflow-hidden' : 'overflow-auto')}>
+          {error && view !== 'kanban' && (
             <div className="m-6 text-sm text-red-700 bg-red-50 border border-red-200 px-3 py-2 rounded-md">
               {error}
             </div>
+          )}
+          {view === 'kanban' && (
+            <FindingsKanban
+              agent={agentFilter || undefined}
+              host={hostFilter || undefined}
+              category={categoryFilter || undefined}
+              severity={selectedSevs.length ? selectedSevs : undefined}
+              onChanged={refresh}
+              onOpenCard={(id, cp) => setSelectedId(id, cp)}
+            />
           )}
           {view === 'recent' && findings === null && <div className="p-6 text-ink-mute">Loading…</div>}
           {view === 'recent' && findings && findings.length === 0 && (
@@ -316,7 +349,7 @@ export default function FindingsPage() {
               {findings.map((f) => (
                 <li
                   key={f.id}
-                  onClick={() => setSelectedId(f.id)}
+                  onClick={() => setSelectedId(f.id, f.cp_source?.instance_id)}
                   className={cn(
                     'cursor-pointer hover:bg-slate-50/60 flex items-stretch',
                     selectedId === f.id && 'bg-brand-50/40',
@@ -412,7 +445,7 @@ export default function FindingsPage() {
                           g={g}
                           selected={sel.isSelected(g.group_key)}
                           onToggleSelected={(on) => sel.set(g.group_key, on)}
-                          onOpen={() => setSelectedId(g.latest_id)}
+                          onOpen={() => setSelectedId(g.latest_id, g.cp_source?.instance_id ?? g.cp_sources?.[0]?.instance_id)}
                           onPickAgent={(a) => setAgentFilter(a)}
                           onPickHost={(h) => setHostFilter(h)}
                           onAcked={refresh}
@@ -472,6 +505,7 @@ export default function FindingsPage() {
         {selectedId !== null && (
           <FindingDrawer
             id={selectedId}
+            cpInstanceID={selectedCp}
             onClose={() => setSelectedId(null)}
             onChanged={refresh}
           />
@@ -808,11 +842,15 @@ function SummaryCard({ label, value, accent }: SummaryCardProps) {
 
 interface DrawerProps {
   id: number;
+  /** When the finding originated on a federated child CP, pass that
+   *  child's instance_id so detail/runs lookups proxy to the right
+   *  store. Local rows leave this undefined. */
+  cpInstanceID?: string;
   onClose: () => void;
   onChanged: () => void;
 }
 
-export function FindingDrawer({ id, onClose, onChanged }: DrawerProps) {
+export function FindingDrawer({ id, cpInstanceID, onClose, onChanged }: DrawerProps) {
   const [f, setF] = useState<Finding | null>(null);
   const [related, setRelated] = useState<Finding[]>([]);
   const [busy, setBusy] = useState(false);
@@ -825,12 +863,12 @@ export function FindingDrawer({ id, onClose, onChanged }: DrawerProps) {
     setF(null);
     setRelated([]);
     setShowRaw(false);
-    api.finding(id).then(setF).catch((e) => setError(String(e)));
-    api.runsForFinding(id).then(setInvestigations).catch(() => setInvestigations([]));
-  }, [id]);
+    api.finding(id, cpInstanceID).then(setF).catch((e) => setError(String(e)));
+    api.runsForFinding(id, cpInstanceID).then(setInvestigations).catch(() => setInvestigations([]));
+  }, [id, cpInstanceID]);
 
   function refreshInvestigations() {
-    api.runsForFinding(id).then(setInvestigations).catch(() => { /* ignore */ });
+    api.runsForFinding(id, cpInstanceID).then(setInvestigations).catch(() => { /* ignore */ });
   }
 
   // Look up related findings (same dedup_key) once we have the finding.
@@ -849,7 +887,7 @@ export function FindingDrawer({ id, onClose, onChanged }: DrawerProps) {
 
   async function setStatus(status: FindingStatus, note: string) {
     setBusy(true); setError(null);
-    try { setF(await api.setFindingStatus(id, status, note)); onChanged(); }
+    try { setF(await api.setFindingStatus(id, status, { note, cpInstanceID })); onChanged(); }
     catch (e) { setError(String(e)); }
     finally { setBusy(false); }
   }
@@ -1096,6 +1134,13 @@ export function FindingDrawer({ id, onClose, onChanged }: DrawerProps) {
             </ul>
           </Section>
         )}
+
+        {/* Edit history — every status change, severity override, tag
+            mutation, or run linkage. Auto-actions show a Bot icon and
+            link to the orchestration run that made the change. */}
+        <Section icon={HistoryIcon} title="History">
+          <FindingHistory findingId={f.id} refreshKey={busy ? 0 : 1} />
+        </Section>
 
         {/* Raw event — collapsible since it duplicates the above */}
         <Section icon={ArrowUpRight} title="Raw event">

@@ -17,9 +17,11 @@ import {
   AlertTriangle,
   Layers,
   Loader2,
+  Pause,
   Search,
   Server,
   Sparkles,
+  Workflow,
   X,
 } from 'lucide-react';
 import {
@@ -29,6 +31,8 @@ import {
   type DaimonItem,
   type Finding,
   type NodeItem,
+  type Orchestration,
+  type OrchestrationRunView,
 } from '../api';
 import { cn } from '../lib/cn';
 import { useHotkey } from '../lib/useHotkey';
@@ -41,7 +45,10 @@ const PER_GROUP = 5;
 // background refetch — earlier reopens reuse the cache.
 const CACHE_TTL_MS = 30_000;
 
-type Kind = 'finding' | 'daimon' | 'agent' | 'node';
+// `pending_gate` is special: it surfaces orchestration runs currently
+// blocked on operator approval. Always renders first when populated
+// so the operator sees their action items the instant they Cmd-K.
+type Kind = 'pending_gate' | 'finding' | 'daimon' | 'agent' | 'node' | 'orchestration';
 
 interface BaseRow {
   kind: Kind;
@@ -65,6 +72,11 @@ interface CacheBundle {
   daimons: DaimonItem[];
   agents: AgentLibraryItem[];
   nodes: NodeItem[];
+  orchestrations: Orchestration[];
+  // Only the runs that are blocking on operator approval — we keep
+  // these distinct from `orchestrations` because their TTL is much
+  // shorter (the gate clears the moment someone approves).
+  pendingGates: OrchestrationRunView[];
 }
 
 interface ScoredRow {
@@ -120,9 +132,12 @@ export default function CommandPalette() {
       api.daimons(200).catch(() => [] as DaimonItem[]),
       api.agentLibrary().catch(() => [] as AgentLibraryItem[]),
       api.nodes().catch(() => [] as NodeItem[]),
+      api.orchestrations().catch(() => [] as Orchestration[]),
+      api.orchestrationRuns().catch(() => [] as OrchestrationRunView[]),
     ])
-      .then(([findings, daimons, agents, nodes]) => {
-        setCache({ fetchedAt: Date.now(), findings, daimons, agents, nodes });
+      .then(([findings, daimons, agents, nodes, orchestrations, runs]) => {
+        const pendingGates = runs.filter((r) => r.status === 'approval_required');
+        setCache({ fetchedAt: Date.now(), findings, daimons, agents, nodes, orchestrations, pendingGates });
       })
       .catch((e) => setError(String(e)))
       .finally(() => setLoading(false));
@@ -131,6 +146,29 @@ export default function CommandPalette() {
   const allRows = useMemo<BaseRow[]>(() => {
     if (!cache) return [];
     const rows: BaseRow[] = [];
+    // Pending gates first — they're action items the operator owns
+    // *now*. Title prefixes with "approve" so a Cmd-K + typing
+    // "approve" still surfaces them quickly.
+    for (const r of cache.pendingGates) {
+      const ageMin = Math.max(0, Math.round((Date.now() - new Date(r.started_at).getTime()) / 60_000));
+      rows.push({
+        kind: 'pending_gate',
+        key: 'pg-' + r.id,
+        title: 'approve run #' + r.id + (r.current_step_id ? ' — ' + r.current_step_id : ''),
+        subtitle: ageMin < 1 ? 'just now' : ageMin + 'm waiting',
+        to: '/orchestrations?tab=runs&run=' + r.id,
+      });
+    }
+    for (const o of cache.orchestrations) {
+      rows.push({
+        kind: 'orchestration',
+        key: 'o-' + o.id + '-' + (o.cp_source?.instance_id ?? ''),
+        title: o.name,
+        subtitle: o.description || ('trigger: ' + o.trigger_kind),
+        to: '/orchestrations?tab=library&id=' + o.id + (o.cp_source ? '&cp=' + encodeURIComponent(o.cp_source.instance_id) : ''),
+        cpSource: o.cp_source,
+      });
+    }
     for (const f of cache.findings) {
       rows.push({
         kind: 'finding',
@@ -138,7 +176,7 @@ export default function CommandPalette() {
         title: f.title || ('finding #' + f.id),
         subtitle: [f.severity, f.host].filter(Boolean).join(' · ') || undefined,
         severity: f.severity,
-        to: '/findings?id=' + f.id,
+        to: '/findings?id=' + f.id + (f.cp_source ? '&cp=' + encodeURIComponent(f.cp_source.instance_id) : ''),
         cpSource: f.cp_source,
       });
     }
@@ -183,6 +221,8 @@ export default function CommandPalette() {
   const grouped = useMemo(() => {
     const q = query.trim();
     const byKind: Record<Kind, ScoredRow[]> = {
+      pending_gate: [],
+      orchestration: [],
       finding: [],
       daimon: [],
       agent: [],
@@ -210,7 +250,9 @@ export default function CommandPalette() {
   // Flat ordered list used for keyboard navigation. Order follows the
   // visual order of the groups so ↓ moves to the next visible row.
   const flat = useMemo<ScoredRow[]>(() => {
-    const order: Kind[] = ['finding', 'daimon', 'agent', 'node'];
+    // Visual order: action items (gates) first, then catalog
+    // (orchestrations), then the existing entity sections.
+    const order: Kind[] = ['pending_gate', 'orchestration', 'finding', 'daimon', 'agent', 'node'];
     const out: ScoredRow[] = [];
     for (const k of order) out.push(...grouped[k].slice(0, PER_GROUP));
     return out;
@@ -263,7 +305,7 @@ export default function CommandPalette() {
             value={query}
             onChange={(e) => { setQuery(e.target.value); setActive(0); }}
             onKeyDown={onInputKey}
-            placeholder="Search findings, daimons, agents, nodes…"
+            placeholder="Search findings, daimons, agents, nodes, orchestrations…"
             className="flex-1 bg-transparent outline-none text-sm placeholder:text-ink-mute"
             spellCheck={false}
             autoComplete="off"
@@ -317,8 +359,16 @@ export default function CommandPalette() {
             <Hint k="↵" label="Open" />
             <Hint k="Esc" label="Close" />
           </div>
-          <div>
-            {cache ? `${cache.findings.length + cache.daimons.length + cache.agents.length + cache.nodes.length} items` : ''}
+          <div className="flex items-center gap-3">
+            {cache && cache.pendingGates.length > 0 && (
+              <span className="inline-flex items-center gap-1 text-amber-700">
+                <Pause size={10} />
+                {cache.pendingGates.length} gate{cache.pendingGates.length === 1 ? '' : 's'}
+              </span>
+            )}
+            <span>
+              {cache ? `${cache.findings.length + cache.daimons.length + cache.agents.length + cache.nodes.length + cache.orchestrations.length} items` : ''}
+            </span>
           </div>
         </footer>
       </div>
@@ -342,10 +392,12 @@ function Results({
   onHover: (i: number) => void;
 }) {
   const groups: { kind: Kind; label: string; sectionTo: string }[] = [
-    { kind: 'finding', label: 'Findings',  sectionTo: '/findings' },
-    { kind: 'daimon',  label: 'Daimons',   sectionTo: '/daimons' },
-    { kind: 'agent',   label: 'Agents',    sectionTo: '/agents?tab=library' },
-    { kind: 'node',    label: 'Nodes',     sectionTo: '/nodes' },
+    { kind: 'pending_gate',  label: 'Pending approvals', sectionTo: '/orchestrations?tab=runs&status=approval_required' },
+    { kind: 'orchestration', label: 'Orchestrations',    sectionTo: '/orchestrations?tab=library' },
+    { kind: 'finding',       label: 'Findings',          sectionTo: '/findings' },
+    { kind: 'daimon',        label: 'Daimons',           sectionTo: '/daimons' },
+    { kind: 'agent',         label: 'Agents',            sectionTo: '/agents?tab=library' },
+    { kind: 'node',          label: 'Nodes',             sectionTo: '/nodes' },
   ];
 
   // Map each row in `flat` to its index so the highlight calc stays O(1).
@@ -410,16 +462,20 @@ function ResultRow({
   onMouseEnter: () => void;
 }) {
   const Icon = iconFor(row.kind);
+  // Pending gates get the amber active+resting accent so the
+  // operator's eye lands on them before any other row.
+  const isGate = row.kind === 'pending_gate';
   return (
     <button
       onClick={onClick}
       onMouseEnter={onMouseEnter}
       className={cn(
         'w-full flex items-center gap-3 px-4 py-2 text-left text-sm',
-        active ? 'bg-brand-50 text-brand-700' : 'text-ink hover:bg-slate-50',
+        active && (isGate ? 'bg-amber-50 text-amber-800' : 'bg-brand-50 text-brand-700'),
+        !active && (isGate ? 'text-amber-800 hover:bg-amber-50/70' : 'text-ink hover:bg-slate-50'),
       )}
     >
-      <Icon size={14} className={cn('shrink-0', active ? 'text-brand-700' : 'text-ink-mute')} />
+      <Icon size={14} className={cn('shrink-0', isGate ? 'text-amber-700' : (active ? 'text-brand-700' : 'text-ink-mute'))} />
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2 min-w-0">
           <span className="truncate">{highlight(row.title, matched, query)}</span>
@@ -456,7 +512,8 @@ function Hint({ k, label }: { k: string; label: string }) {
 function EmptyHint() {
   return (
     <div className="px-4 py-6 text-xs text-ink-mute">
-      Type to search across findings, daimons, agents, and nodes.
+      Type to search across findings, daimons, agents, nodes, and orchestrations.
+      Pending operator gates surface at the top automatically.
     </div>
   );
 }
@@ -468,7 +525,8 @@ function NoMatches() {
       <a className="text-brand-500 hover:underline" href="/findings">Findings</a>{', '}
       <a className="text-brand-500 hover:underline" href="/daimons">Daimons</a>{', '}
       <a className="text-brand-500 hover:underline" href="/agents?tab=library">Agents</a>{', '}
-      <a className="text-brand-500 hover:underline" href="/nodes">Nodes</a>.
+      <a className="text-brand-500 hover:underline" href="/nodes">Nodes</a>{', '}
+      <a className="text-brand-500 hover:underline" href="/orchestrations">Orchestrations</a>.
     </div>
   );
 }
@@ -477,10 +535,12 @@ function NoMatches() {
 
 function iconFor(kind: Kind) {
   switch (kind) {
-    case 'finding': return AlertTriangle;
-    case 'daimon':  return Layers;
-    case 'agent':   return Sparkles;
-    case 'node':    return Server;
+    case 'pending_gate':  return Pause;
+    case 'orchestration': return Workflow;
+    case 'finding':       return AlertTriangle;
+    case 'daimon':        return Layers;
+    case 'agent':         return Sparkles;
+    case 'node':          return Server;
   }
 }
 

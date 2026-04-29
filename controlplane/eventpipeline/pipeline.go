@@ -63,6 +63,36 @@ type Worker struct {
 	eventStore ports.EventStore
 	store      *db.Store
 	cfg        Config
+
+	// onFindingProjected fires after a finding row has landed in the
+	// DB. Used by the orchestrator's auto-trigger probe to evaluate
+	// `trigger.on=finding` orchestrations against the new finding.
+	// Optional — nil callback is a no-op. Wired in server.go.
+	onFindingProjected func(FindingProjectedEvent)
+}
+
+// FindingProjectedEvent is the payload passed to onFindingProjected.
+// Decoupled from db.Finding so callers (the orchestrator's hook
+// belongs to the api package) don't have to import db just to
+// receive the event.
+type FindingProjectedEvent struct {
+	FindingID  int64
+	EventID    int64
+	Severity   string
+	Title      string
+	Agent      string
+	Host       string
+	Category   string
+	DedupKey   string
+	Resource   string
+	Attributes map[string]any
+}
+
+// SetFindingHook installs (or replaces) the post-projection callback.
+// Safe to call before Run() — there's no concurrent access until the
+// worker starts processing batches.
+func (w *Worker) SetFindingHook(fn func(FindingProjectedEvent)) {
+	w.onFindingProjected = fn
 }
 
 // NewWorker constructs a Worker. Pass `store` nil to skip finding
@@ -146,11 +176,36 @@ func (w *Worker) Run(ctx context.Context) error {
 				continue
 			}
 			fi.EventID = id
-			if _, ferr := w.store.InsertFinding(fi); ferr != nil {
+			fid, ferr := w.store.InsertFinding(fi)
+			if ferr != nil {
 				// Event is durable; finding row failed to project.
 				// Log and continue — don't redeliver, that would
 				// double-insert the underlying event.
 				log.Printf("eventpipeline: finding projection failed (event_id=%d): %v", id, ferr)
+				continue
+			}
+			if w.onFindingProjected != nil {
+				// Best-effort: any panic in the callback is
+				// recovered so a buggy hook can't kill the worker.
+				func() {
+					defer func() {
+						if r := recover(); r != nil {
+							log.Printf("eventpipeline: onFindingProjected panic: %v", r)
+						}
+					}()
+					w.onFindingProjected(FindingProjectedEvent{
+						FindingID:  fid,
+						EventID:    id,
+						Severity:   fi.Severity,
+						Title:      fi.Title,
+						Agent:      ev.Agent,
+						Host:       ev.Host,
+						Category:   fi.Category,
+						DedupKey:   fi.DedupKey,
+						Resource:   fi.Resource,
+						Attributes: decodeAttributes(fi.Attributes),
+					})
+				}()
 			}
 		}
 		pending = pending[:0]
@@ -212,6 +267,21 @@ type findingFields struct {
 	CVE             string          `json:"cve"`
 	Tags            string          `json:"tags"`
 	Attributes      json.RawMessage `json:"attributes"`
+}
+
+// decodeAttributes turns a finding's JSON-encoded attributes string
+// (as stored on the Finding row) into a Go map. Best-effort: an
+// undecodable string yields an empty map so the trigger probe still
+// runs against the rest of the finding fields.
+func decodeAttributes(s string) map[string]any {
+	if s == "" {
+		return nil
+	}
+	var out map[string]any
+	if err := json.Unmarshal([]byte(s), &out); err != nil {
+		return nil
+	}
+	return out
 }
 
 func parseFindingFields(ev ports.EventRecord) (*db.FindingInsert, error) {

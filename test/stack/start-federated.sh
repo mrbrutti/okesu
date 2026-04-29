@@ -123,6 +123,7 @@ boot_cp() {
         --daemon-binary "$DAEMON_LINUX_BIN" \
         --daemon-binaries-dir "$bin_dir" \
         --daimon-files-dir "$DEMO_AGENT_FILES_DIR" \
+        --agent-files-dir "$ROOT/agents" \
         --webhook-public-url "https://$PUBLIC_HOST:$ui_port/api/webhooks/events" \
         --mgmt-public-url "https://$PUBLIC_HOST:$mgmt_port" \
         --cp-region "$region" \

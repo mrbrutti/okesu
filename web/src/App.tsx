@@ -6,6 +6,7 @@ import EventsPage from './pages/Events';
 import DaimonsPage from './pages/Daimons';
 import DaimonDetailPage from './pages/DaimonDetail';
 import AgentsPage from './pages/Agents';
+import OrchestrationsPage from './pages/Orchestrations';
 import DashboardPage from './pages/Dashboard';
 import FindingsPage from './pages/Findings';
 import NodesPage from './pages/Nodes';
@@ -53,6 +54,7 @@ export default function App() {
         <Route path="/daimons" element={<DaimonsPage />} />
         <Route path="/daimons/:name" element={<DaimonDetailPage />} />
         <Route path="/agents" element={<AgentsPage />} />
+        <Route path="/orchestrations" element={<OrchestrationsPage />} />
         <Route path="/nodes" element={<NodesPage />} />
         <Route path="/nodes/:id" element={<NodeDetailPage />} />
         {/* Legacy URL — agents now hosts the runs tab. */}

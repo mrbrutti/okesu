@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/section9labs/okesu/controlplane/auth"
 	"github.com/section9labs/okesu/controlplane/db"
 	"github.com/section9labs/okesu/controlplane/federation"
 )
@@ -46,7 +47,16 @@ func requireFederationToken(store *db.Store, next http.HandlerFunc) http.Handler
 			http.Error(w, "federation token invalid or not configured", http.StatusUnauthorized)
 			return
 		}
-		next.ServeHTTP(w, r)
+		// Inject a synthetic user so downstream write handlers that
+		// gate on UserFromContext (status mutations, audit-logged
+		// writes) don't 401. The audit row will show this actor;
+		// authorization happened at the federation-token check above.
+		ctx := auth.WithUser(r.Context(), &db.User{
+			ID:    0,
+			Email: "federation@parent",
+			Role:  "operator",
+		})
+		next.ServeHTTP(w, r.WithContext(ctx))
 	}
 }
 

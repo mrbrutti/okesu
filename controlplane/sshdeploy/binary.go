@@ -143,41 +143,29 @@ chmod 0755 /usr/local/bin/okesu
 	}
 	emit("✓ binary at /usr/local/bin/okesu (previous saved)")
 
-	// Restart services. systemd is Linux-only — non-Linux targets
-	// (macOS, FreeBSD, OpenBSD, Windows) skip this step. The binary
-	// is in place; the operator restarts whatever runtime they're
-	// using by hand.
-	if targetOS != "linux" {
-		emit("  (target is %s — systemd not available; binary swapped, restart agents manually if needed)", targetOS)
+	// Restart services via the flavour-appropriate manager.
+	mgr, err := Detect(c, targetOS)
+	if err != nil {
+		emit("  ! detect service manager: %v — binary in place, restart agents manually", err)
 		emit("✓ binary update complete")
 		return nil
 	}
 
 	if len(req.AgentNames) == 0 {
-		// Discover what's running.
-		if out, err := c.Run(`systemctl list-units 'okesu-agent@*.service' --plain --no-legend --state=loaded | awk '{print $1}'`); err == nil {
-			for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
-				line = strings.TrimSpace(line)
-				if strings.HasPrefix(line, "okesu-agent@") {
-					trim := strings.TrimSuffix(strings.TrimPrefix(line, "okesu-agent@"), ".service")
-					if trim != "" {
-						req.AgentNames = append(req.AgentNames, trim)
-					}
-				}
-			}
-		}
+		req.AgentNames, _ = mgr.ListOkesuAgents(c)
 	}
 
 	if len(req.AgentNames) == 0 {
-		emit("  (no okesu-agent@* services running — binary in place; nothing to restart)")
+		emit("  (no daimon services running — binary in place; nothing to restart)")
 		emit("✓ binary update complete")
 		return nil
 	}
 
 	for _, agent := range req.AgentNames {
-		emit("→ systemctl restart okesu-agent@%s", agent)
-		if out, err := c.Run("systemctl restart okesu-agent@" + agent); err != nil {
-			return fmt.Errorf("restart agent %s: %w (%s)", agent, err, out)
+		svcName := "okesu-agent-" + agent
+		emit("→ %s: restart %s", mgr.Flavour(), svcName)
+		if err := mgr.Restart(c, req.Cred.SudoPassword, svcName); err != nil {
+			return fmt.Errorf("restart agent %s: %w", agent, err)
 		}
 		emit("  ✓ %s restarted", agent)
 	}
@@ -244,29 +232,21 @@ chmod 0755 /usr/local/bin/okesu
 	}
 	emit("✓ binary rolled back")
 
-	if targetOS != "linux" {
-		emit("  (target is %s — systemd not available; binary rolled back, restart agents manually if needed)", targetOS)
+	mgr, err := Detect(c, targetOS)
+	if err != nil {
+		emit("  ! detect service manager: %v — binary rolled back; restart agents manually", err)
 		emit("✓ rollback complete")
 		return nil
 	}
 
 	if len(req.AgentNames) == 0 {
-		if out, err := c.Run(`systemctl list-units 'okesu-agent@*.service' --plain --no-legend --state=loaded | awk '{print $1}'`); err == nil {
-			for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
-				line = strings.TrimSpace(line)
-				if strings.HasPrefix(line, "okesu-agent@") {
-					trim := strings.TrimSuffix(strings.TrimPrefix(line, "okesu-agent@"), ".service")
-					if trim != "" {
-						req.AgentNames = append(req.AgentNames, trim)
-					}
-				}
-			}
-		}
+		req.AgentNames, _ = mgr.ListOkesuAgents(c)
 	}
 	for _, agent := range req.AgentNames {
-		emit("→ systemctl restart okesu-agent@%s", agent)
-		if out, err := c.Run("systemctl restart okesu-agent@" + agent); err != nil {
-			return fmt.Errorf("restart agent %s: %w (%s)", agent, err, out)
+		svcName := "okesu-agent-" + agent
+		emit("→ %s: restart %s", mgr.Flavour(), svcName)
+		if err := mgr.Restart(c, req.Cred.SudoPassword, svcName); err != nil {
+			return fmt.Errorf("restart agent %s: %w", agent, err)
 		}
 		emit("  ✓ %s restarted", agent)
 	}

@@ -3,6 +3,8 @@ import { Loader2, Play, Square, Wifi, WifiOff } from 'lucide-react';
 import { api, subscribeRunLog, type RunListItem } from '../api';
 import { cn } from '../lib/cn';
 import { useInfiniteScroll } from '../lib/useInfiniteScroll';
+import MarkdownEditor from '../components/LazyMarkdownEditor';
+import { HarnessOutput } from '../components/HarnessOutput';
 
 const RUNS_PAGE_SIZE = 200;
 
@@ -23,7 +25,7 @@ export default function RunsPage() {
   const [doneStatus, setDoneStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const scrollRef = useRef<HTMLPreElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
 
   // Refresh connected nodes + first page of history every 6s. The
   // first-page refresh keeps the live state of the most recent runs
@@ -176,14 +178,20 @@ export default function RunsPage() {
           </Field>
 
           <Field label="Prompt">
-            <textarea
-              value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
-              rows={6}
-              placeholder="audit ./src for security vulnerabilities"
-              className={inputCls}
-              required
-            />
+            <div className="border border-border rounded-md focus-within:ring-2 focus-within:ring-brand-500/30 overflow-hidden">
+              <MarkdownEditor
+                value={prompt}
+                onChange={setPrompt}
+                height={160}
+                showLineNumbers={false}
+                ariaLabel="Run prompt"
+              />
+            </div>
+            {!prompt && (
+              <p className="mt-1 text-[11px] text-ink-mute italic">
+                e.g. <span className="font-mono">audit ./src for security vulnerabilities</span>
+              </p>
+            )}
           </Field>
 
           {error && (
@@ -235,19 +243,15 @@ export default function RunsPage() {
               </span>
             )}
           </header>
-          <pre
-            ref={scrollRef}
-            className="flex-1 overflow-auto bg-slate-900 text-slate-100 text-xs font-mono p-3 m-0 rounded-b-xl whitespace-pre-wrap"
-          >
-            {lines.length === 0 && (
-              <span className="text-slate-500">
+          <div ref={scrollRef} className="flex-1 overflow-auto p-3">
+            {lines.length === 0 ? (
+              <div className="text-xs text-ink-mute italic">
                 {running ? 'Waiting for output…' : 'Submit a prompt to start.'}
-              </span>
+              </div>
+            ) : (
+              <HarnessOutput text={lines.join('\n')} maxHeight={null} />
             )}
-            {lines.map((l, i) => (
-              <div key={i}>{prettyJSONL(l)}</div>
-            ))}
-          </pre>
+          </div>
         </section>
 
         {/* Recent runs */}
@@ -330,36 +334,6 @@ function ConnectedHint({ count }: { count: number }) {
       <Wifi size={11} /> {count} node{count === 1 ? '' : 's'} connected
     </span>
   );
-}
-
-// prettyJSONL pretty-prints recognized event types compactly. Falls back to
-// the raw line when the input isn't a JSON object.
-function prettyJSONL(s: string): string {
-  try {
-    const o = JSON.parse(s);
-    if (o && typeof o === 'object' && o.type) {
-      const t = String(o.type);
-      const summary = summarizeEvent(o);
-      return summary ? `[${t}] ${summary}` : `[${t}]`;
-    }
-  } catch {
-    /* not JSON */
-  }
-  return s;
-}
-
-function summarizeEvent(o: Record<string, unknown>): string {
-  if (typeof o.text === 'string' && o.text) return o.text as string;
-  if (typeof o.tool_name === 'string') {
-    const cmd = o.input && typeof o.input === 'object' && (o.input as Record<string, unknown>).command;
-    return cmd ? `${o.tool_name as string}: ${cmd as string}` : (o.tool_name as string);
-  }
-  if (typeof o.title === 'string') return o.title;
-  if (o.usage && typeof o.usage === 'object') {
-    const u = o.usage as Record<string, unknown>;
-    return `tokens in=${u.input_tokens} out=${u.output_tokens}`;
-  }
-  return '';
 }
 
 const inputCls = "w-full px-2.5 py-1.5 text-sm border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500/30 bg-white";

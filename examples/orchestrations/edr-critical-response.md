@@ -1,0 +1,181 @@
+---
+name: edr-critical-response
+description: Auto-investigate HIGH or CRITICAL EDR findings, hunt the fleet for related artifacts, and pause for operator approval before containment.
+
+# Auto-fire whenever the eventpipeline projects a HIGH or CRITICAL
+# finding from the `edr` daimon. The matching finding's fields land
+# on `{{trigger.*}}` for the steps to template against.
+trigger:
+  on: finding
+  filter: "finding.severity in ['HIGH', 'CRITICAL'] && finding.agent == 'edr'"
+
+# Inputs let an operator run this manually for testing — supplying a
+# host + finding_id by hand. When the auto-trigger fires, the matching
+# finding's fields populate {{trigger.*}} and these defaults aren't
+# consulted (auto-trigger payloads carry the real values).
+inputs:
+  host:
+    type: string
+    required: false
+    default: "threat-rocky-1"
+  finding_id:
+    type: int
+    required: false
+    default: 0
+
+defaults:
+  timeout: 5m
+
+steps:
+  # 1. Triage on the affected host. We only need a single agent run
+  #    here — the investigator agent reads the finding context and
+  #    pulls relevant evidence (process tree, recent network, file
+  #    changes).
+  - id: triage
+    agent: investigator
+    node: "{{trigger.host}}"
+    prompt: |
+      Investigate finding #{{trigger.finding_id}} on {{trigger.host}}.
+
+      Severity: {{trigger.severity}}
+      Title: {{trigger.title}}
+      Resource: {{trigger.resource}}
+      Dedup key: {{trigger.dedup_key}}
+
+      Build a 2-minute-window timeline of process / network / file
+      events. If the finding pinpoints a binary (path, sha256), emit
+      an orchestration_result finding with attributes:
+        sha256, path, cmdline, parent_pid, network_peers (array)
+
+  # 2. Analyze the binary if triage extracted one. The `when` gate
+  #    skips the step when there's nothing to analyse.
+  - id: analyze
+    when: "{{triage.result.sha256 != ''}}"
+    agent: binary-analyzer
+    node: "{{trigger.host}}"
+    timeout: 10m
+    prompt: |
+      Analyze the binary at {{triage.result.path}} (sha256
+      {{triage.result.sha256}}).
+
+      Static analysis only — strings, imports, entropy, packers, IOCs.
+      Emit an orchestration_result finding with attributes:
+        family, confidence (low/medium/high), iocs (array of
+        {kind, value} entries), persistence (string)
+
+  # 3. Hunt the fleet. Multi-host fan-out: the same hunt prompt runs
+  #    in parallel on three of our most representative hosts, and
+  #    findings are merged. Operators editing this in the visual
+  #    editor see "3 nodes (fan-out)" on the card.
+  - id: hunt
+    agent: threat-hunter
+    nodes:
+      - threat-rocky-1
+      - threat-fedora-2
+      - threat-debian-2
+    timeout: 8m
+    continue_on_error: true   # one host's hunt failing doesn't kill the chain
+    prompt: |
+      Hunt for the IOCs from the previous step on this host.
+
+      Target sha256: {{analyze.result.sha256}}
+      Family: {{analyze.result.family}}
+      Other IOCs: {{analyze.result.iocs | json}}
+
+      Look at process listings, recent shell history, persistence
+      mechanisms (systemd units, cron, .bashrc), open network
+      connections, and the last 6 hours of relevant log entries.
+
+      Emit an orchestration_result finding with attributes:
+        matches (count), evidence (array of strings), additional_hosts (array)
+
+  # 4. Containment plan, gated. The amber pulse on this card in the
+  #    canvas tells the operator they need to click Approve before
+  #    the incident-responder agent dispatches.
+  - id: respond
+    approval: required
+    agent: incident-responder
+    node: "{{trigger.host}}"
+    timeout: 15m
+    actions:
+      - update_finding_status
+      - add_finding_tag
+      - link_run_to_finding
+    prompt: |
+      Draft a containment plan for finding {{trigger.finding_id}}.
+
+      Triage summary (last 50 lines):
+      {{triage.output | tail(50)}}
+
+      Binary analysis result:
+      {{analyze.result | json}}
+
+      Fleet hunt found {{hunt.findings | length}} related artifact(s)
+      across {{hunt.nodes | length}} host(s):
+      {{hunt.findings | json}}
+
+      Per-host hunt detail:
+      - threat-rocky-1: {{hunt.byNode["threat-rocky-1"].findings | length}} matches
+      - threat-fedora-2: {{hunt.byNode["threat-fedora-2"].findings | length}} matches
+      - threat-debian-2: {{hunt.byNode["threat-debian-2"].findings | length}} matches
+
+      Output a written plan covering:
+      1. Immediate isolation (SG / firewall / kubectl cordon)
+      2. Evidence preservation (hashes, paths, command list)
+      3. Eradication (specific files / accounts / persistence to remove)
+      4. Validation steps and rollback procedure if anything breaks
+
+      Then emit an orchestration_result finding with attributes:
+        plan (string — the markdown above)
+        actions (array)
+
+      Actions to request on finding {{trigger.finding_id}}:
+        update_finding_status → investigating
+          (reason: "containment plan ready: <one-line summary>")
+        add_finding_tag → containment-planned
+        link_run_to_finding
+---
+
+# Notes
+
+This orchestration ships as an example. It exercises every Phase A→D
+feature:
+
+- **Auto-trigger** — the `trigger.on=finding` block fires the run
+  whenever EDR emits a CRITICAL/HIGH finding. The matching finding's
+  fields (`finding.severity`, `finding.host`, `finding.agent`, etc.)
+  populate `{{trigger.*}}` for the steps below.
+- **Conditional skip** — the `analyze` step's `when` gate only fires
+  when triage found a binary worth analysing.
+- **Multi-node fan-out** — `hunt` uses `nodes:` to dispatch the same
+  prompt on three hosts in parallel. Outputs merge into
+  `{{hunt.findings}}` and `{{hunt.byNode}}`.
+- **Continue-on-error** — `hunt` won't halt the chain if one host
+  is offline; `respond` will still see the partial results.
+- **Approval gate** — `respond` pauses with an amber pulse on the
+  canvas. The operator clicks Approve before any containment action
+  is dispatched.
+- **Result chaining** — `triage` emits an `orchestration_result`
+  finding that becomes `{{triage.result.sha256}}` for `analyze`.
+  `analyze` does the same for `hunt`. The result-passing convention
+  keeps prompts compact.
+
+## Pre-requisites to run
+
+- The `investigator`, `binary-analyzer`, `threat-hunter`, and
+  `incident-responder` agents must be present in the agent library.
+- The hunt nodes (`threat-rocky-1`, `threat-fedora-2`,
+  `threat-debian-2`) must be connected on the same CP that hosts
+  this orchestration. If you're running the federated lab, those
+  names match the lab's deployed containers; otherwise edit the
+  `nodes:` list.
+
+## Manual trigger
+
+You can also start a run by hand (skipping the auto-trigger
+filter) by clicking Run on the orchestration row in the Library
+tab — the operator dialog will ask for any missing inputs. Note
+that the `inputs:` block is empty here because everything the
+steps need comes from `{{trigger.*}}` populated by the matching
+finding; a manual run will leave those blank unless you edit the
+spec to add fallbacks.

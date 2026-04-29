@@ -24,6 +24,7 @@ package clickhouseevents
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -192,6 +193,62 @@ func (a *Adapter) Recent(ctx context.Context, limit int, beforeTs int64) ([]port
 	}
 	defer rows.Close()
 
+	out := make([]ports.EventRecord, 0, limit)
+	for rows.Next() {
+		var (
+			r          ports.EventRecord
+			id         uint64
+			receivedAt time.Time
+		)
+		if err := rows.Scan(&id, &r.Ts, &r.Type, &r.Agent, &r.Host, &r.Severity, &r.Title, &r.RawJSON, &receivedAt); err != nil {
+			return nil, err
+		}
+		r.ID = int64(id) //nolint:gosec
+		r.ReceivedAt = receivedAt
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// RecentFiltered is Recent with optional agent/host equality
+// constraints — pushed into the WHERE clause so the columnar scan
+// only touches matching rows.
+func (a *Adapter) RecentFiltered(ctx context.Context, f ports.EventFilter, limit int, beforeTs int64) ([]ports.EventRecord, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	if f.Agent == "" && f.Host == "" {
+		if limit > 1000 {
+			limit = 1000
+		}
+	} else if limit > 5000 {
+		limit = 5000
+	}
+	conds := []string{}
+	args := []any{}
+	if f.Agent != "" {
+		conds = append(conds, "agent = ?")
+		args = append(args, f.Agent)
+	}
+	if f.Host != "" {
+		conds = append(conds, "host = ?")
+		args = append(args, f.Host)
+	}
+	if beforeTs > 0 {
+		conds = append(conds, "ts < ?")
+		args = append(args, beforeTs)
+	}
+	query := `SELECT id, ts, type, agent, host, severity, title, raw_json, received_at FROM events`
+	if len(conds) > 0 {
+		query += " WHERE " + strings.Join(conds, " AND ")
+	}
+	query += ` ORDER BY ts DESC LIMIT ?`
+	args = append(args, limit)
+	rows, err := a.conn.Query(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
 	out := make([]ports.EventRecord, 0, limit)
 	for rows.Next() {
 		var (

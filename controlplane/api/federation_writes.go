@@ -2,15 +2,20 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/section9labs/okesu/controlplane/db"
 	"github.com/section9labs/okesu/controlplane/federation"
+	"github.com/section9labs/okesu/controlplane/orchestrator"
+	"github.com/section9labs/okesu/controlplane/tunnel"
 )
 
 // Phase 9.7: federation writes.
@@ -242,4 +247,422 @@ func FederatedAgentDetail(store *db.Store, agg *federation.Aggregator) http.Hand
 // (GET /api/v1/federation/daimons/{name}). Token-authed sibling.
 func FederationAgentDetail(store *db.Store) http.HandlerFunc {
 	return requireFederationToken(store, AgentDetail(store))
+}
+
+// FederatedFindingDetail wraps FindingDetail. When ?cp=<instance_id> is
+// in the URL, proxies to that child's /api/v1/federation/findings/{id}.
+// Without this wrapper a click on a federated finding tries to look up
+// the local id space and 404s — finding ids are scoped per-CP, so the
+// parent only knows the row through the federated grouped/list calls.
+func FederatedFindingDetail(store *db.Store, agg *federation.Aggregator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		path := strings.Replace(r.URL.Path, "/api/findings/", "/api/v1/federation/findings/", 1)
+		if handled, _ := proxyToCPByQuery(w, r, agg, path); handled {
+			return
+		}
+		FindingDetail(store).ServeHTTP(w, r)
+	}
+}
+
+// FederationFindingDetail is the child-side endpoint
+// (GET /api/v1/federation/findings/{id}). Token-authed sibling.
+func FederationFindingDetail(store *db.Store) http.HandlerFunc {
+	return requireFederationToken(store, FindingDetail(store))
+}
+
+// FederatedRunsForFinding wraps RunsForFinding with the same ?cp= proxy
+// — the related-runs panel on the finding detail page would otherwise
+// 404 on a federated finding for the same id-space reason.
+func FederatedRunsForFinding(store *db.Store, agg *federation.Aggregator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		path := strings.Replace(r.URL.Path, "/api/findings/", "/api/v1/federation/findings/", 1)
+		if handled, _ := proxyToCPByQuery(w, r, agg, path); handled {
+			return
+		}
+		RunsForFinding(store).ServeHTTP(w, r)
+	}
+}
+
+// FederationRunsForFinding is the child-side endpoint
+// (GET /api/v1/federation/findings/{id}/runs). Token-authed sibling.
+func FederationRunsForFinding(store *db.Store) http.HandlerFunc {
+	return requireFederationToken(store, RunsForFinding(store))
+}
+
+// FederationRunSync is the child-side blocking-run endpoint used by
+// the orchestrator's federatedDispatcher. The parent posts a step
+// description (agent + prompt + node) and the child runs it locally
+// via its tunnel runtime, then returns the structured DispatchResult.
+//
+// Signature: POST /api/v1/federation/runs/sync
+//
+//	body: { agent, node, prompt, timeout_seconds? }
+//	resp: orchestrator.DispatchResult JSON
+//
+// Token-authed via the same federation gate as every other federation
+// endpoint. The synthetic `federation@parent` user is injected for the
+// audit trail.
+func FederationRunSync(reg *RunRegistry, tunReg *tunnel.Registry, store *db.Store, agentDirs []string) http.HandlerFunc {
+	return requireFederationToken(store, func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Agent          string `json:"agent"`
+			Node           string `json:"node"`
+			Prompt         string `json:"prompt"`
+			TimeoutSeconds int    `json:"timeout_seconds"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "bad json", http.StatusBadRequest)
+			return
+		}
+		if req.Prompt == "" || req.Node == "" {
+			http.Error(w, "node and prompt are required", http.StatusBadRequest)
+			return
+		}
+
+		ctx := r.Context()
+		if req.TimeoutSeconds > 0 {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, time.Duration(req.TimeoutSeconds)*time.Second)
+			defer cancel()
+		}
+
+		result, err := runStepLocal(ctx, reg, tunReg, store, agentDirs, orchestrator.DispatchRequest{
+			AgentName:    req.Agent,
+			NodeSelector: req.Node,
+			Prompt:       req.Prompt,
+			Timeout:      time.Duration(req.TimeoutSeconds) * time.Second,
+		})
+		if err != nil {
+			// Surface the dispatch error in the result body so the
+			// parent's engine records it on the step. We use 200 +
+			// `error` rather than 5xx so the parent can distinguish
+			// "step failed cleanly" from "transport broke."
+			result = orchestrator.DispatchResult{
+				Status: orchestrator.StepStatusFailed,
+				Error:  err.Error(),
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(result)
+	})
+}
+
+// ── orchestration federation wrappers ───────────────────────────────
+
+// FederatedOrchestrationsList returns the local list merged with each
+// federated child's. Each remote row carries cp_source so the UI can
+// show where it came from. Same fan-out pattern as
+// FederatedFindingsList.
+func FederatedOrchestrationsList(store *db.Store, agg *federation.Aggregator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		localRR := httpRecorder()
+		OrchestrationsList(store).ServeHTTP(localRR, r)
+		if localRR.code != http.StatusOK {
+			w.WriteHeader(localRR.code)
+			_, _ = w.Write(localRR.body)
+			return
+		}
+		var localRows []map[string]any
+		_ = json.Unmarshal(localRR.body, &localRows)
+
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+
+		var mu sync.Mutex
+		merged := append([]map[string]any{}, localRows...)
+		results, _ := agg.FanOut(ctx, func(ctx context.Context, peer federation.Peer) error {
+			var rows []map[string]any
+			if err := agg.FetchJSON(ctx, peer, "/api/v1/federation/orchestrations", &rows); err != nil {
+				return err
+			}
+			tag := map[string]any{
+				"instance_id":  peer.Snapshot.InstanceID,
+				"display_name": peer.Snapshot.DisplayName,
+				"region":       peer.Snapshot.Region,
+			}
+			for i := range rows {
+				rows[i]["cp_source"] = tag
+			}
+			mu.Lock()
+			merged = append(merged, rows...)
+			mu.Unlock()
+			return nil
+		})
+		if pErr := federation.AnyError(results); pErr != nil {
+			w.Header().Set("X-Okesu-Federation-Warning", pErr.Error())
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(merged)
+	}
+}
+
+// FederationOrchestrationsList — child-side token-authed sibling.
+func FederationOrchestrationsList(store *db.Store) http.HandlerFunc {
+	return requireFederationToken(store, OrchestrationsList(store))
+}
+
+// FederatedOrchestrationDetail proxies a single GET via ?cp= to the
+// owning child CP, falling through to the local store otherwise.
+func FederatedOrchestrationDetail(store *db.Store, agg *federation.Aggregator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		path := strings.Replace(r.URL.Path, "/api/orchestrations/", "/api/v1/federation/orchestrations/", 1)
+		if handled, _ := proxyToCPByQuery(w, r, agg, path); handled {
+			return
+		}
+		OrchestrationDetail(store).ServeHTTP(w, r)
+	}
+}
+
+func FederationOrchestrationDetail(store *db.Store) http.HandlerFunc {
+	return requireFederationToken(store, OrchestrationDetail(store))
+}
+
+// FederatedOrchestrationCreate forwards by `target_cp_instance_id` in
+// the body — same convention as Add Node. When set, the orchestration
+// is created on the chosen child instead of the parent.
+func FederatedOrchestrationCreate(store *db.Store, agg *federation.Aggregator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if handled, _ := proxyIfTargetCP(w, r, agg, "/api/v1/federation/orchestrations"); handled {
+			return
+		}
+		OrchestrationCreate(store).ServeHTTP(w, r)
+	}
+}
+
+func FederationOrchestrationCreate(store *db.Store) http.HandlerFunc {
+	return requireFederationToken(store, OrchestrationCreate(store))
+}
+
+// FederatedOrchestrationUpdate / Delete proxy by ?cp= for the case
+// where the orchestration lives on a child and an operator edits it
+// from the Global UI.
+func FederatedOrchestrationUpdate(store *db.Store, agg *federation.Aggregator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		path := strings.Replace(r.URL.Path, "/api/orchestrations/", "/api/v1/federation/orchestrations/", 1)
+		if handled, _ := proxyWriteByQuery(w, r, agg, path); handled {
+			return
+		}
+		OrchestrationUpdate(store).ServeHTTP(w, r)
+	}
+}
+
+func FederationOrchestrationUpdate(store *db.Store) http.HandlerFunc {
+	return requireFederationToken(store, OrchestrationUpdate(store))
+}
+
+func FederatedOrchestrationDelete(store *db.Store, agg *federation.Aggregator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		path := strings.Replace(r.URL.Path, "/api/orchestrations/", "/api/v1/federation/orchestrations/", 1)
+		if handled, _ := proxyWriteByQuery(w, r, agg, path); handled {
+			return
+		}
+		OrchestrationDelete(store).ServeHTTP(w, r)
+	}
+}
+
+func FederationOrchestrationDelete(store *db.Store) http.HandlerFunc {
+	return requireFederationToken(store, OrchestrationDelete(store))
+}
+
+// FederatedOrchestrationRunCreate proxies the run-trigger to the CP
+// that owns the orchestration. ?cp=<id> tells the parent to forward;
+// without it, the run starts locally.
+func FederatedOrchestrationRunCreate(store *db.Store, coord *OrchestrationCoordinator, agg *federation.Aggregator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		path := strings.Replace(r.URL.Path, "/api/orchestrations/", "/api/v1/federation/orchestrations/", 1)
+		if handled, _ := proxyWriteByQuery(w, r, agg, path); handled {
+			return
+		}
+		OrchestrationRunCreate(store, coord).ServeHTTP(w, r)
+	}
+}
+
+func FederationOrchestrationRunCreate(store *db.Store, coord *OrchestrationCoordinator) http.HandlerFunc {
+	return requireFederationToken(store, OrchestrationRunCreate(store, coord))
+}
+
+// FederatedOrchestrationRunsList federates the runs history. Each
+// peer's runs are tagged with cp_source and merged with local rows.
+func FederatedOrchestrationRunsList(store *db.Store, agg *federation.Aggregator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		localRR := httpRecorder()
+		OrchestrationRunsList(store).ServeHTTP(localRR, r)
+		if localRR.code != http.StatusOK {
+			w.WriteHeader(localRR.code)
+			_, _ = w.Write(localRR.body)
+			return
+		}
+		var localRows []map[string]any
+		_ = json.Unmarshal(localRR.body, &localRows)
+
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+		var mu sync.Mutex
+		merged := append([]map[string]any{}, localRows...)
+		results, _ := agg.FanOut(ctx, func(ctx context.Context, peer federation.Peer) error {
+			var rows []map[string]any
+			if err := agg.FetchJSON(ctx, peer, "/api/v1/federation/orchestration-runs", &rows); err != nil {
+				return err
+			}
+			tag := map[string]any{
+				"instance_id":  peer.Snapshot.InstanceID,
+				"display_name": peer.Snapshot.DisplayName,
+				"region":       peer.Snapshot.Region,
+			}
+			for i := range rows {
+				rows[i]["cp_source"] = tag
+			}
+			mu.Lock()
+			merged = append(merged, rows...)
+			mu.Unlock()
+			return nil
+		})
+		if pErr := federation.AnyError(results); pErr != nil {
+			w.Header().Set("X-Okesu-Federation-Warning", pErr.Error())
+		}
+		// Sort newest-first by started_at.
+		sort.SliceStable(merged, func(i, j int) bool {
+			si, _ := merged[i]["started_at"].(string)
+			sj, _ := merged[j]["started_at"].(string)
+			return si > sj
+		})
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(merged)
+	}
+}
+
+func FederationOrchestrationRunsList(store *db.Store) http.HandlerFunc {
+	return requireFederationToken(store, OrchestrationRunsList(store))
+}
+
+// FederatedOrchestrationRunDetail proxies via ?cp= when the run lives
+// on a child CP.
+func FederatedOrchestrationRunDetail(store *db.Store, agg *federation.Aggregator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		path := strings.Replace(r.URL.Path, "/api/orchestration-runs/", "/api/v1/federation/orchestration-runs/", 1)
+		if handled, _ := proxyToCPByQuery(w, r, agg, path); handled {
+			return
+		}
+		OrchestrationRunDetail(store).ServeHTTP(w, r)
+	}
+}
+
+func FederationOrchestrationRunDetail(store *db.Store) http.HandlerFunc {
+	return requireFederationToken(store, OrchestrationRunDetail(store))
+}
+
+// FederatedOrchestrationStepApprove proxies the approve POST to the
+// CP that owns the run.
+func FederatedOrchestrationStepApprove(store *db.Store, coord *OrchestrationCoordinator, agg *federation.Aggregator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		path := strings.Replace(r.URL.Path, "/api/orchestration-runs/", "/api/v1/federation/orchestration-runs/", 1)
+		if handled, _ := proxyWriteByQuery(w, r, agg, path); handled {
+			return
+		}
+		OrchestrationStepApprove(store, coord).ServeHTTP(w, r)
+	}
+}
+
+func FederationOrchestrationStepApprove(store *db.Store, coord *OrchestrationCoordinator) http.HandlerFunc {
+	return requireFederationToken(store, OrchestrationStepApprove(store, coord))
+}
+
+func FederatedOrchestrationRunCancel(store *db.Store, agg *federation.Aggregator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		path := strings.Replace(r.URL.Path, "/api/orchestration-runs/", "/api/v1/federation/orchestration-runs/", 1)
+		if handled, _ := proxyWriteByQuery(w, r, agg, path); handled {
+			return
+		}
+		OrchestrationRunCancel(store).ServeHTTP(w, r)
+	}
+}
+
+func FederationOrchestrationRunCancel(store *db.Store) http.HandlerFunc {
+	return requireFederationToken(store, OrchestrationRunCancel(store))
+}
+
+// proxyWriteByQuery is the write-side counterpart of proxyToCPByQuery:
+// when ?cp=<instance_id> is present and matches a healthy peer, the
+// (POST/PATCH/PUT/DELETE) request — with body intact — is forwarded to
+// the child's federation endpoint and the response streamed back. Used
+// by the Kanban-board status-drag flow so an operator can move a
+// federated finding between columns from the parent UI.
+func proxyWriteByQuery(w http.ResponseWriter, r *http.Request, agg *federation.Aggregator, federationPath string) (handled bool, err error) {
+	cpID := r.URL.Query().Get("cp")
+	if cpID == "" {
+		return false, nil
+	}
+	peers, _ := agg.HealthyPeers()
+	var target *federation.Peer
+	for i := range peers {
+		if peers[i].Snapshot.InstanceID == cpID {
+			target = &peers[i]
+			break
+		}
+	}
+	if target == nil {
+		http.Error(w, "target CP not found or unhealthy: "+cpID, http.StatusNotFound)
+		return true, nil
+	}
+	body, _ := io.ReadAll(r.Body)
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	url := strings.TrimRight(target.Row.URL, "/") + federationPath
+	q := r.URL.Query()
+	q.Del("cp")
+	if enc := q.Encode(); enc != "" {
+		url += "?" + enc
+	}
+	req, err := http.NewRequestWithContext(r.Context(), r.Method, url, bytes.NewReader(body))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return true, err
+	}
+	req.Header.Set("X-Okesu-Federation-Token", target.Row.Token)
+	if ct := r.Header.Get("Content-Type"); ct != "" {
+		req.Header.Set("Content-Type", ct)
+	} else {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	client := &http.Client{
+		Timeout:   proxyTimeout,
+		Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}},
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		http.Error(w, "proxy to "+target.Snapshot.DisplayName+": "+err.Error(), http.StatusBadGateway)
+		return true, err
+	}
+	defer resp.Body.Close()
+	for k, vs := range resp.Header {
+		if strings.EqualFold(k, "Content-Length") || strings.EqualFold(k, "Transfer-Encoding") {
+			continue
+		}
+		for _, v := range vs {
+			w.Header().Add(k, v)
+		}
+	}
+	w.Header().Set("X-Okesu-Forwarded-To", target.Snapshot.InstanceID)
+	w.WriteHeader(resp.StatusCode)
+	_, _ = io.Copy(w, resp.Body)
+	return true, nil
+}
+
+// FederatedFindingSetStatus wraps FindingSetStatus with the ?cp= proxy.
+// The Kanban-board drag handler posts ?cp=<id> when the dragged card
+// belongs to a federated child; without the proxy the parent's local
+// id space wouldn't have the finding and the request would 404.
+func FederatedFindingSetStatus(store *db.Store, agg *federation.Aggregator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		path := strings.Replace(r.URL.Path, "/api/findings/", "/api/v1/federation/findings/", 1)
+		if handled, _ := proxyWriteByQuery(w, r, agg, path); handled {
+			return
+		}
+		FindingSetStatus(store).ServeHTTP(w, r)
+	}
+}
+
+// FederationFindingSetStatus is the child-side endpoint
+// (POST /api/v1/federation/findings/{id}/status). Token-authed sibling.
+func FederationFindingSetStatus(store *db.Store) http.HandlerFunc {
+	return requireFederationToken(store, FindingSetStatus(store))
 }

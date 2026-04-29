@@ -383,6 +383,217 @@ function OverviewTab({ node, isAdmin }: { node: NodeItem; isAdmin: boolean }) {
           </div>
         )}
       </Card>
+      {/* RuntimesCard doesn't need an explicit refresh trigger — the
+          NodeDetail page already auto-refreshes every 6s, so the new
+          jobs_runtime_seen_at lands in the next tick. */}
+      <RuntimesCard node={node} />
+    </div>
+  );
+}
+
+// RuntimesCard — Phase 4 surface. Shows the live state of the
+// pull-mode jobs runtime + any managed tunnel child, and exposes the
+// "Install jobs runtime" button operators use to bootstrap nodes
+// without going through the full deploy flow.
+function RuntimesCard({ node }: { node: NodeItem }) {
+  const [installOpen, setInstallOpen] = useState(false);
+
+  const jobsAge = node.jobs_runtime_seen_at
+    ? Math.floor((Date.now() - new Date(node.jobs_runtime_seen_at).getTime()) / 1000)
+    : null;
+  const jobsFresh = jobsAge !== null && jobsAge < 60;
+
+  return (
+    <section className="bg-panel border border-border rounded-xl shadow-card p-5 lg:col-span-2">
+      <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center gap-2">
+          <span className="w-1 h-4 rounded-full bg-gradient-to-b from-brand-400 to-brand-600 shrink-0" />
+          <h3 className="text-sm font-semibold">Runtimes</h3>
+        </div>
+        <button
+          onClick={() => setInstallOpen(true)}
+          className="inline-flex items-center gap-1 bg-brand-500 hover:bg-brand-600 text-white text-xs font-medium px-3 py-1.5 rounded-md shadow-sm"
+        >
+          Install jobs runtime
+        </button>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+        <RuntimeTile
+          label="Jobs (pull queue)"
+          state={jobsFresh ? 'live' : node.jobs_runtime_seen_at ? 'stale' : 'absent'}
+          detail={
+            jobsAge !== null
+              ? `polled ${jobsAge < 60 ? `${jobsAge}s ago` : `${Math.floor(jobsAge / 60)}m ago`}`
+              : 'not installed — click Install to provision via SSH'
+          }
+        />
+        <RuntimeTile
+          label="Tunnel (reverse mTLS)"
+          state={node.tunnel_running ? 'live' : 'absent'}
+          detail={
+            node.tunnel_running
+              ? 'okesu node child running on host'
+              : 'on demand — orchestration steps with dispatch=tunnel will start one'
+          }
+        />
+      </div>
+
+      {installOpen && (
+        <InstallJobsDialog
+          node={node}
+          onClose={() => setInstallOpen(false)}
+          onCompleted={() => setInstallOpen(false)}
+        />
+      )}
+    </section>
+  );
+}
+
+function RuntimeTile({ label, state, detail }: { label: string; state: 'live' | 'stale' | 'absent'; detail: string }) {
+  const tone =
+    state === 'live'   ? 'bg-green-50 ring-green-200 text-green-800' :
+    state === 'stale'  ? 'bg-amber-50 ring-amber-200 text-amber-800' :
+                         'bg-slate-50 ring-slate-200 text-slate-600';
+  const dot =
+    state === 'live'   ? 'bg-green-500' :
+    state === 'stale'  ? 'bg-amber-500' :
+                         'bg-slate-400';
+  return (
+    <div className={cn('rounded-lg ring-1 px-3 py-2', tone)}>
+      <div className="flex items-center gap-2 font-medium">
+        <span className={cn('w-2 h-2 rounded-full', dot)} />
+        {label}
+      </div>
+      <div className="text-[11px] mt-1 opacity-90">{detail}</div>
+    </div>
+  );
+}
+
+function InstallJobsDialog({
+  node, onClose, onCompleted,
+}: {
+  node: NodeItem;
+  onClose: () => void;
+  onCompleted: () => void;
+}) {
+  const [privateKey, setPrivateKey] = useState('');
+  const [passphrase, setPassphrase] = useState('');
+  const [sudoPassword, setSudoPassword] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [jobLog, setJobLog] = useState<string[]>([]);
+
+  async function start() {
+    setBusy(true); setError(null); setJobLog([]);
+    try {
+      const { job_id } = await api.installJobsRuntime(node.id, {
+        private_key: privateKey,
+        passphrase: passphrase || undefined,
+        sudo_password: sudoPassword || undefined,
+      });
+      // Poll the job log until terminal.
+      let last = 0;
+      const t = setInterval(async () => {
+        try {
+          const snap = await api.job(job_id);
+          if (snap.lines.length > last) {
+            setJobLog(snap.lines);
+            last = snap.lines.length;
+          }
+          if (snap.status === 'succeeded' || snap.status === 'failed') {
+            clearInterval(t);
+            setBusy(false);
+            if (snap.status === 'succeeded') onCompleted();
+            else setError(snap.error ?? 'install failed');
+          }
+        } catch (e) {
+          clearInterval(t);
+          setBusy(false);
+          setError(String(e));
+        }
+      }, 1000);
+    } catch (e) {
+      setBusy(false);
+      setError(String(e));
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/30 p-4">
+      <div className="bg-panel border border-border rounded-xl shadow-card w-full max-w-2xl max-h-[80vh] overflow-hidden flex flex-col">
+        <header className="px-5 py-3 border-b border-border bg-gradient-to-r from-brand-50/60 via-panel to-panel">
+          <h3 className="text-sm font-semibold">Install jobs runtime on {node.name}</h3>
+          <p className="text-[11px] text-ink-dim mt-0.5">
+            One-shot SSH install of <code className="font-mono">okesu-jobs.service</code>. The CP issues a fresh node mTLS cert; the daemon polls for orchestration step jobs.
+          </p>
+        </header>
+        <div className="p-5 space-y-3 overflow-auto flex-1">
+          {error && (
+            <div className="text-xs text-red-700 bg-red-50 border border-red-200 px-3 py-2 rounded-md whitespace-pre-wrap">
+              {error}
+            </div>
+          )}
+          <FormField label="SSH private key" hint="PEM-encoded; same key the deploy flow uses">
+            <textarea
+              value={privateKey}
+              onChange={(e) => setPrivateKey(e.target.value)}
+              rows={6}
+              spellCheck={false}
+              placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
+              className="w-full text-[11px] font-mono px-2 py-1.5 border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500/30"
+            />
+          </FormField>
+          <div className="grid grid-cols-2 gap-3">
+            <FormField label="Passphrase (optional)">
+              <input
+                type="password"
+                value={passphrase}
+                onChange={(e) => setPassphrase(e.target.value)}
+                className="w-full text-xs px-2 py-1.5 border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500/30"
+              />
+            </FormField>
+            <FormField label="Sudo password (optional)">
+              <input
+                type="password"
+                value={sudoPassword}
+                onChange={(e) => setSudoPassword(e.target.value)}
+                className="w-full text-xs px-2 py-1.5 border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500/30"
+              />
+            </FormField>
+          </div>
+          {jobLog.length > 0 && (
+            <div>
+              <div className="text-[10px] uppercase tracking-wide text-ink-mute font-medium mb-1">Install log</div>
+              <pre className="text-[11px] font-mono bg-slate-50 border border-border rounded p-2 whitespace-pre-wrap break-words max-h-48 overflow-auto">
+                {jobLog.join('\n')}
+              </pre>
+            </div>
+          )}
+        </div>
+        <footer className="px-5 py-3 border-t border-border flex items-center justify-end gap-2">
+          <button onClick={onClose} className="text-xs px-3 py-1.5 border border-border rounded-md">
+            Close
+          </button>
+          <button
+            onClick={start}
+            disabled={busy || !privateKey}
+            className="text-xs px-3 py-1.5 bg-brand-500 hover:bg-brand-600 disabled:opacity-50 text-white rounded-md font-medium shadow-sm"
+          >
+            {busy ? 'Installing…' : 'Install'}
+          </button>
+        </footer>
+      </div>
+    </div>
+  );
+}
+
+function FormField({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+  return (
+    <div>
+      <div className="text-[10px] uppercase tracking-wide text-ink-mute font-medium mb-1">{label}</div>
+      {children}
+      {hint && <p className="text-[10px] text-ink-mute mt-0.5">{hint}</p>}
     </div>
   );
 }

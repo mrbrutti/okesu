@@ -146,6 +146,16 @@ func UserFromContext(ctx context.Context) *db.User {
 	return u
 }
 
+// WithUser attaches a user to ctx using the same key Middleware uses.
+// Used by the federation-token gate to inject a synthetic actor so
+// downstream handlers that read UserFromContext (e.g. status mutations)
+// don't 401 when the request comes in from a parent CP rather than an
+// operator browser. The synthetic user is never persisted; it just
+// satisfies the "is anyone home?" check in handlers.
+func WithUser(ctx context.Context, u *db.User) context.Context {
+	return context.WithValue(ctx, userKey{}, u)
+}
+
 type userKey struct{}
 
 func (m *Manager) signCookie(sessionID string) string {

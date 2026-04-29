@@ -26,6 +26,15 @@ export class ApiError extends Error {
   }
 }
 
+// cpQuery threads a federated-CP routing parameter onto a path. Used
+// by orchestration / finding / agent / node detail endpoints that
+// support `?cp=<instance_id>` proxy on the parent CP.
+function cpQuery(path: string, cp?: string): string {
+  if (!cp) return path;
+  const sep = path.includes('?') ? '&' : '?';
+  return `${path}${sep}cp=${encodeURIComponent(cp)}`;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
     credentials: 'same-origin',
@@ -52,6 +61,10 @@ export interface DaimonItem {
   registered_at: string;
   last_heartbeat_at?: string;
   last_tick_count: number;
+  /** Open findings (status='open') for this exact (name, host) pair.
+   *  Driven by /api/agents server-side join, not the SSE stream — so
+   *  we get an authoritative count without aggregating raw events. */
+  open_findings: number;
   heartbeat_age_sec: number;
   healthy: boolean;
   desired_max_turns?: number;
@@ -275,6 +288,69 @@ export interface AuthConfig {
   oidc_label?: string;
 }
 
+// Orchestration types — chained agent runs.
+export interface Orchestration {
+  id: number;
+  name: string;
+  description?: string;
+  spec_yaml: string;
+  trigger_kind: 'manual' | 'finding' | 'cron';
+  trigger_filter?: string;
+  trigger_cron?: string;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+  /** Phase B: federation source. Non-null iff this row was fetched
+   *  from a federated child CP. Local rows leave this undefined. */
+  cp_source?: CPSourceRef;
+}
+
+export type OrchestrationRunStatus =
+  | 'pending'
+  | 'running'
+  | 'approval_required'
+  | 'completed'
+  | 'failed'
+  | 'cancelled';
+
+export type OrchestrationStepStatus =
+  | 'pending'
+  | 'waiting_approval'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'skipped';
+
+export interface OrchestrationStepView {
+  step_id: string;
+  step_idx: number;
+  status: OrchestrationStepStatus;
+  run_id?: string;
+  cp_instance_id?: string;
+  rendered_prompt?: string;
+  result?: Record<string, unknown>;
+  output_summary?: string;
+  started_at?: string;
+  ended_at?: string;
+  error?: string;
+  approved_at?: string;
+}
+
+export interface OrchestrationRunView {
+  id: number;
+  orchestration_id: number;
+  status: OrchestrationRunStatus;
+  trigger_kind: string;
+  trigger_payload?: Record<string, unknown>;
+  current_step_id?: string;
+  started_at: string;
+  ended_at?: string;
+  error?: string;
+  steps?: OrchestrationStepView[];
+  /** Phase B: federation source for runs federated from a child CP. */
+  cp_source?: CPSourceRef;
+}
+
 export const api = {
   authConfig: () => request<AuthConfig>('/api/auth/config'),
 
@@ -357,9 +433,52 @@ export const api = {
       method: 'DELETE',
     }),
 
+  // Orchestrations — chained agent runs. All endpoints accept a
+  // cpInstanceID to route to a federated child CP via ?cp=<id>; on
+  // the parent CP, omit it for local-only ops.
+  orchestrations: () => request<Orchestration[]>('/api/orchestrations'),
+  orchestration: (id: number, cp?: string) =>
+    request<Orchestration>(cpQuery(`/api/orchestrations/${id}`, cp)),
+  orchestrationCreate: (specYAML: string, targetCPInstanceID?: string) =>
+    request<Orchestration>('/api/orchestrations', {
+      method: 'POST',
+      body: JSON.stringify({
+        spec_yaml: specYAML,
+        ...(targetCPInstanceID ? { target_cp_instance_id: targetCPInstanceID } : {}),
+      }),
+    }),
+  orchestrationUpdate: (id: number, specYAML: string, cp?: string) =>
+    request<Orchestration>(cpQuery(`/api/orchestrations/${id}`, cp), {
+      method: 'PUT',
+      body: JSON.stringify({ spec_yaml: specYAML }),
+    }),
+  orchestrationDelete: (id: number, cp?: string) =>
+    request<void>(cpQuery(`/api/orchestrations/${id}`, cp), { method: 'DELETE' }),
+  orchestrationRun: (id: number, inputs?: Record<string, unknown>, cp?: string) =>
+    request<{ run_id: number }>(cpQuery(`/api/orchestrations/${id}/run`, cp), {
+      method: 'POST',
+      body: JSON.stringify({ inputs: inputs ?? {} }),
+    }),
+  orchestrationRuns: () => request<OrchestrationRunView[]>('/api/orchestration-runs'),
+  orchestrationRunDetail: (id: number, cp?: string) =>
+    request<OrchestrationRunView>(cpQuery(`/api/orchestration-runs/${id}`, cp)),
+  orchestrationRunCancel: (id: number, cp?: string) =>
+    request<void>(cpQuery(`/api/orchestration-runs/${id}/cancel`, cp), { method: 'POST' }),
+  orchestrationStepApprove: (runID: number, stepID: string, cp?: string) =>
+    request<void>(
+      cpQuery(`/api/orchestration-runs/${runID}/steps/${encodeURIComponent(stepID)}/approve`, cp),
+      { method: 'POST' },
+    ),
+
   // Investigations attached to a finding — runs whose finding_id == id.
-  runsForFinding: (id: number) =>
-    request<RunListItem[]>(`/api/findings/${id}/runs`),
+  // `cpInstanceID` routes the lookup to a federated child CP via the
+  // ?cp= proxy convention; finding ids are scoped per-CP.
+  runsForFinding: (id: number, cpInstanceID?: string) =>
+    request<RunListItem[]>(
+      cpInstanceID
+        ? `/api/findings/${id}/runs?cp=${encodeURIComponent(cpInstanceID)}`
+        : `/api/findings/${id}/runs`,
+    ),
 
   findings: (filter: FindingsFilter = {}) => {
     const p = new URLSearchParams();
@@ -377,8 +496,12 @@ export const api = {
     return request<Finding[]>(`/api/findings${qs ? '?' + qs : ''}`);
   },
 
-  finding: (id: number) =>
-    request<Finding>(`/api/findings/${id}`),
+  finding: (id: number, cpInstanceID?: string) =>
+    request<Finding>(
+      cpInstanceID
+        ? `/api/findings/${id}?cp=${encodeURIComponent(cpInstanceID)}`
+        : `/api/findings/${id}`,
+    ),
 
   findingsSummary: () =>
     request<FindingsSummary>('/api/findings/summary'),
@@ -402,11 +525,16 @@ export const api = {
       body: JSON.stringify(req),
     }),
 
-  setFindingStatus: (id: number, status: FindingStatus, note?: string) =>
-    request<Finding>(`/api/findings/${id}/status`, {
-      method: 'POST',
-      body: JSON.stringify({ status, note: note ?? '' }),
-    }),
+  setFindingStatus: (id: number, status: FindingStatus, opts?: { note?: string; cpInstanceID?: string }) =>
+    request<Finding>(
+      opts?.cpInstanceID
+        ? `/api/findings/${id}/status?cp=${encodeURIComponent(opts.cpInstanceID)}`
+        : `/api/findings/${id}/status`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ status, note: opts?.note ?? '' }),
+      },
+    ),
 
   setGroupStatus: (req: {
     status: FindingStatus;
@@ -496,11 +624,62 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(req),
     }),
+  /** Phase 4: install the host-side jobs runtime on a node. Same
+   *  SSH-credential shape as deployNode. Returns a job id; poll
+   *  via api.job(jobId). */
+  installJobsRuntime: (id: number, req: {
+    private_key: string;
+    passphrase?: string;
+    sudo_password?: string;
+    ssh_user?: string;
+    ssh_port?: number;
+  }) =>
+    request<{ job_id: string; node_id: number }>(`/api/nodes/${id}/install-jobs-runtime`, {
+      method: 'POST',
+      body: JSON.stringify(req),
+    }),
   nodeLibrary: () =>
     request<{ agents: string[]; daemon_binary_path: string; agent_files_dir: string }>(
       '/api/nodes/library',
     ),
   job: (id: string) => request<JobSnapshot>(`/api/jobs/${id}`),
+
+  // Phase 9 — S3 dead-drop transport: bucket-backed deploy that doesn't
+  // require any inbound reachability. Operator generates a fleet
+  // package, drops it on N hosts, each host self-registers via the
+  // shared bucket.
+  transportConfigs: () =>
+    request<TransportConfigSummary[]>('/api/transport-configs'),
+  transportConfigCreate: (req: TransportConfigCreateReq) =>
+    request<TransportConfigSummary>('/api/transport-configs', {
+      method: 'POST',
+      body: JSON.stringify(req),
+    }),
+  enrollmentPackages: () =>
+    request<EnrollmentPackageSummary[]>('/api/enrollment-packages'),
+  enrollmentPackageCreate: (req: EnrollmentPackageCreateReq) =>
+    request<EnrollmentPackageSummary>('/api/enrollment-packages', {
+      method: 'POST',
+      body: JSON.stringify(req),
+    }),
+  /** Returns the package URL the operator should open / fetch. We
+   *  expose it as a URL rather than fetching here so the browser
+   *  drives the download natively (Content-Disposition handles the
+   *  filename). */
+  enrollmentPackageDownloadURL: (id: number, format: string) =>
+    `/api/enrollment-packages/${id}/download?format=${encodeURIComponent(format)}`,
+  enrollmentPackageRevoke: (id: number) =>
+    request<void>(`/api/enrollment-packages/${id}/revoke`, { method: 'POST' }),
+
+  // Phase 11.4 — finding edit history + run↔finding linkage. Used by
+  // the finding-detail History panel and the run-detail "Actions
+  // applied" surface.
+  findingHistory: (id: number) =>
+    request<FindingEditEntry[]>(`/api/findings/${id}/history`),
+  findingLinkedRuns: (id: number) =>
+    request<FindingRunLinkEntry[]>(`/api/findings/${id}/runs`),
+  runLinkedFindings: (id: number) =>
+    request<FindingRunLinkEntry[]>(`/api/orchestration-runs/${id}/findings`),
 
   // Phase 7 — Settings
   about: () => request<AboutInfo>('/api/system/about'),
@@ -856,6 +1035,19 @@ export interface NodeItem {
    *  definitions. Operators set this for compliance windows or before
    *  manual rollouts. */
   auto_update_paused?: boolean;
+  /** Phase 4 — pull-mode jobs runtime liveness. Set every time the
+   *  daemon polls /api/v1/agents/jobs. The Runtimes panel reads this
+   *  to show "polled Ns ago" or "not installed". */
+  jobs_runtime_seen_at?: string;
+  /** True iff the host's jobs runtime currently has a managed
+   *  okesu node child running (i.e. tunnel is up via a start_tunnel
+   *  job). For static reverse-tunnels this stays false; the UI
+   *  cross-references the live tunnel registry separately. */
+  tunnel_running?: boolean;
+  /** "" (auto) | "tunnel" | "jobs". Operator-set per-node hint that
+   *  layers under spec defaults when an orchestration step uses
+   *  dispatch=auto. */
+  preferred_dispatch?: '' | 'tunnel' | 'jobs';
   memory_mb?: number;
   disk_free_mb?: number;
   okesu_version?: string;
@@ -890,6 +1082,86 @@ export interface NodeDeployReq {
   openai_api_key?: string;
   include_webhook?: boolean;
   include_mgmt_cert?: boolean;
+}
+
+// ── Finding history + run linkage (Phase 11.4) ──────────────────────────────
+
+export interface FindingEditEntry {
+  id: number;
+  finding_id: number;
+  /** status | severity_override | tag_add | tag_remove | linked_run */
+  field: string;
+  old_value?: string;
+  new_value?: string;
+  reason?: string;
+  edited_by_user_id?: number;
+  edited_by_email?: string;
+  orchestration_run_id?: number;
+  orchestration_step_id?: string;
+  edited_at: string;
+}
+
+export interface FindingRunLinkEntry {
+  finding_id: number;
+  orchestration_run_id: number;
+  step_id?: string;
+  linked_at: string;
+}
+
+// ── S3 transport / enrollment packages ──────────────────────────────────────
+
+export interface TransportConfigSummary {
+  id: number;
+  name: string;
+  kind: string;            // 's3'
+  bucket: string;
+  endpoint: string;
+  region?: string;
+  use_ssl: boolean;
+  access_key?: string;
+  has_secret_key: boolean;
+  has_fleet_pubkey: boolean;
+  has_fleet_privkey: boolean;
+  scanner_interval_ms: number;
+  cp_id?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface TransportConfigCreateReq {
+  name: string;
+  kind: string;            // 's3'
+  bucket: string;
+  endpoint: string;
+  region?: string;
+  use_ssl: boolean;
+  access_key?: string;
+  secret_key?: string;
+  generate_fleet_keys?: boolean;
+  scanner_interval_ms?: number;
+  cp_id?: string;
+}
+
+export interface EnrollmentPackageSummary {
+  id: number;
+  display_name: string;
+  transport_config_id: number;
+  cp_id: string;
+  created_at?: string;
+  revoked_at?: string;
+}
+
+export interface PackageDefaults {
+  agents?: string[];
+  poll_interval_ms?: number;
+  heartbeat_interval_ms?: number;
+  cp_id?: string;
+}
+
+export interface EnrollmentPackageCreateReq {
+  display_name: string;
+  transport_config_id: number;
+  defaults: PackageDefaults;
 }
 
 /** Time-range shared across the two dashboard timeline charts. */

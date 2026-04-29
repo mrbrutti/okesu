@@ -7,7 +7,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Loader2, Play, Sparkles, X } from 'lucide-react';
 import { api, type AgentLibraryItem, type Finding } from '../api';
-import { cn } from '../lib/cn';
+import MarkdownEditor from './LazyMarkdownEditor';
 
 const PREF_LAST_AGENT = 'okesu.invest.last_agent';
 const PREF_LAST_NODE = 'okesu.invest.last_node';
@@ -134,13 +134,15 @@ export function InvestigateDialog({
           </div>
 
           <Field label="Prompt">
-            <textarea
-              value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
-              rows={10}
-              className={cn(inputCls, 'font-mono text-xs')}
-              spellCheck={false}
-            />
+            <div className="border border-border rounded-md focus-within:ring-2 focus-within:ring-brand-500/30 overflow-hidden">
+              <MarkdownEditor
+                value={prompt}
+                onChange={setPrompt}
+                height={220}
+                showLineNumbers={false}
+                ariaLabel="Investigation prompt"
+              />
+            </div>
           </Field>
 
           {error && (

@@ -28,10 +28,6 @@ type DeployRequest struct {
 	// DaimonFilesDir on the CP host — *.md files matching AgentsToInstall are uploaded.
 	DaimonFilesDir string
 
-	// SystemdUnitPath on the CP host — uploaded to /etc/systemd/system/okesu-agent@.service.
-	// If empty, a sane built-in template is used.
-	SystemdUnitPath string
-
 	// Mgmt-plane bundle for the daemon. If non-empty, written under /etc/okesu/<agent>/.
 	// Map of agent name → {client.crt, client.key, ca.crt} bytes.
 	MgmtCerts map[string]MgmtCertBundle
@@ -50,6 +46,17 @@ type DeployRequest struct {
 	// AnthropicAPIKey, OpenAIAPIKey for /etc/okesu/agents/<agent>.env. Empty disables.
 	AnthropicAPIKey string
 	OpenAIAPIKey    string
+
+	// JobsRuntime: when set, deploy also installs and starts
+	// okesu-jobs.service alongside the daimons. The cert bundle
+	// authenticates the host's pull-mode jobs runtime when polling
+	// the CP's mgmt-plane jobs endpoints. Phase 6 default: deploy
+	// always sets this so a fresh node lands a fully-functional
+	// orchestration target out of the box.
+	JobsRuntime *MgmtCertBundle
+	// NodeName is what `okesu jobs --name` reports — should match
+	// the cert CN. Defaults to the operator's `nodes.name`.
+	NodeName string
 }
 
 // MgmtCertBundle holds the three PEM artifacts an agent needs for mTLS.
@@ -64,6 +71,23 @@ type MgmtCertBundle struct {
 // table or by a static directory scan.
 type DaemonBinaryResolver interface {
 	Resolve(osName, arch string) (path string, err error)
+}
+
+// unameSToOS maps `uname -s` output to the lowercase identifiers the
+// rest of the package uses (linux, darwin, freebsd, openbsd, illumos,
+// sunos). Unrecognised values pass through lowercased.
+func unameSToOS(unameS string) string {
+	v := strings.ToLower(strings.TrimSpace(unameS))
+	switch v {
+	case "linux", "darwin", "freebsd", "openbsd", "illumos":
+		return v
+	case "sunos":
+		// SunOS reports as "SunOS" on both Solaris and illumos; treat
+		// as illumos by convention since the open-source distros
+		// (OmniOS, OpenIndiana) are now the dominant deploy target.
+		return "illumos"
+	}
+	return v
 }
 
 // archFromUname maps `uname -m` output to a Go GOARCH value. Returns ""
@@ -141,12 +165,14 @@ func Deploy(ctx context.Context, req DeployRequest, logFn LogFn) (DeployResult, 
 		return result, err
 	}
 
-	// 1. Pre-flight: capture remote hostname (used to correlate daemon
-	//    events back to this node), check systemd, capture os-release + arch.
+	// 1. Pre-flight: capture remote hostname, arch, OS. The service-
+	//    manager probe happens later via Detect(); we no longer reject
+	//    non-systemd targets — Phase 8.1–8.5 added launchd / rc.d / SMF
+	//    support for both daimons and the jobs runtime.
 	emit("→ pre-flight checks")
-	preflight, err := c.Run("hostname && test -d /run/systemd/system && uname -m && uname -s && cat /etc/os-release 2>/dev/null | head -3")
+	preflight, err := c.Run("hostname && uname -m && uname -s && cat /etc/os-release 2>/dev/null | head -3")
 	if err != nil {
-		return result, fmt.Errorf("pre-flight: systemd not detected: %w (output: %s)", err, preflight)
+		return result, fmt.Errorf("pre-flight: %w (output: %s)", err, preflight)
 	}
 	preflight = strings.TrimSpace(preflight)
 	for _, line := range strings.Split(preflight, "\n") {
@@ -162,7 +188,7 @@ func Deploy(ctx context.Context, req DeployRequest, logFn LogFn) (DeployResult, 
 	}
 	if len(preLines) >= 3 {
 		targetArch = archFromUname(preLines[1])
-		targetOS = strings.ToLower(strings.TrimSpace(preLines[2])) // typically "linux"
+		targetOS = unameSToOS(preLines[2])
 	}
 	if targetOS == "" {
 		targetOS = "linux"
@@ -171,14 +197,20 @@ func Deploy(ctx context.Context, req DeployRequest, logFn LogFn) (DeployResult, 
 		emit("  ! could not classify target arch from uname output %q", preLines[1])
 	}
 
-	// 2. Create okesu user and directories.
-	emit("→ ensuring okesu system user + directories")
-	bootstrap := `set -e
-id -u okesu >/dev/null 2>&1 || useradd --system --create-home --home-dir /var/lib/okesu okesu
-install -d -m 0755 -o okesu -g okesu /etc/okesu/agents /var/lib/okesu /var/log/okesu
-`
-	if out, err := runWithSudo(c, req.Cred.SudoPassword, bootstrap); err != nil {
-		return result, fmt.Errorf("user/dir bootstrap: %w (output: %s)", err, out)
+	// 2. Pick the service manager — single source of truth for the
+	//    rest of the deploy. Both the daimon install loop below and
+	//    the Phase-6 jobs-runtime install reuse this manager.
+	mgr, err := Detect(c, targetOS)
+	if err != nil {
+		return result, fmt.Errorf("detect service manager: %w", err)
+	}
+	emit("  service manager: %s", mgr.Flavour())
+
+	// 3. Create okesu (or _okesu on macOS) system user + state dirs.
+	user, group := okesuUserGroup(targetOS)
+	emit("→ ensuring %s system user + directories", user)
+	if err := bootstrapOkesuUser(c, req.Cred.SudoPassword, targetOS); err != nil {
+		return result, err
 	}
 	emit("✓ user + dirs ready")
 
@@ -199,23 +231,17 @@ install -d -m 0755 -o okesu -g okesu /etc/okesu/agents /var/lib/okesu /var/log/o
 	_ = binFile.Close()
 	emit("✓ binary at /usr/local/bin/okesu")
 
-	// 4. Upload the systemd template unit.
-	emit("→ writing systemd unit")
-	unit := defaultSystemdUnit
-	if req.SystemdUnitPath != "" {
-		b, err := os.ReadFile(req.SystemdUnitPath)
-		if err != nil {
-			return result, fmt.Errorf("read systemd unit: %w", err)
-		}
-		unit = string(b)
+	// 4. (systemd-only) Stop any legacy `okesu-agent@<name>.service`
+	//    template-instance services left over from the pre-Phase-8.5
+	//    deploy code. The new code writes per-instance units named
+	//    `okesu-agent-<name>.service`; running both in parallel would
+	//    double-spawn each daimon. Tolerated to fail — `systemctl stop`
+	//    on a missing unit is a no-op.
+	if mgr.Flavour() == FlavourSystemd {
+		emit("→ migrating any legacy okesu-agent@*.service template instances")
+		_, _ = runWithSudo(c, req.Cred.SudoPassword,
+			`for u in $(systemctl list-units 'okesu-agent@*.service' --plain --no-legend --state=loaded | awk '{print $1}'); do systemctl disable --now "$u" 2>/dev/null || true; done`)
 	}
-	if err := c.WriteFile("/etc/systemd/system/okesu-agent@.service", []byte(unit), 0644); err != nil {
-		return result, fmt.Errorf("write systemd unit: %w", err)
-	}
-	if out, err := c.Run("systemctl daemon-reload"); err != nil {
-		return result, fmt.Errorf("daemon-reload: %w (%s)", err, out)
-	}
-	emit("✓ systemd unit installed")
 
 	// 5. For each agent: upload agent file, optional env file, optional mgmt certs, start service.
 	for _, agent := range req.AgentsToInstall {
@@ -250,14 +276,15 @@ install -d -m 0755 -o okesu -g okesu /etc/okesu/agents /var/lib/okesu /var/log/o
 		}
 		emit("  ✓ %s", dest)
 
-		// Per-agent env file with secrets.
+		// Per-agent env file with secrets. chown to the OS-specific
+		// daemon user so the service can read it post-drop-privileges.
 		envContent := buildEnvFile(req.AnthropicAPIKey, req.OpenAIAPIKey, req.WebhookSecret)
 		if envContent != "" {
 			envPath := "/etc/okesu/agents/" + agent + ".env"
 			if err := c.WriteFile(envPath, []byte(envContent), 0600); err != nil {
 				return result, fmt.Errorf("upload env file: %w", err)
 			}
-			if _, err := c.Run("chown okesu:okesu " + envPath); err != nil {
+			if _, err := runWithSudo(c, req.Cred.SudoPassword, fmt.Sprintf("chown %s:%s %s", user, group, envPath)); err != nil {
 				// Non-fatal — env file is still readable by root.
 				emit("  ! could not chown %s: %v", envPath, err)
 			}
@@ -267,7 +294,7 @@ install -d -m 0755 -o okesu -g okesu /etc/okesu/agents /var/lib/okesu /var/log/o
 		// mTLS cert bundle.
 		if bundle, ok := req.MgmtCerts[agent]; ok && len(bundle.ClientCert) > 0 {
 			certDir := "/etc/okesu/" + agent + "-mgmt-certs"
-			if _, err := c.Run("install -d -m 0750 -o okesu -g okesu " + certDir); err != nil {
+			if _, err := runWithSudo(c, req.Cred.SudoPassword, fmt.Sprintf("install -d -m 0750 -o %s -g %s %s", user, group, certDir)); err != nil {
 				return result, fmt.Errorf("mkdir cert dir: %w", err)
 			}
 			if err := c.WriteFile(certDir+"/ca.crt", bundle.CACert, 0644); err != nil {
@@ -279,22 +306,102 @@ install -d -m 0755 -o okesu -g okesu /etc/okesu/agents /var/lib/okesu /var/log/o
 			if err := c.WriteFile(certDir+"/client.key", bundle.ClientKey, 0600); err != nil {
 				return result, fmt.Errorf("write client.key: %w", err)
 			}
-			if _, err := c.Run("chown -R okesu:okesu " + certDir); err != nil {
+			if _, err := runWithSudo(c, req.Cred.SudoPassword, fmt.Sprintf("chown -R %s:%s %s", user, group, certDir)); err != nil {
 				emit("  ! could not chown %s: %v", certDir, err)
 			}
 			emit("  ✓ mTLS certs in %s", certDir)
 		}
 
-		// Enable + start the service.
-		emit("  → systemctl enable --now okesu-agent@%s", agent)
-		if out, err := c.Run("systemctl enable --now okesu-agent@" + agent); err != nil {
-			return result, fmt.Errorf("enable agent %s: %w (%s)", agent, err, out)
+		// Service unit + start, via the flavour-appropriate manager.
+		// The svcmgr name-mapping handles the per-OS naming convention
+		// (systemd: okesu-agent-<name>.service; launchd:
+		// com.okesu.agent-<name>; rc.d: okesu_agent_<name>; SMF:
+		// svc:/site/okesu-agent-<name>:default).
+		svcName := "okesu-agent-" + agent
+		spec := ServiceSpec{
+			Name:             svcName,
+			Description:      "Okesu daimon: " + agent,
+			ExecStart:        "/usr/local/bin/okesu daemon --agent " + agent,
+			User:             user,
+			Group:            group,
+			EnvironmentFile:  "/etc/okesu/agents/" + agent + ".env",
+			WorkingDirectory: "/var/lib/okesu/" + agent,
+		}
+		emit("  → %s: install %s", mgr.Flavour(), svcName)
+		if err := mgr.Install(c, req.Cred.SudoPassword, spec); err != nil {
+			return result, fmt.Errorf("install service for agent %s: %w", agent, err)
+		}
+		if err := mgr.EnableAndStart(c, req.Cred.SudoPassword, svcName); err != nil {
+			return result, fmt.Errorf("start agent %s: %w", agent, err)
 		}
 		emit("  ✓ agent %q started", agent)
 	}
 
+	// Phase 6: install the pull-mode jobs runtime alongside the
+	// daimons. Same binary, same trust path, just a different
+	// systemd unit. Nodes deployed before this change get the
+	// jobs runtime on their next deploy or via the manual install
+	// button on the Nodes page.
+	if req.JobsRuntime != nil && len(req.JobsRuntime.ClientCert) > 0 {
+		emit("→ installing pull-mode jobs runtime (okesu-jobs)")
+		if err := installNodeCerts(c, req.JobsRuntime, user, group, req.Cred.SudoPassword); err != nil {
+			emit("  ! jobs runtime install failed: %v (daimons unaffected)", err)
+		} else {
+			// Reuse the daimon-deploy keys for the jobs runtime so
+			// spawned `okesu claude` jobs have credentials. Same env
+			// shape as /etc/okesu/agents/<agent>.env.
+			if envContent := buildJobsEnvFile(req.AnthropicAPIKey, req.OpenAIAPIKey); envContent != "" {
+				if err := c.WriteFile("/etc/okesu/jobs.env", []byte(envContent), 0600); err != nil {
+					emit("  ! write /etc/okesu/jobs.env: %v", err)
+				} else {
+					_, _ = runWithSudo(c, req.Cred.SudoPassword, fmt.Sprintf("chown %s:%s /etc/okesu/jobs.env", user, group))
+					emit("  ✓ /etc/okesu/jobs.env written")
+				}
+			}
+			spec := ServiceSpec{
+				Name:            "okesu-jobs",
+				Description:     "Okesu pull-mode jobs runtime",
+				ExecStart:       fmt.Sprintf("/usr/local/bin/okesu jobs --cp-url %q --name %q", req.MgmtURL, req.NodeName),
+				User:            user,
+				Group:           group,
+				EnvironmentFile: "/etc/okesu/jobs.env",
+			}
+			if err := mgr.Install(c, req.Cred.SudoPassword, spec); err != nil {
+				emit("  ! install okesu-jobs unit: %v (daimons unaffected)", err)
+			} else if err := mgr.EnableAndStart(c, req.Cred.SudoPassword, "okesu-jobs"); err != nil {
+				emit("  ! start okesu-jobs: %v (daimons unaffected)", err)
+			} else {
+				emit("  ✓ okesu-jobs running — node accepts pull-mode dispatch")
+			}
+		}
+	}
+
 	emit("✓ deploy complete")
 	return result, nil
+}
+
+// installNodeCerts drops the three-file mTLS bundle into the
+// canonical /etc/okesu/node-certs directory. The jobs runtime + the
+// future tunnel runtime both look here, so they share one cert
+// (the CN identifies the node either way).
+func installNodeCerts(c *Client, bundle *MgmtCertBundle, user, group, sudo string) error {
+	dir := "/etc/okesu/node-certs"
+	if _, err := runWithSudo(c, sudo, fmt.Sprintf("install -d -m 0750 -o %s -g %s %s", user, group, dir)); err != nil {
+		return fmt.Errorf("mkdir %s: %w", dir, err)
+	}
+	if err := c.WriteFile(dir+"/ca.crt", bundle.CACert, 0644); err != nil {
+		return fmt.Errorf("write ca.crt: %w", err)
+	}
+	if err := c.WriteFile(dir+"/client.crt", bundle.ClientCert, 0644); err != nil {
+		return fmt.Errorf("write client.crt: %w", err)
+	}
+	if err := c.WriteFile(dir+"/client.key", bundle.ClientKey, 0600); err != nil {
+		return fmt.Errorf("write client.key: %w", err)
+	}
+	if _, err := runWithSudo(c, sudo, fmt.Sprintf("chown -R %s:%s %s", user, group, dir)); err != nil {
+		return fmt.Errorf("chown %s: %w", dir, err)
+	}
+	return nil
 }
 
 // buildEnvFile assembles the contents of /etc/okesu/agents/<agent>.env.
@@ -498,40 +605,3 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
-const defaultSystemdUnit = `[Unit]
-Description=Okesu autonomous agent — %i
-Documentation=https://github.com/section9labs/okesu
-After=network-online.target
-Wants=network-online.target
-StartLimitIntervalSec=300
-StartLimitBurst=5
-
-[Service]
-Type=simple
-ExecStart=/usr/local/bin/okesu daemon --agent %i
-Restart=on-failure
-RestartSec=10s
-
-User=okesu
-Group=okesu
-
-WorkingDirectory=/var/lib/okesu/%i
-ReadWritePaths=/var/lib/okesu /var/log/okesu /etc/okesu /tmp
-ProtectSystem=strict
-ProtectHome=yes
-PrivateTmp=yes
-NoNewPrivileges=yes
-CapabilityBoundingSet=
-
-EnvironmentFile=-/etc/okesu/agents/%i.env
-
-StandardOutput=journal
-StandardError=journal
-SyslogIdentifier=okesu-%i
-
-KillSignal=SIGTERM
-SendSIGHUP=yes
-
-[Install]
-WantedBy=multi-user.target
-`

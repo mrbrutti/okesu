@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   Activity,
+  AlertTriangle,
   ChevronRight,
   Cpu,
   FileEdit,
@@ -401,6 +402,22 @@ function DaimonRow({
             {daimon.last_tick_count} tick{daimon.last_tick_count === 1 ? '' : 's'}
           </div>
           <TickBar count={daimon.last_tick_count} />
+        </div>
+
+        <div className="hidden lg:flex w-24 shrink-0 flex-col items-start">
+          <div
+            className={cn(
+              'text-xs flex items-center gap-1',
+              daimon.open_findings > 0 ? 'text-amber-700' : 'text-ink-dim',
+            )}
+            title={`${daimon.open_findings} open finding${daimon.open_findings === 1 ? '' : 's'} for ${daimon.name} on ${daimon.host}`}
+          >
+            <AlertTriangle
+              size={11}
+              className={daimon.open_findings > 0 ? 'text-amber-500' : 'text-ink-mute'}
+            />
+            {daimon.open_findings} open
+          </div>
         </div>
 
         <HeartbeatBadge daimon={daimon} />

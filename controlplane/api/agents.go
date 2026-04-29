@@ -25,6 +25,7 @@ type agentJSON struct {
 	RegisteredAt     string `json:"registered_at"`
 	LastHeartbeatAt  string `json:"last_heartbeat_at,omitempty"`
 	LastTickCount    int64  `json:"last_tick_count"`
+	OpenFindings     int64  `json:"open_findings"`
 	HeartbeatAgeSec  int64  `json:"heartbeat_age_sec"`
 	Healthy          bool   `json:"healthy"`
 	DesiredMaxTurns  *int64 `json:"desired_max_turns,omitempty"`
@@ -55,9 +56,18 @@ func AgentsList(store *db.Store) http.HandlerFunc {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		// Decorate with open-finding counts. One grouped query — cheap
+		// enough that we don't bother gating it behind a query-param.
+		counts, err := store.OpenFindingCountsByAgentHost()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 		out := make([]agentJSON, 0, len(agents))
 		for _, a := range agents {
-			out = append(out, toAgentJSON(a))
+			row := toAgentJSON(a)
+			row.OpenFindings = counts[db.AgentHostKey{Agent: a.Name, Host: a.Host}]
+			out = append(out, row)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(out)
@@ -93,8 +103,15 @@ func AgentDetail(store *db.Store) http.HandlerFunc {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		row := toAgentJSON(a)
+		// Decorate with open-finding count for this exact (name, host).
+		// Cheap to fold into one extra query; keeps the detail page in
+		// sync with the daimon list's count widget.
+		if counts, err := store.OpenFindingCountsByAgentHost(); err == nil {
+			row.OpenFindings = counts[db.AgentHostKey{Agent: a.Name, Host: a.Host}]
+		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(toAgentJSON(a))
+		_ = json.NewEncoder(w).Encode(row)
 	}
 }
 

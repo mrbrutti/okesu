@@ -133,12 +133,28 @@ var sqliteM021 string
 //go:embed migrations/sqlite/022_federation_peers.sql
 var sqliteM022 string
 
+//go:embed migrations/sqlite/023_orchestrations.sql
+var sqliteM023 string
+
+//go:embed migrations/sqlite/024_orchestration_triggers.sql
+var sqliteM024 string
+
+//go:embed migrations/sqlite/025_node_jobs.sql
+var sqliteM025 string
+
+//go:embed migrations/sqlite/026_s3_transport.sql
+var sqliteM026 string
+
+//go:embed migrations/sqlite/027_finding_edits.sql
+var sqliteM027 string
+
 var sqliteMigrations = []string{
 	sqliteM001, sqliteM002, sqliteM003,
 	sqliteM004, sqliteM005, sqliteM006, sqliteM007,
 	sqliteM008, sqliteM009, sqliteM010, sqliteM011, sqliteM012,
 	sqliteM013, sqliteM014, sqliteM015, sqliteM016, sqliteM017,
 	sqliteM018, sqliteM019, sqliteM020, sqliteM021, sqliteM022,
+	sqliteM023, sqliteM024, sqliteM025, sqliteM026, sqliteM027,
 }
 
 //go:embed migrations/postgres/001_init.sql
@@ -207,12 +223,28 @@ var pgM021 string
 //go:embed migrations/postgres/022_federation_peers.sql
 var pgM022 string
 
+//go:embed migrations/postgres/023_orchestrations.sql
+var pgM023 string
+
+//go:embed migrations/postgres/024_orchestration_triggers.sql
+var pgM024 string
+
+//go:embed migrations/postgres/025_node_jobs.sql
+var pgM025 string
+
+//go:embed migrations/postgres/026_s3_transport.sql
+var pgM026 string
+
+//go:embed migrations/postgres/027_finding_edits.sql
+var pgM027 string
+
 var postgresMigrations = []string{
 	pgM001, pgM002, pgM003,
 	pgM004, pgM005, pgM006, pgM007,
 	pgM008, pgM009, pgM010, pgM011, pgM012,
 	pgM013, pgM014, pgM015, pgM016, pgM017,
 	pgM018, pgM019, pgM020, pgM021, pgM022,
+	pgM023, pgM024, pgM025, pgM026, pgM027,
 }
 
 // migrationsForDialect returns the embedded list matching the dialect.
@@ -697,15 +729,48 @@ func (s *Store) InsertEvent(e *Event) (int64, error) {
 // (Cursor by ts is more robust than offset against the SSE stream
 // prepending new events at the top during pagination.)
 func (s *Store) RecentEvents(limit int, beforeTs int64) ([]*Event, error) {
-	if limit <= 0 || limit > 1000 {
+	return s.RecentEventsFiltered("", "", limit, beforeTs)
+}
+
+// RecentEventsFiltered is RecentEvents with agent/host equality
+// constraints pushed into the SQL WHERE so a daimon-detail query
+// doesn't scan the whole fleet's recent events to find the few
+// rows belonging to one daimon. Empty filters fall through to the
+// unfiltered path.
+//
+// Limit is capped at 5000 here (vs 1000 for unfiltered Recent)
+// because the filtered query can return up to that many rows for
+// one busy daimon's history without wasting bandwidth on rows
+// nobody asked for.
+func (s *Store) RecentEventsFiltered(agent, host string, limit int, beforeTs int64) ([]*Event, error) {
+	if limit <= 0 {
 		limit = 100
+	}
+	if agent == "" && host == "" {
+		if limit > 1000 {
+			limit = 1000
+		}
+	} else if limit > 5000 {
+		limit = 5000
 	}
 	q := `SELECT id, ts, type, agent, host, severity, title, raw_json, received_at
 		  FROM events`
-	args := []any{}
+	var conds []string
+	var args []any
+	if agent != "" {
+		conds = append(conds, "agent = ?")
+		args = append(args, agent)
+	}
+	if host != "" {
+		conds = append(conds, "host = ?")
+		args = append(args, host)
+	}
 	if beforeTs > 0 {
-		q += ` WHERE ts < ?`
+		conds = append(conds, "ts < ?")
 		args = append(args, beforeTs)
+	}
+	if len(conds) > 0 {
+		q += " WHERE " + strings.Join(conds, " AND ")
 	}
 	q += ` ORDER BY ts DESC LIMIT ?`
 	args = append(args, limit)

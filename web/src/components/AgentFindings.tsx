@@ -17,6 +17,10 @@ interface Props {
    *  conflate findings from other daimons that happen to share the
    *  same agent name (common when a fleet has 10x edr daimons). */
   host?: string;
+  /** When the daimon lives on a federated child CP, this is that
+   *  child's instance_id — used to route the finding-detail drawer
+   *  through the parent's ?cp= proxy. */
+  cpInstanceID?: string;
 }
 
 type Sev = 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW' | 'INFO';
@@ -24,7 +28,7 @@ type State = 'open' | 'acked' | 'all';
 
 const ALL_SEVS: Sev[] = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO'];
 
-export default function AgentFindings({ agentName, host }: Props) {
+export default function AgentFindings({ agentName, host, cpInstanceID }: Props) {
   const [findings, setFindings] = useState<Finding[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [sevs, setSevs] = useState<Sev[]>([]);
@@ -228,6 +232,7 @@ export default function AgentFindings({ agentName, host }: Props) {
       {drawerID !== null && (
         <FindingDrawer
           id={drawerID}
+          cpInstanceID={cpInstanceID}
           onClose={() => setDrawerID(null)}
           onChanged={() => { setDrawerID(null); refresh(); }}
         />

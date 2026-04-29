@@ -118,6 +118,24 @@ type Config struct {
 	// operators can extend with --agent-files-dir <path> (repeatable).
 	AgentFilesDirs []string
 
+	// FleetSSHKeyPath is an optional path to a private SSH key the CP
+	// uses for unattended auto-deploy of the jobs runtime when an
+	// orchestration step targets a node that has neither tunnel nor
+	// jobs runtime up. When empty, auto-deploy is disabled and the
+	// engine fails the step with a clear "manual install required"
+	// message pointing at the Nodes UI. Operators set this with
+	// --fleet-ssh-key-path when they want unattended provisioning.
+	FleetSSHKeyPath string
+
+	// FleetAnthropicAPIKey / FleetOpenAIAPIKey are the API keys the
+	// auto-deployer writes into /etc/okesu/jobs.env on each freshly
+	// installed node, so spawned `okesu claude` / `okesu codex` jobs
+	// have credentials. Empty means the runtime starts without keys —
+	// agent_run jobs will fail with "no API key" until an operator
+	// drops a jobs.env on the node manually.
+	FleetAnthropicAPIKey string
+	FleetOpenAIAPIKey    string
+
 	// WebhookPublicURL is the absolute URL the deployed daemon should POST
 	// webhook events to. Defaults to derived from Listen ("https://localhost<port>")
 	// — set explicitly when the daemon reaches the CP through a different
@@ -262,6 +280,10 @@ func FromEnv() Config {
 		AgentFilesDirs:    defaultAgentSearchDirs(envSplitNonEmpty("OKESU_CP_AGENT_FILES_DIRS", ":")),
 		WebhookPublicURL:  os.Getenv("OKESU_CP_WEBHOOK_PUBLIC_URL"),
 		MgmtPublicURL:     os.Getenv("OKESU_CP_MGMT_PUBLIC_URL"),
+
+		FleetSSHKeyPath:      os.Getenv("OKESU_CP_FLEET_SSH_KEY_PATH"),
+		FleetAnthropicAPIKey: envOr("OKESU_CP_FLEET_ANTHROPIC_API_KEY", os.Getenv("ANTHROPIC_API_KEY")),
+		FleetOpenAIAPIKey:    envOr("OKESU_CP_FLEET_OPENAI_API_KEY", os.Getenv("OPENAI_API_KEY")),
 
 		EventTTLDays: envInt("OKESU_CP_EVENT_TTL_DAYS", 0),
 		PubSubURL:    os.Getenv("OKESU_CP_PUBSUB_URL"),

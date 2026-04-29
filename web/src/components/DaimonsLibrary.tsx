@@ -23,6 +23,7 @@ import {
 } from 'lucide-react';
 import { api, ApiError, type DaimonItem, type DaimonLibraryDetail, type DaimonLibraryItem } from '../api';
 import { cn } from '../lib/cn';
+import MarkdownEditor from './LazyMarkdownEditor';
 
 const TEMPLATE = `---
 # ── Identity ────────────────────────────────────────────────────────────────
@@ -342,12 +343,13 @@ function DaimonEditor({
         {content === null ? (
           <p className="text-ink-mute text-sm">Loading…</p>
         ) : (
-          <textarea
-            value={content}
-            onChange={(e) => setContent(e.target.value)}
-            spellCheck={false}
-            className="flex-1 min-h-[480px] text-xs font-mono px-3 py-2 border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500/30 resize-y"
-          />
+          <div className="flex-1 min-h-[480px] border border-border rounded-md focus-within:ring-2 focus-within:ring-brand-500/30 overflow-hidden">
+            <MarkdownEditor
+              value={content}
+              onChange={setContent}
+              ariaLabel="Daimon system prompt"
+            />
+          </div>
         )}
       </div>
 

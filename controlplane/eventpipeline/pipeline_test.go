@@ -37,6 +37,9 @@ func (f *fakeEventStore) InsertBatch(_ context.Context, evs []ports.EventRecord)
 func (f *fakeEventStore) Recent(_ context.Context, _ int, _ int64) ([]ports.EventRecord, error) {
 	return nil, nil
 }
+func (f *fakeEventStore) RecentFiltered(_ context.Context, _ ports.EventFilter, _ int, _ int64) ([]ports.EventRecord, error) {
+	return nil, nil
+}
 
 // TestWorker_SplitsFindingsFromBatch verifies that finding events go
 // through the per-row Insert path (so each one can capture an event_id

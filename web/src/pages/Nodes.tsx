@@ -14,7 +14,7 @@ import {
   Wifi,
   X,
 } from 'lucide-react';
-import { api, subscribeJobLog, type FederationPeer, type NodeItem } from '../api';
+import { api, subscribeJobLog, type EnrollmentPackageSummary, type FederationPeer, type NodeItem, type TransportConfigSummary } from '../api';
 import { cn } from '../lib/cn';
 import { SectionHeader, type SectionTone } from '../components/lists/SectionHeader';
 import { ListCard } from '../components/lists/ListCard';
@@ -392,8 +392,71 @@ function groupNodes(list: NodeItem[]): Record<Bucket, NodeItem[]> {
 }
 
 // ── Add Node modal ──────────────────────────────────────────────────────────
+//
+// Two enrollment paths in one dialog:
+//
+//   1. SSH push  — operator supplies host + SSH creds, CP installs via SSH.
+//                  Best for hosts the CP can reach and for the existing
+//                  fleet operators have already provisioned with sshd.
+//   2. S3 dead-drop — operator generates a fleet package against a
+//                  configured S3-compatible bucket, downloads it, runs
+//                  install.sh on N machines. The hosts self-register via
+//                  the bucket; no inbound reachability to the CP is
+//                  required.
+//
+// Dropping in / out of either tab keeps the form-state private to that
+// tab so a half-filled SSH form isn't lost when the operator peeks at
+// the package generator.
+
+type AddTab = 'ssh' | 's3';
 
 function AddNodeModal({ onClose, onCreated }: { onClose: () => void; onCreated: (n: NodeItem) => void }) {
+  const [tab, setTab] = useState<AddTab>('ssh');
+  return (
+    <div className="fixed inset-0 bg-black/30 flex items-center justify-center p-4 z-50">
+      <div className="bg-panel border border-border rounded-xl shadow-card w-full max-w-2xl">
+        <header className="px-5 py-3 border-b border-border flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <h2 className="text-sm font-semibold">Add Node</h2>
+            <nav className="flex gap-1 text-xs">
+              <button
+                onClick={() => setTab('ssh')}
+                className={cn(
+                  'px-2.5 py-1 rounded-md font-medium',
+                  tab === 'ssh'
+                    ? 'bg-brand-50 text-brand-700 ring-1 ring-brand-200'
+                    : 'text-ink-dim hover:bg-slate-100',
+                )}
+              >
+                SSH push
+              </button>
+              <button
+                onClick={() => setTab('s3')}
+                className={cn(
+                  'px-2.5 py-1 rounded-md font-medium',
+                  tab === 's3'
+                    ? 'bg-brand-50 text-brand-700 ring-1 ring-brand-200'
+                    : 'text-ink-dim hover:bg-slate-100',
+                )}
+              >
+                S3 dead-drop
+              </button>
+            </nav>
+          </div>
+          <button onClick={onClose} className="p-1 text-ink-dim hover:text-ink rounded-md"><X size={16} /></button>
+        </header>
+        {tab === 'ssh' ? (
+          <AddNodeSSH onClose={onClose} onCreated={onCreated} />
+        ) : (
+          <AddNodeS3 onClose={onClose} />
+        )}
+      </div>
+    </div>
+  );
+}
+
+// SSH push tab — original Add Node form, unchanged in behaviour.
+function AddNodeSSH({ onClose, onCreated }: { onClose: () => void; onCreated: (n: NodeItem) => void }) {
   const [name, setName] = useState('');
   const [hostname, setHostname] = useState('');
   const [sshUser, setSshUser] = useState('root');
@@ -401,8 +464,6 @@ function AddNodeModal({ onClose, onCreated }: { onClose: () => void; onCreated: 
   const [notes, setNotes] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Phase 9.7: federation target. Empty string = local CP (default).
-  // Populated with healthy peers when this CP federates from anyone.
   const [peers, setPeers] = useState<FederationPeer[]>([]);
   const [targetCP, setTargetCP] = useState('');
 
@@ -428,68 +489,370 @@ function AddNodeModal({ onClose, onCreated }: { onClose: () => void; onCreated: 
   }
 
   return (
-    <div className="fixed inset-0 bg-black/30 flex items-center justify-center p-4 z-50">
-      <div className="bg-panel border border-border rounded-xl shadow-card w-full max-w-md">
-        <header className="px-5 py-3 border-b border-border flex items-center justify-between">
-          <h2 className="text-sm font-semibold">Register Node</h2>
-          <button onClick={onClose} className="p-1 text-ink-dim hover:text-ink rounded-md"><X size={16} /></button>
-        </header>
-        <div className="p-5 space-y-3 text-sm">
-          {peers.length > 0 && (
-            <Field label="Target CP">
-              <select
-                value={targetCP}
-                onChange={(e) => setTargetCP(e.target.value)}
-                className={inputCls}
-                title="Which Control Plane should own this node? Defaults to this (local) CP."
-              >
-                <option value="">This CP (local)</option>
-                {peers.map((p) => {
-                  const id = p.introspect?.instance_id ?? '';
-                  const label = p.display_name || p.introspect?.display_name || p.url;
-                  const region = p.introspect?.region;
-                  return (
-                    <option key={id} value={id}>
-                      {label}{region ? ` · ${region}` : ''}
-                    </option>
-                  );
-                })}
-              </select>
-            </Field>
-          )}
-          <Field label="Name">
-            <input value={name} onChange={(e) => setName(e.target.value)} placeholder="prod-web-01" className={inputCls} required />
+    <>
+      <div className="p-5 space-y-3 text-sm">
+        {peers.length > 0 && (
+          <Field label="Target CP">
+            <select
+              value={targetCP}
+              onChange={(e) => setTargetCP(e.target.value)}
+              className={inputCls}
+              title="Which Control Plane should own this node? Defaults to this (local) CP."
+            >
+              <option value="">This CP (local)</option>
+              {peers.map((p) => {
+                const id = p.introspect?.instance_id ?? '';
+                const label = p.display_name || p.introspect?.display_name || p.url;
+                const region = p.introspect?.region;
+                return (
+                  <option key={id} value={id}>
+                    {label}{region ? ` · ${region}` : ''}
+                  </option>
+                );
+              })}
+            </select>
           </Field>
-          <Field label="Hostname or IP">
-            <input value={hostname} onChange={(e) => setHostname(e.target.value)} placeholder="10.0.1.42" className={inputCls} required />
+        )}
+        <Field label="Name">
+          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="prod-web-01" className={inputCls} required />
+        </Field>
+        <Field label="Hostname or IP">
+          <input value={hostname} onChange={(e) => setHostname(e.target.value)} placeholder="10.0.1.42" className={inputCls} required />
+        </Field>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="SSH user">
+            <input value={sshUser} onChange={(e) => setSshUser(e.target.value)} className={inputCls} />
           </Field>
-          <div className="grid grid-cols-2 gap-3">
-            <Field label="SSH user">
-              <input value={sshUser} onChange={(e) => setSshUser(e.target.value)} className={inputCls} />
-            </Field>
-            <Field label="SSH port">
-              <input type="number" value={sshPort} onChange={(e) => setSshPort(Number(e.target.value))} className={inputCls} />
-            </Field>
-          </div>
-          <Field label="Notes (optional)">
-            <input value={notes} onChange={(e) => setNotes(e.target.value)} className={inputCls} />
+          <Field label="SSH port">
+            <input type="number" value={sshPort} onChange={(e) => setSshPort(Number(e.target.value))} className={inputCls} />
           </Field>
-          {error && (
-            <div className="text-xs text-red-700 bg-red-50 border border-red-200 px-2.5 py-1.5 rounded-md">{error}</div>
-          )}
         </div>
-        <footer className="px-5 py-3 border-t border-border flex justify-end gap-2">
-          <button onClick={onClose} className="text-xs px-3 py-1.5 border border-border rounded-md">Cancel</button>
+        <Field label="Notes (optional)">
+          <input value={notes} onChange={(e) => setNotes(e.target.value)} className={inputCls} />
+        </Field>
+        {error && (
+          <div className="text-xs text-red-700 bg-red-50 border border-red-200 px-2.5 py-1.5 rounded-md">{error}</div>
+        )}
+      </div>
+      <footer className="px-5 py-3 border-t border-border flex justify-end gap-2">
+        <button onClick={onClose} className="text-xs px-3 py-1.5 border border-border rounded-md">Cancel</button>
+        <button
+          onClick={handleSubmit}
+          disabled={busy || !name || !hostname}
+          className="text-xs px-3 py-1.5 bg-brand-500 hover:bg-brand-600 disabled:opacity-50 text-white rounded-md font-medium"
+        >
+          {busy ? 'Creating…' : 'Create & Deploy'}
+        </button>
+      </footer>
+    </>
+  );
+}
+
+// S3 dead-drop tab — generate an enrollment package the operator
+// can drop on N hosts. Each host self-registers via the bucket.
+//
+// The form picks: a transport_config (or inline-creates one),
+// display name, target platforms, default agents, archive format.
+// Output is a download link the operator clicks.
+function AddNodeS3({ onClose }: { onClose: () => void }) {
+  // Operator inputs.
+  const [transportID, setTransportID] = useState<number | null>(null);
+  const [displayName, setDisplayName] = useState('');
+  const [agentsCsv, setAgentsCsv] = useState('instance-integrity');
+  const [pollMs, setPollMs] = useState(10_000);
+  const [format, setFormat] = useState<'tar.gz' | 'deb' | 'rpm' | 'pkg' | 'msi'>('tar.gz');
+
+  // Available transport configs + agents (for the autocomplete).
+  const [configs, setConfigs] = useState<TransportConfigSummary[]>([]);
+  const [agentLib, setAgentLib] = useState<string[]>([]);
+  const [showCreateConfig, setShowCreateConfig] = useState(false);
+
+  // Generation state — once a package is minted we surface the
+  // download link (operator can re-download for any format) and the
+  // raw curl recipe for scripting.
+  const [pkg, setPkg] = useState<EnrollmentPackageSummary | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    refreshConfigs();
+    api.nodeLibrary().then((lib) => setAgentLib(lib.agents)).catch(() => { /* ignore */ });
+  }, []);
+
+  function refreshConfigs() {
+    api.transportConfigs()
+      .then((rows) => {
+        setConfigs(rows);
+        if (rows.length > 0 && transportID == null) {
+          setTransportID(rows[0].id);
+        }
+      })
+      .catch((e) => setError(String(e)));
+  }
+
+  async function handleGenerate() {
+    if (!transportID) { setError('pick a transport config first'); return; }
+    setBusy(true); setError(null);
+    try {
+      const agents = agentsCsv.split(',').map((s) => s.trim()).filter(Boolean);
+      const created = await api.enrollmentPackageCreate({
+        display_name: displayName || `pkg-${new Date().toISOString().slice(0, 10)}`,
+        transport_config_id: transportID,
+        defaults: {
+          agents,
+          poll_interval_ms: pollMs,
+        },
+      });
+      setPkg(created);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const downloadURL = pkg ? api.enrollmentPackageDownloadURL(pkg.id, format) : null;
+
+  return (
+    <>
+      <div className="p-5 space-y-4 text-sm max-h-[70vh] overflow-y-auto">
+        {/* Transport config picker — null state nudges the operator
+            into creating one inline. */}
+        <Field label="S3 bucket / transport config">
+          {configs.length === 0 ? (
+            <div className="space-y-2">
+              <p className="text-xs text-ink-mute">
+                No S3 transport configured. Add one to mint enrollment packages.
+              </p>
+              <button
+                onClick={() => setShowCreateConfig(true)}
+                className="text-xs text-brand-700 hover:underline inline-flex items-center gap-1"
+              >
+                <Plus size={11} /> Create transport config
+              </button>
+            </div>
+          ) : (
+            <div className="flex gap-2 items-center">
+              <select
+                value={transportID ?? ''}
+                onChange={(e) => setTransportID(Number(e.target.value))}
+                className={inputCls}
+              >
+                {configs.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name} · {c.bucket} {c.has_fleet_pubkey ? '' : '(no fleet keys yet)'}
+                  </option>
+                ))}
+              </select>
+              <button
+                onClick={() => setShowCreateConfig(true)}
+                title="Add another transport config"
+                className="text-xs text-brand-700 hover:underline shrink-0 inline-flex items-center gap-0.5"
+              >
+                <Plus size={11} /> Add
+              </button>
+            </div>
+          )}
+        </Field>
+
+        {showCreateConfig && (
+          <CreateTransportInline
+            onCreated={(c) => {
+              setShowCreateConfig(false);
+              setConfigs((prev) => [...prev, c]);
+              setTransportID(c.id);
+            }}
+            onCancel={() => setShowCreateConfig(false)}
+          />
+        )}
+
+        <Field label="Package name">
+          <input
+            value={displayName}
+            onChange={(e) => setDisplayName(e.target.value)}
+            placeholder="prod-fleet-2026-04"
+            className={inputCls}
+          />
+        </Field>
+
+        <Field label="Default agents (comma-separated)">
+          <input
+            value={agentsCsv}
+            onChange={(e) => setAgentsCsv(e.target.value)}
+            placeholder="instance-integrity,edr"
+            className={inputCls}
+          />
+          {agentLib.length > 0 && (
+            <p className="text-[10px] text-ink-mute mt-1">
+              Available: {agentLib.join(', ')}
+            </p>
+          )}
+        </Field>
+
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Poll interval (ms)">
+            <input
+              type="number"
+              value={pollMs}
+              onChange={(e) => setPollMs(Number(e.target.value))}
+              min={5000}
+              max={300_000}
+              step={1000}
+              className={inputCls}
+            />
+          </Field>
+          <Field label="Archive format">
+            <select
+              value={format}
+              onChange={(e) => setFormat(e.target.value as typeof format)}
+              className={inputCls}
+            >
+              <option value="tar.gz">tar.gz · linux / macos / bsd</option>
+              <option value="deb">.deb · debian / ubuntu (coming soon)</option>
+              <option value="rpm">.rpm · rhel / fedora (coming soon)</option>
+              <option value="pkg">.pkg · macos installer (coming soon)</option>
+              <option value="msi">.msi · windows (coming soon)</option>
+            </select>
+          </Field>
+        </div>
+
+        <p className="text-[11px] text-ink-mute">
+          Multi-arch binaries baked in: linux-amd64, linux-arm64, darwin-amd64,
+          darwin-arm64, freebsd-amd64. The install.sh script picks the right
+          one for each host based on <code>uname -s</code> / <code>uname -m</code>.
+        </p>
+
+        {error && (
+          <div className="text-xs text-red-700 bg-red-50 border border-red-200 px-2.5 py-1.5 rounded-md">
+            {error}
+          </div>
+        )}
+
+        {pkg && downloadURL && (
+          <section className="bg-green-50 border border-green-200 rounded-md p-3 space-y-2">
+            <div className="flex items-center gap-2 text-xs font-semibold text-green-800">
+              <CheckCircle2 size={14} /> Package #{pkg.id} ready
+            </div>
+            <p className="text-[11px] text-green-900/80">
+              Drop on any host and run <code>sudo ./install.sh</code>. The host
+              auto-registers via the bucket.
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <a
+                href={downloadURL}
+                download
+                className="text-xs px-3 py-1.5 bg-green-700 hover:bg-green-800 text-white rounded-md font-medium inline-flex items-center gap-1"
+              >
+                <Upload size={12} className="rotate-180" /> Download {format}
+              </a>
+              <button
+                onClick={() => navigator.clipboard.writeText(`curl -sk -OJ ${window.location.origin}${downloadURL}`)}
+                className="text-xs px-3 py-1.5 border border-green-300 text-green-800 hover:bg-green-100 rounded-md font-medium"
+                title="Copy a curl command for scripted download"
+              >
+                Copy curl
+              </button>
+            </div>
+          </section>
+        )}
+      </div>
+      <footer className="px-5 py-3 border-t border-border flex justify-end gap-2">
+        <button onClick={onClose} className="text-xs px-3 py-1.5 border border-border rounded-md">
+          {pkg ? 'Done' : 'Cancel'}
+        </button>
+        {!pkg && (
           <button
-            onClick={handleSubmit}
-            disabled={busy || !name || !hostname}
+            onClick={handleGenerate}
+            disabled={busy || !transportID}
             className="text-xs px-3 py-1.5 bg-brand-500 hover:bg-brand-600 disabled:opacity-50 text-white rounded-md font-medium"
           >
-            {busy ? 'Creating…' : 'Create & Deploy'}
+            {busy ? 'Generating…' : 'Generate package'}
           </button>
-        </footer>
+        )}
+      </footer>
+    </>
+  );
+}
+
+// CreateTransportInline — minimal form to add a new bucket config
+// without leaving the Add Node dialog. Mints a fresh fleet keypair
+// by default since v1 has no separate keypair-management UI.
+function CreateTransportInline({
+  onCreated,
+  onCancel,
+}: {
+  onCreated: (c: TransportConfigSummary) => void;
+  onCancel: () => void;
+}) {
+  const [name, setName] = useState('');
+  const [bucket, setBucket] = useState('');
+  const [endpoint, setEndpoint] = useState('s3.us-west-2.amazonaws.com');
+  const [region, setRegion] = useState('us-west-2');
+  const [accessKey, setAccessKey] = useState('');
+  const [secretKey, setSecretKey] = useState('');
+  const [useSSL, setUseSSL] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function submit() {
+    setBusy(true); setError(null);
+    try {
+      const c = await api.transportConfigCreate({
+        name, kind: 's3', bucket, endpoint, region,
+        use_ssl: useSSL, access_key: accessKey, secret_key: secretKey,
+        generate_fleet_keys: true,
+        scanner_interval_ms: 10_000,
+        cp_id: 'global',
+      });
+      onCreated(c);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="bg-slate-50 border border-border rounded-md p-3 space-y-2">
+      <div className="text-[11px] uppercase tracking-wide text-ink-mute font-medium">
+        New transport config
       </div>
-    </div>
+      <div className="grid grid-cols-2 gap-2">
+        <Field label="Name">
+          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="prod-bucket" className={inputCls} />
+        </Field>
+        <Field label="Bucket">
+          <input value={bucket} onChange={(e) => setBucket(e.target.value)} placeholder="okesu-prod" className={inputCls} />
+        </Field>
+        <Field label="Endpoint (host:port)">
+          <input value={endpoint} onChange={(e) => setEndpoint(e.target.value)} className={inputCls} />
+        </Field>
+        <Field label="Region">
+          <input value={region} onChange={(e) => setRegion(e.target.value)} className={inputCls} />
+        </Field>
+        <Field label="Access key">
+          <input value={accessKey} onChange={(e) => setAccessKey(e.target.value)} className={inputCls} />
+        </Field>
+        <Field label="Secret key">
+          <input type="password" value={secretKey} onChange={(e) => setSecretKey(e.target.value)} className={inputCls} />
+        </Field>
+      </div>
+      <label className="text-[11px] inline-flex items-center gap-1.5 text-ink-dim">
+        <input type="checkbox" checked={useSSL} onChange={(e) => setUseSSL(e.target.checked)} />
+        Use TLS (uncheck only for local MinIO over plain HTTP)
+      </label>
+      {error && <div className="text-xs text-red-700">{error}</div>}
+      <div className="flex justify-end gap-2 pt-1">
+        <button onClick={onCancel} className="text-xs px-2.5 py-1 border border-border rounded">Cancel</button>
+        <button
+          onClick={submit}
+          disabled={busy || !name || !bucket || !endpoint}
+          className="text-xs px-2.5 py-1 bg-brand-500 hover:bg-brand-600 disabled:opacity-50 text-white rounded font-medium"
+        >
+          {busy ? 'Creating…' : 'Create + mint fleet keys'}
+        </button>
+      </div>
+    </section>
   );
 }
 

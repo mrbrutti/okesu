@@ -54,31 +54,33 @@ func EventsList(store ports.EventStore) http.HandlerFunc {
 		// just clicked on).
 		filterAgent := q.Get("agent")
 		filterHost := q.Get("host")
-		// Over-fetch when filtering — most rows in the recent window
-		// won't match, so we need a wider scoop to land `limit`
-		// matching rows. Cap at a generous ceiling so we don't pull
-		// the whole table on a busy CP.
-		fetchLimit := limit
+		// SQL-pushdown filter: when an agent/host filter is set we
+		// route through RecentFiltered so the WHERE clause runs in the
+		// store. The previous code over-fetched + post-filtered in Go,
+		// which capped recall at ~24s of fleet history when 5000 rows
+		// of busy-fleet recents covered only a sliver of the window —
+		// the daimon-detail Messages tab regularly missed its own last
+		// tick.
+		var (
+			events []ports.EventRecord
+			err    error
+		)
 		if filterAgent != "" || filterHost != "" {
-			fetchLimit = limit * 25
-			if fetchLimit > 5000 {
-				fetchLimit = 5000
-			}
+			events, err = store.RecentFiltered(
+				r.Context(),
+				ports.EventFilter{Agent: filterAgent, Host: filterHost},
+				limit, beforeTs,
+			)
+		} else {
+			events, err = store.Recent(r.Context(), limit, beforeTs)
 		}
-		events, err := store.Recent(r.Context(), fetchLimit, beforeTs)
 		if err != nil {
 			http.Error(w, "query: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 
-		out := make([]eventJSON, 0, limit)
+		out := make([]eventJSON, 0, len(events))
 		for _, e := range events {
-			if filterAgent != "" && e.Agent != filterAgent {
-				continue
-			}
-			if filterHost != "" && e.Host != filterHost {
-				continue
-			}
 			out = append(out, eventJSON{
 				ID:       e.ID,
 				Ts:       e.Ts,
@@ -89,9 +91,6 @@ func EventsList(store ports.EventStore) http.HandlerFunc {
 				Title:    e.Title,
 				Raw:      json.RawMessage(e.RawJSON),
 			})
-			if len(out) >= limit {
-				break
-			}
 		}
 
 		w.Header().Set("Content-Type", "application/json")

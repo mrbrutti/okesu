@@ -33,6 +33,24 @@ type EventStore interface {
 	// before the given ts cursor. Used by the Live Events UI's
 	// infinite-scroll pagination.
 	Recent(ctx context.Context, limit int, beforeTs int64) ([]EventRecord, error)
+
+	// RecentFiltered is Recent with optional agent/host equality
+	// constraints applied at the storage layer (SQL WHERE for sqlite,
+	// PREWHERE for clickhouse). At fleet scale the unfiltered Recent
+	// returns the most-recent N events across the whole fleet — for
+	// daimon-detail views asking "give me events for THIS daimon"
+	// that's the wrong scoop because one daimon's events are sparse
+	// in the fleet-wide stream. Empty filter strings disable that
+	// constraint.
+	RecentFiltered(ctx context.Context, filter EventFilter, limit int, beforeTs int64) ([]EventRecord, error)
+}
+
+// EventFilter is the set of equality constraints RecentFiltered
+// supports. Empty string = no constraint on that field. Add more
+// fields here when query patterns demand it (severity, type, etc.).
+type EventFilter struct {
+	Agent string
+	Host  string
 }
 
 // EventRecord is the wire shape between EventStore adapters and the

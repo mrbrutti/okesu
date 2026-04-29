@@ -1693,3 +1693,131 @@ controlplane/
 
 A new cloud requires writing one new file per service, not editing
 the rest of the CP.
+
+---
+
+## 24. Multi-OS Service Manager (Phase 8)
+
+The SSH deploy and the install paths used to shell out to
+`systemctl` directly. Phase 8 introduced an abstraction so daimons +
+the jobs runtime install on every Unix-family target the daemon
+binary builds for.
+
+```
+controlplane/sshdeploy/
+  svcmgr.go            ServiceManager interface + Detect() factory
+  svcmgr_launchd.go    macOS — /Library/LaunchDaemons/<label>.plist + launchctl
+  svcmgr_rcd.go        FreeBSD/OpenBSD — /usr/local/etc/rc.d or /etc/rc.d
+  svcmgr_smf.go        illumos/Solaris — SMF manifests + svcadm
+  bootstrap.go         OS-aware unprivileged-user creation
+```
+
+`Detect()` runs `uname -s` against the target and returns the right
+manager. The deploy + install paths use `mgr.Install(spec) +
+mgr.EnableAndStart(name)` — same code on every flavour. Naming
+convention: a service named `okesu-agent-edr` becomes
+`okesu-agent-edr.service` on systemd, `com.okesu.agent-edr.plist` on
+launchd, `okesu_agent_edr` on rc.d, `svc:/site/okesu-agent-edr:default`
+on SMF. The mapping is symmetric so `ListOkesuAgents` round-trips.
+
+The Phase 8.5 migration replaced the systemd template-unit pattern
+(`okesu-agent@.service`) with per-instance units; existing template
+instances are stopped + disabled on the next deploy.
+
+---
+
+## 25. S3 Dead-Drop Transport (Phase 9)
+
+For nodes that can't reach the CP directly (NAT, air-gap, DMZ) but
+can reach an object-storage bucket. Both sides only ever read/write
+objects in a shared bucket; they never connect to each other.
+
+Wire-format spec: [docs/s3-transport.md](s3-transport.md). Layout:
+
+```
+s3://okesu-<cp-id>/
+  cp/<cp-id>/
+    enrollment/pubkey.pem                 fleet trust anchor
+    registration/<node-uuid>.json         inbox for new nodes
+    nodes/<node-id>/
+      cert.pem                            CP-issued post-enrollment
+      heartbeat.json                      ~30s liveness
+      jobs/inbox/<job-id>.json            CP enqueues
+      jobs/<job-id>/output/<seq>.txt      node-streamed chunks
+      jobs/<job-id>/exit.json             terminal status
+      events/YYYY-MM-DD/*.ndjson          batched daimon events
+      findings/*.json                     finding-type events
+      config/desired.json                 hot-reloaded from CP
+```
+
+Implementation:
+
+```
+agent/s3transport/         node-side: client, runner, eventsink, enroll, wire types
+controlplane/transport/
+  s3scanner/               CP-side: ingests registrations, heartbeats, events,
+                           findings, job output, job exits
+controlplane/packaging/    self-register package generator with pluggable
+                           Formatter interface (tar.gz live; deb/rpm/pkg/msi stubs)
+```
+
+Trust: per-CP fleet keypair (`transport_configs.fleet_pubkey_pem`)
+signs each generated package's signing cert. Each node generates
+its own UUID + keypair on first boot, uploads a CSR signed with the
+package signing cert, and the CP scanner validates against the
+fleet public key before issuing the per-node mTLS cert. One package
+safely registers N machines — there's no per-node identity in the
+package.
+
+Tunables (`config/desired.json`, hot-reload): jobs poll, heartbeat,
+events flush, output chunk flush. Defaults documented in
+`docs/s3-transport.md` §"Polling cadence".
+
+UI: `+ Add Node` modal has an **S3 dead-drop** tab where the
+operator picks a transport config, agents to install, format, and
+downloads the tar.gz. Backend ready for `.deb`, `.rpm`, `.pkg`,
+`.msi` — `packaging.Register()` makes adding a formatter a
+single-file change.
+
+---
+
+## 26. Engine-Applied Action Protocol (Phase 11)
+
+Agents emit structured intent in `orchestration_result.attributes.actions[]`;
+the engine validates against the step's `actions:` allowlist and
+applies via DB methods. Agents never get CP credentials. Full
+protocol doc: [agents/_orchestration-actions.md](../agents/_orchestration-actions.md);
+operator-facing doc: [docs/orchestrations.md §Engine-applied actions](orchestrations.md#engine-applied-actions-cp-side-mutations).
+
+Action set:
+- `update_finding_status` — open / acknowledged / investigating / resolved / false_positive / wontfix / suppressed
+- `add_finding_tag` / `remove_finding_tag`
+- `set_finding_severity_override`
+- `link_run_to_finding`
+- `escalate` (soft signal)
+
+Schema (mig 027):
+- `finding_edits` — audit log keyed off `finding_id`; one row per
+  atomic change. Origin can be a user (operator triage) or an
+  orchestration run + step.
+- `finding_run_links` — bidirectional join so the finding-detail
+  page lists "auto-handled by run #N" and the run-detail page lists
+  "this run touched findings X, Y, Z".
+
+Implementation:
+
+```
+controlplane/orchestrator/actions.go         wire types + AllowedByStep validator
+controlplane/orchestrator/engine.go          applyStepActions() called post-step
+controlplane/api/orchestration_actions.go    db-backed ActionApplier impl
+controlplane/api/finding_history.go          read-only API: history + run links
+controlplane/db/finding_edits.go             ApplyFindingStatusChange + audit row in tx
+agents/_orchestration-actions.md             protocol doc agents read at runtime
+```
+
+UI surfaces the audit:
+- Finding-detail drawer has a **History** section with bot-vs-user
+  icons and run deep-links
+  (`web/src/components/FindingHistory.tsx`).
+- Run-detail expanded step shows an **Actions applied** strip — one
+  green chip per action (`Orchestrations.tsx::StepActionsApplied`).

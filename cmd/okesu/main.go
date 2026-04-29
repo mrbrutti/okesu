@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/signal"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/section9labs/okesu/agent"
+	"github.com/section9labs/okesu/agent/s3transport"
 	"github.com/section9labs/okesu/node"
 	"github.com/spf13/cobra"
 )
@@ -80,8 +82,208 @@ func rootCmd() *cobra.Command {
 All tool calls execute without any sandbox or approval gate.
 Output streams as JSONL to stdout.`,
 	}
-	root.AddCommand(claudeCmd(), codexCmd(), autoCmd(), daemonCmd(), nodeCmd())
+	root.AddCommand(claudeCmd(), codexCmd(), autoCmd(), daemonCmd(), nodeCmd(), jobsCmd(), enrollCmd(), s3JobsCmd())
 	return root
+}
+
+// enrollCmd reads the bootstrap.json an operator's package dropped
+// on disk, runs the S3 dead-drop enrollment flow, and persists the
+// per-node identity to /etc/okesu/node-certs/. Idempotent — re-runs
+// no-op once the cached identity is in place.
+func enrollCmd() *cobra.Command {
+	var (
+		bootstrapPath string
+		certDir       string
+	)
+	cmd := &cobra.Command{
+		Use:   "enroll",
+		Short: "Enroll this host against a Control Plane via the S3 dead-drop transport",
+		Long: `Reads /etc/okesu/bootstrap.json (produced by the CP's package
+generator), uploads a registration request to the bucket, and waits
+for the CP scanner to issue the per-node mTLS cert.
+
+The flow is offline-friendly: the host needs reachability to the
+configured bucket only, never to the CP itself.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+			defer cancel()
+			body, err := os.ReadFile(bootstrapPath)
+			if err != nil {
+				return fmt.Errorf("read bootstrap: %w", err)
+			}
+			var b struct {
+				PackageID      int64    `json:"package_id"`
+				CPID           string   `json:"cp_id"`
+				Bucket         string   `json:"bucket"`
+				Endpoint       string   `json:"endpoint"`
+				Region         string   `json:"region"`
+				UseSSL         bool     `json:"use_ssl"`
+				AccessKey      string   `json:"access_key"`
+				SecretKey      string   `json:"secret_key"`
+				PackageCertPEM string   `json:"package_cert_pem"`
+				PackageKeyPEM  string   `json:"package_key_pem"`
+				Defaults       struct {
+					Agents []string `json:"agents,omitempty"`
+				} `json:"defaults"`
+			}
+			if err := json.Unmarshal(body, &b); err != nil {
+				return fmt.Errorf("decode bootstrap: %w", err)
+			}
+			cli, err := s3transport.NewClient(ctx, s3transport.ClientConfig{
+				Endpoint:  b.Endpoint,
+				Region:    b.Region,
+				Bucket:    b.Bucket,
+				AccessKey: b.AccessKey,
+				SecretKey: b.SecretKey,
+				UseSSL:    b.UseSSL,
+			})
+			if err != nil {
+				return fmt.Errorf("connect bucket: %w", err)
+			}
+			res, err := s3transport.Enroll(ctx, s3transport.EnrollRequest{
+				Client:          cli,
+				CPID:            b.CPID,
+				PackageID:       b.PackageID,
+				PackageCertPEM:  b.PackageCertPEM,
+				PackageKeyPEM:   b.PackageKeyPEM,
+				AgentsRequested: b.Defaults.Agents,
+				CertDir:         certDir,
+			})
+			if err != nil {
+				return err
+			}
+			fmt.Printf("enrolled: node_id=%d uuid=%s\n", res.NodeID, res.NodeUUID)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&bootstrapPath, "bootstrap", "/etc/okesu/bootstrap.json", "Path to the bootstrap.json file the package dropped on disk")
+	cmd.Flags().StringVar(&certDir, "cert-dir", "/etc/okesu/node-certs", "Directory to persist the issued cert + key")
+	return cmd
+}
+
+// s3JobsCmd runs the S3-mode jobs runtime — the dead-drop dual of
+// the existing `okesu jobs` HTTPS pull loop. Reads the bootstrap.json
+// + node identity from disk and starts the poll loop.
+//
+// Wired as a subcommand of the main `jobs` group via a flag in v1
+// to keep the existing `okesu jobs --cp-url ...` shape backward
+// compatible.
+func s3JobsCmd() *cobra.Command {
+	var (
+		bootstrapPath string
+		certDir       string
+	)
+	cmd := &cobra.Command{
+		Use:    "s3-jobs",
+		Short:  "Run the pull-mode jobs runtime over S3 (dead-drop transport)",
+		Hidden: true, // surfaced via `okesu jobs --transport=s3` in a follow-up
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+			defer cancel()
+			body, err := os.ReadFile(bootstrapPath)
+			if err != nil {
+				return fmt.Errorf("read bootstrap: %w", err)
+			}
+			var b struct {
+				CPID      string `json:"cp_id"`
+				Bucket    string `json:"bucket"`
+				Endpoint  string `json:"endpoint"`
+				Region    string `json:"region"`
+				UseSSL    bool   `json:"use_ssl"`
+				AccessKey string `json:"access_key"`
+				SecretKey string `json:"secret_key"`
+			}
+			if err := json.Unmarshal(body, &b); err != nil {
+				return fmt.Errorf("decode bootstrap: %w", err)
+			}
+			cli, err := s3transport.NewClient(ctx, s3transport.ClientConfig{
+				Endpoint:  b.Endpoint,
+				Region:    b.Region,
+				Bucket:    b.Bucket,
+				AccessKey: b.AccessKey,
+				SecretKey: b.SecretKey,
+				UseSSL:    b.UseSSL,
+			})
+			if err != nil {
+				return fmt.Errorf("connect bucket: %w", err)
+			}
+			// Read the persisted node-id (set by enroll). Without it
+			// the runner has nowhere to read jobs from.
+			idStr, err := os.ReadFile(certDir + "/node-id")
+			if err != nil {
+				return fmt.Errorf("read node-id: %w (run `okesu enroll` first)", err)
+			}
+			var nodeID int64
+			fmt.Sscanf(string(idStr), "%d", &nodeID)
+			if nodeID == 0 {
+				return fmt.Errorf("invalid node-id at %s/node-id", certDir)
+			}
+			r := s3transport.NewRunner(s3transport.RunnerConfig{
+				Client:   cli,
+				CPID:     b.CPID,
+				NodeID:   nodeID,
+				NodeName: hostname(),
+			})
+			return r.Run(ctx)
+		},
+	}
+	cmd.Flags().StringVar(&bootstrapPath, "bootstrap", "/etc/okesu/bootstrap.json", "Path to bootstrap.json")
+	cmd.Flags().StringVar(&certDir, "cert-dir", "/etc/okesu/node-certs", "Directory holding the persisted node-id")
+	return cmd
+}
+
+func hostname() string {
+	h, _ := os.Hostname()
+	return h
+}
+
+// jobsCmd runs the pull-mode jobs runtime — the host-side worker the
+// orchestrator dispatches agent runs through when the tunnel isn't
+// installed (which is the new default). One process per host;
+// authenticates with a node-level mTLS cert in --cert-dir.
+//
+// This is the cleaner long-term path than `okesu node`: no persistent
+// reverse-tunnel, no separate connection-tracking on the CP, and the
+// same trust path the daimon mgmt-plane already uses. Tunnels stay
+// available on demand — the jobs runtime supervises an `okesu node`
+// child whenever the engine asks for one via a start_tunnel job.
+func jobsCmd() *cobra.Command {
+	var (
+		cpMgmtURL string
+		certDir   string
+		nodeName  string
+	)
+	cmd := &cobra.Command{
+		Use:   "jobs",
+		Short: "Run the pull-mode jobs runtime",
+		Long: `Polls the Control Plane for orchestration jobs and executes them locally.
+
+Same mTLS cert layout as ` + "`okesu node`" + `:
+
+  okesu-cp issue-node-cert --node <name> --out <dir>
+
+Then on the target host:
+
+  okesu jobs --cp-url https://cp.example.com:8444 --cert-dir /etc/okesu/node-certs --name prod-web-01`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx, cancel := signal.NotifyContext(context.Background(),
+				syscall.SIGTERM, syscall.SIGINT)
+			defer cancel()
+			r, err := agent.NewJobsRunner(agent.JobsRunnerConfig{
+				CPMgmtURL: cpMgmtURL,
+				CertDir:   certDir,
+				NodeName:  nodeName,
+			})
+			if err != nil {
+				return err
+			}
+			return r.Run(ctx)
+		},
+	}
+	cmd.Flags().StringVar(&cpMgmtURL, "cp-url", "", "Control Plane mgmt-plane URL (https://cp.example.com:8444)")
+	cmd.Flags().StringVar(&certDir, "cert-dir", "/etc/okesu/node-certs", "Directory holding client.crt, client.key, ca.crt")
+	cmd.Flags().StringVar(&nodeName, "name", "", "Node name reported on each poll (defaults to hostname)")
+	return cmd
 }
 
 // nodeCmd runs the reverse-tunnel client (Phase 6). Connects to the CP via

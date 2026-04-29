@@ -135,10 +135,10 @@ export default function DaimonDetailPage() {
           <AgentMessages
             agentName={daimon.name}
             host={daimon.host}
-            cpInstanceID={daimon.cp_source?.instance_id}
+            cpInstanceID={cp ?? daimon.cp_source?.instance_id}
           />
         )}
-        {tab === 'findings' && <AgentFindings agentName={daimon.name} host={daimon.host} />}
+        {tab === 'findings' && <AgentFindings agentName={daimon.name} host={daimon.host} cpInstanceID={cp ?? daimon.cp_source?.instance_id} />}
         {tab === 'events' && (
           <EventTimeline
             agentFilter={daimon.name}

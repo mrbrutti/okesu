@@ -1342,6 +1342,47 @@ type HostFindingCount struct {
 	Critical int64
 }
 
+// AgentHostKey identifies a single (daimon name, host) pair — the
+// composite key the agents table is unique on. Used by
+// OpenFindingCountsByAgentHost so the daimon list can show open-finding
+// counts alongside ticks, similar to ticks but driven by the
+// findings projection.
+type AgentHostKey struct {
+	Agent string
+	Host  string
+}
+
+// OpenFindingCountsByAgentHost returns the count of `status = 'open'`
+// findings per (agent, host) pair across the whole table. Cheap enough
+// for the AgentsList code path (the index on findings(status, ts) keeps
+// it sub-ms even with millions of rows) and returns *every* daimon
+// rather than a top-N — the caller looks up by key, so missing rows
+// just mean "zero open findings for that daimon."
+func (s *Store) OpenFindingCountsByAgentHost() (map[AgentHostKey]int64, error) {
+	rows, err := s.Query(`
+		SELECT COALESCE(agent, '') AS a,
+		       COALESCE(host, '')  AS h,
+		       COUNT(*)
+		FROM findings
+		WHERE status = 'open'
+		GROUP BY a, h
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[AgentHostKey]int64)
+	for rows.Next() {
+		var k AgentHostKey
+		var n int64
+		if err := rows.Scan(&k.Agent, &k.Host, &n); err != nil {
+			return nil, err
+		}
+		out[k] = n
+	}
+	return out, rows.Err()
+}
+
 // OpenFindingsByHost returns the top-`limit` hosts by open finding
 // count, descending. Hosts with no findings are excluded. Empty
 // host strings collapse into "(unknown)".

@@ -1,0 +1,137 @@
+---
+name: t1-finding-autotriage
+description: Tier-1 auto-triage for every new finding. Decides real-issue vs known noise; suppresses noise, summarises the rest, and only escalates to a human-visible state when the finding survives both checks. Runs autonomously — no approval gate.
+
+# Fires on every new finding regardless of severity. The filter is
+# intentionally permissive — the work happens inside the orchestration,
+# not in the trigger condition.
+trigger:
+  on: finding
+  filter: "finding.severity != 'INFO'"
+
+inputs:
+  host:
+    type: string
+    required: false
+    default: ""
+  finding_id:
+    type: int
+    required: false
+    default: 0
+
+defaults:
+  timeout: 5m
+
+steps:
+  # 1. Classify: noise vs real. The investigator agent reads the
+  #    finding context, checks the recent fleet pattern (is this the
+  #    same finding firing on every host? is the source a known
+  #    scanner / monitoring system?), and emits a verdict +
+  #    requests CP-side actions to mutate the finding accordingly.
+  - id: classify
+    agent: investigator
+    node: "{{trigger.host}}"
+    actions:
+      - update_finding_status
+      - set_finding_severity_override
+      - add_finding_tag
+      - link_run_to_finding
+    prompt: |
+      Classify finding #{{trigger.finding_id}} on {{trigger.host}}.
+
+      Severity: {{trigger.severity}}
+      Title: {{trigger.title}}
+      Agent: {{trigger.agent}}
+      Resource: {{trigger.resource}}
+      Dedup key: {{trigger.dedup_key}}
+
+      Decide:
+        - verdict: one of `noise` | `confirmed` | `unknown`
+        - reasoning: one short sentence
+        - suppress_pattern: glob to suppress future identical findings, or empty
+        - escalate: bool — set true ONLY when verdict=confirmed AND severity in (HIGH, CRITICAL)
+
+      Heuristics for `noise`:
+        - Same finding fired on >=5 hosts in last 60 min with identical title
+        - Source attributes match a known internal scanner / monitor IP
+        - The change recorded matches a sanctioned automation (ansible run id, package manager update)
+        - Self-reported finding from the agent that itself deployed (collector seeing its own writes)
+
+      Emit an orchestration_result finding with attributes:
+        verdict (string), reasoning (string), suppress_pattern (string),
+        escalate (bool), actions (array — see below).
+
+      Actions to request:
+        - verdict=noise:
+            update_finding_status → false_positive (reason: short noise reason)
+            set_finding_severity_override → INFO
+            add_finding_tag → auto-triaged-noise
+            link_run_to_finding
+        - verdict=confirmed:
+            add_finding_tag → auto-confirmed
+            link_run_to_finding
+        - verdict=unknown:
+            add_finding_tag → needs-human
+            link_run_to_finding
+
+      The full action protocol is at agents/_orchestration-actions.md.
+
+  # 2. Auto-suppress when classified as noise. The action runs in the
+  #    same node as the finding came from so its scope is local; a
+  #    fleet-wide suppression would be an explicit T2 step.
+  - id: auto_suppress
+    when: "{{classify.result.verdict == 'noise' && classify.result.suppress_pattern != ''}}"
+    agent: investigator
+    node: "{{trigger.host}}"
+    timeout: 2m
+    prompt: |
+      Apply local suppression for finding #{{trigger.finding_id}}.
+
+      Pattern: `{{classify.result.suppress_pattern}}`
+      Reason:  {{classify.result.reasoning}}
+
+      Add the pattern to /etc/okesu/suppressions.yml on this host (create if absent), under
+      a `local:` block keyed by today's ISO date so we can audit later.
+
+      Emit an orchestration_result finding with attributes:
+        applied (bool), suppression_path (string), entries_added (int)
+
+  # 3. Confirmed-real summary. When `escalate` is true, write a
+  #    short operator-readable summary so the human opening the
+  #    finding sees an executive answer rather than a raw event log.
+  - id: summarize
+    when: "{{classify.result.escalate == true}}"
+    agent: investigator
+    node: "{{trigger.host}}"
+    timeout: 3m
+    prompt: |
+      Write a one-paragraph operator brief for finding #{{trigger.finding_id}}.
+
+      Verdict: confirmed real
+      Reasoning: {{classify.result.reasoning}}
+
+      Keep it ≤120 words. Cover:
+        - What happened (what changed / fired / observed)
+        - Blast radius (this host? cluster? fleet?)
+        - Recommended next action (1-2 bullets)
+        - Confidence level
+
+      Emit an orchestration_result finding with attributes:
+        brief (string), blast_radius (string: host|cluster|fleet),
+        confidence (string: low|medium|high)
+---
+
+# Notes
+
+Every new finding flows through this orchestration first. The branches:
+
+- **noise** → applies a local suppression entry, then the chain ends.
+  No human touched it.
+- **confirmed** + non-critical → just classified; the finding stays
+  visible at its original severity, no escalation.
+- **confirmed** + HIGH/CRITICAL → summary brief is generated,
+  attached to the finding, and the on-call sees an executive
+  paragraph instead of raw event JSON.
+
+Operators can audit decisions via the orchestration runs page —
+every classify call's reasoning is preserved in the run log.

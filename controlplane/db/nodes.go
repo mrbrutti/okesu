@@ -54,6 +54,21 @@ type Node struct {
 	// deploys; flip off to resume rollout.
 	AutoUpdatePaused bool
 
+	// Phase 4 — runtime liveness columns reported by the jobs runtime.
+	// Populated by every poll against /api/v1/agents/jobs.
+	JobsRuntimeSeenAt  sql.NullTime
+	TunnelRunning      bool
+	PreferredDispatch  string // "" | "tunnel" | "jobs"
+
+	// Phase 9 — transport selection. 'https' (default) means the node
+	// uses the existing pull-mode HTTPS endpoints; 's3' means the node
+	// reads/writes a shared object-storage bucket. transport_config_id
+	// points at the bucket configuration when transport != 'https'.
+	Transport         string
+	TransportConfigID sql.NullInt64
+	PollIntervalMs    sql.NullInt64
+	NodeUUID          sql.NullString
+
 	CreatedAt       time.Time
 }
 
@@ -78,13 +93,17 @@ func (s *Store) CreateNode(name, hostname, sshUser string, sshPort int, notes st
 // NodeByID returns a node by primary key.
 func (s *Store) NodeByID(id int64) (*Node, error) {
 	n := &Node{}
+	var tunnelRunning int64
 	err := s.QueryRow(`
 		SELECT id, name, hostname, ssh_user, ssh_port,
 		       status, status_message, last_status_at, last_deployed_at,
 		       agents_installed, notes, daemon_hostname,
 		       kernel_release, os_release, arch, cpu_count, memory_mb,
 		       disk_free_mb, okesu_version, metadata_at,
-		       auto_update_paused, created_at
+		       auto_update_paused,
+		       jobs_runtime_seen_at, tunnel_running, preferred_dispatch,
+		       transport, transport_config_id, poll_interval_ms, node_uuid,
+		       created_at
 		FROM nodes WHERE id = ?
 	`, id).Scan(
 		&n.ID, &n.Name, &n.Hostname, &n.SSHUser, &n.SSHPort,
@@ -92,11 +111,15 @@ func (s *Store) NodeByID(id int64) (*Node, error) {
 		&n.AgentsInstalled, &n.Notes, &n.DaemonHostname,
 			&n.KernelRelease, &n.OSRelease, &n.Arch, &n.CPUCount, &n.MemoryMB,
 			&n.DiskFreeMB, &n.OkesuVersion, &n.MetadataAt,
-			&n.AutoUpdatePaused, &n.CreatedAt,
+			&n.AutoUpdatePaused,
+			&n.JobsRuntimeSeenAt, &tunnelRunning, &n.PreferredDispatch,
+			&n.Transport, &n.TransportConfigID, &n.PollIntervalMs, &n.NodeUUID,
+			&n.CreatedAt,
 	)
 	if err != nil {
 		return nil, err
 	}
+	n.TunnelRunning = tunnelRunning != 0
 	return n, nil
 }
 
@@ -116,7 +139,10 @@ func (s *Store) ListNodes(limit, offset int) ([]*Node, error) {
 		       agents_installed, notes, daemon_hostname,
 		       kernel_release, os_release, arch, cpu_count, memory_mb,
 		       disk_free_mb, okesu_version, metadata_at,
-		       auto_update_paused, created_at
+		       auto_update_paused,
+		       jobs_runtime_seen_at, tunnel_running, preferred_dispatch,
+		       transport, transport_config_id, poll_interval_ms, node_uuid,
+		       created_at
 		FROM nodes ORDER BY created_at DESC
 		LIMIT ? OFFSET ?
 	`, limit, offset)
@@ -127,16 +153,21 @@ func (s *Store) ListNodes(limit, offset int) ([]*Node, error) {
 	var out []*Node
 	for rows.Next() {
 		n := &Node{}
+		var tunnelRunning int64
 		if err := rows.Scan(
 			&n.ID, &n.Name, &n.Hostname, &n.SSHUser, &n.SSHPort,
 			&n.Status, &n.StatusMessage, &n.LastStatusAt, &n.LastDeployedAt,
 			&n.AgentsInstalled, &n.Notes, &n.DaemonHostname,
 			&n.KernelRelease, &n.OSRelease, &n.Arch, &n.CPUCount, &n.MemoryMB,
 			&n.DiskFreeMB, &n.OkesuVersion, &n.MetadataAt,
-			&n.AutoUpdatePaused, &n.CreatedAt,
+			&n.AutoUpdatePaused,
+			&n.JobsRuntimeSeenAt, &tunnelRunning, &n.PreferredDispatch,
+			&n.Transport, &n.TransportConfigID, &n.PollIntervalMs, &n.NodeUUID,
+			&n.CreatedAt,
 		); err != nil {
 			return nil, err
 		}
+		n.TunnelRunning = tunnelRunning != 0
 		out = append(out, n)
 	}
 	return out, rows.Err()
