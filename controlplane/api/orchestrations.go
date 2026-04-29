@@ -1481,6 +1481,118 @@ func OrchestrationRunCancel(store *db.Store) http.HandlerFunc {
 	}
 }
 
+// bulkOpRequest is the wire body for both /bulk-cancel and /bulk-retry.
+// Run ids are scoped per-CP — the federated wrapper splits the list
+// by `cp_instance_id` (passed alongside each id) and forwards the
+// per-CP slices to the right peer. The local handler ignores the
+// cp field; it only sees ids that already belong to it.
+type bulkOpRequest struct {
+	IDs []int64 `json:"ids"`
+}
+
+// bulkOpResponse summarises which ids the operator's request affected.
+// Failures per-id are included so the UI can show "12 cancelled, 1
+// already finished, 1 not found" instead of an opaque success/fail.
+type bulkOpResponse struct {
+	Affected []int64           `json:"affected"`
+	Skipped  map[int64]string  `json:"skipped,omitempty"` // id → reason
+}
+
+// OrchestrationRunsBulkCancel — POST /api/orchestration-runs/bulk-cancel
+//
+// Accepts `{"ids": [...]}` and marks each `running` / `pending` /
+// `approval_required` run as cancelled. Already-terminal runs are
+// silently skipped (with a "not in cancellable state" reason in the
+// response so operators see why a row didn't move). Each transition
+// emits one audit row.
+func OrchestrationRunsBulkCancel(store *db.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req bulkOpRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || len(req.IDs) == 0 {
+			http.Error(w, "request body must be {ids: [...]}", http.StatusBadRequest)
+			return
+		}
+		resp := bulkOpResponse{Skipped: map[int64]string{}}
+		for _, id := range req.IDs {
+			run, err := store.GetOrchestrationRun(id)
+			if err != nil {
+				resp.Skipped[id] = "not found"
+				continue
+			}
+			switch run.Status {
+			case "completed", "failed", "cancelled":
+				resp.Skipped[id] = "already " + run.Status
+				continue
+			}
+			if err := store.FinishOrchestrationRun(id, "cancelled", "operator bulk-cancel"); err != nil {
+				resp.Skipped[id] = err.Error()
+				continue
+			}
+			audit.Emit(r, store, db.AuditEntry{
+				Action: "orchestration.bulk_cancel",
+				Target: fmt.Sprintf("orchestration_run:%d", id),
+			})
+			resp.Affected = append(resp.Affected, id)
+		}
+		writeJSON(w, http.StatusOK, resp)
+	}
+}
+
+// OrchestrationRunsBulkRetry — POST /api/orchestration-runs/bulk-retry
+//
+// Spawns a fresh run for each input run id, reusing the original
+// trigger kind + payload + orchestration id. The new runs are NOT
+// linked back to the originals — they appear as new rows. This is
+// the right semantics for the lab pattern of "the deploy hiccupped,
+// re-fire that batch of T1 autotriages": each new run audits cleanly
+// and operators can compare side-by-side.
+//
+// Skips: original run not found, original orchestration disabled
+// (would fire and immediately quietly do nothing, surface clearly),
+// original orchestration deleted.
+func OrchestrationRunsBulkRetry(store *db.Store, coord *OrchestrationCoordinator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req bulkOpRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || len(req.IDs) == 0 {
+			http.Error(w, "request body must be {ids: [...]}", http.StatusBadRequest)
+			return
+		}
+		var startedBy int64
+		if u := auth.UserFromContext(r.Context()); u != nil {
+			startedBy = u.ID
+		}
+		resp := bulkOpResponse{Skipped: map[int64]string{}}
+		for _, id := range req.IDs {
+			run, err := store.GetOrchestrationRun(id)
+			if err != nil {
+				resp.Skipped[id] = "not found"
+				continue
+			}
+			orch, err := store.GetOrchestration(run.OrchestrationID)
+			if err != nil {
+				resp.Skipped[id] = "orchestration deleted"
+				continue
+			}
+			if !orch.Enabled {
+				resp.Skipped[id] = "orchestration disabled"
+				continue
+			}
+			newID, err := coord.SpawnRun(orch.ID, run.TriggerKind, run.TriggerPayload.String, startedBy)
+			if err != nil {
+				resp.Skipped[id] = err.Error()
+				continue
+			}
+			audit.Emit(r, store, db.AuditEntry{
+				Action: "orchestration.bulk_retry",
+				Target: fmt.Sprintf("orchestration_run:%d", id),
+				Metadata: map[string]any{"new_run_id": newID},
+			})
+			resp.Affected = append(resp.Affected, newID)
+		}
+		writeJSON(w, http.StatusOK, resp)
+	}
+}
+
 type orchestrationRunJSON struct {
 	ID              int64                  `json:"id"`
 	OrchestrationID int64                  `json:"orchestration_id"`

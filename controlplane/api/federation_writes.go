@@ -637,6 +637,41 @@ func FederationOrchestrationRunCancel(store *db.Store) http.HandlerFunc {
 	return requireFederationToken(store, OrchestrationRunCancel(store))
 }
 
+// FederatedOrchestrationRunsBulkCancel routes the POST to a child CP
+// when ?cp= is set; otherwise operates on the local DB. The UI
+// partitions a multi-CP selection into one POST per CP, so each
+// invocation sees only ids belonging to one CP — no server-side
+// split-and-fan-out needed.
+func FederatedOrchestrationRunsBulkCancel(store *db.Store, agg *federation.Aggregator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if handled, _ := proxyWriteByQuery(w, r, agg, "/api/v1/federation/orchestration-runs/bulk-cancel"); handled {
+			return
+		}
+		OrchestrationRunsBulkCancel(store).ServeHTTP(w, r)
+	}
+}
+
+func FederationOrchestrationRunsBulkCancel(store *db.Store) http.HandlerFunc {
+	return requireFederationToken(store, OrchestrationRunsBulkCancel(store))
+}
+
+// FederatedOrchestrationRunsBulkRetry — same routing rule as cancel.
+// Coordinator is required so the local handler can spawn fresh runs
+// when ?cp= is unset; child CPs use their own coord on the federation
+// endpoint.
+func FederatedOrchestrationRunsBulkRetry(store *db.Store, coord *OrchestrationCoordinator, agg *federation.Aggregator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if handled, _ := proxyWriteByQuery(w, r, agg, "/api/v1/federation/orchestration-runs/bulk-retry"); handled {
+			return
+		}
+		OrchestrationRunsBulkRetry(store, coord).ServeHTTP(w, r)
+	}
+}
+
+func FederationOrchestrationRunsBulkRetry(store *db.Store, coord *OrchestrationCoordinator) http.HandlerFunc {
+	return requireFederationToken(store, OrchestrationRunsBulkRetry(store, coord))
+}
+
 // proxyWriteByQuery is the write-side counterpart of proxyToCPByQuery:
 // when ?cp=<instance_id> is present and matches a healthy peer, the
 // (POST/PATCH/PUT/DELETE) request — with body intact — is forwarded to

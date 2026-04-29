@@ -19,10 +19,14 @@ import {
   Clock,
   Filter,
   GitBranch,
+  LayoutList,
+  LayoutGrid,
   Loader2,
   Pause,
   Play,
   Plus,
+  RotateCcw,
+  Square,
   Trash2,
   Workflow,
   X,
@@ -47,6 +51,8 @@ import { parseSpecYAMLLite } from '../lib/orchestrationSpec';
 import { HarnessOutput } from '../components/HarnessOutput';
 import { StructuredView } from '../components/StructuredView';
 import { useInfiniteScroll } from '../lib/useInfiniteScroll';
+import { useSelection } from '../lib/useSelection';
+import { BulkActionBar, BulkActionButton } from '../components/BulkActionBar';
 
 // Lazy-load the canvases — react-flow + js-yaml together add ~120KB
 // gzipped. Operators viewing the Library/Runs lists shouldn't pay
@@ -676,6 +682,20 @@ function RunDetailWithRefresh({
   );
 }
 
+type RunsView = 'list' | 'kanban';
+
+// Server-side statuses worth surfacing as kanban columns. Rendered
+// in operator-priority order: things needing eyes first, then the
+// stable buckets, then the noise tail.
+const KANBAN_COLUMNS: { status: OrchestrationRunStatus; label: string; tone: string }[] = [
+  { status: 'approval_required', label: 'Approval',  tone: 'bg-amber-50 ring-amber-200 text-amber-700' },
+  { status: 'running',            label: 'Running',   tone: 'bg-blue-50 ring-blue-200 text-blue-700' },
+  { status: 'pending',            label: 'Pending',   tone: 'bg-slate-50 ring-slate-200 text-slate-700' },
+  { status: 'failed',             label: 'Failed',    tone: 'bg-red-50 ring-red-200 text-red-700' },
+  { status: 'completed',          label: 'Completed', tone: 'bg-green-50 ring-green-200 text-green-700' },
+  { status: 'cancelled',          label: 'Cancelled', tone: 'bg-slate-100 ring-slate-200 text-slate-600' },
+];
+
 function RunsList({
   onSelectRun,
 }: {
@@ -688,12 +708,22 @@ function RunsList({
   const sinceParam = params.get('since') ?? '24h';
   const search = params.get('q') || '';
   const orchID = params.get('orch') || '';
+  const view: RunsView = (params.get('view') as RunsView) === 'kanban' ? 'kanban' : 'list';
+  // Grouping collapses runs with the same orchestration_id + payload
+  // dedup key into one card. Especially useful when one finding fires
+  // 30 identical autotriages across the fleet.
+  const grouped = params.get('group') === 'trigger';
 
   const [orchestrations, setOrchestrations] = useState<Orchestration[]>([]);
   const [counts, setCounts] = useState<Partial<Record<OrchestrationRunStatus, number>>>({});
   const [rows, setRows] = useState<OrchestrationRunView[] | null>(null);
   const [hasMore, setHasMore] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  // Selection — keys encode CP scope so the bulk handler can route
+  // each id to the right CP without an extra lookup.
+  const sel = useSelection<string>();
 
   // Orchestration list — populates the picker dropdown. Cheap;
   // already fetched on the Library tab too but the cache between
@@ -833,28 +863,63 @@ function RunsList({
             <option key={r.value} value={r.value}>{r.label}</option>
           ))}
         </select>
-        {(search || orchID || triggerKindCsv || pill !== 'active' || sinceParam !== '24h') && (
+        <label className="inline-flex items-center gap-1 text-ink-dim cursor-pointer ml-1">
+          <input
+            type="checkbox"
+            checked={grouped}
+            onChange={(e) => setParam('group', e.target.checked ? 'trigger' : '')}
+          />
+          Group identical triggers
+        </label>
+        {(search || orchID || triggerKindCsv || pill !== 'active' || sinceParam !== '24h' || grouped) && (
           <button
-            onClick={() => setParams({}, { replace: true })}
+            onClick={() => {
+              const next = new URLSearchParams();
+              if (view === 'kanban') next.set('view', 'kanban');
+              setParams(next, { replace: true });
+            }}
             className="text-ink-dim hover:text-ink underline"
           >
             clear filters
           </button>
         )}
+        {/* View toggle pinned right */}
+        <div className="ml-auto inline-flex rounded-md ring-1 ring-border overflow-hidden">
+          <button
+            onClick={() => setParam('view', '')}
+            className={cn(
+              'inline-flex items-center gap-1 px-2 py-1 text-xs',
+              view === 'list' ? 'bg-brand-50 text-brand-700' : 'bg-white text-ink-dim hover:bg-slate-50',
+            )}
+            title="List view"
+          >
+            <LayoutList size={12} /> List
+          </button>
+          <button
+            onClick={() => setParam('view', 'kanban')}
+            className={cn(
+              'inline-flex items-center gap-1 px-2 py-1 text-xs border-l border-border',
+              view === 'kanban' ? 'bg-brand-50 text-brand-700' : 'bg-white text-ink-dim hover:bg-slate-50',
+            )}
+            title="Kanban view (columns by status)"
+          >
+            <LayoutGrid size={12} /> Kanban
+          </button>
+        </div>
       </div>
 
-      {/* List */}
-      <div className="flex-1 overflow-auto p-6">
+      {/* Body — list OR kanban — share the rows fetched above */}
+      <div className="flex-1 overflow-auto">
         {error && (
-          <div className="text-xs text-red-700 bg-red-50 border border-red-200 px-3 py-2 rounded-md mb-3">
+          <div className="mx-6 mt-4 text-xs text-red-700 bg-red-50 border border-red-200 px-3 py-2 rounded-md">
             {error}
           </div>
         )}
         {!rows && (
-          <div className="text-xs text-ink-mute">Loading…</div>
+          <div className="px-6 py-6 text-xs text-ink-mute">Loading…</div>
         )}
         {rows && rows.length === 0 && (
-          <div className="text-center py-16 text-ink-mute bg-panel border border-border rounded-xl shadow-card">
+          <div className="m-6 text-center py-16 text-ink-mute bg-panel border border-border rounded-xl shadow-card">
             <Clock size={32} className="mx-auto mb-2 opacity-40" />
             <p className="text-sm font-medium text-ink mb-1">No runs match.</p>
             <p className="text-xs">
@@ -862,48 +927,478 @@ function RunsList({
             </p>
           </div>
         )}
-        {rows && rows.length > 0 && (
-          <ListCard>
-            {rows.map((r) => (
-              <RunRow
-                key={`${r.cp_source?.instance_id ?? 'local'}-${r.id}`}
-                run={r}
-                selected={false}
-                onSelect={() => onSelectRun(r.id, r.cp_source?.instance_id)}
+        {rows && rows.length > 0 && view === 'list' && (
+          <RunsListBody
+            rows={grouped ? collapseGroups(rows) : rows.map((r) => ({ kind: 'single', run: r }))}
+            sel={sel}
+            onSelectRun={onSelectRun}
+            scrollSentinelRef={scroll.sentinelRef}
+            scrollLoading={scroll.loading}
+            hasMore={hasMore}
+          />
+        )}
+        {rows && rows.length > 0 && view === 'kanban' && (
+          <RunsKanbanBody
+            rows={grouped ? collapseGroups(rows) : rows.map((r) => ({ kind: 'single', run: r }))}
+            sel={sel}
+            onSelectRun={onSelectRun}
+            scrollSentinelRef={scroll.sentinelRef}
+            scrollLoading={scroll.loading}
+            hasMore={hasMore}
+          />
+        )}
+      </div>
+
+      {/* Bulk action bar — only when something is selected. */}
+      <div className="px-6">
+        <BulkActionBar count={sel.count} onClear={sel.clear} label="Runs">
+          <BulkActionButton
+            icon={Square}
+            label={busy ? 'Cancelling…' : `Cancel ${sel.count}`}
+            tone="bad"
+            busy={busy}
+            onClick={async () => {
+              setBusy(true);
+              try {
+                await runBulkOp(sel.all, 'cancel');
+                sel.clear();
+                refreshNow();
+              } finally {
+                setBusy(false);
+              }
+            }}
+            title="Mark selected runs as cancelled (already-terminal runs are skipped)"
+          />
+          <BulkActionButton
+            icon={RotateCcw}
+            label={busy ? 'Retrying…' : `Retry ${sel.count}`}
+            tone="neutral"
+            busy={busy}
+            onClick={async () => {
+              setBusy(true);
+              try {
+                await runBulkOp(sel.all, 'retry');
+                sel.clear();
+                refreshNow();
+              } finally {
+                setBusy(false);
+              }
+            }}
+            title="Spawn fresh runs cloning each selected run's trigger payload"
+          />
+        </BulkActionBar>
+      </div>
+    </div>
+  );
+
+  // Force-refresh after a bulk op so the operator sees the new state
+  // immediately rather than waiting for the auto-refresh tick.
+  function refreshNow() {
+    api.orchestrationRunsFiltered({ ...filter, limit: PAGE_SIZE, offset: 0 }, { withCounts: true })
+      .then((res) => {
+        setRows(res.rows);
+        setCounts(res.counts_by_status);
+        setHasMore(res.rows.length >= PAGE_SIZE);
+      })
+      .catch(() => { /* ignore */ });
+  }
+
+  // Run a bulk op against the currently-selected keys. Selection
+  // keys are `<cp>:<id>` (cp='' for local) so we partition by CP and
+  // issue one POST per partition.
+  async function runBulkOp(keys: string[], op: 'cancel' | 'retry') {
+    const byCP = new Map<string, number[]>();
+    for (const k of keys) {
+      const [cp, idStr] = k.split(':');
+      const id = Number(idStr);
+      if (!Number.isFinite(id) || id <= 0) continue;
+      const list = byCP.get(cp) ?? [];
+      list.push(id);
+      byCP.set(cp, list);
+    }
+    const calls: Promise<unknown>[] = [];
+    for (const [cp, ids] of byCP) {
+      const cpArg = cp === '' ? undefined : cp;
+      calls.push(
+        op === 'cancel'
+          ? api.orchestrationRunsBulkCancel(ids, cpArg)
+          : api.orchestrationRunsBulkRetry(ids, cpArg),
+      );
+    }
+    await Promise.allSettled(calls);
+  }
+}
+
+// runRowKey — encodes (cp, id) so the bulk handler can route each
+// selected key back to its owning CP without a follow-up lookup.
+// cp_source is undefined for local rows; use '' as the CP slot.
+function runRowKey(r: OrchestrationRunView): string {
+  return `${r.cp_source?.instance_id ?? ''}:${r.id}`;
+}
+
+// payloadStr — read a string-ish field from trigger_payload (typed
+// `unknown` on the wire) without scattering casts through the JSX.
+// Returns the string form when the value is set, otherwise empty.
+function payloadStr(payload: Record<string, unknown> | undefined, key: string): string {
+  if (!payload) return '';
+  const v = payload[key];
+  if (v == null) return '';
+  if (typeof v === 'string') return v;
+  if (typeof v === 'number' || typeof v === 'boolean') return String(v);
+  return '';
+}
+
+// Group entry — either a single run (no grouping or unique trigger)
+// or a group (≥2 runs with identical orchestration_id + dedup_key).
+type GroupEntry =
+  | { kind: 'single'; run: OrchestrationRunView }
+  | { kind: 'group'; key: string; runs: OrchestrationRunView[] };
+
+// collapseGroups buckets runs with the same (orchestration_id,
+// trigger_payload.dedup_key OR finding_id OR host) into one card.
+// Single-row buckets render as plain rows; multi-row buckets as a
+// stacked card with a count.
+function collapseGroups(rows: OrchestrationRunView[]): GroupEntry[] {
+  const order: string[] = [];
+  const buckets = new Map<string, OrchestrationRunView[]>();
+  for (const r of rows) {
+    const dedup =
+      (r.trigger_payload?.dedup_key as string | undefined) ??
+      (r.trigger_payload?.finding_id != null ? `f:${r.trigger_payload.finding_id}` : '');
+    const host = (r.trigger_payload?.host as string | undefined) ?? '';
+    // Scope by orchestration so different orchestrations don't collide.
+    const key = `${r.orchestration_id}|${dedup || host || 'each'}|${r.cp_source?.instance_id ?? ''}`;
+    // Group only when we have a real dedup signal AND the orchestration
+    // is a finding-trigger one (the lab's mass-fired t1-finding-autotriage
+    // case). Manual and cron runs stay as singles even with the toggle on.
+    const groupable = r.trigger_kind === 'finding' && (dedup !== '' || host !== '');
+    const bucketKey = groupable ? key : `single:${r.cp_source?.instance_id ?? ''}:${r.id}`;
+    if (!buckets.has(bucketKey)) {
+      buckets.set(bucketKey, []);
+      order.push(bucketKey);
+    }
+    buckets.get(bucketKey)!.push(r);
+  }
+  const out: GroupEntry[] = [];
+  for (const k of order) {
+    const list = buckets.get(k)!;
+    if (list.length === 1) {
+      out.push({ kind: 'single', run: list[0] });
+    } else {
+      out.push({ kind: 'group', key: k, runs: list });
+    }
+  }
+  return out;
+}
+
+// RunsListBody — renders a flat list of GroupEntries. Groups
+// expand into a header card with a count and stacked sub-rows.
+function RunsListBody({
+  rows, sel, onSelectRun, scrollSentinelRef, scrollLoading, hasMore,
+}: {
+  rows: GroupEntry[];
+  sel: ReturnType<typeof useSelection<string>>;
+  onSelectRun: (id: number | null, cp?: string) => void;
+  scrollSentinelRef: (el: HTMLDivElement | null) => void;
+  scrollLoading: boolean;
+  hasMore: boolean;
+}) {
+  const totalRuns = rows.reduce((n, e) => n + (e.kind === 'single' ? 1 : e.runs.length), 0);
+  return (
+    <div className="p-6 pb-24">
+      <ListCard>
+        {rows.map((entry, i) => entry.kind === 'single' ? (
+          <RunRow
+            key={runRowKey(entry.run)}
+            run={entry.run}
+            selected={sel.isSelected(runRowKey(entry.run))}
+            onSelect={() => onSelectRun(entry.run.id, entry.run.cp_source?.instance_id)}
+            onToggleSelect={(on) => sel.set(runRowKey(entry.run), on)}
+          />
+        ) : (
+          <RunGroupRow
+            key={entry.key + ':' + i}
+            group={entry}
+            sel={sel}
+            onSelectRun={onSelectRun}
+          />
+        ))}
+      </ListCard>
+      <div ref={scrollSentinelRef} className="px-4 py-3 text-[11px] text-ink-mute text-center">
+        {scrollLoading
+          ? 'Loading older runs…'
+          : hasMore
+            ? 'Scroll for more'
+            : `— end of ${totalRuns} runs —`}
+      </div>
+    </div>
+  );
+}
+
+// RunsKanbanBody — one column per status. Each column holds the
+// matching slice of the currently-loaded rows. Infinite scroll lives
+// on the page (not per-column); when the user scrolls down inside
+// any column, we extend the underlying list.
+function RunsKanbanBody({
+  rows, sel, onSelectRun, scrollSentinelRef, scrollLoading, hasMore,
+}: {
+  rows: GroupEntry[];
+  sel: ReturnType<typeof useSelection<string>>;
+  onSelectRun: (id: number | null, cp?: string) => void;
+  scrollSentinelRef: (el: HTMLDivElement | null) => void;
+  scrollLoading: boolean;
+  hasMore: boolean;
+}) {
+  const cols = KANBAN_COLUMNS.map((c) => {
+    const items = rows.filter((e) => {
+      if (e.kind === 'single') return e.run.status === c.status;
+      // Group cards live in the column matching the most-advanced status
+      // among their runs (so an in-flight group stays visible even when
+      // some sub-runs already completed).
+      return e.runs.some((r) => r.status === c.status) && !e.runs.some((r) => statusOrder(r.status) > statusOrder(c.status));
+    });
+    return { ...c, items };
+  });
+  return (
+    <div className="flex gap-3 p-4 pb-24 overflow-x-auto h-full">
+      {cols.map((col) => (
+        <div
+          key={col.status}
+          className="w-72 shrink-0 bg-slate-50 border border-border rounded-lg flex flex-col"
+        >
+          <header className={cn('px-3 py-2 border-b border-border rounded-t-lg ring-1 ring-inset', col.tone)}>
+            <div className="flex items-center justify-between text-xs font-semibold uppercase tracking-wide">
+              <span>{col.label}</span>
+              <span className="tabular-nums text-[11px]">{col.items.length}</span>
+            </div>
+          </header>
+          <div className="p-2 space-y-2 overflow-auto flex-1">
+            {col.items.length === 0 && (
+              <div className="text-[11px] text-ink-mute italic px-2 py-3">empty</div>
+            )}
+            {col.items.map((entry, i) => entry.kind === 'single' ? (
+              <KanbanCard
+                key={runRowKey(entry.run)}
+                run={entry.run}
+                selected={sel.isSelected(runRowKey(entry.run))}
+                onSelect={() => onSelectRun(entry.run.id, entry.run.cp_source?.instance_id)}
+                onToggleSelect={(on) => sel.set(runRowKey(entry.run), on)}
+              />
+            ) : (
+              <KanbanGroupCard
+                key={entry.key + ':' + i}
+                group={entry}
+                sel={sel}
+                onSelectRun={onSelectRun}
               />
             ))}
-          </ListCard>
-        )}
-        {/* Sentinel for infinite scroll. ref hooks into IntersectionObserver. */}
-        {rows && rows.length > 0 && (
-          <div ref={scroll.sentinelRef} className="px-4 py-3 text-[11px] text-ink-mute text-center">
-            {scroll.loading
-              ? 'Loading older runs…'
-              : hasMore
-                ? 'Scroll for more'
-                : `— end of ${rows.length} runs —`}
           </div>
-        )}
+        </div>
+      ))}
+      {/* Sentinel sits at the bottom of the kanban viewport; scrolling
+          horizontally doesn't trigger more, only vertical (per-column
+          scrollers don't bubble). The sentinel is dropped here too so
+          a long Failed column triggers more loads. */}
+      <div ref={scrollSentinelRef} className="w-px shrink-0">
+        {scrollLoading && <span className="text-[10px] text-ink-mute">…</span>}
+      </div>
+      {!hasMore && (
+        <div className="text-[10px] text-ink-mute self-end shrink-0">— end —</div>
+      )}
+    </div>
+  );
+}
+
+// statusOrder picks a deterministic ranking so a group card lands
+// in the column matching the "most advanced" status among its runs.
+function statusOrder(s: OrchestrationRunStatus): number {
+  switch (s) {
+    case 'pending':           return 0;
+    case 'running':           return 1;
+    case 'approval_required': return 2;
+    case 'failed':            return 3;
+    case 'completed':         return 4;
+    case 'cancelled':         return 5;
+  }
+}
+
+// RunGroupRow — list-view rendering of a multi-run group. Click
+// expands inline (toggle); click any sub-row to open that run's
+// detail pane.
+function RunGroupRow({
+  group, sel, onSelectRun,
+}: {
+  group: { kind: 'group'; key: string; runs: OrchestrationRunView[] };
+  sel: ReturnType<typeof useSelection<string>>;
+  onSelectRun: (id: number | null, cp?: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const head = group.runs[0];
+  const allKeys = group.runs.map((r) => runRowKey(r));
+  const allSelected = allKeys.every((k) => sel.isSelected(k));
+  const someSelected = allKeys.some((k) => sel.isSelected(k));
+  return (
+    <>
+      <div className="px-4 py-2.5 flex items-center gap-3 hover:bg-slate-50/40 cursor-pointer" onClick={() => setOpen((v) => !v)}>
+        <input
+          type="checkbox"
+          ref={(el) => { if (el) el.indeterminate = !allSelected && someSelected; }}
+          checked={allSelected}
+          onChange={(e) => sel.setMany(allKeys, e.target.checked)}
+          onClick={(e) => e.stopPropagation()}
+          className="shrink-0"
+        />
+        <span className="inline-flex items-center text-[10px] uppercase tracking-wide font-medium px-1.5 py-0.5 rounded ring-1 text-brand-700 bg-brand-50 ring-brand-200 shrink-0">
+          {group.runs.length}× group
+        </span>
+        <div className="flex-1 min-w-0">
+          <div className="text-sm font-medium text-ink truncate">
+            {group.runs.length} runs · same trigger
+            {payloadStr(head.trigger_payload, 'host') && (
+              <span className="text-ink-dim font-normal"> · {payloadStr(head.trigger_payload, 'host')}</span>
+            )}
+            {payloadStr(head.trigger_payload, 'finding_id') && (
+              <span className="text-ink-dim font-normal"> · finding #{payloadStr(head.trigger_payload, 'finding_id')}</span>
+            )}
+          </div>
+          <div className="text-[11px] text-ink-mute mt-0.5">
+            orchestration_id {head.orchestration_id} · trigger {head.trigger_kind}
+          </div>
+        </div>
+        <ChevronRight size={14} className={cn('text-ink-mute transition-transform', open && 'rotate-90')} />
+      </div>
+      {open && (
+        <div className="bg-slate-50/40 border-t border-border">
+          {group.runs.map((r) => (
+            <RunRow
+              key={runRowKey(r)}
+              run={r}
+              selected={sel.isSelected(runRowKey(r))}
+              onSelect={() => onSelectRun(r.id, r.cp_source?.instance_id)}
+              onToggleSelect={(on) => sel.set(runRowKey(r), on)}
+              indented
+            />
+          ))}
+        </div>
+      )}
+    </>
+  );
+}
+
+function KanbanCard({
+  run, selected, onSelect, onToggleSelect,
+}: {
+  run: OrchestrationRunView;
+  selected: boolean;
+  onSelect: () => void;
+  onToggleSelect: (on: boolean) => void;
+}) {
+  return (
+    <div
+      onClick={onSelect}
+      className={cn(
+        'bg-white border border-border rounded-md px-2.5 py-2 text-xs shadow-sm cursor-pointer hover:border-brand-200',
+        selected && 'border-brand-300 ring-1 ring-brand-200',
+      )}
+    >
+      <div className="flex items-start gap-2">
+        <input
+          type="checkbox"
+          checked={selected}
+          onChange={(e) => onToggleSelect(e.target.checked)}
+          onClick={(e) => e.stopPropagation()}
+          className="mt-0.5 shrink-0"
+        />
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-1.5">
+            <span className="font-medium text-ink truncate">Run #{run.id}</span>
+            <CPSourceChip source={run.cp_source} />
+          </div>
+          <div className="text-[10px] text-ink-mute uppercase tracking-wide">{run.trigger_kind}</div>
+          {(run.current_step_id || run.error) && (
+            <div className="text-[11px] text-ink-dim mt-1 truncate">
+              {run.current_step_id && <code className="font-mono">{run.current_step_id}</code>}
+              {run.error && <span className="text-red-700"> · {run.error.slice(0, 60)}</span>}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function KanbanGroupCard({
+  group, sel, onSelectRun,
+}: {
+  group: { kind: 'group'; key: string; runs: OrchestrationRunView[] };
+  sel: ReturnType<typeof useSelection<string>>;
+  onSelectRun: (id: number | null, cp?: string) => void;
+}) {
+  const head = group.runs[0];
+  const allKeys = group.runs.map((r) => runRowKey(r));
+  const allSelected = allKeys.every((k) => sel.isSelected(k));
+  const someSelected = allKeys.some((k) => sel.isSelected(k));
+  return (
+    <div
+      onClick={() => onSelectRun(head.id, head.cp_source?.instance_id)}
+      className="bg-white border border-brand-200 rounded-md px-2.5 py-2 text-xs shadow-sm cursor-pointer hover:border-brand-300"
+    >
+      <div className="flex items-start gap-2">
+        <input
+          type="checkbox"
+          ref={(el) => { if (el) el.indeterminate = !allSelected && someSelected; }}
+          checked={allSelected}
+          onChange={(e) => sel.setMany(allKeys, e.target.checked)}
+          onClick={(e) => e.stopPropagation()}
+          className="mt-0.5 shrink-0"
+        />
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-1.5">
+            <span className="text-[10px] uppercase tracking-wide font-medium px-1.5 py-0.5 rounded ring-1 text-brand-700 bg-brand-50 ring-brand-200">
+              {group.runs.length}×
+            </span>
+            <span className="font-medium text-ink truncate">grouped</span>
+          </div>
+          <div className="text-[11px] text-ink-mute mt-0.5 truncate">
+            orch {head.orchestration_id}
+            {payloadStr(head.trigger_payload, 'host') && ` · ${payloadStr(head.trigger_payload, 'host')}`}
+          </div>
+        </div>
       </div>
     </div>
   );
 }
 
 function RunRow({
-  run, selected, onSelect,
+  run, selected, onSelect, onToggleSelect, indented,
 }: {
   run: OrchestrationRunView;
   selected: boolean;
   onSelect: () => void;
+  /** When provided, a checkbox is rendered for bulk selection. */
+  onToggleSelect?: (on: boolean) => void;
+  /** Slight inset for sub-rows inside an expanded group card. */
+  indented?: boolean;
 }) {
   return (
     <div
       onClick={onSelect}
       className={cn(
-        'px-4 py-3 flex items-center gap-3 cursor-pointer hover:bg-slate-50/40',
+        'flex items-center gap-3 cursor-pointer hover:bg-slate-50/40',
+        indented ? 'pl-12 pr-4 py-2' : 'px-4 py-3',
         selected && 'bg-brand-50/40',
       )}
     >
+      {onToggleSelect && (
+        <input
+          type="checkbox"
+          checked={selected}
+          onChange={(e) => onToggleSelect(e.target.checked)}
+          onClick={(e) => e.stopPropagation()}
+          className="shrink-0"
+          aria-label={`Select run ${run.id}`}
+        />
+      )}
       <RunStatusPill status={run.status} />
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 flex-wrap">

@@ -460,6 +460,18 @@ export const api = {
       body: JSON.stringify({ inputs: inputs ?? {} }),
     }),
   orchestrationRuns: () => request<OrchestrationRunView[]>('/api/orchestration-runs'),
+  /** Bulk-cancel runs scoped to one CP (federated UI partitions per CP). */
+  orchestrationRunsBulkCancel: (ids: number[], cp?: string) =>
+    request<BulkRunOpResult>(cpQuery('/api/orchestration-runs/bulk-cancel', cp), {
+      method: 'POST',
+      body: JSON.stringify({ ids }),
+    }),
+  /** Bulk-retry: spawn fresh runs cloning trigger+orchestration of each input. */
+  orchestrationRunsBulkRetry: (ids: number[], cp?: string) =>
+    request<BulkRunOpResult>(cpQuery('/api/orchestration-runs/bulk-retry', cp), {
+      method: 'POST',
+      body: JSON.stringify({ ids }),
+    }),
   /** Filter-aware variant. When `withCounts:true`, returns the
    *  wrapper shape `{rows, counts_by_status}` so the runs-tab status
    *  pills can populate from the same call. Filter values that match
@@ -1127,6 +1139,15 @@ export interface OrchestrationRunsFilter {
 export interface OrchestrationRunsListResponse {
   rows: OrchestrationRunView[];
   counts_by_status: Partial<Record<OrchestrationRunStatus, number>>;
+}
+
+export interface BulkRunOpResult {
+  /** Run ids that successfully transitioned (cancel) or that the new
+   *  spawned run ids (retry). UI surfaces the total count. */
+  affected: number[];
+  /** id → reason for runs the server skipped (already terminal,
+   *  orchestration disabled, deleted). */
+  skipped?: Record<number, string>;
 }
 
 // ── Finding history + run linkage (Phase 11.4) ──────────────────────────────
