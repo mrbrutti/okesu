@@ -80,7 +80,7 @@ okesu claude --agent security-reviewer "audit ./api"
 okesu codex --system ./my-agent.md "run all tests and fix failures"
 
 # Specific model
-okesu claude --model claude-opus-4-6 "refactor ./pkg/auth"
+okesu claude --model claude-mythos-preview "refactor ./pkg/auth"
 okesu codex  --model gpt-4o          "find hardcoded credentials in ./config"
 
 # Stream output to a file and watch it live
@@ -100,7 +100,7 @@ Every line written to stdout is a self-contained JSON object. Your orchestrator 
 
 #### `init` — session started
 ```json
-{"type":"init","provider":"claude","model":"claude-opus-4-6","ts":1745000000000}
+{"type":"init","provider":"claude","model":"claude-mythos-preview","ts":1745000000000}
 ```
 
 #### `text` — text delta from the model
@@ -121,7 +121,7 @@ Text events arrive incrementally. Concatenate them per-turn to reconstruct the f
 
 #### `done` — session complete
 ```json
-{"type":"done","provider":"claude","model":"claude-opus-4-6","stop_reason":"end_turn","usage":{"input_tokens":12400,"output_tokens":3800},"ts":1745000060000}
+{"type":"done","provider":"claude","model":"claude-mythos-preview","stop_reason":"end_turn","usage":{"input_tokens":12400,"output_tokens":3800},"ts":1745000060000}
 ```
 
 #### `error` — fatal error
@@ -210,7 +210,7 @@ import anthropic "github.com/anthropics/anthropic-sdk-go"
 
 // Stream a response
 stream := client.Messages.NewStreaming(ctx, anthropic.MessageNewParams{
-    Model:     anthropic.Model("claude-opus-4-6"),
+    Model:     anthropic.Model("claude-mythos-preview"),
     MaxTokens: 8192,
     System:    []anthropic.TextBlockParam{{Text: anthropic.String(systemPrompt)}},
     Messages:  messages,
@@ -315,7 +315,7 @@ Key types:
 | **Tool result** | `anthropic.NewToolResultBlock(id, output, false)` | `openai.ToolMessage(id, output)` |
 | **System prompt** | `[]anthropic.TextBlockParam` in `MessageNewParams.System` | `openai.SystemMessage("...")` in messages slice |
 | **Stop signal** | `acc.StopReason == "end_turn"` + no tool blocks | `choice.FinishReason == "stop"` |
-| **Default model** | `claude-opus-4-6` | `gpt-4o` |
+| **Default model** | `claude-mythos-preview` | `gpt-4o` |
 | **Key env var** | `ANTHROPIC_API_KEY` | `OPENAI_API_KEY` |
 
 ---

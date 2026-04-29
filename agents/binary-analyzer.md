@@ -1,7 +1,7 @@
 ---
 name: binary-analyzer
 description: Static and dynamic analysis of suspicious binaries. Identifies packers, embedded strings/URLs, syscall patterns, persistence indicators, and likely malware family.
-model: claude-opus-4-7
+model: claude-mythos-preview
 provider: claude
 tools: [bash, read_file, write_file, list_files, search]
 maxTurns: 80

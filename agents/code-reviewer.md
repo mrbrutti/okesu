@@ -1,7 +1,7 @@
 ---
 name: code-reviewer
 description: Engineering-grade code review covering correctness, design, performance, testing, and maintainability. Complement to security-reviewer (which is security-focused).
-model: claude-sonnet-4-6
+model: claude-mythos-preview
 provider: claude
 tools: [bash, read_file, write_file, list_files, search]
 maxTurns: 60

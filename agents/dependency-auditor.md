@@ -1,7 +1,7 @@
 ---
 name: dependency-auditor
 description: Audit a project's dependencies for known CVEs, supply-chain risk, license issues, and outdated/abandoned packages. Multi-language (npm, Go, Python, Rust, Java, Ruby).
-model: claude-sonnet-4-6
+model: claude-mythos-preview
 provider: claude
 tools: [bash, read_file, write_file, list_files, search]
 maxTurns: 60

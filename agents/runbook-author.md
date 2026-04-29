@@ -1,7 +1,7 @@
 ---
 name: runbook-author
 description: Convert an ad-hoc investigation, fix, or operational sequence into a reusable runbook. Captures what worked so the next person doesn't start from zero.
-model: claude-sonnet-4-6
+model: claude-mythos-preview
 provider: claude
 tools: [bash, read_file, write_file, list_files, search]
 maxTurns: 40

@@ -1,7 +1,7 @@
 ---
 name: threat-hunter
 description: Proactive threat hunting across the fleet. Given an IOC, TTP, or hypothesis, sweeps events / findings / processes for matching artifacts and reports clusters.
-model: claude-opus-4-7
+model: claude-mythos-preview
 provider: claude
 tools: [bash, read_file, write_file, list_files, search]
 maxTurns: 80
