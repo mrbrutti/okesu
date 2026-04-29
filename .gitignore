@@ -1,6 +1,8 @@
 # Compiled binaries (built locally with `go build`).
 /okesu
 /okesu-cp
+/okesu-cp-linux-amd64
+/okesu-cp-linux-arm64
 /okesu-linux-amd64
 /okesu-linux-arm64
 /okesu-darwin-amd64
