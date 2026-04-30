@@ -425,10 +425,14 @@ function OverviewPanel({
   bundle: InvestigationDetail;
   onChange: () => void;
 }) {
-  // Active cases get suggestions; closed/archived don't (no point
-  // proposing additions to a closed case's evidence — the operator
-  // would have to reopen first).
-  const showSuggestions = inv.Status === 'active' && bundle.findings.length > 0;
+  // The Suggested findings card renders for active AND closed/
+  // archived cases. Active cases get the live action affordances
+  // (Add / Dismiss / bulk-add); closed/archived ones get a read-
+  // only retrospective view ("would have suggested") so post-mortems
+  // have an evidence trail without needing to reopen the case.
+  // Empty when there are no linked findings to score against.
+  const showSuggestions = bundle.findings.length > 0;
+  const isActive = inv.Status === 'active';
 
   return (
     <section className="grid grid-cols-1 lg:grid-cols-3 gap-4">
@@ -457,6 +461,7 @@ function OverviewPanel({
             invID={invID}
             cpInstanceID={cpInstanceID}
             onChange={onChange}
+            readOnly={!isActive}
           />
         )}
       </div>
