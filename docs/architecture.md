@@ -1913,3 +1913,41 @@ error, or empty list all degrade silently to the original prompt.
 
 See `docs/superpowers/specs/2026-04-29-threatcaddy-borrows-phasing-design.md`
 for the design.
+
+## Investigations (Phase 22.3)
+
+T2 case workspace. An Investigation groups findings + orchestration
+runs + analyst notes through an `active → closed` lifecycle.
+Resolutions: `resolved`, `false_positive`, `duplicate`, `wont_fix`.
+
+Schema (migration 036):
+- `investigations` — id, title, status, resolution, summary, created_by, timestamps.
+- `investigation_findings` — m2m link to findings (ON DELETE RESTRICT —
+  a finding referenced from a case can't be silently deleted).
+- `investigation_runs` — m2m link to orchestration_runs (same RESTRICT).
+- `investigation_notes` — markdown notes, newest-first.
+
+CRUD endpoints under `/api/investigations`. Findings can be promoted
+straight into an investigation via `POST /api/investigations` with
+`from_finding_id` set.
+
+## Hypothesis findings + meeting steps (Phase 22.3)
+
+Two new finding subtypes back the T2 workflow:
+- **hypothesis** — falsifiable theories with claim/evidence/confidence/how_to_test
+  attributes, emitted by the `hypothesis-writer` shared agent.
+- **meeting_minutes** — agenda + positions + action items, emitted by the
+  synthesizer of a `kind: meeting` orchestration step.
+
+Meeting steps execute participants sequentially, each seeing the trigger
+payload + all prior participants' outputs. The synthesizer receives the
+full conversation and emits the meeting_minutes finding.
+
+War-bridge variant: `war_bridge: true` on a meeting step instructs the
+synthesizer (via prompt) to tag the resulting finding `war-bridge` so
+the dashboard surfaces it in a red banner for immediate operator
+attention. The eventpipeline reads `subtype` and `tags` directly from
+the agent's JSONL emission, so the DB row reflects what the agent
+emitted; the meeting executor mutates the in-memory DispatchedFinding
+as a defensive fallback for downstream env-binding when the agent
+forgets.
