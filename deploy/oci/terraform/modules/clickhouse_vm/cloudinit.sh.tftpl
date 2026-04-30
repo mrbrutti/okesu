@@ -21,6 +21,7 @@ cat > /etc/clickhouse-server/users.d/okesu.xml <<EOF
 <clickhouse>
   <users>
     <default>
+      <!-- Password is interpolated raw — secrets.tf locks special=false. -->
       <password>${clickhouse_password}</password>
       <networks><ip>::/0</ip></networks>
       <profile>default</profile>

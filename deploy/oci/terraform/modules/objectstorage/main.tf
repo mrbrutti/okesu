@@ -76,12 +76,13 @@ output "federation_token_path" {
 }
 
 output "federation_outputs" {
-  description = "Bundle parent-mode operators paste into a child's tfvars."
+  description = "Bundle parent-mode operators paste into a child's tfvars + .env.oci."
   value = {
     parent_federation_bucket     = oci_objectstorage_bucket.main.name
     parent_federation_endpoint   = "${data.oci_objectstorage_namespace.ns.namespace}.compat.objectstorage.${var.region}.oraclecloud.com"
     parent_federation_region     = var.region
     parent_federation_access_key = oci_identity_customer_secret_key.main.id
+    parent_federation_secret_key = oci_identity_customer_secret_key.main.key
     parent_federation_token      = random_password.federation_token.result
   }
   sensitive = true

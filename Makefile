@@ -275,20 +275,7 @@ oci-install: oci-render
 	    "$$(eval echo $$SECRETS_DIR)/" \
 	    $(OCI_SSH_USER)@$$CP_IP:/tmp/secrets/; \
 	  echo "▶ atomically installing + reload + restart"; \
-	  ssh -o StrictHostKeyChecking=no $(OCI_SSH_USER)@$$CP_IP 'sudo bash -se' <<-'BASH'; \
-	    set -euo pipefail; \
-	    install -m 0755 -o root -g root /tmp/okesu-cp.new /usr/local/bin/okesu-cp; \
-	    install -m 0640 -o root -g okesu-cp /tmp/cp.yaml.new /etc/okesu-cp/cp.yaml; \
-	    install -m 0640 -o root -g okesu-cp /tmp/okesu-cp.env.new /etc/default/okesu-cp; \
-	    install -m 0644 -o root -g root /tmp/okesu-cp.service.new /etc/systemd/system/okesu-cp.service; \
-	    rm -rf /etc/okesu-cp/secrets; \
-	    mv /tmp/secrets /etc/okesu-cp/secrets; \
-	    chown -R okesu-cp:okesu-cp /etc/okesu-cp/secrets; \
-	    chmod -R go-rwx /etc/okesu-cp/secrets; \
-	    systemctl daemon-reload; \
-	    systemctl enable --now okesu-cp; \
-	    systemctl restart okesu-cp; \
-	  BASH \
+	  ssh -o StrictHostKeyChecking=no $(OCI_SSH_USER)@$$CP_IP 'sudo bash -s' < scripts/oci-install-remote.sh; \
 	  echo "▶ waiting for /health"; \
 	  for i in $$(seq 1 $(OCI_HEALTH_RETRIES)); do \
 	    if curl -ksS --max-time 5 https://$$CP_IP:8443/health >/dev/null; then \

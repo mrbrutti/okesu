@@ -34,6 +34,11 @@ resource "local_sensitive_file" "webhook" {
   file_permission = "0600"
 }
 
+# DO NOT change `special = false`. The password is interpolated raw
+# into /etc/clickhouse-server/users.d/okesu.xml by the clickhouse_vm
+# module's cloudinit; XML-significant chars (& < > " ') would break
+# ClickHouse boot silently. If specials become required later, switch
+# the cloudinit to <password_sha256_hex> instead of <password>.
 resource "random_password" "clickhouse" {
   length  = 32
   special = false
