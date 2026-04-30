@@ -67,3 +67,46 @@ func TestParseYARAHeader_Garbage(t *testing.T) {
 			name, tags, severity)
 	}
 }
+
+// `private rule X { ... }` and `global rule X { ... }` are valid YARA
+// syntax. Third-party rule corpora (ESET, Mandiant, neo23x0/signature-base)
+// ship a meaningful fraction of rules with those modifiers; they affect
+// the YARA engine's matching semantics but not the rule's identity, so
+// the parser must extract the same name/tags as the un-modified form.
+func TestParseYARAHeader_PrivateModifier(t *testing.T) {
+	body := `private rule InternalHelper : helper internal
+{
+    meta:
+        severity = "LOW"
+    condition:
+        true
+}`
+	name, tags, severity := ParseYARAHeader(body)
+	if name != "InternalHelper" {
+		t.Errorf("name = %q, want InternalHelper", name)
+	}
+	if len(tags) != 2 || tags[0] != "helper" || tags[1] != "internal" {
+		t.Errorf("tags = %v, want [helper internal]", tags)
+	}
+	if severity != "LOW" {
+		t.Errorf("severity = %q, want LOW", severity)
+	}
+}
+
+func TestParseYARAHeader_GlobalModifier(t *testing.T) {
+	body := `global rule SystemwideMatch { condition: true }`
+	name, _, _ := ParseYARAHeader(body)
+	if name != "SystemwideMatch" {
+		t.Errorf("name = %q, want SystemwideMatch", name)
+	}
+}
+
+// Both modifiers can appear together (`global private` or `private global`).
+// The parser handles arbitrary order/repetition.
+func TestParseYARAHeader_PrivateAndGlobal(t *testing.T) {
+	body := `private global rule HiddenSystemwide { condition: true }`
+	name, _, _ := ParseYARAHeader(body)
+	if name != "HiddenSystemwide" {
+		t.Errorf("name = %q, want HiddenSystemwide", name)
+	}
+}

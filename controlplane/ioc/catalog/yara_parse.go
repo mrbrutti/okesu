@@ -41,9 +41,13 @@ func ParseYARAHeader(body string) (name string, tags []string, severity string) 
 	return name, tags, severity
 }
 
-// `rule <name>` declaration. Tag list (`: t1 t2`) is optional; we
-// capture everything up to the opening brace and split on whitespace.
-var yaraRuleHeaderRE = regexp.MustCompile(`(?m)^\s*rule\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?::\s*([^{]*?))?\s*\{`)
+// `[private|global] rule <name>` declaration. Tag list (`: t1 t2`)
+// is optional; we capture everything up to the opening brace and
+// split on whitespace. Optional `private`/`global` modifiers are
+// matched (and ignored — they affect YARA's matching engine, not the
+// rule's identity); third-party rule corpora ship a meaningful
+// fraction of rules with those prefixes.
+var yaraRuleHeaderRE = regexp.MustCompile(`(?m)^\s*(?:(?:private|global)\s+)*rule\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?::\s*([^{]*?))?\s*\{`)
 
 // `severity = "<value>"` inside a meta block. Quotes are required —
 // YARA's grammar makes meta string values quoted, so an unquoted value
