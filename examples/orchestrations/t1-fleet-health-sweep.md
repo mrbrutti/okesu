@@ -16,6 +16,11 @@ steps:
   - id: aggregate
     agent: investigator
     timeout: 5m
+    actions:
+      - update_finding_status
+      - set_finding_severity_override
+      - add_finding_tag
+      - link_run_to_finding
     data:
       nodes:
         query: nodes.list
@@ -73,6 +78,11 @@ steps:
     when: "{{aggregate.result.anything_concerning == true}}"
     agent: investigator
     timeout: 4m
+    actions:
+      - update_finding_status
+      - set_finding_severity_override
+      - add_finding_tag
+      - link_run_to_finding
     prompt: |
       Triage the concerning items from the aggregate.
 
@@ -102,6 +112,11 @@ steps:
   - id: brief
     agent: investigator
     timeout: 3m
+    actions:
+      - update_finding_status
+      - set_finding_severity_override
+      - add_finding_tag
+      - link_run_to_finding
     prompt: |
       Compose the morning fleet briefing.
 

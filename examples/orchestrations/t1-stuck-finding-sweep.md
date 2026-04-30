@@ -16,6 +16,11 @@ steps:
   - id: scan
     agent: investigator
     timeout: 4m
+    actions:
+      - update_finding_status
+      - set_finding_severity_override
+      - add_finding_tag
+      - link_run_to_finding
     data:
       opens:
         query: findings.list

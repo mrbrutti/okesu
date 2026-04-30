@@ -26,6 +26,11 @@ steps:
   - id: probe
     agent: investigator
     node: "{{trigger.host}}"
+    actions:
+      - update_finding_status
+      - set_finding_severity_override
+      - add_finding_tag
+      - link_run_to_finding
     prompt: |
       Probe daimon `{{trigger.agent}}` on {{trigger.host}}.
 
@@ -52,6 +57,11 @@ steps:
     agent: investigator
     node: "{{trigger.host}}"
     timeout: 1m
+    actions:
+      - update_finding_status
+      - set_finding_severity_override
+      - add_finding_tag
+      - link_run_to_finding
     prompt: |
       Restart `okesu-agent-{{trigger.agent}}` on {{trigger.host}}.
 

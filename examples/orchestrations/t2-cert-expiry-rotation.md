@@ -58,6 +58,11 @@ steps:
       - mixed-west-2
     continue_on_error: true
     timeout: 5m
+    actions:
+      - update_finding_status
+      - set_finding_severity_override
+      - add_finding_tag
+      - link_run_to_finding
     prompt: |
       Audit cert expiry on this host.
 
@@ -82,6 +87,11 @@ steps:
   - id: plan
     agent: investigator
     timeout: 3m
+    actions:
+      - update_finding_status
+      - set_finding_severity_override
+      - add_finding_tag
+      - link_run_to_finding
     prompt: |
       Build a rotation plan from the audit.
 
@@ -106,6 +116,11 @@ steps:
     when: "{{plan.result.auto_rotate | length > 0}}"
     agent: investigator
     timeout: 8m
+    actions:
+      - update_finding_status
+      - set_finding_severity_override
+      - add_finding_tag
+      - link_run_to_finding
     prompt: |
       Rotate certs on the auto-tier hosts.
 
@@ -133,6 +148,11 @@ steps:
     when: "{{plan.result.gated_rotate | length > 0}}"
     agent: incident-responder
     timeout: 5m
+    actions:
+      - update_finding_status
+      - set_finding_severity_override
+      - add_finding_tag
+      - link_run_to_finding
     prompt: |
       Production cert rotation needs approval.
 
@@ -156,6 +176,11 @@ steps:
     when: "{{plan.result.gated_rotate | length > 0}}"
     agent: investigator
     timeout: 30m
+    actions:
+      - update_finding_status
+      - set_finding_severity_override
+      - add_finding_tag
+      - link_run_to_finding
     prompt: |
       Execute the prod rotation plan.
 

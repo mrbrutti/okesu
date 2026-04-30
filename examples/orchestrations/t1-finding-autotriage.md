@@ -84,6 +84,11 @@ steps:
     agent: investigator
     node: "{{trigger.host}}"
     timeout: 2m
+    actions:
+      - update_finding_status
+      - set_finding_severity_override
+      - add_finding_tag
+      - link_run_to_finding
     prompt: |
       Apply local suppression for finding #{{trigger.finding_id}}.
 
@@ -104,6 +109,11 @@ steps:
     agent: investigator
     node: "{{trigger.host}}"
     timeout: 3m
+    actions:
+      - update_finding_status
+      - set_finding_severity_override
+      - add_finding_tag
+      - link_run_to_finding
     prompt: |
       Write a one-paragraph operator brief for finding #{{trigger.finding_id}}.
 

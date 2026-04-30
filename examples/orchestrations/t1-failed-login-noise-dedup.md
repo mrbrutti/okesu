@@ -26,6 +26,11 @@ steps:
   - id: triage
     agent: investigator
     node: "{{trigger.host}}"
+    actions:
+      - update_finding_status
+      - set_finding_severity_override
+      - add_finding_tag
+      - link_run_to_finding
     prompt: |
       Triage failed-login finding #{{trigger.finding_id}} on {{trigger.host}}.
 
@@ -104,6 +109,11 @@ steps:
     agent: incident-responder
     node: "{{trigger.host}}"
     timeout: 4m
+    actions:
+      - update_finding_status
+      - set_finding_severity_override
+      - add_finding_tag
+      - link_run_to_finding
     prompt: |
       Write an on-call brief for the auth-failure incident on {{trigger.host}}.
 

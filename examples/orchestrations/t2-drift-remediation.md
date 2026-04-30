@@ -26,6 +26,11 @@ steps:
   - id: attribute
     agent: investigator
     node: "{{trigger.host}}"
+    actions:
+      - update_finding_status
+      - set_finding_severity_override
+      - add_finding_tag
+      - link_run_to_finding
     prompt: |
       Attribute the FIM change for finding #{{trigger.finding_id}} on {{trigger.host}}.
 
@@ -73,6 +78,11 @@ steps:
       - mixed-east-1
       - mixed-west-1
     timeout: 6m
+    actions:
+      - update_finding_status
+      - set_finding_severity_override
+      - add_finding_tag
+      - link_run_to_finding
     continue_on_error: true
     prompt: |
       Look for the same drift on this host.
@@ -100,6 +110,11 @@ steps:
     when: "{{attribute.result.sanctioned == false}}"
     agent: incident-responder
     timeout: 4m
+    actions:
+      - update_finding_status
+      - set_finding_severity_override
+      - add_finding_tag
+      - link_run_to_finding
     prompt: |
       Plan remediation for the unsanctioned drift.
 
