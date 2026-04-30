@@ -2261,3 +2261,15 @@ controlplane/server.go                      boot honors --cp-instance-id
 The Federation page's "Generate Bundle" dialog has a fourth radio
 for **S3 dead-drop**, with a transport_config picker for the bucket
 coords.
+
+## Bucket provisioning native to Settings
+
+Operators add object-storage buckets directly from `Settings → Cloud → Object storage buckets` via a two-step wizard (`web/src/components/AddBucketWizard.tsx`), mirroring the Add-CP flow.
+
+The wizard offers two paths:
+- **Configured cloud provider** — pick an AWS / OCI / MinIO `cloud_credential`, then either discover existing buckets or create a new one. Backend dispatches via the new `BucketProvisioner` interface (`controlplane/cpprovision/bucket_provisioner.go`) to per-cloud implementations.
+- **Manual entry** — preserved for on-prem / third-party S3-compatible services without an Okesu credential. Same shape as the legacy form.
+
+OCI's S3-compatible endpoint requires Customer Secret Keys, which the OCI provisioner auto-creates via the IAM SDK. MinIO is treated as S3-compatible and reuses the AWS S3 SDK with a custom endpoint pulled from the credential.
+
+`PATCH /api/transport-configs/{id}` permits partial updates of `name` and `scanner_interval_ms`. Identity fields (bucket, endpoint, access keys, region) are immutable — operators delete + re-add for identity changes. `DELETE` returns `409 Conflict` with a referencing-resources list if any node or enrollment_package references the row; federation_peers and cp_provisions FKs are `ON DELETE SET NULL` and don't block.
