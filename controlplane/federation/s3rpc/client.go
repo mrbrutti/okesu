@@ -21,26 +21,24 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-
-	"github.com/section9labs/okesu/agent/s3transport"
 )
 
 // Client submits directives to a child CP via the bucket and polls
 // for the response.
 type Client struct {
-	cli          *s3transport.Client
-	reqPrefix    string        // 'cp/<parent>/outbound/<child>/req/'
-	respPrefix   string        // 'cp/<child>/outbound/<parent>/resp/'
+	cli          Bucket
+	reqPrefix    string // 'cp/<parent>/outbound/<child>/req/'
+	respPrefix   string // 'cp/<child>/outbound/<parent>/resp/'
 	pollInterval time.Duration
 	timeout      time.Duration
 }
 
 // NewClient wires up a Client against an existing s3transport
-// connection. parentSelfPrefix is `cp/<parent-id>/` (where the
-// parent writes from); peerOutboundPrefix is the same value the
-// federation_peers row carries (where the child publishes — i.e.
-// `cp/<child-id>/outbound/<parent-id>/`). The Client derives both
-// req + resp prefixes from those.
+// connection (or any Bucket implementation). parentSelfPrefix is
+// `cp/<parent-id>/` (where the parent writes from); peerOutboundPrefix
+// is the same value the federation_peers row carries (where the child
+// publishes — i.e. `cp/<child-id>/outbound/<parent-id>/`). The Client
+// derives both req + resp prefixes from those.
 //
 // The directive direction (parent → child) lives at:
 //
@@ -49,9 +47,9 @@ type Client struct {
 // We compute it by reversing the peerOutboundPrefix: the bucket
 // convention `cp/<self>/outbound/<peer>/` is symmetric, so swapping
 // self and peer is sufficient.
-func NewClient(cli *s3transport.Client, parentSelfID, peerOutboundPrefix string) (*Client, error) {
+func NewClient(cli Bucket, parentSelfID, peerOutboundPrefix string) (*Client, error) {
 	if cli == nil {
-		return nil, errors.New("s3rpc: client requires non-nil s3transport.Client")
+		return nil, errors.New("s3rpc: client requires non-nil Bucket")
 	}
 	parentSelfID = strings.Trim(parentSelfID, "/")
 	if parentSelfID == "" {
