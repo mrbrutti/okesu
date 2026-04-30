@@ -9,13 +9,17 @@ toc:
   - { id: where,       label: "Where it runs" }
   - { id: lifecycle,   label: "Lifecycle" }
   - { id: contract,    label: "The dispatch contract" }
+  - { id: transport,   label: "Tunnel vs jobs mode" }
+  - { id: upgrades,    label: "Auto-deploy & upgrades" }
   - { id: next,        label: "Where to next" }
 ---
 
-import DaimonOnHost from '../../components/diagrams/DaimonOnHost.astro';
+import DispatchFlowDemo from '../../components/diagrams/DispatchFlowDemo.astro';
+import HeartbeatDemo from '../../components/diagrams/HeartbeatDemo.astro';
+import BinaryUpgradeDemo from '../../components/diagrams/BinaryUpgradeDemo.astro';
 
 <div class="bg-bg border border-border rounded-xl p-6 md:p-8 my-8">
-  <DaimonOnHost />
+  <DispatchFlowDemo />
 </div>
 
 <h2 id="what">What a daimon is</h2>
@@ -40,15 +44,21 @@ import DaimonOnHost from '../../components/diagrams/DaimonOnHost.astro';
 
 <h2 id="lifecycle">Lifecycle</h2>
 
-<p>A daimon's life:</p>
+<p>A daimon's life follows five stages — every running daimon is currently sitting in one of them:</p>
 
 <ul>
   <li><span class="term">install</span> — drop the binary; create the systemd unit (or your supervisor of choice).</li>
   <li><span class="term">register</span> — first contact with the CP; the CP issues the daimon a long-lived agent token bound to its hostname.</li>
   <li><span class="term">heartbeat</span> — every few seconds the daimon ping-pongs with the CP so dispatches are deliverable.</li>
-  <li><span class="term">execute runs</span> — the CP dispatches a run (an agent invocation with prompt, inputs, dispatch mode); the daimon runs the agent and streams JSONL events back.</li>
+  <li><span class="term">execute runs</span> — the CP dispatches a run; the daimon runs the agent and streams JSONL events back.</li>
   <li><span class="term">upgrade in place</span> — the CP can push a new binary; the daimon swaps itself out under systemd and re-registers with the same identity.</li>
 </ul>
+
+<p>The heartbeat is what makes the dashboard's "online/offline" indicator work. Lose connectivity for too long and the daimon shows as stale; reconnect and the heartbeat resumes from wherever it left off.</p>
+
+<div class="my-6">
+  <HeartbeatDemo />
+</div>
 
 <h2 id="contract">The dispatch contract</h2>
 
@@ -66,6 +76,25 @@ import DaimonOnHost from '../../components/diagrams/DaimonOnHost.astro';
 </div>
 
 <p>What the daimon emits is a sequence of newline-delimited JSON events — most importantly <code>finding</code> events for security signals and a final <code>orchestration_result</code> for the structured payload downstream steps consume.</p>
+
+<h2 id="transport">Tunnel vs jobs mode</h2>
+
+<p>Two transports for getting work to a daimon:</p>
+
+<ul>
+  <li><span class="term">tunnel</span> — the daimon holds a long-running mTLS connection to the CP. Dispatches arrive in real-time over that tunnel; findings stream back the same way. Best for hosts with stable outbound network.</li>
+  <li><span class="term">jobs</span> — the daimon polls an S3 dead-drop bucket on an interval. The CP writes job envelopes; the daimon picks them up, runs the agent, writes findings back. Best for offline / restricted networks where outbound HTTPS is the only thing allowed, or for hosts that should never hold a connection open.</li>
+</ul>
+
+<p>The same daimon binary supports both. Each orchestration step picks its preferred mode via <code>dispatch:</code> in the spec; if the daimon's tunnel is up, dispatches use it, otherwise they fall back to the bucket.</p>
+
+<h2 id="upgrades">Auto-deploy & upgrades</h2>
+
+<p>The CP can deploy a daimon to a new host (rsync the binary, write the systemd unit, register the agent token) and upgrade an existing one in place. The daimon process replaces its own executable, restarts under systemd with the same identity, and resumes its heartbeat. Operators don't manage host-by-host installations.</p>
+
+<div class="my-6">
+  <BinaryUpgradeDemo />
+</div>
 
 <h2 id="next">Where to next</h2>
 
