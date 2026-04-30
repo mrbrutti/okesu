@@ -36,6 +36,7 @@ import (
 	"github.com/section9labs/okesu/controlplane/auth"
 	"github.com/section9labs/okesu/controlplane/cpprovision"
 	awsprovisioner "github.com/section9labs/okesu/controlplane/cpprovision/aws"
+	minioprovisioner "github.com/section9labs/okesu/controlplane/cpprovision/minio"
 	ociprovisioner "github.com/section9labs/okesu/controlplane/cpprovision/oci"
 	"github.com/section9labs/okesu/controlplane/db"
 	"github.com/section9labs/okesu/controlplane/eventpipeline"
@@ -81,6 +82,11 @@ type Server struct {
 	// implementations. Per-cloud impls (OCI in 21.3b, AWS in 21.3c)
 	// register against this from server.New() below.
 	cpProvisioners *cpprovision.Registry
+	// bucketProvisioners is the sibling registry for bucket
+	// (object-storage) provisioning. AWS / OCI / MinIO each register
+	// their BucketProvisioner here at boot. Used by the
+	// /api/buckets/* handlers in the Settings → Add Bucket wizard.
+	bucketProvisioners *cpprovision.BucketRegistry
 	// bundleCache holds the generated child-CP bundle bytes the
 	// cloud-init script fetches via /api/federation/cp-bundle/download.
 	// Populated by RunCPProvisionWorker, drained by the bootstrap
@@ -303,14 +309,20 @@ func New(cfg Config) (*Server, error) {
 		jobs:           jobs.New(500),
 		tunReg:         tunnel.NewRegistry(),
 		runs:           api.NewRunRegistry(),
-		cpProvisioners: cpprovision.NewRegistry(),
-		bundleCache:    api.NewBundleCache(),
+		cpProvisioners:     cpprovision.NewRegistry(),
+		bucketProvisioners: cpprovision.NewBucketRegistry(),
+		bundleCache:        api.NewBundleCache(),
 	}
 	// Phase 21.3b/c — register per-cloud provisioners. Each cloud
 	// implementation lives in its own subpackage so adding a new one
 	// is one import + one Register() call.
 	srv.cpProvisioners.Register(ociprovisioner.New())
 	srv.cpProvisioners.Register(awsprovisioner.New())
+	// Bucket provisioners (Settings → Add Bucket wizard). Same
+	// register-per-impl shape as cpProvisioners.
+	srv.bucketProvisioners.Register(awsprovisioner.NewBucketProvisioner())
+	srv.bucketProvisioners.Register(ociprovisioner.NewBucketProvisioner())
+	srv.bucketProvisioners.Register(minioprovisioner.NewBucketProvisioner())
 	srv.notify = &notify.Worker{
 		Store:      store,
 		Subscriber: bcast,
@@ -935,7 +947,15 @@ func (s *Server) routes() http.Handler {
 			r.Get("/api/transport-configs/{id}", api.TransportConfigDetail(s.store))
 			r.Post("/api/transport-configs", api.TransportConfigCreate(s.store))
 			r.Put("/api/transport-configs/{id}", api.TransportConfigUpdate(s.store))
+			r.Patch("/api/transport-configs/{id}", api.TransportConfigPatch(s.store))
 			r.Delete("/api/transport-configs/{id}", api.TransportConfigDelete(s.store))
+
+			// Buckets — Settings → Add Bucket wizard. Uses configured
+			// cloud_credentials + the SDK to discover existing buckets
+			// or create new ones, then writes a transport_configs row.
+			r.Get("/api/buckets/cloud-providers", api.BucketCloudProviders(s.store, s.bucketProvisioners))
+			r.Get("/api/buckets/discover", api.BucketDiscover(s.store, s.bucketProvisioners))
+			r.Post("/api/buckets/provision", api.BucketProvision(s.store, s.bucketProvisioners))
 			r.Get("/api/enrollment-packages", api.EnrollmentPackagesList(s.store))
 			r.Post("/api/enrollment-packages", api.EnrollmentPackageCreate(s.store))
 			r.Get("/api/enrollment-packages/{id}/download", api.EnrollmentPackageDownload(s.store, func(target string) ([]byte, error) {
