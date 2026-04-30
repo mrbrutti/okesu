@@ -25,7 +25,13 @@ export default function CatalogPage() {
     setError(null);
     api.iocs({ source: sourceFilter || undefined, q: query || undefined })
       .then(setRows)
-      .catch(e => setError(String(e)));
+      .catch(e => {
+        // Empty list on error so the table area renders the no-match
+        // empty state alongside the error banner instead of a stuck
+        // "Loading…" spinner.
+        setRows([]);
+        setError(String(e));
+      });
   }, [sourceFilter, query]);
 
   const filtered = useMemo(() => {
