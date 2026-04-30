@@ -307,3 +307,13 @@ oci-deploy: oci-build oci-apply oci-install
 # Iteration target: just re-render + reinstall. No terraform.
 oci-redeploy: oci-build oci-install
 	@echo "▶ redeploy complete (mode=$(OCI_MODE))"
+
+oci-destroy: _oci-preflight
+	@echo "▶ this will DELETE all VMs, DBs, buckets in compartment for mode=$(OCI_MODE)"
+	@read -p "type 'destroy' to confirm: " ans; \
+	  [ "$$ans" = "destroy" ] || { echo "aborted"; exit 1; }
+	cd $(OCI_DIR) && terraform destroy -auto-approve -var-file=$(abspath $(OCI_TFVARS))
+	@SECRETS_DIR=$$(grep '^secrets_dir' $(OCI_TFVARS) | sed -E 's/^.*=[[:space:]]*"([^"]+)"/\1/'); \
+	  EXPANDED=$$(eval echo $$SECRETS_DIR); \
+	  [ -d "$$EXPANDED" ] && rm -rf "$$EXPANDED" || true
+	@echo "▶ destroyed (mode=$(OCI_MODE))"
