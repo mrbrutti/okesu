@@ -12,8 +12,9 @@
 // cloud and surfaces errors as-is.
 
 import { useEffect, useState } from 'react';
-import { Cloud, Loader2, Pencil, Plus, RefreshCw, Trash2, X } from 'lucide-react';
-import { api, type CloudCredential, type CloudCredentialCreateRequest, type CloudCredentialUpdateRequest, type CloudKind } from '../../api';
+import { Link } from 'react-router-dom';
+import { Cloud, Database, ExternalLink, Loader2, Pencil, Plus, RefreshCw, Trash2, X } from 'lucide-react';
+import { api, type CloudCredential, type CloudCredentialCreateRequest, type CloudCredentialUpdateRequest, type CloudKind, type TransportConfigSummary } from '../../api';
 import { cn } from '../../lib/cn';
 
 const CLOUDS: Array<{ kind: CloudKind; label: string; provisioned: boolean }> = [
@@ -159,6 +160,8 @@ export default function CloudSection() {
         })}
       </div>
 
+      <BucketsSection />
+
       {showAdd && (
         <AddCredentialDialog
           cloud={showAdd}
@@ -175,6 +178,95 @@ export default function CloudSection() {
         />
       )}
     </div>
+  );
+}
+
+// BucketsSection — related-resources card for object-storage buckets
+// (transport_configs). Buckets aren't cloud-credentials shape, but
+// the mental model "I added my OCI tenancy → I want a bucket in that
+// tenancy" is real, so they're surfaced here too. Read-only summary
+// with a deep-link to the canonical creation flow (Nodes → Add Node →
+// S3 dead-drop), which already builds + tests the keypair stack.
+function BucketsSection() {
+  const [items, setItems] = useState<TransportConfigSummary[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    api.transportConfigs()
+      .then(setItems)
+      .catch((e) => setError(String(e)));
+  }, []);
+
+  return (
+    <section className="border border-border rounded-xl overflow-hidden bg-panel">
+      <header className="px-4 py-2.5 border-b border-border flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <Database size={16} className="text-brand-500" />
+          <span className="text-sm font-medium">Object storage buckets</span>
+          <span className="text-[10px] uppercase tracking-wider text-ink-mute bg-slate-100 px-1.5 py-0.5 rounded">
+            shared with Nodes + Federation
+          </span>
+        </div>
+        <Link
+          to="/nodes"
+          className="text-xs px-2 py-1 bg-brand-50 hover:bg-brand-100 text-brand-700 rounded inline-flex items-center gap-1"
+          title="Add a bucket via Nodes → Add Node → S3 dead-drop. Buckets serve both node and federation transports."
+        >
+          <Plus size={12} /> Add bucket
+        </Link>
+      </header>
+      {error && (
+        <div className="px-4 py-2 text-xs text-red-700 bg-red-50 border-b border-red-200">{error}</div>
+      )}
+      {items === null ? (
+        <div className="px-4 py-3 text-xs text-ink-mute">loading…</div>
+      ) : items.length === 0 ? (
+        <div className="px-4 py-3 text-xs text-ink-mute">
+          No buckets configured. Buckets are used by the S3 dead-drop transport for both
+          nodes (offline / NAT'd hosts) and federated child CPs. Click <strong>Add bucket</strong>{' '}
+          to register one.
+        </div>
+      ) : (
+        <ul className="divide-y divide-border">
+          {items.map((tc) => (
+            <li key={tc.id} className="px-4 py-2.5 flex items-center justify-between gap-3 text-sm">
+              <div className="min-w-0 flex-1">
+                <div className="font-medium truncate">{tc.name}</div>
+                <div className="text-[11px] text-ink-mute truncate">
+                  <code>{tc.bucket}</code> @ <code>{tc.endpoint}</code>
+                  {tc.region && <> · {tc.region}</>}
+                  {tc.use_ssl ? ' · TLS' : ' · plaintext'}
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                {tc.has_fleet_pubkey ? (
+                  <span className="text-[10px] uppercase tracking-wider text-emerald-700 bg-emerald-50 ring-1 ring-emerald-200 px-1.5 py-0.5 rounded">
+                    fleet keypair
+                  </span>
+                ) : (
+                  <span className="text-[10px] uppercase tracking-wider text-amber-700 bg-amber-50 ring-1 ring-amber-200 px-1.5 py-0.5 rounded">
+                    no keypair
+                  </span>
+                )}
+                <Link
+                  to="/nodes"
+                  className="text-xs px-2 py-1 border border-border hover:bg-slate-50 rounded inline-flex items-center gap-1"
+                  title="Manage this bucket on the Nodes page"
+                >
+                  <ExternalLink size={12} /> Manage
+                </Link>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+      <footer className="px-4 py-2 text-[11px] text-ink-mute bg-slate-50 border-t border-border">
+        Buckets are not strictly cloud credentials — they serve transport for nodes (Phase 9)
+        and federation (Phase A/B) regardless of which cloud account the bucket lives in.
+        The canonical store is at <code>/api/transport-configs</code>; create + edit happens
+        through the Nodes Add flow today.
+      </footer>
+    </section>
   );
 }
 
