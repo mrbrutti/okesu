@@ -95,6 +95,7 @@ type ActionApplier interface {
 	SetFindingSeverityOverride(findingID int64, severity, reason string, runID int64, stepID string) error
 	LinkRunToFinding(findingID int64, runID int64, stepID, reason string) error
 	EscalateRun(runID int64, reason, severity string) error
+	RecordAgentLesson(agentName, text string, runID int64, stepID string) error
 }
 
 // Orchestration is what Store.GetOrchestration returns — the parsed
@@ -674,13 +675,14 @@ func (e *Engine) applyStepActions(runID int64, step StepSpec, result DispatchRes
 		log.Printf("engine: action %q rejected on run=%d step=%s (not in allowlist %v)", a.Kind, runID, step.ID, step.Actions)
 	}
 	for _, a := range allowed {
-		if err := e.dispatchAction(runID, step.ID, a); err != nil {
+		if err := e.dispatchAction(runID, step, a); err != nil {
 			log.Printf("engine: action %q failed on run=%d step=%s: %v", a.Kind, runID, step.ID, err)
 		}
 	}
 }
 
-func (e *Engine) dispatchAction(runID int64, stepID string, a Action) error {
+func (e *Engine) dispatchAction(runID int64, step StepSpec, a Action) error {
+	stepID := step.ID
 	switch a.Kind {
 	case ActionUpdateFindingStatus:
 		if a.FindingID == 0 || a.Status == "" {
@@ -709,6 +711,13 @@ func (e *Engine) dispatchAction(runID int64, stepID string, a Action) error {
 		return e.applier.LinkRunToFinding(a.FindingID, runID, stepID, a.Reason)
 	case ActionEscalate:
 		return e.applier.EscalateRun(runID, a.Reason, a.Severity)
+	case ActionReflectWithLessons:
+		for _, lesson := range a.Lessons {
+			if err := e.applier.RecordAgentLesson(step.Agent, lesson, runID, stepID); err != nil {
+				return err
+			}
+		}
+		return nil
 	}
 	return fmt.Errorf("unhandled kind %q", a.Kind)
 }

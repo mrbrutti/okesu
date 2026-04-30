@@ -291,6 +291,26 @@ export interface FindingsFilter {
   offset?: number;
 }
 
+// IOCRecord mirrors controlplane/db.IOCRecord. JSON encoder uses Go's
+// default capitalized field names since the struct has no `json:"…"`
+// tags — keep the casing here in lockstep with the server type.
+export interface IOCRecord {
+  ID: number;
+  Kind: string;            // ipv4 | ipv6 | domain | url | sha256 | md5 | cve | mitre | …
+  Value: string;            // canonical (refanged) form, suitable for matching
+  NormalizedValue: string;  // lower-cased / dedup form
+  Source: string;           // "catalog" | "observed"
+  DefinitionPath: string;
+  Confidence: string;
+  Attribution: string;
+  SeverityFloor: string;    // CRITICAL|HIGH|MEDIUM|LOW|INFO
+  Classification: string;
+  Notes: string;
+  ObservationCount: number;
+  FirstSeen: string;        // RFC3339
+  LastSeen: string;         // RFC3339
+}
+
 export interface AuthConfig {
   oidc_enabled: boolean;
   oidc_label?: string;
@@ -524,6 +544,18 @@ export const api = {
         ? `/api/findings/${id}/runs?cp=${encodeURIComponent(cpInstanceID)}`
         : `/api/findings/${id}/runs`,
     ),
+
+  // IOCs (Phase 22.1+). Without filters returns the most recent 100
+  // by last_seen; with finding_id returns only those observed against
+  // that finding (joined via ioc_observations); with kind filters by
+  // indicator type. Sources can mix catalog + observed rows.
+  iocs: (filter: { findingID?: number; kind?: string } = {}) => {
+    const p = new URLSearchParams();
+    if (filter.findingID) p.set('finding_id', String(filter.findingID));
+    if (filter.kind)      p.set('kind', filter.kind);
+    const qs = p.toString();
+    return request<IOCRecord[]>(`/api/iocs${qs ? '?' + qs : ''}`);
+  },
 
   findings: (filter: FindingsFilter = {}) => {
     const p = new URLSearchParams();

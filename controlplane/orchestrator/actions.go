@@ -55,6 +55,13 @@ const (
 	// after it completes — surfaces in the dashboard's "Pending
 	// review" tile. Payload: { reason: string, severity?: SEV-N }
 	ActionEscalate = "escalate"
+
+	// ActionReflectWithLessons writes one or more lesson strings to the
+	// agent_lessons KV. Daemons read top-N on tick prep and prepend them
+	// to the system prompt. Agent-emitted shape:
+	//
+	//   { "kind": "reflect_with_lessons", "lessons": ["short text", ...] }
+	ActionReflectWithLessons = "reflect_with_lessons"
 )
 
 // AllowedActionKinds is the source of truth for the spec validator
@@ -64,6 +71,7 @@ var AllowedActionKinds = []string{
 	ActionAddFindingTag,
 	ActionEscalate,
 	ActionLinkRunToFinding,
+	ActionReflectWithLessons,
 	ActionRemoveFindingTag,
 	ActionSetFindingSeverityOverride,
 	ActionUpdateFindingStatus,
@@ -92,6 +100,8 @@ type Action struct {
 	Severity  string `json:"severity,omitempty"`
 	Tag       string `json:"tag,omitempty"`
 	Reason    string `json:"reason,omitempty"`
+	// Lessons is populated for ActionReflectWithLessons actions.
+	Lessons []string `json:"lessons,omitempty"`
 }
 
 // ParseActions decodes the agent's wire array into Action structs.
@@ -141,6 +151,21 @@ func decodeAction(m map[string]any) (Action, error) {
 	a.Severity, _ = m["severity"].(string)
 	a.Tag, _ = m["tag"].(string)
 	a.Reason, _ = m["reason"].(string)
+
+	switch kind {
+	case ActionReflectWithLessons:
+		raw, _ := m["lessons"].([]any)
+		out := make([]string, 0, len(raw))
+		for _, x := range raw {
+			if s, ok := x.(string); ok && s != "" {
+				out = append(out, s)
+			}
+		}
+		if len(out) == 0 {
+			return Action{}, fmt.Errorf("%s: lessons must be a non-empty array of strings", kind)
+		}
+		a.Lessons = out
+	}
 	return a, nil
 }
 

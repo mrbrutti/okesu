@@ -24,29 +24,29 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
+	"github.com/section9labs/okesu/agent"
+	"github.com/section9labs/okesu/agent/s3transport"
 	"github.com/section9labs/okesu/controlplane/adapters/clickhouseevents"
 	"github.com/section9labs/okesu/controlplane/adapters/inprocess"
 	"github.com/section9labs/okesu/controlplane/adapters/kafka"
 	"github.com/section9labs/okesu/controlplane/adapters/redispubsub"
 	"github.com/section9labs/okesu/controlplane/adapters/sqliteevents"
 	"github.com/section9labs/okesu/controlplane/api"
+	"github.com/section9labs/okesu/controlplane/auth"
 	"github.com/section9labs/okesu/controlplane/cpprovision"
 	awsprovisioner "github.com/section9labs/okesu/controlplane/cpprovision/aws"
 	ociprovisioner "github.com/section9labs/okesu/controlplane/cpprovision/oci"
-	"github.com/section9labs/okesu/controlplane/eventpipeline"
-	"github.com/section9labs/okesu/controlplane/auth"
 	"github.com/section9labs/okesu/controlplane/db"
+	"github.com/section9labs/okesu/controlplane/eventpipeline"
 	"github.com/section9labs/okesu/controlplane/federation"
 	"github.com/section9labs/okesu/controlplane/ioc/catalog"
 	"github.com/section9labs/okesu/controlplane/jobs"
 	"github.com/section9labs/okesu/controlplane/notify"
-	"github.com/section9labs/okesu/agent"
-	"github.com/section9labs/okesu/agent/s3transport"
 	"github.com/section9labs/okesu/controlplane/orchestrator"
 	"github.com/section9labs/okesu/controlplane/packaging"
-	"github.com/section9labs/okesu/controlplane/transport/s3scanner"
 	"github.com/section9labs/okesu/controlplane/ports"
 	"github.com/section9labs/okesu/controlplane/sshdeploy"
+	"github.com/section9labs/okesu/controlplane/transport/s3scanner"
 	"github.com/section9labs/okesu/controlplane/tunnel"
 	"github.com/section9labs/okesu/controlplane/ui"
 )
@@ -81,9 +81,9 @@ type Server struct {
 	// cloud-init script fetches via /api/federation/cp-bundle/download.
 	// Populated by RunCPProvisionWorker, drained by the bootstrap
 	// handler when the new CP completes its bootstrap exchange.
-	bundleCache    *api.BundleCache
-	http       *http.Server
-	mgmtHTTP *http.Server       // mTLS-protected management plane
+	bundleCache *api.BundleCache
+	http        *http.Server
+	mgmtHTTP    *http.Server // mTLS-protected management plane
 }
 
 // daemonBinaryVersion reports the version of the daemon binary the CP
@@ -467,35 +467,35 @@ func (s *Server) routes() http.Handler {
 	// Phase 9.6: federation read endpoints. Token-authed siblings of
 	// the local read endpoints — the parent CP fans out to these to
 	// build merged Findings / Daimons / Nodes / Events views.
-	r.Get("/api/v1/federation/findings",            api.FederationFindings(s.store))
-	r.Get("/api/v1/federation/findings/summary",    api.FederationFindingsSummary(s.store))
-	r.Get("/api/v1/federation/findings/grouped",    api.FederationFindingsGrouped(s.store))
-	r.Get("/api/v1/federation/findings/{id}",        api.FederationFindingDetail(s.store))
-	r.Get("/api/v1/federation/findings/{id}/runs",   api.FederationRunsForFinding(s.store))
+	r.Get("/api/v1/federation/findings", api.FederationFindings(s.store))
+	r.Get("/api/v1/federation/findings/summary", api.FederationFindingsSummary(s.store))
+	r.Get("/api/v1/federation/findings/grouped", api.FederationFindingsGrouped(s.store))
+	r.Get("/api/v1/federation/findings/{id}", api.FederationFindingDetail(s.store))
+	r.Get("/api/v1/federation/findings/{id}/runs", api.FederationRunsForFinding(s.store))
 	r.Post("/api/v1/federation/findings/{id}/status", api.FederationFindingSetStatus(s.store))
 
 	// Phase B: orchestration federation endpoints.
-	r.Get("/api/v1/federation/orchestrations",                                              api.FederationOrchestrationsList(s.store))
-	r.Get("/api/v1/federation/orchestrations/{id}",                                         api.FederationOrchestrationDetail(s.store))
-	r.Post("/api/v1/federation/orchestrations",                                             api.FederationOrchestrationCreate(s.store))
-	r.Put("/api/v1/federation/orchestrations/{id}",                                         api.FederationOrchestrationUpdate(s.store))
-	r.Delete("/api/v1/federation/orchestrations/{id}",                                      api.FederationOrchestrationDelete(s.store))
-	r.Post("/api/v1/federation/orchestrations/{id}/run",                                    api.FederationOrchestrationRunCreate(s.store, s.orchestra))
-	r.Get("/api/v1/federation/orchestration-runs",                                          api.FederationOrchestrationRunsList(s.store))
-	r.Get("/api/v1/federation/orchestration-runs/{id}",                                     api.FederationOrchestrationRunDetail(s.store))
-	r.Post("/api/v1/federation/orchestration-runs/{id}/cancel",                             api.FederationOrchestrationRunCancel(s.store))
-	r.Post("/api/v1/federation/orchestration-runs/bulk-cancel",                             api.FederationOrchestrationRunsBulkCancel(s.store))
-	r.Post("/api/v1/federation/orchestration-runs/bulk-retry",                              api.FederationOrchestrationRunsBulkRetry(s.store, s.orchestra))
-	r.Post("/api/v1/federation/orchestration-runs/{id}/steps/{stepID}/approve",             api.FederationOrchestrationStepApprove(s.store, s.orchestra))
-	r.Post("/api/v1/federation/runs/sync",                                                  api.FederationRunSync(s.runs, s.tunReg, s.store, s.cfg.AgentFilesDirs))
-	r.Get("/api/v1/federation/daimons",          api.FederationDaimons(s.store))
-	r.Get("/api/v1/federation/daimons/{name}",   api.FederationAgentDetail(s.store))
-	r.Get("/api/v1/federation/nodes",            api.FederationNodes(s.store))
-	r.Get("/api/v1/federation/nodes/{id}",       api.FederationNodeDetail(s.store))
-	r.Get("/api/v1/federation/events",                   api.RequireFederationToken(s.store, api.EventsList(s.eventStore)))
-	r.Get("/api/v1/federation/events/stream",            api.RequireFederationToken(s.store, api.EventsStream(s.bcast)))
-	r.Get("/api/v1/federation/insights/findings",        api.FederationInsightsFindings(s.store))
-	r.Get("/api/v1/federation/insights/events",          api.RequireFederationToken(s.store, api.InsightsEvents(s.eventStore)))
+	r.Get("/api/v1/federation/orchestrations", api.FederationOrchestrationsList(s.store))
+	r.Get("/api/v1/federation/orchestrations/{id}", api.FederationOrchestrationDetail(s.store))
+	r.Post("/api/v1/federation/orchestrations", api.FederationOrchestrationCreate(s.store))
+	r.Put("/api/v1/federation/orchestrations/{id}", api.FederationOrchestrationUpdate(s.store))
+	r.Delete("/api/v1/federation/orchestrations/{id}", api.FederationOrchestrationDelete(s.store))
+	r.Post("/api/v1/federation/orchestrations/{id}/run", api.FederationOrchestrationRunCreate(s.store, s.orchestra))
+	r.Get("/api/v1/federation/orchestration-runs", api.FederationOrchestrationRunsList(s.store))
+	r.Get("/api/v1/federation/orchestration-runs/{id}", api.FederationOrchestrationRunDetail(s.store))
+	r.Post("/api/v1/federation/orchestration-runs/{id}/cancel", api.FederationOrchestrationRunCancel(s.store))
+	r.Post("/api/v1/federation/orchestration-runs/bulk-cancel", api.FederationOrchestrationRunsBulkCancel(s.store))
+	r.Post("/api/v1/federation/orchestration-runs/bulk-retry", api.FederationOrchestrationRunsBulkRetry(s.store, s.orchestra))
+	r.Post("/api/v1/federation/orchestration-runs/{id}/steps/{stepID}/approve", api.FederationOrchestrationStepApprove(s.store, s.orchestra))
+	r.Post("/api/v1/federation/runs/sync", api.FederationRunSync(s.runs, s.tunReg, s.store, s.cfg.AgentFilesDirs))
+	r.Get("/api/v1/federation/daimons", api.FederationDaimons(s.store))
+	r.Get("/api/v1/federation/daimons/{name}", api.FederationAgentDetail(s.store))
+	r.Get("/api/v1/federation/nodes", api.FederationNodes(s.store))
+	r.Get("/api/v1/federation/nodes/{id}", api.FederationNodeDetail(s.store))
+	r.Get("/api/v1/federation/events", api.RequireFederationToken(s.store, api.EventsList(s.eventStore)))
+	r.Get("/api/v1/federation/events/stream", api.RequireFederationToken(s.store, api.EventsStream(s.bcast)))
+	r.Get("/api/v1/federation/insights/findings", api.FederationInsightsFindings(s.store))
+	r.Get("/api/v1/federation/insights/events", api.RequireFederationToken(s.store, api.InsightsEvents(s.eventStore)))
 
 	// Phase 9.7: federation writes. Token-authed POST endpoints the
 	// parent's forwarding handlers proxy to when an operator picks a
@@ -583,11 +583,11 @@ func (s *Server) routes() http.Handler {
 		r.Get("/api/findings/summary", api.FederatedFindingsSummary(s.store, s.fedAgg))
 		r.Get("/api/findings/grouped", api.FederatedFindingsGrouped(s.store, s.fedAgg))
 		r.Get("/api/findings/{id}", api.FederatedFindingDetail(s.store, s.fedAgg))
-			r.Get("/api/findings/{id}/runs", api.FederatedRunsForFinding(s.store, s.fedAgg))
+		r.Get("/api/findings/{id}/runs", api.FederatedRunsForFinding(s.store, s.fedAgg))
 
-			// Phase 22.1 — IOC list. Filter by finding_id (drawer drill-down)
-			// or kind (e.g. all observed sha256s). Local-only for now.
-			r.Get("/api/iocs", api.ListIOCs(s.store))
+		// Phase 22.1 — IOC list. Filter by finding_id (drawer drill-down)
+		// or kind (e.g. all observed sha256s). Local-only for now.
+		r.Get("/api/iocs", api.ListIOCs(s.store))
 
 		// Read endpoints (continued)
 		r.Get("/api/nodes", api.FederatedNodesList(s.store, s.fedAgg))
@@ -595,13 +595,13 @@ func (s *Server) routes() http.Handler {
 		r.Get("/api/nodes/library", api.AgentLibrary(api.NodesConfig{
 			DaemonBinaryPath:  s.cfg.DaemonBinaryPath,
 			DaemonBinariesDir: s.cfg.DaemonBinariesDir,
-			DaimonFilesDir:     s.cfg.DaimonFilesDir,
+			DaimonFilesDir:    s.cfg.DaimonFilesDir,
 		}))
 		r.Get("/api/daimons/library", api.DaimonLibraryList(s.cfg.DaimonFilesDir))
-			r.Get("/api/daimons/library/{name}", api.DaimonLibraryGet(s.cfg.DaimonFilesDir))
-			r.Get("/api/agent-library", api.AgentLibraryList(s.cfg.AgentFilesDirs))
-			r.Get("/api/agent-library/{name}", api.AgentLibraryGet(s.cfg.AgentFilesDirs))
-			r.Get("/api/deploy/binaries", api.BinariesList(s.store, s.cfg.DaemonBinariesDir))
+		r.Get("/api/daimons/library/{name}", api.DaimonLibraryGet(s.cfg.DaimonFilesDir))
+		r.Get("/api/agent-library", api.AgentLibraryList(s.cfg.AgentFilesDirs))
+		r.Get("/api/agent-library/{name}", api.AgentLibraryGet(s.cfg.AgentFilesDirs))
+		r.Get("/api/deploy/binaries", api.BinariesList(s.store, s.cfg.DaemonBinariesDir))
 		r.Get("/api/deploy/known-hosts", api.KnownHostsList(s.store))
 		r.Get("/api/nodes/{id}/known-host", api.NodeKnownHost(s.store))
 
@@ -809,7 +809,7 @@ func (s *Server) routes() http.Handler {
 			r.Get("/api/orchestration-runs/{id}", api.FederatedOrchestrationRunDetail(s.store, s.fedAgg))
 			r.Post("/api/orchestration-runs/{id}/cancel", api.FederatedOrchestrationRunCancel(s.store, s.fedAgg))
 			r.Post("/api/orchestration-runs/bulk-cancel", api.FederatedOrchestrationRunsBulkCancel(s.store, s.fedAgg))
-			r.Post("/api/orchestration-runs/bulk-retry",  api.FederatedOrchestrationRunsBulkRetry(s.store, s.orchestra, s.fedAgg))
+			r.Post("/api/orchestration-runs/bulk-retry", api.FederatedOrchestrationRunsBulkRetry(s.store, s.orchestra, s.fedAgg))
 			r.Post("/api/orchestration-runs/{id}/steps/{stepID}/approve", api.FederatedOrchestrationStepApprove(s.store, s.orchestra, s.fedAgg))
 		})
 	})
@@ -926,6 +926,11 @@ func (s *Server) mgmtRoutes() http.Handler {
 	r.Get("/api/v1/agents/{name}/definition", api.MgmtDefinition(s.cfg.DaimonFilesDir))
 	r.Get("/api/v1/agents/{name}/known-issues", api.MgmtKnownIssues(s.store))
 	r.Get("/api/v1/agents/{name}/findings/search", api.MgmtFindingsLookup(s.store))
+	// Phase 22.2 — per-agent lessons (KV) the daemon prepends to its
+	// system prompt each tick. Mounted on the mgmt plane (mTLS-gated)
+	// alongside known-issues so the daemon can fetch via the same
+	// authenticated channel it already uses.
+	r.Get("/api/v1/agents/{name}/lessons", api.ListAgentLessonsHandler(s.store))
 
 	// Pull-mode jobs queue (Phase D). The jobs runtime on each node
 	// polls /jobs, claims work, streams output via /output, and

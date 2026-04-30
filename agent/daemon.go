@@ -379,7 +379,22 @@ func execTick(cfg Config, dcfg DaemonConfig, hostname string, tickNum int64, las
 
 	tctx := BuildTickContext(cfg, hostname, tickNum, lastRunAt, dcfg.StateDir, results)
 
-	rendered, err := RenderPrompt(cfg.SystemPrompt, tctx)
+	// Phase 22.2 — pull recent lessons from the CP (mgmt plane,
+	// /api/v1/agents/{name}/lessons) and prepend them to the system
+	// prompt before template rendering. Best-effort: a missing CP URL
+	// or empty lessons list is a no-op. The fetch reuses the
+	// MgmtPlane's mTLS-configured *http.Client; without one, the call
+	// is skipped.
+	sp := cfg.SystemPrompt
+	if mgmt != nil {
+		if cpURL := mgmt.URL(); cpURL != "" {
+			lctx, lcancel := context.WithTimeout(context.Background(), 5*time.Second)
+			sp = ApplyLessonsToPrompt(lctx, cpURL, cfg.Name, sp, mgmt.HTTPClient())
+			lcancel()
+		}
+	}
+
+	rendered, err := RenderPrompt(sp, tctx)
 	if err != nil {
 		EmitError(fmt.Errorf("tick %d prompt render: %w", tickNum, err))
 		rendered = tctx.buildFallbackPrompt()

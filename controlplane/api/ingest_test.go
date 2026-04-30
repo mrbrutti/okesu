@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/section9labs/okesu/controlplane/adapters/sqliteevents"
+	"github.com/section9labs/okesu/controlplane/db"
 )
 
 // noopBroadcaster satisfies api.Broadcaster for tests that don't care
@@ -92,5 +93,60 @@ func TestFindingIngest_ExtractsAndLinksIOCs(t *testing.T) {
 		if !linked {
 			t.Errorf("ioc %s/%s not linked to finding %d; observations=%+v", c.kind, c.normalized, resp.FindingID, obs)
 		}
+	}
+}
+
+// TestFindingIngest_RaisesSeverityFromCatalogFloor exercises the
+// Phase 22.2 propagation path end-to-end: a catalog IOC with
+// severity_floor=HIGH should raise an incoming MEDIUM finding, and
+// since this is the first surface of that IOC the finding should
+// receive a freshly-minted cluster_id (its own row id, stringified).
+func TestFindingIngest_RaisesSeverityFromCatalogFloor(t *testing.T) {
+	store := newTestStore(t)
+	es := sqliteevents.New(store)
+
+	store.UpsertIOC(&db.IOCUpsert{
+		Kind:            "sha256",
+		Value:           "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+		NormalizedValue: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+		Source:          "catalog",
+		SeverityFloor:   "HIGH",
+	})
+
+	body, err := json.Marshal(FindingIngestRequest{
+		Agent:    "test",
+		Host:     "h1",
+		Severity: "MEDIUM",
+		Title:    "saw hash deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+	})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+
+	h := FindingIngest(store, es, noopBroadcaster{})
+	req := httptest.NewRequest(http.MethodPost, "/api/findings/ingest", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		FindingID int64 `json:"finding_id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+
+	f, err := store.FindingByID(resp.FindingID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := f.Severity.String; got != "HIGH" {
+		t.Errorf("finding severity = %q, want HIGH (raised from MEDIUM)", got)
+	}
+	if f.ClusterID == "" {
+		t.Error("cluster_id should be minted on first finding")
 	}
 }

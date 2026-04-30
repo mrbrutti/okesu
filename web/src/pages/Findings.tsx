@@ -8,6 +8,7 @@ import {
   Clock,
   Columns,
   Cpu,
+  Crosshair,
   ExternalLink,
   Hash,
   Inbox,
@@ -22,9 +23,11 @@ import {
   ThumbsDown,
   X,
 } from 'lucide-react';
-import { api, type Finding, type FindingGroup, type FindingsSummary, type FindingStatus, type RunListItem } from '../api';
+import { api, type Finding, type FindingGroup, type FindingsSummary, type FindingStatus, type IOCRecord, type RunListItem } from '../api';
 import { FindingHistory, History as HistoryIcon } from '../components/FindingHistory';
 import { cn } from '../lib/cn';
+import { useIOCDisplayPrefs } from '../lib/preferences';
+import { defangValue } from '../lib/defang';
 import { SectionHeader, type SectionTone } from '../components/lists/SectionHeader';
 import { ListCard } from '../components/lists/ListCard';
 import { StatusMenu } from '../components/StatusMenu';
@@ -869,13 +872,21 @@ export function FindingDrawer({ id, cpInstanceID, onClose, onChanged }: DrawerPr
   const [showRaw, setShowRaw] = useState(false);
   const [investigations, setInvestigations] = useState<RunListItem[]>([]);
   const [investigateOpen, setInvestigateOpen] = useState(false);
+  const [iocs, setIOCs] = useState<IOCRecord[]>([]);
 
   useEffect(() => {
     setF(null);
     setRelated([]);
     setShowRaw(false);
+    setIOCs([]);
     api.finding(id, cpInstanceID).then(setF).catch((e) => setError(String(e)));
     api.runsForFinding(id, cpInstanceID).then(setInvestigations).catch(() => setInvestigations([]));
+    // /api/iocs reads the local CP's store; finding ids are
+    // CP-scoped, so federated rows can't be looked up here. Skip the
+    // call when this drawer is showing a child-CP finding.
+    if (!cpInstanceID) {
+      api.iocs({ findingID: id }).then(setIOCs).catch(() => setIOCs([]));
+    }
   }, [id, cpInstanceID]);
 
   function refreshInvestigations() {
@@ -1146,6 +1157,17 @@ export function FindingDrawer({ id, cpInstanceID, onClose, onChanged }: DrawerPr
           </Section>
         )}
 
+        {/* Linked IOCs — indicators extracted at ingest from the
+            finding's evidence/raw payload, joined via ioc_observations.
+            Values render through the defang helper so an operator
+            can't accidentally click a live indicator (toggle in
+            Settings → Display). */}
+        {iocs.length > 0 && (
+          <Section icon={Crosshair} title="Linked IOCs" count={iocs.length}>
+            <IOCList iocs={iocs} />
+          </Section>
+        )}
+
         {/* Edit history — every status change, severity override, tag
             mutation, or run linkage. Auto-actions show a Bot icon and
             link to the orchestration run that made the change. */}
@@ -1247,6 +1269,63 @@ function KV({ label, children }: { label: string; children: React.ReactNode }) {
       <dt className="text-ink-mute">{label}</dt>
       <dd className="text-ink truncate">{children}</dd>
     </div>
+  );
+}
+
+// Compact list of IOCs linked to a finding. Values run through the
+// global defang helper when the operator's IOC display preference is
+// on (default), so a stray click can't hit a live indicator.
+function IOCList({ iocs }: { iocs: IOCRecord[] }) {
+  const [iocPrefs] = useIOCDisplayPrefs();
+  return (
+    <ul className="space-y-1">
+      {iocs.map((ioc) => {
+        const display = iocPrefs.defang ? defangValue(ioc.Kind, ioc.Value) : ioc.Value;
+        const sev = (ioc.SeverityFloor || '').toLowerCase();
+        return (
+          <li
+            key={ioc.ID}
+            className="flex items-start gap-2 text-xs px-2 py-1.5 rounded-md bg-slate-50 border border-border"
+          >
+            <span className="text-[10px] uppercase tracking-wide text-ink-mute font-medium shrink-0 pt-0.5 w-14">
+              {ioc.Kind}
+            </span>
+            <code className="font-mono text-[11px] text-ink break-all flex-1">
+              {display}
+            </code>
+            <div className="flex flex-col items-end gap-0.5 shrink-0 text-[10px] text-ink-mute">
+              {ioc.Source === 'catalog' && (
+                <span className="text-brand-700 bg-brand-50 ring-1 ring-brand-100 px-1 rounded">
+                  catalog
+                </span>
+              )}
+              {sev && (sev === 'critical' || sev === 'high' || sev === 'medium' || sev === 'low' || sev === 'info') && (
+                <span
+                  className={cn(
+                    'uppercase px-1 rounded ring-1',
+                    sev === 'critical' && 'text-purple-700 bg-purple-50 ring-purple-200',
+                    sev === 'high'     && 'text-red-700 bg-red-50 ring-red-200',
+                    sev === 'medium'   && 'text-orange-700 bg-orange-50 ring-orange-200',
+                    sev === 'low'      && 'text-yellow-700 bg-yellow-50 ring-yellow-200',
+                    sev === 'info'     && 'text-slate-600 bg-slate-100 ring-slate-200',
+                  )}
+                >
+                  {sev}
+                </span>
+              )}
+              {ioc.Attribution && (
+                <span className="italic truncate max-w-[120px]" title={ioc.Attribution}>
+                  {ioc.Attribution}
+                </span>
+              )}
+              {ioc.LastSeen && (
+                <span className="font-mono">{fmtAge(ioc.LastSeen)}</span>
+              )}
+            </div>
+          </li>
+        );
+      })}
+    </ul>
   );
 }
 

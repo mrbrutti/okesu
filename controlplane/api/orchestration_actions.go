@@ -64,6 +64,13 @@ func (a *FindingActionApplier) LinkRunToFinding(findingID int64, runID int64, st
 	})
 }
 
+// RecordAgentLesson delegates to the db.Store's bounded KV. Daemons
+// read the top-N for the same agent_name on tick prep and prepend
+// them to the system prompt.
+func (a *FindingActionApplier) RecordAgentLesson(agentName, text string, runID int64, stepID string) error {
+	return a.store.RecordAgentLesson(agentName, text, runID, stepID)
+}
+
 // EscalateRun is a soft signal in v1 — recorded as a finding_edits
 // row keyed off run id 0 (no specific finding) so the run-detail
 // audit pulls it back. A dedicated column on orchestration_runs is

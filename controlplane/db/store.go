@@ -170,6 +170,9 @@ var sqliteM033 string
 //go:embed migrations/sqlite/034_iocs.sql
 var sqliteM034 string
 
+//go:embed migrations/sqlite/035_finding_clusters_and_lessons.sql
+var sqliteM035 string
+
 
 var sqliteMigrations = []string{
 	sqliteM001, sqliteM002, sqliteM003,
@@ -180,6 +183,7 @@ var sqliteMigrations = []string{
 	sqliteM023, sqliteM024, sqliteM025, sqliteM026, sqliteM027,
 
 	sqliteM028, sqliteM029, sqliteM030, sqliteM031, sqliteM032, sqliteM033, sqliteM034,
+	sqliteM035,
 }
 
 //go:embed migrations/postgres/001_init.sql
@@ -285,6 +289,9 @@ var pgM033 string
 //go:embed migrations/postgres/034_iocs.sql
 var pgM034 string
 
+//go:embed migrations/postgres/035_finding_clusters_and_lessons.sql
+var pgM035 string
+
 var postgresMigrations = []string{
 	pgM001, pgM002, pgM003,
 	pgM004, pgM005, pgM006, pgM007,
@@ -293,6 +300,7 @@ var postgresMigrations = []string{
 	pgM018, pgM019, pgM020, pgM021, pgM022,
 
 	pgM023, pgM024, pgM025, pgM026, pgM027, pgM028, pgM029, pgM030, pgM031, pgM032, pgM033, pgM034,
+	pgM035,
 }
 
 // migrationsForDialect returns the embedded list matching the dialect.

@@ -36,6 +36,13 @@ export interface Preferences {
      *  `error` still never groups regardless of this toggle. */
     smartGrouping: boolean;
   };
+  iocDisplay: {
+    /** When true, IOC values render in defanged form (e.g.
+     *  `1.2.3[.]4`, `example[.]com`, `hxxps://`) so an operator can't
+     *  accidentally click or copy a live indicator. Hashes / CVEs /
+     *  MITRE IDs pass through unchanged regardless. Default on. */
+    defang: boolean;
+  };
 }
 
 export const DEFAULTS: Preferences = {
@@ -44,6 +51,9 @@ export const DEFAULTS: Preferences = {
     highVolumeThreshold: 5,
     applyToAgentDetail: true,
     smartGrouping: false,
+  },
+  iocDisplay: {
+    defang: true,
   },
 };
 
@@ -61,6 +71,7 @@ function readFromStorage(): Preferences {
     // populate cleanly when an older saved object is loaded.
     return {
       liveEvents: { ...DEFAULTS.liveEvents, ...(parsed.liveEvents ?? {}) },
+      iocDisplay: { ...DEFAULTS.iocDisplay, ...(parsed.iocDisplay ?? {}) },
     };
   } catch {
     return DEFAULTS;
@@ -109,5 +120,17 @@ export function useLiveEventsPrefs() {
     prefs.liveEvents,
     (next: Partial<Preferences['liveEvents']>) =>
       setPrefs({ ...prefs, liveEvents: { ...prefs.liveEvents, ...next } }),
+  ] as const;
+}
+
+/** IOC display preferences (Phase 22.2). Mirrors useLiveEventsPrefs:
+ *  reactive across same-tab and cross-tab changes via the shared
+ *  preferences hook. Default `defang: true` is applied on first read. */
+export function useIOCDisplayPrefs() {
+  const [prefs, setPrefs] = usePreferences();
+  return [
+    prefs.iocDisplay,
+    (next: Partial<Preferences['iocDisplay']>) =>
+      setPrefs({ ...prefs, iocDisplay: { ...prefs.iocDisplay, ...next } }),
   ] as const;
 }

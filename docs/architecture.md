@@ -1876,3 +1876,40 @@ race-safe via `INSERT … ON CONFLICT DO NOTHING + UPDATE`.
 Cross-reference:
 `docs/superpowers/specs/2026-04-29-threatcaddy-borrows-phasing-design.md`
 for the design.
+
+### Severity-floor propagation (Phase 22.2)
+
+When a finding is ingested, the IOCs extracted from its text/attributes
+are looked up in the catalog. If any matched IOC has a `severity_floor`,
+the finding's `severity` is raised to the highest matching floor (never
+lowered). The matched IOC's `attribution`, `classification`, and
+`confidence` are stamped on the finding as `ioc_attribution`,
+`ioc_classification`, and `ioc_confidence`. Operators see the resulting
+context on the finding-detail page without the agent having to copy it
+into the title.
+
+Cluster ID is also assigned at ingest: the first finding to surface a
+given IOC mints a cluster (cluster_id = that finding's id, as TEXT);
+subsequent findings within the IOC's window (24h for sha*, 1h for
+ipv*/domain, 7d for cve/mitre, 15m otherwise) join the same cluster.
+The smallest window across the finding's IOC kinds wins, so an ipv4
+clusters aggressively even when a sha256 (24h) is in the same hit set.
+
+## 28. Agent lessons (Phase 22.2)
+
+Per-agent `lessons` KV in the `agent_lessons` table. Orchestrations
+write lessons via the `reflect_with_lessons` action; daemons fetch the
+top 10 from `GET /api/v1/agents/{name}/lessons` (mgmt plane, mTLS-gated)
+on each tick and prepend them to the system prompt under a "## Lessons
+from prior runs" header.
+
+Bounds:
+- Max 10 entries per agent_name (older entries pruned on insert).
+- Max 200 chars per entry, UTF-8-safe truncation (clips to rune boundary).
+- Whitespace-only entries dropped at the daemon-side render layer.
+
+The daemon's lessons fetch is best-effort — a missing CP, network
+error, or empty list all degrade silently to the original prompt.
+
+See `docs/superpowers/specs/2026-04-29-threatcaddy-borrows-phasing-design.md`
+for the design.

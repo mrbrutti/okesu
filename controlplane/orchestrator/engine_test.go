@@ -401,6 +401,12 @@ type fakeActionApplier struct {
 		stepID    string
 		reason    string
 	}
+	lessonCalls []struct {
+		agentName string
+		text      string
+		runID     int64
+		stepID    string
+	}
 }
 
 func (f *fakeActionApplier) UpdateFindingStatus(int64, string, string, int64, string) error {
@@ -421,6 +427,15 @@ func (f *fakeActionApplier) LinkRunToFinding(findingID, runID int64, stepID, rea
 	return nil
 }
 func (f *fakeActionApplier) EscalateRun(int64, string, string) error { return nil }
+func (f *fakeActionApplier) RecordAgentLesson(agentName, text string, runID int64, stepID string) error {
+	f.lessonCalls = append(f.lessonCalls, struct {
+		agentName string
+		text      string
+		runID     int64
+		stepID    string
+	}{agentName, text, runID, stepID})
+	return nil
+}
 
 // TestEngine_ApprovalGate_PolicyMixedActionsStillGates confirms the
 // bypass requires every kind in the step's allowlist to be
@@ -610,4 +625,69 @@ func (r *recordingResolver) Resolve(_ context.Context, query string, params map[
 		params map[string]any
 	}{query, params})
 	return map[string]any{"valid": true}, nil
+}
+
+// TestEngine_AppliesReflectWithLessons confirms the engine dispatches
+// each lesson string from a reflect_with_lessons action through the
+// applier, with step.Agent threaded as the agent_name. Without this
+// test, a regression in the dispatchAction switch (e.g. a `break` that
+// silently no-ops the case) would not be caught — the per-action
+// allowlist + class registry would still report the action as valid.
+func TestEngine_AppliesReflectWithLessons(t *testing.T) {
+	spec := mustParse(t, `---
+name: reflective
+description: agent emits two lessons after the step
+steps:
+  - id: classify
+    agent: investigator
+    actions:
+      - reflect_with_lessons
+    prompt: x
+---`)
+	store := newFakeStore(
+		&Orchestration{ID: 1, Spec: spec},
+		&RunRecord{ID: 1, OrchestrationID: 1, Status: RunStatusPending, TriggerKind: "manual"},
+	)
+	disp := &fakeDispatcher{
+		resultByStep: map[string]DispatchResult{
+			"classify": {
+				Status:       StepStatusCompleted,
+				RunID:        "run-classify",
+				CPInstanceID: "local",
+				HostResolved: "h1",
+				Findings: []DispatchedFinding{
+					{
+						Category: OrchestrationResultCategory,
+						Title:    "result",
+						Attributes: map[string]any{
+							"actions": []any{
+								map[string]any{
+									"kind":    "reflect_with_lessons",
+									"lessons": []any{"keep grep tight", "validate before delete"},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	applier := &fakeActionApplier{}
+	engine := NewEngine(store, disp)
+	engine.SetActionApplier(applier)
+
+	if err := engine.Run(context.Background(), 1); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(applier.lessonCalls) != 2 {
+		t.Fatalf("expected 2 RecordAgentLesson calls; got %d", len(applier.lessonCalls))
+	}
+	for i, want := range []string{"keep grep tight", "validate before delete"} {
+		if applier.lessonCalls[i].text != want {
+			t.Errorf("lessonCalls[%d].text = %q, want %q", i, applier.lessonCalls[i].text, want)
+		}
+		if applier.lessonCalls[i].agentName != "investigator" {
+			t.Errorf("lessonCalls[%d].agentName = %q, want investigator (from step.Agent)", i, applier.lessonCalls[i].agentName)
+		}
+	}
 }
