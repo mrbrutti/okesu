@@ -1,0 +1,23 @@
+# Example catalog entry. Operators: copy this file, replace the rule
+# body with your own, and drop into catalog/iocs/. The CP picks up new
+# files on boot or on SIGHUP.
+iocs:
+  - kind: yara_rule
+    confidence: high
+    attribution: example
+    notes: |
+      Toy YARA rule for the Phase 22.5 example — matches a literal
+      mimikatz banner string. Replace with a curated rule before relying
+      on this in production.
+    value: |
+      rule ExampleMimikatzBanner : mimikatz example
+      {
+          meta:
+              author = "operator@example.com"
+              severity = "HIGH"
+              description = "Detects mimikatz banner string in a binary"
+          strings:
+              $banner = "mimikatz 2." ascii wide
+          condition:
+              $banner
+      }

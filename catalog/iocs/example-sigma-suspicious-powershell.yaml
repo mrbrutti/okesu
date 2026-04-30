@@ -1,0 +1,31 @@
+# Example Sigma rule entry. v1 stores Sigma rules; per-host log-adapter
+# execution is deferred. Use these for catalog inventory and sharing.
+iocs:
+  - kind: sigma_rule
+    confidence: high
+    attribution: example
+    notes: |
+      Toy Sigma rule for the Phase 22.5 example — flags PowerShell
+      with -EncodedCommand, a common downloader pattern. Storage-only
+      in v1; replace with a curated rule before relying on it.
+    value: |
+      title: Suspicious PowerShell EncodedCommand
+      id: 00000000-0000-0000-0000-000000000001
+      status: experimental
+      description: Detects PowerShell invocations that pass an
+        EncodedCommand argument, frequently used by downloaders.
+      author: operator@example.com
+      date: 2026/04/29
+      tags:
+        - attack.execution
+        - attack.t1059.001
+        - powershell
+      level: high
+      logsource:
+        product: windows
+        category: process_creation
+      detection:
+        selection:
+          Image|endswith: '\powershell.exe'
+          CommandLine|contains: '-EncodedCommand'
+        condition: selection
