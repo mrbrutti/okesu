@@ -24,6 +24,7 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
@@ -327,7 +328,10 @@ func deriveCloudKey(masterKey []byte) ([]byte, error) {
 	if len(masterKey) < 16 {
 		return nil, errors.New("master key too short (need >= 16 bytes)")
 	}
-	r := hkdf.New(nil /* default sha256 */, masterKey, nil, []byte("okesu-cloud-credentials-v1"))
+	// hkdf.New requires an explicit hash constructor — passing nil
+	// here previously nil-panicked on the first Read because the
+	// "default sha256" the comment claimed doesn't exist in the API.
+	r := hkdf.New(sha256.New, masterKey, nil, []byte("okesu-cloud-credentials-v1"))
 	out := make([]byte, 32) // AES-256
 	if _, err := io.ReadFull(r, out); err != nil {
 		return nil, err
