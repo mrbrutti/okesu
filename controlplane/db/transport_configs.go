@@ -141,13 +141,126 @@ func (s *Store) UpdateTransportConfig(c TransportConfig) error {
 	return err
 }
 
-// DeleteTransportConfig removes a row. Foreign-keyed nodes with
-// transport_config_id pointing here will have it set to NULL by SQLite
-// (no ON DELETE CASCADE — we'd rather surface the orphan than lose
-// node identities). The API layer should refuse to delete configs
-// referenced by enabled enrollment_packages.
+// NamedRef is a generic id+display tuple for cross-table reference lists.
+type NamedRef struct {
+	ID   int64  `json:"id"`
+	Name string `json:"name"`
+}
+
+// TransportConfigReferences enumerates rows in other tables that
+// point to a given transport_config_id. Used by the API delete
+// handler to return a 409 with an actionable list rather than
+// surfacing a raw FK error.
+type TransportConfigReferences struct {
+	Nodes              []NamedRef
+	EnrollmentPackages []NamedRef
+	FederationPeers    []NamedRef
+	CPProvisions       []NamedRef
+}
+
+// IsEmpty returns true when nothing references this transport_config.
+func (r TransportConfigReferences) IsEmpty() bool {
+	return len(r.Nodes) == 0 && len(r.EnrollmentPackages) == 0 &&
+		len(r.FederationPeers) == 0 && len(r.CPProvisions) == 0
+}
+
+// HasBlockers returns true when at least one reference would
+// prevent deletion via FK constraint (nodes, enrollment_packages).
+// federation_peers + cp_provisions use ON DELETE SET NULL so they
+// don't block, but we still surface them as info.
+func (r TransportConfigReferences) HasBlockers() bool {
+	return len(r.Nodes) > 0 || len(r.EnrollmentPackages) > 0
+}
+
+// TransportConfigReferences returns every row in nodes,
+// enrollment_packages, federation_peers, cp_provisions that
+// references the given transport_config id.
+func (s *Store) TransportConfigReferences(id int64) (TransportConfigReferences, error) {
+	var out TransportConfigReferences
+
+	// nodes
+	rows, err := s.Query(`SELECT id, COALESCE(name,'') FROM nodes WHERE transport_config_id = ? ORDER BY id`, id)
+	if err != nil {
+		return out, err
+	}
+	for rows.Next() {
+		var r NamedRef
+		if err := rows.Scan(&r.ID, &r.Name); err != nil {
+			rows.Close()
+			return out, err
+		}
+		out.Nodes = append(out.Nodes, r)
+	}
+	rows.Close()
+
+	// enrollment_packages
+	rows, err = s.Query(`SELECT id, COALESCE(display_name,'') FROM enrollment_packages WHERE transport_config_id = ? ORDER BY id`, id)
+	if err != nil {
+		return out, err
+	}
+	for rows.Next() {
+		var r NamedRef
+		if err := rows.Scan(&r.ID, &r.Name); err != nil {
+			rows.Close()
+			return out, err
+		}
+		out.EnrollmentPackages = append(out.EnrollmentPackages, r)
+	}
+	rows.Close()
+
+	// federation_peers
+	rows, err = s.Query(`SELECT id, COALESCE(display_name,'') FROM federation_peers WHERE transport_config_id = ? ORDER BY id`, id)
+	if err != nil {
+		return out, err
+	}
+	for rows.Next() {
+		var r NamedRef
+		if err := rows.Scan(&r.ID, &r.Name); err != nil {
+			rows.Close()
+			return out, err
+		}
+		out.FederationPeers = append(out.FederationPeers, r)
+	}
+	rows.Close()
+
+	// cp_provisions
+	rows, err = s.Query(`SELECT id, COALESCE(display_name,'') FROM cp_provisions WHERE transport_config_id = ? ORDER BY id`, id)
+	if err != nil {
+		return out, err
+	}
+	for rows.Next() {
+		var r NamedRef
+		if err := rows.Scan(&r.ID, &r.Name); err != nil {
+			rows.Close()
+			return out, err
+		}
+		out.CPProvisions = append(out.CPProvisions, r)
+	}
+	rows.Close()
+
+	return out, nil
+}
+
+// ErrTransportConfigInUse is returned by DeleteTransportConfig when
+// at least one row in nodes / enrollment_packages references the
+// transport_config. The caller can fetch the references via
+// TransportConfigReferences(id) to surface them in a 409.
+var ErrTransportConfigInUse = errors.New("transport_config is referenced by nodes or enrollment_packages")
+
+// DeleteTransportConfig deletes the row only if no rows in nodes or
+// enrollment_packages reference it. Returns ErrTransportConfigInUse
+// otherwise. federation_peers + cp_provisions FKs are ON DELETE
+// SET NULL so they don't block (callers that care can pre-fetch
+// TransportConfigReferences).
 func (s *Store) DeleteTransportConfig(id int64) error {
-	_, err := s.Exec(`DELETE FROM transport_configs WHERE id = ?`, id)
+	refs, err := s.TransportConfigReferences(id)
+	if err != nil {
+		return err
+	}
+	if refs.HasBlockers() {
+		return ErrTransportConfigInUse
+	}
+	_, err = s.Exec(`DELETE FROM transport_configs WHERE id = ?`, id)
 	return err
 }
 
