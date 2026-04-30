@@ -33,6 +33,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -181,6 +182,43 @@ func dbStepToEngine(r *db.OrchestrationStep) *orchestrator.StepRecord {
 	return rec
 }
 
+// ── stepNodeProgressSinkAdapter ─────────────────────────────────────
+
+// stepNodeProgressSinkAdapter delegates the engine's per-host fan-out
+// sink calls to the db Store's Insert/Update on the
+// orchestration_step_node_dispatches table.
+type stepNodeProgressSinkAdapter struct {
+	store *db.Store
+}
+
+var _ orchestrator.StepNodeProgressSink = (*stepNodeProgressSinkAdapter)(nil)
+
+func (a *stepNodeProgressSinkAdapter) OnDispatchStart(runID int64, stepID, host string, startedAt time.Time) error {
+	return a.store.InsertStepNodeDispatch(db.StepNodeDispatchInsert{
+		RunID:     runID,
+		StepID:    stepID,
+		Host:      host,
+		Status:    "running",
+		StartedAt: &startedAt,
+	})
+}
+
+func (a *stepNodeProgressSinkAdapter) OnDispatchEnd(runID int64, stepID, host string,
+	status, agentRunID string, findingsCount int,
+	outputTail, errorStr string, endedAt time.Time) error {
+	return a.store.UpdateStepNodeDispatch(db.StepNodeDispatchUpdate{
+		RunID:         runID,
+		StepID:        stepID,
+		Host:          host,
+		Status:        status,
+		AgentRunID:    agentRunID,
+		FindingsCount: findingsCount,
+		OutputTail:    outputTail,
+		Error:         errorStr,
+		EndedAt:       &endedAt,
+	})
+}
+
 // ── localDispatcher ──────────────────────────────────────────────────
 
 // localDispatcher executes a step on this CP. It mirrors CreateRun's
@@ -202,10 +240,11 @@ func newLocalDispatcher(reg *RunRegistry, tunReg *tunnel.Registry, store *db.Sto
 // it directly when a parent CP delegates a step to this CP.
 //
 // As of the pull-mode refactor, this function picks between:
-//   1. Tunnel runtime (existing) — preferred when an `okesu node`
-//      reverse-tunnel client is connected for this hostname.
-//   2. Jobs runtime (new) — used when the host's `okesu jobs`
-//      runtime has polled within the last 60s but no tunnel exists.
+//  1. Tunnel runtime (existing) — preferred when an `okesu node`
+//     reverse-tunnel client is connected for this hostname.
+//  2. Jobs runtime (new) — used when the host's `okesu jobs`
+//     runtime has polled within the last 60s but no tunnel exists.
+//
 // Steps that match neither path get the actionable not-connected
 // error pointing the operator at the install path.
 func runStepLocal(
@@ -367,9 +406,9 @@ func (d *federatedDispatcher) Dispatch(ctx context.Context, req orchestrator.Dis
 	}
 
 	body, _ := json.Marshal(map[string]any{
-		"agent":         req.AgentName,
-		"node":          req.NodeSelector,
-		"prompt":        req.Prompt,
+		"agent":           req.AgentName,
+		"node":            req.NodeSelector,
+		"prompt":          req.Prompt,
 		"timeout_seconds": int(req.Timeout.Seconds()),
 	})
 
@@ -1129,8 +1168,8 @@ func OrchestrationCreate(store *db.Store) http.HandlerFunc {
 			return
 		}
 		audit.Emit(r, store, db.AuditEntry{
-			Action: "orchestration.create",
-			Target: fmt.Sprintf("orchestration:%d", id),
+			Action:   "orchestration.create",
+			Target:   fmt.Sprintf("orchestration:%d", id),
 			Metadata: map[string]any{"name": spec.Name, "trigger": spec.Trigger.On},
 		})
 		o, _ := store.GetOrchestration(id)
@@ -1286,6 +1325,7 @@ func NewOrchestrationCoordinator(
 		autoDeployer: opts.AutoDeployer,
 	}
 	engine := orchestrator.NewEngine(adapter, disp)
+	engine.SetProgressSink(&stepNodeProgressSinkAdapter{store: store})
 	// Wire the action applier so agents' orchestration_result.actions
 	// produce real CP mutations (status / tags / severity / run links).
 	applier := NewFindingActionApplier(store)
@@ -1545,8 +1585,8 @@ func OrchestrationRunCreate(store *db.Store, coord *OrchestrationCoordinator) ht
 			})
 		}
 		audit.Emit(r, store, db.AuditEntry{
-			Action: "orchestration.run",
-			Target: fmt.Sprintf("orchestration_run:%d", runID),
+			Action:   "orchestration.run",
+			Target:   fmt.Sprintf("orchestration_run:%d", runID),
 			Metadata: map[string]any{"orchestration_id": o.ID, "name": o.Name},
 		})
 		coord.kick(runID)
@@ -1560,16 +1600,16 @@ func OrchestrationRunCreate(store *db.Store, coord *OrchestrationCoordinator) ht
 //
 // Query string filters (any combination):
 //
-//   status=running,failed         CSV — multi-select pill
-//   orchestration_id=3,7          CSV
-//   trigger_kind=manual,finding   CSV
-//   since=30m | 1h | 24h | 7d     relative-time alias (or unix-ms)
-//   q=needle                      free-text against id/step/host/finding_id
-//   limit=N                       page size; clamped to 1000, default 100
-//   offset=M                      page offset
-//   counts=1                      return wrapper with {rows, counts_by_status}
-//                                 so the runs-tab pills don't need a separate
-//                                 round-trip.
+//	status=running,failed         CSV — multi-select pill
+//	orchestration_id=3,7          CSV
+//	trigger_kind=manual,finding   CSV
+//	since=30m | 1h | 24h | 7d     relative-time alias (or unix-ms)
+//	q=needle                      free-text against id/step/host/finding_id
+//	limit=N                       page size; clamped to 1000, default 100
+//	offset=M                      page offset
+//	counts=1                      return wrapper with {rows, counts_by_status}
+//	                              so the runs-tab pills don't need a separate
+//	                              round-trip.
 func OrchestrationRunsList(store *db.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		f := db.OrchestrationRunFilter{
@@ -1589,7 +1629,7 @@ func OrchestrationRunsList(store *db.Store) http.HandlerFunc {
 		}
 		jsonRows := make([]orchestrationRunJSON, 0, len(rows))
 		for _, run := range rows {
-			jsonRows = append(jsonRows, toOrchestrationRunJSON(run, nil))
+			jsonRows = append(jsonRows, toOrchestrationRunJSON(run, nil, nil))
 		}
 
 		w.Header().Set("Content-Type", "application/json")
@@ -1666,8 +1706,15 @@ func OrchestrationRunDetail(store *db.Store) http.HandlerFunc {
 			return
 		}
 		steps, _ := store.ListOrchestrationSteps(id)
+		// Group per-host dispatches by step_id so the serializer can
+		// drop the matching slice into each step's PerNode field.
+		perNode, _ := store.ListStepNodeDispatchesByRun(id)
+		perNodeByStep := map[string][]*db.StepNodeDispatch{}
+		for _, p := range perNode {
+			perNodeByStep[p.StepID] = append(perNodeByStep[p.StepID], p)
+		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(toOrchestrationRunJSON(run, steps))
+		_ = json.NewEncoder(w).Encode(toOrchestrationRunJSON(run, steps, perNodeByStep))
 	}
 }
 
@@ -1733,8 +1780,8 @@ type bulkOpRequest struct {
 // Failures per-id are included so the UI can show "12 cancelled, 1
 // already finished, 1 not found" instead of an opaque success/fail.
 type bulkOpResponse struct {
-	Affected []int64           `json:"affected"`
-	Skipped  map[int64]string  `json:"skipped,omitempty"` // id → reason
+	Affected []int64          `json:"affected"`
+	Skipped  map[int64]string `json:"skipped,omitempty"` // id → reason
 }
 
 // OrchestrationRunsBulkCancel — POST /api/orchestration-runs/bulk-cancel
@@ -1822,8 +1869,8 @@ func OrchestrationRunsBulkRetry(store *db.Store, coord *OrchestrationCoordinator
 				continue
 			}
 			audit.Emit(r, store, db.AuditEntry{
-				Action: "orchestration.bulk_retry",
-				Target: fmt.Sprintf("orchestration_run:%d", id),
+				Action:   "orchestration.bulk_retry",
+				Target:   fmt.Sprintf("orchestration_run:%d", id),
 				Metadata: map[string]any{"new_run_id": newID},
 			})
 			resp.Affected = append(resp.Affected, newID)
@@ -1833,38 +1880,54 @@ func OrchestrationRunsBulkRetry(store *db.Store, coord *OrchestrationCoordinator
 }
 
 type orchestrationRunJSON struct {
-	ID              int64                  `json:"id"`
-	OrchestrationID int64                  `json:"orchestration_id"`
-	Status          string                 `json:"status"`
-	TriggerKind     string                 `json:"trigger_kind"`
-	TriggerPayload  map[string]any         `json:"trigger_payload,omitempty"`
-	CurrentStepID   string                 `json:"current_step_id,omitempty"`
-	StartedAt       string                 `json:"started_at"`
-	EndedAt         string                 `json:"ended_at,omitempty"`
-	Error           string                 `json:"error,omitempty"`
+	ID              int64                   `json:"id"`
+	OrchestrationID int64                   `json:"orchestration_id"`
+	Status          string                  `json:"status"`
+	TriggerKind     string                  `json:"trigger_kind"`
+	TriggerPayload  map[string]any          `json:"trigger_payload,omitempty"`
+	CurrentStepID   string                  `json:"current_step_id,omitempty"`
+	StartedAt       string                  `json:"started_at"`
+	EndedAt         string                  `json:"ended_at,omitempty"`
+	Error           string                  `json:"error,omitempty"`
 	Steps           []orchestrationStepJSON `json:"steps,omitempty"`
 }
 
 type orchestrationStepJSON struct {
-	StepID         string `json:"step_id"`
-	StepIdx        int    `json:"step_idx"`
-	Status         string `json:"status"`
-	RunID          string `json:"run_id,omitempty"`
-	CPInstanceID   string `json:"cp_instance_id,omitempty"`
-	RenderedPrompt string `json:"rendered_prompt,omitempty"`
+	StepID         string         `json:"step_id"`
+	StepIdx        int            `json:"step_idx"`
+	Status         string         `json:"status"`
+	RunID          string         `json:"run_id,omitempty"`
+	CPInstanceID   string         `json:"cp_instance_id,omitempty"`
+	RenderedPrompt string         `json:"rendered_prompt,omitempty"`
 	Result         map[string]any `json:"result,omitempty"`
-	OutputSummary  string `json:"output_summary,omitempty"`
-	StartedAt      string `json:"started_at,omitempty"`
-	EndedAt        string `json:"ended_at,omitempty"`
-	Error          string `json:"error,omitempty"`
-	ApprovedAt     string `json:"approved_at,omitempty"`
+	OutputSummary  string         `json:"output_summary,omitempty"`
+	StartedAt      string         `json:"started_at,omitempty"`
+	EndedAt        string         `json:"ended_at,omitempty"`
+	Error          string         `json:"error,omitempty"`
+	ApprovedAt     string         `json:"approved_at,omitempty"`
 	// Data is the resolved snapshot of the step's `data:` block,
 	// captured at dispatch. The UI surfaces this on the step-detail
 	// panel so operators can see exactly what input the agent saw.
-	Data           any    `json:"data,omitempty"`
+	Data    any                    `json:"data,omitempty"`
+	PerNode []stepNodeDispatchJSON `json:"per_node,omitempty"`
 }
 
-func toOrchestrationRunJSON(r *db.OrchestrationRun, steps []*db.OrchestrationStep) orchestrationRunJSON {
+type stepNodeDispatchJSON struct {
+	Host          string `json:"host"`
+	Status        string `json:"status"`
+	AgentRunID    string `json:"agent_run_id,omitempty"`
+	FindingsCount int    `json:"findings_count"`
+	OutputTail    string `json:"output_tail,omitempty"`
+	Error         string `json:"error,omitempty"`
+	StartedAt     string `json:"started_at,omitempty"`
+	EndedAt       string `json:"ended_at,omitempty"`
+}
+
+func toOrchestrationRunJSON(
+	r *db.OrchestrationRun,
+	steps []*db.OrchestrationStep,
+	perNodeByStep map[string][]*db.StepNodeDispatch,
+) orchestrationRunJSON {
 	out := orchestrationRunJSON{
 		ID:              r.ID,
 		OrchestrationID: r.OrchestrationID,
@@ -1909,7 +1972,77 @@ func toOrchestrationRunJSON(r *db.OrchestrationRun, steps []*db.OrchestrationSte
 				s.Data = data
 			}
 		}
+		// Per-host dispatch hydration. Prefer the dedicated table;
+		// fall back to result_json.byNode for legacy runs (pre-table).
+		if rows, ok := perNodeByStep[st.StepID]; ok && len(rows) > 0 {
+			s.PerNode = make([]stepNodeDispatchJSON, 0, len(rows))
+			for _, p := range rows {
+				s.PerNode = append(s.PerNode, stepNodeDispatchJSON{
+					Host:          p.Host,
+					Status:        p.Status,
+					AgentRunID:    p.AgentRunID.String,
+					FindingsCount: p.FindingsCount,
+					OutputTail:    p.OutputTail.String,
+					Error:         p.Error.String,
+					StartedAt:     formatNullableTime(p.StartedAt),
+					EndedAt:       formatNullableTime(p.EndedAt),
+				})
+			}
+		} else if byNode := readByNodeFromResult(s.Result); len(byNode) > 0 {
+			// Legacy run: hydrate read-only from the byNode JSON map.
+			// Status / agent_run_id / output_tail / error / findings_count
+			// are present; timestamps stay empty.
+			s.PerNode = byNode
+		}
 		out.Steps = append(out.Steps, s)
+	}
+	return out
+}
+
+func formatNullableTime(t sql.NullTime) string {
+	if !t.Valid {
+		return ""
+	}
+	return t.Time.UTC().Format(time.RFC3339)
+}
+
+// readByNodeFromResult decodes orchestration_steps.result_json for a
+// fan-out step and projects its byNode map into the same shape as the
+// new table. Used to render legacy runs (pre-migration 038) with the
+// new fan-out card. Returns nil for non-fan-out steps.
+func readByNodeFromResult(result map[string]any) []stepNodeDispatchJSON {
+	raw, ok := result["byNode"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	out := make([]stepNodeDispatchJSON, 0, len(raw))
+	hosts := make([]string, 0, len(raw))
+	for h := range raw {
+		hosts = append(hosts, h)
+	}
+	sort.Strings(hosts)
+	for _, h := range hosts {
+		entry, _ := raw[h].(map[string]any)
+		if entry == nil {
+			continue
+		}
+		j := stepNodeDispatchJSON{Host: h}
+		if v, ok := entry["status"].(string); ok {
+			j.Status = v
+		}
+		if v, ok := entry["run_id"].(string); ok {
+			j.AgentRunID = v
+		}
+		if v, ok := entry["output_tail"].(string); ok {
+			j.OutputTail = v
+		}
+		if v, ok := entry["error"].(string); ok {
+			j.Error = v
+		}
+		if findings, ok := entry["findings"].([]any); ok {
+			j.FindingsCount = len(findings)
+		}
+		out = append(out, j)
 	}
 	return out
 }

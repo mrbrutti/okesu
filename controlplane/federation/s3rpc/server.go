@@ -29,8 +29,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/section9labs/okesu/agent/s3transport"
 )
 
 // Handler executes a single kind of directive. Returns the body
@@ -41,13 +39,13 @@ type Handler func(ctx context.Context, req Request) Response
 
 // Server is the child-side dispatcher. New + Register + Run.
 type Server struct {
-	cli       *s3transport.Client
-	selfID    string
-	handlers  map[string]Handler
-	interval  time.Duration
+	cli      Bucket
+	selfID   string
+	handlers map[string]Handler
+	interval time.Duration
 
-	mu        sync.Mutex
-	executed  map[string]executedEntry
+	mu       sync.Mutex
+	executed map[string]executedEntry
 }
 
 type executedEntry struct {
@@ -57,9 +55,9 @@ type executedEntry struct {
 
 // New constructs a Server. Run starts the polling loop; Register
 // adds handlers; both must complete before Run.
-func New(cli *s3transport.Client, selfID string) (*Server, error) {
+func New(cli Bucket, selfID string) (*Server, error) {
 	if cli == nil {
-		return nil, errors.New("s3rpc: server requires non-nil s3transport.Client")
+		return nil, errors.New("s3rpc: server requires non-nil Bucket")
 	}
 	selfID = strings.Trim(selfID, "/")
 	if selfID == "" {

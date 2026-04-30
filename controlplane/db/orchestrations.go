@@ -453,7 +453,19 @@ func (s *Store) FinishOrchestrationRun(id int64, status, errMsg string) error {
 		   SET status = ?, error = ?, ended_at = CURRENT_TIMESTAMP
 		 WHERE id = ? AND ended_at IS NULL
 	`, status, nullable(errMsg), id)
-	return err
+	if err != nil {
+		return err
+	}
+	// Reconcile any orphan fan-out rows: if a step was mid-dispatch
+	// when this run hit terminal, the per-host row would otherwise
+	// stay `running` forever. The reason mirrors the run's terminal
+	// reason (e.g. "operator cancelled", or the failure message that
+	// halted the engine) so the host drawer shows a coherent error.
+	reason := errMsg
+	if reason == "" {
+		reason = "run " + status
+	}
+	return s.ReconcileStepNodeDispatchesForRun(id, reason)
 }
 
 func isOrchestrationTerminal(s string) bool {

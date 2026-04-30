@@ -27,7 +27,8 @@ import {
 } from '@xyflow/react';
 import { CheckCircle2, Cpu, Loader2, Pause, Server, XCircle, AlertCircle, ChevronRight } from 'lucide-react';
 import { cn } from '../lib/cn';
-import type { OrchestrationStepStatus, OrchestrationStepView } from '../api';
+import type { OrchestrationStepStatus, OrchestrationStepView, StepNodeDispatchView } from '../api';
+import { FanoutCardView } from './OrchestrationFanoutCard';
 
 import '@xyflow/react/dist/style.css';
 
@@ -110,7 +111,10 @@ function RunStepNodeView({ data, selected }: NodeProps<RunStepNode>) {
   );
 }
 
-const nodeTypes = { runStep: RunStepNodeView };
+const nodeTypes = {
+  runStep: RunStepNodeView,
+  runStepFanout: FanoutCardView,
+};
 
 function stepRunTone(status: OrchestrationStepStatus) {
   switch (status) {
@@ -153,6 +157,14 @@ interface Props {
    *  persisted step record only stores the rendered node. */
   agentByStepID?: Record<string, string>;
   nodeByStepID?: Record<string, string>;
+  /** Phase 23.x: invoked when an operator clicks a host row inside a
+   *  fan-out card (or a row in the host-list drawer). Parent opens
+   *  FanoutHostDrawer for the (stepID, host) pair. */
+  onSelectHost?: (stepID: string, host: string) => void;
+  /** Phase 23.x: invoked when the operator clicks "View all N hosts"
+   *  on a large-mode (>20) fan-out card. Parent opens
+   *  FanoutHostListDrawer for that step. */
+  onOpenHostList?: (stepID: string) => void;
 }
 
 export default function OrchestrationRunCanvas(props: Props) {
@@ -171,24 +183,45 @@ function RunCanvasInner({
   selectedStepID,
   agentByStepID,
   nodeByStepID,
+  onSelectHost,
+  onOpenHostList,
 }: Props) {
-  const initialNodes = useMemo<RunStepNode[]>(() => {
-    return steps.map((s, i) => ({
-      id: s.step_id,
-      type: 'runStep',
-      position: { x: i * (NODE_W + NODE_GAP), y: 0 },
-      data: {
+  const initialNodes = useMemo<Node[]>(() => {
+    return steps.map((s, i) => {
+      const isFanout = (s.per_node?.length ?? 0) > 0;
+      const baseData = {
         stepID: s.step_id,
         agent: agentByStepID?.[s.step_id],
-        node: nodeByStepID?.[s.step_id],
         status: s.status,
         cpInstanceID: s.cp_instance_id,
         approvable: s.status === 'waiting_approval',
         approving: approvingStepID === s.step_id,
         onApprove,
-      },
-    }));
-  }, [steps, approvingStepID, onApprove, agentByStepID, nodeByStepID]);
+      };
+      if (isFanout) {
+        return {
+          id: s.step_id,
+          type: 'runStepFanout',
+          position: { x: i * (NODE_W + NODE_GAP), y: 0 },
+          data: {
+            ...baseData,
+            perNode: s.per_node as StepNodeDispatchView[],
+            onSelectHost,
+            onOpenHostList,
+          },
+        };
+      }
+      return {
+        id: s.step_id,
+        type: 'runStep',
+        position: { x: i * (NODE_W + NODE_GAP), y: 0 },
+        data: {
+          ...baseData,
+          node: nodeByStepID?.[s.step_id],
+        },
+      };
+    });
+  }, [steps, approvingStepID, onApprove, agentByStepID, nodeByStepID, onSelectHost, onOpenHostList]);
 
   const initialEdges = useMemo<Edge[]>(() => {
     return steps.slice(0, -1).map((s, i) => {
@@ -212,7 +245,7 @@ function RunCanvasInner({
     });
   }, [steps]);
 
-  const [nodes, setNodes, onNodesChange] = useNodesState<RunStepNode>(initialNodes);
+  const [nodes, setNodes, onNodesChange] = useNodesState<Node>(initialNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>(initialEdges);
 
   // Keep nodes/edges synced when the run polls update step statuses.
@@ -259,7 +292,7 @@ function RunCanvasInner({
 // selected-node visual when the parent toggles selectedStepID — keeps
 // the parent's expanded-body state and the canvas's selection in
 // sync without forcing a controlled-selection prop on react-flow.
-function SelectionRing({ nodes, selectedID }: { nodes: RunStepNode[]; selectedID: string }) {
+function SelectionRing({ nodes, selectedID }: { nodes: Node[]; selectedID: string }) {
   useEffect(() => {
     // No-op: the selection state is driven by node click handlers on
     // the parent. Leaving this hook as the integration seam if we

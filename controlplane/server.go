@@ -546,6 +546,8 @@ func (s *Server) routes() http.Handler {
 		MgmtURL:           s.cfg.EffectiveMgmtURL(),
 		Secrets:           s.secrets,
 	}))
+	r.Get("/api/v1/federation/runs", api.FederationRunsList(s.store))
+	r.Get("/api/v1/federation/runs/{id}", api.FederationRunStatus(s.runs, s.store))
 	r.Post("/api/v1/federation/runs", api.FederationCreateRun(s.runs, s.tunReg, s.store, s.cfg.AgentFilesDirs))
 	r.Post("/api/v1/federation/runs/{id}/cancel", api.FederationCancelRun(s.runs, s.tunReg, s.store))
 
@@ -676,8 +678,8 @@ func (s *Server) routes() http.Handler {
 		r.Get("/api/nodes/connected", api.ConnectedNodes(s.tunReg))
 		r.Get("/api/jobs/{id}", api.JobStatus(s.jobs))
 		r.Get("/api/jobs/{id}/log", api.JobLogStream(s.jobs))
-		r.Get("/api/runs", api.RunsList(s.store))
-		r.Get("/api/runs/{id}", api.RunStatus(s.runs, s.store))
+		r.Get("/api/runs", api.FederatedRunsList(s.store, s.fedAgg))
+		r.Get("/api/runs/{id}", api.FederatedRunStatus(s.runs, s.store, s.fedAgg))
 		r.Get("/api/runs/{id}/log", api.RunLogStream(s.runs, s.store))
 
 		// Admin-only endpoints

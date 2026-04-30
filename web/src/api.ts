@@ -391,6 +391,17 @@ export type OrchestrationStepStatus =
   | 'failed'
   | 'skipped';
 
+export interface StepNodeDispatchView {
+  host: string;
+  status: 'pending' | 'running' | 'completed' | 'failed';
+  agent_run_id?: string;
+  findings_count: number;
+  output_tail?: string;
+  error?: string;
+  started_at?: string;
+  ended_at?: string;
+}
+
 export interface OrchestrationStepView {
   step_id: string;
   step_idx: number;
@@ -404,6 +415,10 @@ export interface OrchestrationStepView {
   ended_at?: string;
   error?: string;
   approved_at?: string;
+  /** Phase 23.x: per-host fan-out dispatches. Present when the step
+   *  used `nodes:` (fan-out). Empty for single-node steps and legacy
+   *  runs without byNode data. */
+  per_node?: StepNodeDispatchView[];
 }
 
 export interface OrchestrationRunView {
@@ -940,8 +955,10 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(req),
     }),
-  cancelRun: (id: string) =>
-    request<void>(`/api/runs/${id}/cancel`, { method: 'POST' }),
+  cancelRun: (id: string, cpInstanceID?: string) => {
+    const qs = cpInstanceID ? `?cp=${encodeURIComponent(cpInstanceID)}` : '';
+    return request<void>(`/api/runs/${id}/cancel${qs}`, { method: 'POST' });
+  },
 
   // Phase 10 — system / database.
   dbStats: () => request<DBStatsResponse>('/api/system/db/stats'),
@@ -1273,6 +1290,10 @@ export interface RunListItem {
   started_by?: string;
   /** Set when the run was launched via "Investigate this finding". */
   finding_id?: number;
+  /** Federation tag — present iff the run lives on a federated child CP.
+   *  Caller must pass `?cp=<instance_id>` on detail/cancel/log requests
+   *  for these rows because run ids are scoped per-CP. */
+  cp_source?: CPSourceRef;
 }
 
 export interface DBStatsResponse {
