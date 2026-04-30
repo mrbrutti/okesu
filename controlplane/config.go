@@ -258,18 +258,36 @@ type Config struct {
 	CPBootstrapImageTarPath string
 
 	// FederationS3PublishPrefix tells a child CP where to write its
-	// introspect manifest under the configured transport_config's
-	// bucket. Format: 'cp/<self-cp-id>/outbound/<parent-cp-id>/'.
-	// Empty disables publishing — only needed on CPs that federate
-	// up to a parent via S3 dead-drop.
+	// introspect manifest under the configured bucket. Format:
+	// 'cp/<self-cp-id>/outbound/<parent-cp-id>/'. Empty disables
+	// publishing.
 	FederationS3PublishPrefix string
 
-	// FederationS3PublishConfigID names the transport_config row whose
-	// bucket coords the publisher uses. Reuses the same table that
-	// powers the S3 dead-drop transport for nodes — operators don't
-	// configure two different bucket setups for the two purposes.
-	// 0 disables publishing.
+	// Path A — bucket coords by transport_config row. Reuses the
+	// same table that powers the S3 dead-drop transport for nodes.
+	// Best for operators already managing one bucket for both
+	// purposes. 0 = disabled.
 	FederationS3PublishConfigID int64
+
+	// Path B — inline bucket coords. Used by the CP enrollment
+	// package (Phase A.1) which bakes everything into env-vars on
+	// the child VM so first boot doesn't require an existing
+	// transport_config row. When *all* of these are set, they take
+	// precedence over FederationS3PublishConfigID.
+	FederationS3PublishBucket    string
+	FederationS3PublishEndpoint  string
+	FederationS3PublishRegion    string
+	FederationS3PublishUseSSL    bool
+	FederationS3PublishAccessKey string
+	FederationS3PublishSecretKey string
+
+	// CPInstanceID, when set, seeds cp_meta.instance_id on FIRST
+	// boot. Existing rows are unaffected. Used by the enrollment
+	// bundle so the parent can register the federation peer with a
+	// known prefix BEFORE the child boots — eliminating the chicken-
+	// egg between "child generates uuid" and "parent watches prefix
+	// derived from that uuid."
+	CPInstanceID string
 
 	// FederationToken is a shared secret a parent CP presents on the
 	// introspect endpoint via the X-Okesu-Federation-Token header. The
@@ -344,8 +362,16 @@ func FromEnv() Config {
 		FleetAnthropicAPIKey: envOr("OKESU_CP_FLEET_ANTHROPIC_API_KEY", os.Getenv("ANTHROPIC_API_KEY")),
 		FleetOpenAIAPIKey:    envOr("OKESU_CP_FLEET_OPENAI_API_KEY", os.Getenv("OPENAI_API_KEY")),
 
-		FederationS3PublishPrefix:   os.Getenv("OKESU_CP_FEDERATION_S3_PUBLISH_PREFIX"),
-		FederationS3PublishConfigID: envInt64("OKESU_CP_FEDERATION_S3_PUBLISH_CONFIG_ID", 0),
+		FederationS3PublishPrefix:    os.Getenv("OKESU_CP_FEDERATION_S3_PUBLISH_PREFIX"),
+		FederationS3PublishConfigID:  envInt64("OKESU_CP_FEDERATION_S3_PUBLISH_CONFIG_ID", 0),
+		FederationS3PublishBucket:    os.Getenv("OKESU_CP_FEDERATION_S3_PUBLISH_BUCKET"),
+		FederationS3PublishEndpoint:  os.Getenv("OKESU_CP_FEDERATION_S3_PUBLISH_ENDPOINT"),
+		FederationS3PublishRegion:    os.Getenv("OKESU_CP_FEDERATION_S3_PUBLISH_REGION"),
+		FederationS3PublishUseSSL:    envBool("OKESU_CP_FEDERATION_S3_PUBLISH_USE_SSL", true),
+		FederationS3PublishAccessKey: os.Getenv("OKESU_CP_FEDERATION_S3_PUBLISH_ACCESS_KEY"),
+		FederationS3PublishSecretKey: os.Getenv("OKESU_CP_FEDERATION_S3_PUBLISH_SECRET_KEY"),
+
+		CPInstanceID: os.Getenv("OKESU_CP_INSTANCE_ID"),
 
 		EventTTLDays: envInt("OKESU_CP_EVENT_TTL_DAYS", 0),
 		PubSubURL:    os.Getenv("OKESU_CP_PUBSUB_URL"),

@@ -95,6 +95,33 @@ func (s *Store) bootstrapCPMeta() (*CPMeta, error) {
 	return s.CPMeta()
 }
 
+// SeedCPInstanceID inserts the cp_meta singleton row with a
+// pre-assigned instance_id IF and only if no row exists yet. On a
+// re-launched CP (row already present) this is a no-op — we never
+// overwrite an established instance_id because it's the durable
+// identity that downstream rows (federation_peers, bucket prefixes,
+// orchestration runs) reference.
+//
+// Used by the federation enrollment bundle: parent mints a uuid,
+// pre-registers the federation peer at cp/<that-uuid>/outbound/...,
+// and bakes the uuid into the child VM's env so its first boot
+// adopts that identity.
+func (s *Store) SeedCPInstanceID(id string) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return errors.New("cp_meta seed: empty instance_id")
+	}
+	_, err := s.Exec(`
+		INSERT INTO cp_meta (id, instance_id, region, display_name, role)
+		VALUES (1, ?, '', '', ?)
+		ON CONFLICT(id) DO NOTHING`,
+		id, CPRoleStandalone)
+	if err != nil {
+		return fmt.Errorf("cp_meta seed: %w", err)
+	}
+	return nil
+}
+
 // UpdateCPMeta writes the operator-editable fields. InstanceID and
 // timestamps are not editable; CreatedAt is preserved, UpdatedAt is
 // refreshed. Pass an empty string for any field you don't want to

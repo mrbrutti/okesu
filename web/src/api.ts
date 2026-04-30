@@ -1139,13 +1139,16 @@ export const api = {
 export interface CPBundleRequest {
   display_name: string;
   region: string;
-  format: 'dockerfile-tarball' | 'compose-tarball' | 'terraform';
+  format: 'dockerfile-tarball' | 'compose-tarball' | 'terraform' | 's3-dead-drop';
   cloud?: 'oci' | 'aws';
   parent_url?: string;
   child_host?: string;
   child_port?: number;
   mgmt_port?: number;
   with_api_keys?: boolean;
+  /** Required for format=s3-dead-drop. Identifies the bucket the
+   *  child publishes to + the parent reads from. */
+  transport_config_id?: number;
 }
 
 // ── Phase 9 — Notifications ────────────────────────────────────────────────
