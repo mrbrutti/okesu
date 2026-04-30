@@ -421,6 +421,9 @@ func (f *fakeActionApplier) LinkRunToFinding(findingID, runID int64, stepID, rea
 	return nil
 }
 func (f *fakeActionApplier) EscalateRun(int64, string, string) error { return nil }
+func (f *fakeActionApplier) RecordAgentLesson(_, _ string, _ int64, _ string) error {
+	return nil
+}
 
 // TestEngine_ApprovalGate_PolicyMixedActionsStillGates confirms the
 // bypass requires every kind in the step's allowlist to be

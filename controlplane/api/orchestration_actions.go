@@ -64,6 +64,13 @@ func (a *FindingActionApplier) LinkRunToFinding(findingID int64, runID int64, st
 	})
 }
 
+// RecordAgentLesson is a temporary stub — replaced in Task C4 with a
+// delegation to the db.Store. Keeping it here keeps the build green
+// between the engine-interface change (C2) and the store impl (C3+C4).
+func (a *FindingActionApplier) RecordAgentLesson(_, _ string, _ int64, _ string) error {
+	return nil
+}
+
 // EscalateRun is a soft signal in v1 — recorded as a finding_edits
 // row keyed off run id 0 (no specific finding) so the run-detail
 // audit pulls it back. A dedicated column on orchestration_runs is
