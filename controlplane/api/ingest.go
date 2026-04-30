@@ -41,6 +41,11 @@ type FindingIngestRequest struct {
 	CVE             string                 `json:"cve,omitempty"`
 	Tags            []string               `json:"tags,omitempty"`
 	Attributes      map[string]interface{} `json:"attributes,omitempty"`
+
+	// Phase 22.3 — finding subtype. Identifies the structured shape of
+	// attributes ("hypothesis", "meeting_minutes", etc.). Empty = no
+	// special rendering.
+	Subtype string `json:"subtype,omitempty"`
 }
 
 // FindingIngest accepts a finding from a non-okesu source (CI, scanner, etc.)
@@ -172,6 +177,7 @@ func FindingIngest(store *db.Store, eventStore ports.EventStore, bcast Broadcast
 			IOCConfidence:     prop.IOCConfidence,
 			IOCAttribution:    prop.IOCAttribution,
 			IOCClassification: prop.IOCClassification,
+			Subtype:           req.Subtype,
 		})
 		if err != nil {
 			http.Error(w, "store finding: "+err.Error(), http.StatusInternalServerError)

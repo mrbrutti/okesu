@@ -279,6 +279,10 @@ type findingFields struct {
 	CVE             string          `json:"cve"`
 	Tags            string          `json:"tags"`
 	Attributes      json.RawMessage `json:"attributes"`
+	// Phase 22.3 — finding subtype emitted by orchestration agents
+	// (e.g. "hypothesis", "meeting_minutes"). Drives UI rendering
+	// hooks. NULL/empty = no special rendering.
+	Subtype string `json:"subtype"`
 }
 
 // decodeAttributes turns a finding's JSON-encoded attributes string
@@ -321,5 +325,6 @@ func parseFindingFields(ev ports.EventRecord) (*db.FindingInsert, error) {
 		CVE:             f.CVE,
 		Tags:            f.Tags,
 		Attributes:      string(f.Attributes),
+		Subtype:         f.Subtype,
 	}, nil
 }

@@ -600,6 +600,67 @@ The action class is `create`, so operators with
 `policy.auto_approve.create: true` can let agents reflect without
 approval gates.
 
+## Meeting steps (`kind: meeting`)
+
+A meeting step runs N participants sequentially against the trigger
+payload, then has a synthesizer agent emit a structured `meeting_minutes`
+finding. Use it for cross-perspective T2 case work where one agent's
+analysis isn't enough.
+
+```yaml
+- id: discuss
+  kind: meeting
+  meeting:
+    participants:
+      - investigator
+      - threat-hunter
+      - malware-analyst
+    synthesizer: incident-responder
+  prompt: |
+    A critical finding has surfaced on `{{trigger.host}}`.
+    Discuss the incident from your perspective.
+```
+
+Each participant receives the trigger plus all prior participants'
+outputs as a "## Conversation so far" section. The synthesizer
+receives the full conversation and structured outputs and emits a
+finding with `subtype: meeting_minutes` (agenda, positions, action
+items, decision).
+
+The step's timeout is the budget for the whole conversation, not per
+turn — if participant 1 takes 18m of a 20m budget, the synthesizer has
+2m left.
+
+### War bridges
+
+Set `war_bridge: true` on a meeting step to instruct the synthesizer to
+tag the resulting finding `war-bridge`. The dashboard renders a red
+banner listing active war-bridge findings (queries
+`GET /api/findings/war-bridge`); operators can drill in immediately.
+
+```yaml
+- id: emergency_huddle
+  kind: meeting
+  war_bridge: true
+  meeting:
+    participants: [investigator, threat-hunter, ciso]
+    synthesizer: incident-responder
+  prompt: ...
+```
+
+Pair with a `severity == 'CRITICAL'` trigger filter so war bridges
+fire only on alarms that actually warrant the attention.
+
+## Finding subtypes
+
+Findings carry an optional `subtype` that identifies the structured
+shape of their attributes. Subtypes drive UI rendering hooks.
+
+| Subtype          | Emitted by               | Attributes                                                                |
+|------------------|--------------------------|---------------------------------------------------------------------------|
+| `hypothesis`     | `hypothesis-writer`      | claim, evidence_for[], evidence_against[], confidence, how_to_test        |
+| `meeting_minutes`| meeting-step synthesizer | agenda, positions, action_items, decision                                 |
+
 ## Approval gates
 
 Set `approval: required` on a step to pause the run before that step

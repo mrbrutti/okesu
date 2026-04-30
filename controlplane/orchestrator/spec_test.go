@@ -205,6 +205,100 @@ steps:
 	}
 }
 
+// TestParse_MeetingStepValidation covers the Phase 22.3 step kind
+// taxonomy. Default-kind (empty / "agent") still requires top-level
+// agent + prompt; "meeting" steps require a meeting block with at
+// least one participant and a synthesizer, and forbid the top-level
+// agent (which the engine ignores in meeting mode). Any other kind is
+// rejected with a clear "unknown kind" message so a typo surfaces at
+// parse time rather than at dispatch.
+func TestParse_MeetingStepValidation(t *testing.T) {
+	cases := []struct {
+		name    string
+		yaml    string
+		wantErr bool
+	}{
+		{"valid meeting", `---
+name: tt
+description: tt
+steps:
+  - id: discuss
+    kind: meeting
+    meeting:
+      participants: [investigator, threat-hunter]
+      synthesizer: incident-responder
+    prompt: ""
+---`, false},
+		{"meeting without block", `---
+name: tt
+description: tt
+steps:
+  - id: discuss
+    kind: meeting
+    prompt: ""
+---`, true},
+		{"meeting with top-level agent", `---
+name: tt
+description: tt
+steps:
+  - id: discuss
+    kind: meeting
+    agent: alice
+    meeting:
+      participants: [a]
+      synthesizer: b
+    prompt: ""
+---`, true},
+		{"unknown kind", `---
+name: tt
+description: tt
+steps:
+  - id: discuss
+    kind: ritual
+    agent: a
+    prompt: ""
+---`, true},
+		{"legacy default", `---
+name: tt
+description: tt
+steps:
+  - id: discuss
+    agent: a
+    prompt: x
+---`, false},
+		{"meeting with empty participants", `---
+name: tt
+description: tt
+steps:
+  - id: discuss
+    kind: meeting
+    meeting:
+      participants: []
+      synthesizer: b
+    prompt: ""
+---`, true},
+		{"meeting with missing synthesizer", `---
+name: tt
+description: tt
+steps:
+  - id: discuss
+    kind: meeting
+    meeting:
+      participants: [a]
+    prompt: ""
+---`, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := Parse(c.yaml)
+			gotErr := err != nil
+			if gotErr != c.wantErr {
+				t.Errorf("parse: err=%v, wantErr=%v", err, c.wantErr)
+			}
+		})
+	}
+}
+
 func TestValidate_TriggerKindsAllowed(t *testing.T) {
 	for _, kind := range []string{"manual", "finding", "cron"} {
 		extra := ""

@@ -582,12 +582,26 @@ func (s *Server) routes() http.Handler {
 		r.Get("/api/findings", api.FederatedFindingsList(s.store, s.fedAgg))
 		r.Get("/api/findings/summary", api.FederatedFindingsSummary(s.store, s.fedAgg))
 		r.Get("/api/findings/grouped", api.FederatedFindingsGrouped(s.store, s.fedAgg))
+		// Phase 22.3 — active war-bridge feed for the dashboard red banner.
+		// Static segment must register before /api/findings/{id} so chi
+		// doesn't try to ParseInt "war-bridge". Local-only for now.
+		r.Get("/api/findings/war-bridge", api.ListActiveWarBridgeFindingsHandler(s.store))
 		r.Get("/api/findings/{id}", api.FederatedFindingDetail(s.store, s.fedAgg))
 		r.Get("/api/findings/{id}/runs", api.FederatedRunsForFinding(s.store, s.fedAgg))
 
 		// Phase 22.1 — IOC list. Filter by finding_id (drawer drill-down)
 		// or kind (e.g. all observed sha256s). Local-only for now.
 		r.Get("/api/iocs", api.ListIOCs(s.store))
+
+		// Phase 22.3 — Investigations (T2 case workspace). CRUD plus
+		// notes and finding linking; viewer+ for now (no admin gate)
+		// since cases are operator workflow, not config.
+		r.Get("/api/investigations", api.ListInvestigationsHandler(s.store))
+		r.Post("/api/investigations", api.CreateInvestigationHandler(s.store))
+		r.Get("/api/investigations/{id}", api.GetInvestigationHandler(s.store))
+		r.Patch("/api/investigations/{id}", api.UpdateInvestigationHandler(s.store))
+		r.Post("/api/investigations/{id}/notes", api.AddInvestigationNoteHandler(s.store))
+		r.Put("/api/investigations/{id}/findings/{finding_id}", api.LinkFindingToInvestigationHandler(s.store))
 
 		// Read endpoints (continued)
 		r.Get("/api/nodes", api.FederatedNodesList(s.store, s.fedAgg))

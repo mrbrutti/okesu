@@ -65,6 +65,12 @@ type findingJSON struct {
 	Tags            []string        `json:"tags,omitempty"`
 	Attributes      json.RawMessage `json:"attributes,omitempty"`
 
+	// Phase 22.3 — finding subtype. Identifies the structured shape of
+	// `attributes` ("hypothesis", "meeting_minutes", etc.). Empty = no
+	// special rendering. UI uses this to switch on per-subtype cards
+	// (HypothesisCard etc.) on top of the standard finding drawer.
+	Subtype string `json:"subtype,omitempty"`
+
 	// Phase 9.6 — federation source. Populated only when this row was
 	// fetched from a federated child CP. Local rows leave this nil so
 	// the UI can render a "from <CP>" chip iff non-null.
@@ -103,6 +109,7 @@ func toFindingJSON(f *db.Finding, includeRaw bool) findingJSON {
 		Path:            f.Path.String,
 		NetworkEndpoint: f.NetworkEndpoint.String,
 		CVE:             f.CVE.String,
+		Subtype:         f.Subtype,
 	}
 	if f.OperatorSeverity.Valid && f.OperatorSeverity.String != "" {
 		out.OperatorSeverity = f.OperatorSeverity.String
@@ -679,5 +686,23 @@ func SeverityRuleDelete(store *db.Store) http.HandlerFunc {
 			Target: "rule:" + body.Fingerprint,
 		})
 		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+// ListActiveWarBridgeFindingsHandler powers the dashboard red banner.
+// Returns up to 25 currently-open war-bridge findings, newest first.
+func ListActiveWarBridgeFindingsHandler(store *db.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		findings, err := store.ListActiveWarBridgeFindings(25)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		out := make([]findingJSON, 0, len(findings))
+		for _, fr := range findings {
+			out = append(out, toFindingJSON(fr, false))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(out)
 	}
 }

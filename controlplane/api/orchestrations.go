@@ -822,6 +822,27 @@ func (d *routingDispatcher) findNodeOnFederation(ctx context.Context, name strin
 	return matches
 }
 
+// normalizeFindingTags accepts the agent's tags field as either a
+// comma-separated string or a JSON array of strings, and returns the
+// canonical comma-separated form used everywhere else (db column,
+// dashboard query, etc.).
+func normalizeFindingTags(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	// Try string first.
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s
+	}
+	// Then array of strings.
+	var arr []string
+	if err := json.Unmarshal(raw, &arr); err == nil {
+		return strings.Join(arr, ",")
+	}
+	return ""
+}
+
 // parseFindingsFromLines pulls JSONL `type=finding` events out of a
 // run transcript. The orchestrator only cares about the few finding
 // fields that drive templating + result distillation; everything
@@ -841,6 +862,14 @@ func parseFindingsFromLines(lines []db.RunLine) []orchestrator.DispatchedFinding
 			Resource   string         `json:"resource"`
 			DedupKey   string         `json:"dedup_key"`
 			Attributes map[string]any `json:"attributes"`
+			// Phase 22.3 — finding subtype + tags. Carried forward to
+			// DispatchedFinding so downstream steps (and the meeting
+			// executor) can read what the agent emitted, e.g. `subtype:
+			// "meeting_minutes"` or `tags: ["war-bridge"]`.
+			Subtype string `json:"subtype"`
+			// Tags can arrive as a comma-separated string or a JSON
+			// array. Decode the raw value flexibly below.
+			Tags json.RawMessage `json:"tags"`
 		}
 		if err := json.Unmarshal([]byte(ln.Data), &f); err != nil {
 			continue
@@ -855,6 +884,8 @@ func parseFindingsFromLines(lines []db.RunLine) []orchestrator.DispatchedFinding
 			Resource:   f.Resource,
 			DedupKey:   f.DedupKey,
 			Attributes: f.Attributes,
+			Subtype:    f.Subtype,
+			Tags:       normalizeFindingTags(f.Tags),
 		})
 	}
 	if len(out) == 0 {

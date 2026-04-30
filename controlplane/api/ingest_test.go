@@ -150,3 +150,47 @@ func TestFindingIngest_RaisesSeverityFromCatalogFloor(t *testing.T) {
 		t.Error("cluster_id should be minted on first finding")
 	}
 }
+
+// TestFindingIngest_StoresSubtype verifies that the Phase 22.3 subtype
+// field on FindingIngestRequest is threaded through to the persisted
+// finding row, so external producers can flag hypotheses, meeting
+// minutes, etc. for special rendering downstream.
+func TestFindingIngest_StoresSubtype(t *testing.T) {
+	store := newTestStore(t)
+	es := sqliteevents.New(store)
+
+	body, err := json.Marshal(map[string]any{
+		"agent":    "hypothesis-writer",
+		"host":     "h1",
+		"severity": "MEDIUM",
+		"title":    "Lateral movement via SMB",
+		"subtype":  "hypothesis",
+	})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+
+	h := FindingIngest(store, es, noopBroadcaster{})
+	req := httptest.NewRequest(http.MethodPost, "/api/findings/ingest", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		FindingID int64 `json:"finding_id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+
+	f, err := store.FindingByID(resp.FindingID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Subtype != "hypothesis" {
+		t.Errorf("Subtype = %q, want hypothesis", f.Subtype)
+	}
+}

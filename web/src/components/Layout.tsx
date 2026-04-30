@@ -1,5 +1,5 @@
 import { Link, NavLink, Outlet, useNavigate } from 'react-router-dom';
-import { Activity, AlertTriangle, BookOpen, LayoutDashboard, Network, Server, Layers, Settings, LogOut, Sparkles, Workflow } from 'lucide-react';
+import { Activity, AlertTriangle, BookOpen, ClipboardList, LayoutDashboard, Network, Server, Layers, Settings, LogOut, Sparkles, Workflow } from 'lucide-react';
 import { api, type User } from '../api';
 import { cn } from '../lib/cn';
 import CommandPalette from './CommandPalette';
@@ -12,6 +12,7 @@ interface Props {
 const nav = [
   { to: '/dashboard',  label: 'Dashboard',    icon: LayoutDashboard, enabled: true  },
   { to: '/findings',   label: 'Findings',     icon: AlertTriangle,  enabled: true  },
+  { to: '/investigations', label: 'Investigations', icon: ClipboardList, enabled: true },
   { to: '/events',     label: 'Live Events',  icon: Activity,       enabled: true  },
   { to: '/daimons',    label: 'Daimons',      icon: Layers,         enabled: true  },
   { to: '/agents',     label: 'Agents',       icon: Sparkles,       enabled: true  },
