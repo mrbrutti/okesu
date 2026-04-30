@@ -617,6 +617,25 @@ func FederationLinkFindingToInvestigation(store *db.Store) http.HandlerFunc {
 	return requireFederationToken(store, LinkFindingToInvestigationHandler(store))
 }
 
+// FederatedLinkRunToInvestigation forwards PUT /api/investigations/
+// {id}/runs/{run_id} to the owning child via `?cp=<id>`. Used when
+// the workspace's "Run orchestration" button creates a run on a
+// federated child and immediately links it back to the case there.
+func FederatedLinkRunToInvestigation(store *db.Store, agg *federation.Aggregator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		path := strings.Replace(r.URL.Path, "/api/investigations/", "/api/v1/federation/investigations/", 1)
+		if handled, _ := proxyWriteByQuery(w, r, agg, path, "", nil); handled {
+			return
+		}
+		LinkRunToInvestigationHandler(store).ServeHTTP(w, r)
+	}
+}
+
+// FederationLinkRunToInvestigation — child-side, token-authed.
+func FederationLinkRunToInvestigation(store *db.Store) http.HandlerFunc {
+	return requireFederationToken(store, LinkRunToInvestigationHandler(store))
+}
+
 // FederatedOrchestrationDetail proxies a single GET via ?cp= to the
 // owning child CP, falling through to the local store otherwise.
 func FederatedOrchestrationDetail(store *db.Store, agg *federation.Aggregator) http.HandlerFunc {

@@ -874,10 +874,12 @@ export const api = {
       request<void>(`/api/investigations/${invID}/findings/${findingID}`, {
         method: 'DELETE',
       }),
-    linkRun: (invID: number, runID: number) =>
-      request<void>(`/api/investigations/${invID}/runs/${runID}`, {
+    linkRun: (invID: number, runID: number, cpInstanceID?: string) => {
+      const qs = cpInstanceID ? `?cp=${encodeURIComponent(cpInstanceID)}` : '';
+      return request<void>(`/api/investigations/${invID}/runs/${runID}${qs}`, {
         method: 'PUT',
-      }),
+      });
+    },
     unlinkRun: (invID: number, runID: number) =>
       request<void>(`/api/investigations/${invID}/runs/${runID}`, {
         method: 'DELETE',

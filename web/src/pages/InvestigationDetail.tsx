@@ -35,6 +35,8 @@ import {
   Lock,
   MessageSquarePlus,
   Pencil,
+  Play,
+  Plus,
   Save,
   Sparkles,
   Trash2,
@@ -45,6 +47,7 @@ import {
 import {
   api,
   ApiError,
+  type Finding,
   type Investigation,
   type InvestigationDaimonItem,
   type InvestigationDetail,
@@ -53,6 +56,7 @@ import {
   type InvestigationNote,
   type InvestigationOrchestrationItem,
   type InvestigationRunItem,
+  type Orchestration,
 } from '../api';
 import { cn } from '../lib/cn';
 
@@ -306,7 +310,7 @@ export default function InvestigationDetailPage() {
         )}
 
         {tab === 'findings' && (
-          <FindingsPanel invID={invID} findings={bundle.findings} onChange={reload} />
+          <FindingsPanel invID={invID} cpInstanceID={cpInstanceID} findings={bundle.findings} onChange={reload} />
         )}
 
         {tab === 'runs' && (
@@ -317,7 +321,9 @@ export default function InvestigationDetailPage() {
 
         {tab === 'daimons' && <DaimonsPanel daimons={bundle.daimons} />}
 
-        {tab === 'orchestrations' && <OrchestrationsPanel orchs={bundle.orchestrations} />}
+        {tab === 'orchestrations' && (
+          <OrchestrationsPanel invID={invID} cpInstanceID={cpInstanceID} orchs={bundle.orchestrations} onChange={reload} />
+        )}
 
         {tab === 'notes' && (
           <NotesPanel invID={invID} notes={bundle.notes} onChange={reload} />
@@ -434,48 +440,70 @@ function OverviewPanel({
 
 // ── Findings panel ──────────────────────────────────────────────────
 
-function FindingsPanel({ invID, findings, onChange }: {
+function FindingsPanel({ invID, cpInstanceID, findings, onChange }: {
   invID: number;
+  cpInstanceID?: string;
   findings: InvestigationFindingItem[];
   onChange: () => void;
 }) {
-  if (findings.length === 0) {
-    return <EmptyTabState icon={Hash} label="No findings linked yet." hint="Open a finding and click 'Add to investigation' to link it here." />;
-  }
+  const [linkOpen, setLinkOpen] = useState(false);
   return (
-    <div className="border border-border rounded-md bg-white overflow-hidden">
-      <table className="w-full text-sm">
-        <thead className="bg-slate-50 border-b border-border text-[11px] uppercase tracking-wide text-ink-mute">
-          <tr>
-            <th className="px-3 py-2 text-left w-16">ID</th>
-            <th className="px-3 py-2 text-left w-24">Severity</th>
-            <th className="px-3 py-2 text-left">Title</th>
-            <th className="px-3 py-2 text-left w-32">Daimon</th>
-            <th className="px-3 py-2 text-left w-28">Host</th>
-            <th className="px-3 py-2 text-left w-28">Status</th>
-            <th className="px-3 py-2 text-right w-12"></th>
-          </tr>
-        </thead>
-        <tbody>
-          {findings.map((f) => (
-            <tr key={f.ID} className="border-b border-border/60 last:border-0 hover:bg-slate-50/40">
-              <td className="px-3 py-2"><Link to={`/findings?id=${f.ID}`} className="text-brand-700 hover:underline font-mono text-xs">#{f.ID}</Link></td>
-              <td className="px-3 py-2"><SeverityChip sev={nullStr(f.Severity)} /></td>
-              <td className="px-3 py-2 truncate max-w-md">{nullStr(f.Title) || <span className="text-ink-mute italic">(no title)</span>}</td>
-              <td className="px-3 py-2 text-xs text-ink-dim">{nullStr(f.Agent) || '—'}</td>
-              <td className="px-3 py-2 text-xs text-ink-dim">{nullStr(f.Host) || '—'}</td>
-              <td className="px-3 py-2"><StatusPill v={nullStr(f.Status)} /></td>
-              <td className="px-3 py-2 text-right">
-                <UnlinkButton onClick={async () => {
-                  if (!confirm(`Unlink finding #${f.ID} from this investigation?`)) return;
-                  await api.investigations.unlinkFinding(invID, f.ID);
-                  onChange();
-                }} />
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+    <div className="space-y-3">
+      <div className="flex justify-end">
+        <button
+          onClick={() => setLinkOpen(true)}
+          className="inline-flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-md bg-brand-600 text-white hover:bg-brand-700"
+        >
+          <Plus size={12} /> Link finding
+        </button>
+      </div>
+      {findings.length === 0 ? (
+        <EmptyTabState icon={Hash} label="No findings linked yet." hint="Click 'Link finding' above, or open a finding from the Findings page and use 'Add to existing'." />
+      ) : (
+        <div className="border border-border rounded-md bg-white overflow-hidden">
+          <table className="w-full text-sm">
+            <thead className="bg-slate-50 border-b border-border text-[11px] uppercase tracking-wide text-ink-mute">
+              <tr>
+                <th className="px-3 py-2 text-left w-16">ID</th>
+                <th className="px-3 py-2 text-left w-24">Severity</th>
+                <th className="px-3 py-2 text-left">Title</th>
+                <th className="px-3 py-2 text-left w-32">Daimon</th>
+                <th className="px-3 py-2 text-left w-28">Host</th>
+                <th className="px-3 py-2 text-left w-28">Status</th>
+                <th className="px-3 py-2 text-right w-12"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {findings.map((f) => (
+                <tr key={f.ID} className="border-b border-border/60 last:border-0 hover:bg-slate-50/40">
+                  <td className="px-3 py-2"><Link to={`/findings?id=${f.ID}${cpInstanceID ? `&cp=${cpInstanceID}` : ''}`} className="text-brand-700 hover:underline font-mono text-xs">#{f.ID}</Link></td>
+                  <td className="px-3 py-2"><SeverityChip sev={nullStr(f.Severity)} /></td>
+                  <td className="px-3 py-2 truncate max-w-md">{nullStr(f.Title) || <span className="text-ink-mute italic">(no title)</span>}</td>
+                  <td className="px-3 py-2 text-xs text-ink-dim">{nullStr(f.Agent) || '—'}</td>
+                  <td className="px-3 py-2 text-xs text-ink-dim">{nullStr(f.Host) || '—'}</td>
+                  <td className="px-3 py-2"><StatusPill v={nullStr(f.Status)} /></td>
+                  <td className="px-3 py-2 text-right">
+                    <UnlinkButton onClick={async () => {
+                      if (!confirm(`Unlink finding #${f.ID} from this investigation?`)) return;
+                      await api.investigations.unlinkFinding(invID, f.ID);
+                      onChange();
+                    }} />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {linkOpen && (
+        <LinkFindingDialog
+          invID={invID}
+          cpInstanceID={cpInstanceID}
+          alreadyLinkedIDs={new Set(findings.map((f) => f.ID))}
+          onClose={() => setLinkOpen(false)}
+          onLinked={() => { setLinkOpen(false); onChange(); }}
+        />
+      )}
     </div>
   );
 }
@@ -606,38 +634,63 @@ function DaimonsPanel({ daimons }: { daimons: InvestigationDaimonItem[] }) {
 
 // ── Orchestrations panel ───────────────────────────────────────────
 
-function OrchestrationsPanel({ orchs }: { orchs: InvestigationOrchestrationItem[] }) {
-  if (orchs.length === 0) {
-    return <EmptyTabState icon={Activity} label="No orchestrations have run on this case." hint="Trigger an orchestration on a linked finding (or directly), and the resulting runs will surface here." />;
-  }
+function OrchestrationsPanel({ invID, cpInstanceID, orchs, onChange }: {
+  invID: number;
+  cpInstanceID?: string;
+  orchs: InvestigationOrchestrationItem[];
+  onChange: () => void;
+}) {
+  const [runOpen, setRunOpen] = useState(false);
   return (
-    <div className="border border-border rounded-md bg-white overflow-hidden">
-      <table className="w-full text-sm">
-        <thead className="bg-slate-50 border-b border-border text-[11px] uppercase tracking-wide text-ink-mute">
-          <tr>
-            <th className="px-3 py-2 text-left">Orchestration</th>
-            <th className="px-3 py-2 text-right w-24">Runs</th>
-            <th className="px-3 py-2 text-left w-40">Last started</th>
-          </tr>
-        </thead>
-        <tbody>
-          {orchs.map((o) => (
-            <tr key={`${o.OrchestrationID.Int64}:${o.OrchestrationName}`} className="border-b border-border/60 last:border-0 hover:bg-slate-50/40">
-              <td className="px-3 py-2">
-                {o.OrchestrationID.Valid ? (
-                  <Link to={`/orchestrations/${o.OrchestrationID.Int64}`} className="text-brand-700 hover:underline">
-                    {o.OrchestrationName}
-                  </Link>
-                ) : (
-                  <span className="text-ink-mute italic">{o.OrchestrationName}</span>
-                )}
-              </td>
-              <td className="px-3 py-2 text-right text-xs font-mono text-ink-dim">{o.RunCount}</td>
-              <td className="px-3 py-2 text-xs text-ink-dim font-mono">{fmtDate(o.LastStartedAt)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+    <div className="space-y-3">
+      <div className="flex justify-end">
+        <button
+          onClick={() => setRunOpen(true)}
+          className="inline-flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-md bg-brand-600 text-white hover:bg-brand-700"
+        >
+          <Play size={12} /> Run orchestration
+        </button>
+      </div>
+      {orchs.length === 0 ? (
+        <EmptyTabState icon={Activity} label="No orchestrations have run on this case." hint="Click 'Run orchestration' above to launch one. The resulting run will be auto-linked to this case." />
+      ) : (
+        <div className="border border-border rounded-md bg-white overflow-hidden">
+          <table className="w-full text-sm">
+            <thead className="bg-slate-50 border-b border-border text-[11px] uppercase tracking-wide text-ink-mute">
+              <tr>
+                <th className="px-3 py-2 text-left">Orchestration</th>
+                <th className="px-3 py-2 text-right w-24">Runs</th>
+                <th className="px-3 py-2 text-left w-40">Last started</th>
+              </tr>
+            </thead>
+            <tbody>
+              {orchs.map((o) => (
+                <tr key={`${o.OrchestrationID.Int64}:${o.OrchestrationName}`} className="border-b border-border/60 last:border-0 hover:bg-slate-50/40">
+                  <td className="px-3 py-2">
+                    {o.OrchestrationID.Valid ? (
+                      <Link to={`/orchestrations/${o.OrchestrationID.Int64}${cpInstanceID ? `?cp=${cpInstanceID}` : ''}`} className="text-brand-700 hover:underline">
+                        {o.OrchestrationName}
+                      </Link>
+                    ) : (
+                      <span className="text-ink-mute italic">{o.OrchestrationName}</span>
+                    )}
+                  </td>
+                  <td className="px-3 py-2 text-right text-xs font-mono text-ink-dim">{o.RunCount}</td>
+                  <td className="px-3 py-2 text-xs text-ink-dim font-mono">{fmtDate(o.LastStartedAt)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {runOpen && (
+        <RunOrchestrationDialog
+          invID={invID}
+          cpInstanceID={cpInstanceID}
+          onClose={() => setRunOpen(false)}
+          onRan={() => { setRunOpen(false); onChange(); }}
+        />
+      )}
     </div>
   );
 }
@@ -875,4 +928,277 @@ function fmtDate(iso: string): string {
 
 function isZeroTime(iso: string): boolean {
   return iso === '' || iso === '0001-01-01T00:00:00Z';
+}
+
+// ── Workspace action dialogs ────────────────────────────────────────
+
+function LinkFindingDialog({
+  invID, cpInstanceID, alreadyLinkedIDs, onClose, onLinked,
+}: {
+  invID: number;
+  cpInstanceID?: string;
+  alreadyLinkedIDs: Set<number>;
+  onClose: () => void;
+  onLinked: () => void;
+}) {
+  const [items, setItems] = useState<Finding[] | null>(null);
+  const [filter, setFilter] = useState('');
+  const [pickedID, setPickedID] = useState<number | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    api.findings({ state: 'queue', limit: 200 })
+      .then((rows) => {
+        // Federated case → only allow linking findings on the same
+        // child (FK on investigation_findings.finding_id wouldn't
+        // resolve cross-CP). Local case → only local findings.
+        const filtered = rows.filter((f) =>
+          cpInstanceID
+            ? (f as Finding & { cp_source?: { instance_id: string } }).cp_source?.instance_id === cpInstanceID
+            : !(f as Finding & { cp_source?: unknown }).cp_source,
+        );
+        setItems(filtered);
+      })
+      .catch((e) => setError(String(e)));
+  }, [cpInstanceID]);
+
+  async function submit() {
+    if (!pickedID) return;
+    setBusy(true); setError(null);
+    try {
+      await api.investigations.linkFinding(invID, pickedID, cpInstanceID);
+      onLinked();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const filtered = (items ?? [])
+    .filter((f) => !alreadyLinkedIDs.has(f.id))
+    .filter((f) => !filter || (f.title || '').toLowerCase().includes(filter.toLowerCase()) || (f.host || '').toLowerCase().includes(filter.toLowerCase()));
+
+  return (
+    <div className="fixed inset-0 bg-black/30 flex items-center justify-center p-4 z-50" onClick={onClose}>
+      <div
+        className="bg-panel border border-border rounded-xl shadow-card w-full max-w-lg flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+        style={{ maxHeight: '75vh' }}
+      >
+        <header className="px-5 py-3 border-b border-border flex items-center justify-between">
+          <h2 className="text-sm font-semibold flex items-center gap-2">
+            <Hash size={14} className="text-brand-500" />
+            Link finding
+          </h2>
+          <button onClick={onClose} className="p-1 text-ink-dim hover:text-ink rounded-md">
+            <X size={16} />
+          </button>
+        </header>
+        <div className="p-5 space-y-3 text-sm flex flex-col flex-1 overflow-hidden">
+          <p className="text-xs text-ink-dim">
+            Pick a finding{cpInstanceID ? <> on <code className="font-mono">{cpInstanceID}</code></> : <> on this CP</>} to add to this investigation. Already-linked findings are filtered out. Showing the most recent 200 open findings; refine with the filter box.
+          </p>
+          <input
+            type="text"
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            placeholder="Filter by title or host…"
+            className="w-full px-2.5 py-1.5 text-sm border border-border rounded-md"
+          />
+          <div className="flex-1 overflow-auto border border-border rounded-md">
+            {items === null ? (
+              <div className="p-3 text-xs text-ink-mute">Loading…</div>
+            ) : filtered.length === 0 ? (
+              <div className="p-3 text-xs text-ink-mute">No matching open findings.</div>
+            ) : (
+              <ul className="divide-y divide-border">
+                {filtered.map((f) => (
+                  <li key={f.id}>
+                    <label className="flex items-start gap-2 px-3 py-2 cursor-pointer hover:bg-slate-50">
+                      <input
+                        type="radio"
+                        checked={pickedID === f.id}
+                        onChange={() => setPickedID(f.id)}
+                        className="mt-1"
+                      />
+                      <div className="min-w-0 flex-1">
+                        <div className="text-sm truncate">
+                          <span className={cn(
+                            'inline-block text-[10px] uppercase tracking-wide px-1 py-0.5 rounded ring-1 mr-2',
+                            f.severity === 'CRITICAL' ? 'text-red-700 bg-red-50 ring-red-200' :
+                            f.severity === 'HIGH' ? 'text-orange-700 bg-orange-50 ring-orange-200' :
+                            f.severity === 'MEDIUM' ? 'text-amber-700 bg-amber-50 ring-amber-200' :
+                            f.severity === 'LOW' ? 'text-blue-700 bg-blue-50 ring-blue-200' :
+                            'text-slate-600 bg-slate-50 ring-slate-200',
+                          )}>{f.severity || '—'}</span>
+                          {f.title || `(no title) #${f.id}`}
+                        </div>
+                        <div className="text-[11px] text-ink-mute font-mono">
+                          #{f.id} · {f.agent || '—'} · {f.host || '—'}
+                        </div>
+                      </div>
+                    </label>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+          {error && (
+            <div className="text-xs text-red-700 bg-red-50 border border-red-200 px-3 py-2 rounded-md">{error}</div>
+          )}
+        </div>
+        <footer className="px-5 py-3 border-t border-border flex items-center justify-end gap-2">
+          <button onClick={onClose} className="text-xs px-3 py-1.5 border border-border rounded-md">Cancel</button>
+          <button
+            onClick={submit}
+            disabled={busy || !pickedID}
+            className="text-xs px-3 py-1.5 bg-brand-500 hover:bg-brand-600 disabled:opacity-50 text-white rounded-md font-medium inline-flex items-center gap-1.5"
+          >
+            {busy && <Loader2 size={12} className="animate-spin" />}
+            Link
+          </button>
+        </footer>
+      </div>
+    </div>
+  );
+}
+
+function RunOrchestrationDialog({
+  invID, cpInstanceID, onClose, onRan,
+}: {
+  invID: number;
+  cpInstanceID?: string;
+  onClose: () => void;
+  onRan: () => void;
+}) {
+  const [items, setItems] = useState<Orchestration[] | null>(null);
+  const [pickedID, setPickedID] = useState<number | null>(null);
+  const [filter, setFilter] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    api.orchestrations()
+      .then((rows) => {
+        // Federated case → only orchestrations defined on the same
+        // child (a parent-side orchestration would create runs in
+        // the wrong CP's row space).
+        const cpFiltered = rows.filter((o) =>
+          cpInstanceID
+            ? (o as Orchestration & { cp_source?: { instance_id: string } }).cp_source?.instance_id === cpInstanceID
+            : !(o as Orchestration & { cp_source?: unknown }).cp_source,
+        );
+        setItems(cpFiltered.filter((o) => o.enabled));
+      })
+      .catch((e) => setError(String(e)));
+  }, [cpInstanceID]);
+
+  async function submit() {
+    if (!pickedID) return;
+    setBusy(true); setError(null);
+    try {
+      // Manual trigger; pass `investigation_id` as an input so the
+      // orchestration's prompt template can reference it via
+      // `{{trigger.investigation_id}}` if it knows about the case
+      // schema.
+      const { run_id } = await api.orchestrationRun(
+        pickedID,
+        { investigation_id: invID },
+        cpInstanceID,
+      );
+      // Auto-link the run to this case. Engine's link_run_to_finding
+      // hook handles this automatically when steps emit the action,
+      // but a brand-new run that hasn't yet emitted anything won't
+      // be linked. Belt-and-suspenders: explicit link here too.
+      await api.investigations.linkRun(invID, run_id, cpInstanceID);
+      onRan();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const filtered = (items ?? []).filter((o) =>
+    !filter || o.name.toLowerCase().includes(filter.toLowerCase()) || (o.description || '').toLowerCase().includes(filter.toLowerCase()),
+  );
+
+  return (
+    <div className="fixed inset-0 bg-black/30 flex items-center justify-center p-4 z-50" onClick={onClose}>
+      <div
+        className="bg-panel border border-border rounded-xl shadow-card w-full max-w-lg flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+        style={{ maxHeight: '75vh' }}
+      >
+        <header className="px-5 py-3 border-b border-border flex items-center justify-between">
+          <h2 className="text-sm font-semibold flex items-center gap-2">
+            <Play size={14} className="text-brand-500" />
+            Run orchestration on this case
+          </h2>
+          <button onClick={onClose} className="p-1 text-ink-dim hover:text-ink rounded-md">
+            <X size={16} />
+          </button>
+        </header>
+        <div className="p-5 space-y-3 text-sm flex flex-col flex-1 overflow-hidden">
+          <p className="text-xs text-ink-dim">
+            Triggers a manual run of the chosen orchestration. The investigation id is passed as a trigger input (<code className="font-mono">{`{{trigger.investigation_id}}`}</code>), and the resulting run is auto-linked to this case.
+            {cpInstanceID && <> Showing orchestrations defined on <code className="font-mono">{cpInstanceID}</code>.</>}
+          </p>
+          <input
+            type="text"
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            placeholder="Filter by name or description…"
+            className="w-full px-2.5 py-1.5 text-sm border border-border rounded-md"
+          />
+          <div className="flex-1 overflow-auto border border-border rounded-md">
+            {items === null ? (
+              <div className="p-3 text-xs text-ink-mute">Loading…</div>
+            ) : filtered.length === 0 ? (
+              <div className="p-3 text-xs text-ink-mute">
+                No enabled orchestrations{cpInstanceID ? ` on ${cpInstanceID}` : ''}.
+              </div>
+            ) : (
+              <ul className="divide-y divide-border">
+                {filtered.map((o) => (
+                  <li key={o.id}>
+                    <label className="flex items-start gap-2 px-3 py-2 cursor-pointer hover:bg-slate-50">
+                      <input
+                        type="radio"
+                        checked={pickedID === o.id}
+                        onChange={() => setPickedID(o.id)}
+                        className="mt-1"
+                      />
+                      <div className="min-w-0 flex-1">
+                        <div className="text-sm font-medium truncate">{o.name}</div>
+                        <div className="text-[11px] text-ink-mute truncate">
+                          {o.description || <span className="italic">(no description)</span>}
+                        </div>
+                      </div>
+                    </label>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+          {error && (
+            <div className="text-xs text-red-700 bg-red-50 border border-red-200 px-3 py-2 rounded-md">{error}</div>
+          )}
+        </div>
+        <footer className="px-5 py-3 border-t border-border flex items-center justify-end gap-2">
+          <button onClick={onClose} className="text-xs px-3 py-1.5 border border-border rounded-md">Cancel</button>
+          <button
+            onClick={submit}
+            disabled={busy || !pickedID}
+            className="text-xs px-3 py-1.5 bg-brand-500 hover:bg-brand-600 disabled:opacity-50 text-white rounded-md font-medium inline-flex items-center gap-1.5"
+          >
+            {busy && <Loader2 size={12} className="animate-spin" />}
+            Run
+          </button>
+        </footer>
+      </div>
+    </div>
+  );
 }
