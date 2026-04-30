@@ -126,7 +126,9 @@ func New(store *db.Store, interval time.Duration, assets *AssetCache) *Loop {
 // so the bucket layout can evolve without churning either side.
 var extraAssets = []string{
 	"findings.json",
-	// Phase A.3: "daimons.json", "nodes.json", "orchestrations.json"
+	"daimons.json",
+	"nodes.json",
+	"orchestrations.json",
 }
 
 // peerClient is the cached s3 client for one peer + its prefix. We

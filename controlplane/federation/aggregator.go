@@ -206,7 +206,15 @@ func s3AssetForPath(path string) string {
 	switch {
 	case strings.HasPrefix(path, "/api/v1/federation/findings"):
 		return "findings.json"
-	// Phase A.3 will add daimons / nodes / orchestrations cases here.
+	case strings.HasPrefix(path, "/api/v1/federation/daimons"):
+		return "daimons.json"
+	case strings.HasPrefix(path, "/api/v1/federation/nodes"):
+		return "nodes.json"
+	case strings.HasPrefix(path, "/api/v1/federation/orchestrations"):
+		return "orchestrations.json"
+	// Phase B will add per-resource detail paths (.../findings/{id})
+	// once the write pipe lands — they need the same kind of
+	// request_id correlation as directives.
 	}
 	return ""
 }
