@@ -180,6 +180,43 @@ func dbStepToEngine(r *db.OrchestrationStep) *orchestrator.StepRecord {
 	return rec
 }
 
+// ── stepNodeProgressSinkAdapter ─────────────────────────────────────
+
+// stepNodeProgressSinkAdapter delegates the engine's per-host fan-out
+// sink calls to the db Store's Insert/Update on the
+// orchestration_step_node_dispatches table.
+type stepNodeProgressSinkAdapter struct {
+	store *db.Store
+}
+
+var _ orchestrator.StepNodeProgressSink = (*stepNodeProgressSinkAdapter)(nil)
+
+func (a *stepNodeProgressSinkAdapter) OnDispatchStart(runID int64, stepID, host string, startedAt time.Time) error {
+	return a.store.InsertStepNodeDispatch(db.StepNodeDispatchInsert{
+		RunID:     runID,
+		StepID:    stepID,
+		Host:      host,
+		Status:    "running",
+		StartedAt: &startedAt,
+	})
+}
+
+func (a *stepNodeProgressSinkAdapter) OnDispatchEnd(runID int64, stepID, host string,
+	status, agentRunID string, findingsCount int,
+	outputTail, errorStr string, endedAt time.Time) error {
+	return a.store.UpdateStepNodeDispatch(db.StepNodeDispatchUpdate{
+		RunID:         runID,
+		StepID:        stepID,
+		Host:          host,
+		Status:        status,
+		AgentRunID:    agentRunID,
+		FindingsCount: findingsCount,
+		OutputTail:    outputTail,
+		Error:         errorStr,
+		EndedAt:       &endedAt,
+	})
+}
+
 // ── localDispatcher ──────────────────────────────────────────────────
 
 // localDispatcher executes a step on this CP. It mirrors CreateRun's
@@ -1278,6 +1315,7 @@ func NewOrchestrationCoordinator(
 		autoDeployer: opts.AutoDeployer,
 	}
 	engine := orchestrator.NewEngine(adapter, disp)
+	engine.SetProgressSink(&stepNodeProgressSinkAdapter{store: store})
 	// Wire the action applier so agents' orchestration_result.actions
 	// produce real CP mutations (status / tags / severity / run links).
 	engine.SetActionApplier(NewFindingActionApplier(store))
