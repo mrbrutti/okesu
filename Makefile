@@ -160,3 +160,55 @@ clean:
 
 version:
 	@echo $(VERSION)
+
+# ─────────────────────────────────────────────────────────────────────
+# OCI end-to-end deploy
+# ─────────────────────────────────────────────────────────────────────
+#
+# `make oci-deploy MODE=<standalone|parent|child>` takes a clean checkout
+# to a running Okesu CP on Oracle Cloud. See deploy/oci/README.md.
+
+OCI_MODE ?= $(or $(MODE),standalone)
+OCI_DIR  ?= deploy/oci/terraform
+OCI_TFVARS ?= deploy/oci/terraform/$(OCI_MODE).tfvars
+OCI_ENV  ?= .env.oci
+
+# Default ssh user for Oracle Linux on OCI.
+OCI_SSH_USER ?= opc
+
+# Render CLI built into dist/.
+OCI_RENDER ?= dist/oci-render
+
+.PHONY: oci-build oci-plan oci-apply oci-render oci-install oci-deploy \
+        oci-redeploy oci-destroy oci-print oci-test \
+        _oci-preflight _oci-render-cli
+
+# ── Pre-flight: hard-fail before terraform/scp if anything's missing.
+_oci-preflight:
+	@if [ ! -e "$(OCI_ENV)" ]; then \
+	  echo "✖ missing $(OCI_ENV) — copy deploy/oci/.env.oci.example and fill it in" >&2; exit 1; fi
+	@. "$(OCI_ENV)"; \
+	  if [ -z "$$ANTHROPIC_API_KEY" ]; then \
+	    echo "✖ ANTHROPIC_API_KEY unset in $(OCI_ENV)" >&2; exit 1; fi
+	@if [ ! -e "$(OCI_TFVARS)" ]; then \
+	  echo "✖ missing $(OCI_TFVARS) — copy deploy/oci/modes/$(OCI_MODE).tfvars.example" >&2; exit 1; fi
+	@if [ "$(OCI_MODE)" = "child" ]; then \
+	  for k in parent_federation_bucket parent_federation_endpoint parent_federation_region parent_federation_access_key; do \
+	    grep -E "^[[:space:]]*$$k[[:space:]]*=[[:space:]]*\"[^\"]+\"" $(OCI_TFVARS) >/dev/null || { \
+	      echo "✖ child mode: $$k not set in $(OCI_TFVARS)" >&2; exit 1; }; \
+	  done; \
+	  . "$(OCI_ENV)"; \
+	  for k in PARENT_FEDERATION_TOKEN PARENT_FEDERATION_ACCESS_KEY PARENT_FEDERATION_SECRET_KEY; do \
+	    eval "v=\$$$$k"; \
+	    [ -n "$$v" ] || { echo "✖ child mode: $$k unset in $(OCI_ENV)" >&2; exit 1; }; \
+	  done; \
+	fi
+	@command -v oci >/dev/null   || { echo "✖ oci CLI not in PATH" >&2; exit 1; }
+	@command -v terraform >/dev/null || { echo "✖ terraform not in PATH" >&2; exit 1; }
+	@oci iam region list >/dev/null 2>&1 || { echo "✖ oci CLI not authenticated — run 'oci session refresh -p $$OCI_CLI_PROFILE' (or oci session authenticate)" >&2; exit 1; }
+	@echo "▶ pre-flight ok (mode=$(OCI_MODE), dir=$(OCI_DIR))"
+
+_oci-render-cli: $(OCI_RENDER)
+$(OCI_RENDER): cmd/oci-render/main.go deploy/oci/render/render.go deploy/oci/render/templates/cp.yaml.tmpl deploy/oci/render/templates/okesu-cp.env.tmpl
+	@mkdir -p $(@D)
+	go build -o $@ ./cmd/oci-render
