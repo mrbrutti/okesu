@@ -1651,7 +1651,9 @@ function RunDetail({
           <FanoutHostListDrawer
             step={step}
             onSelectHost={(host) => setHostDrawer({ stepID: step.step_id, host })}
-            onClose={() => setHostList(null)}
+            // ESC fires on both drawers in the same tick when stacked;
+            // guard so ESC closes only the topmost (the host drawer).
+            onClose={() => { if (!hostDrawer) setHostList(null); }}
           />
         );
       })()}
