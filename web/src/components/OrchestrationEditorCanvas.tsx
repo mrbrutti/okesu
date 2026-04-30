@@ -47,7 +47,7 @@ import {
   type NodeProps,
 } from '@xyflow/react';
 import yaml from 'js-yaml';
-import { Cpu, Pause, Server, Trash2, Workflow, X } from 'lucide-react';
+import { Cpu, Network, Pause, Server, Trash2, Workflow, X } from 'lucide-react';
 import { api, type AgentLibraryItem, type NodeItem } from '../api';
 import { cn } from '../lib/cn';
 
@@ -96,6 +96,15 @@ function StepNodeView({ data, selected }: NodeProps<StepNode>) {
     >
       <Handle type="target" position={Position.Left} className="!bg-brand-500 !w-2 !h-2 !border-0" />
       <div className={cn('h-1', tone.stripe)} />
+      {/* Fan-out header strip — only when 2+ nodes are configured.
+          Mirrors the run-canvas fanout card's identity treatment so
+          operators see the same shape in editor + run viewer. */}
+      {data.nodes && data.nodes.length > 1 && (
+        <div className="bg-brand-50 text-brand-700 px-3 py-1 text-[10px] uppercase tracking-wide font-semibold flex items-center gap-1.5 border-b border-brand-100">
+          <Network size={10} />
+          <span>Fan-out · {data.nodes.length} hosts</span>
+        </div>
+      )}
       <div className="p-3">
         <div className="flex items-center gap-1.5 mb-1.5 flex-wrap">
           <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wide text-brand-700 bg-brand-50 ring-1 ring-brand-200 px-1.5 py-0.5 rounded font-medium">
@@ -114,15 +123,24 @@ function StepNodeView({ data, selected }: NodeProps<StepNode>) {
             </span>
           )}
         </div>
-        {data.nodes && data.nodes.length > 0 && (
+        {data.nodes && data.nodes.length === 1 && (
           <div className="text-[11px] text-ink-dim flex items-center gap-1 mb-1 min-w-0">
             <Server size={10} className="shrink-0" />
-            {data.nodes.length === 1 ? (
-              <span className="truncate font-mono">{data.nodes[0]}</span>
-            ) : (
-              <span className="truncate" title={data.nodes.join(', ')}>
-                {data.nodes.length} nodes (fan-out)
-              </span>
+            <span className="truncate font-mono">{data.nodes[0]}</span>
+          </div>
+        )}
+        {data.nodes && data.nodes.length > 1 && (
+          <div className="mb-1.5 space-y-0.5" title={data.nodes.join(', ')}>
+            {data.nodes.slice(0, 3).map((host) => (
+              <div key={host} className="text-[11px] text-ink-dim font-mono flex items-center gap-1.5 min-w-0">
+                <span className="w-1 h-1 rounded-full bg-slate-300 shrink-0" />
+                <span className="truncate">{host}</span>
+              </div>
+            ))}
+            {data.nodes.length > 3 && (
+              <div className="text-[10px] text-ink-mute italic pl-2.5">
+                +{data.nodes.length - 3} more
+              </div>
             )}
           </div>
         )}
