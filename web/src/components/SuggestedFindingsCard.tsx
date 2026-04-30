@@ -14,14 +14,15 @@
 // Closed/archived cases never render this — OverviewPanel
 // short-circuits before instantiating us.
 
-import { useEffect, useState } from 'react';
-import { Lightbulb, Loader2, Plus, RefreshCw, ThumbsDown } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { Lightbulb, Loader2, Plus, PlusSquare, RefreshCw, ThumbsDown } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { api, type SuggestedFinding, type SuggestionSignal } from '../api';
 
 const SIGNAL_LABEL: Record<SuggestionSignal, string> = {
   dedup_key: 'same dedup',
   ioc: 'same IOC',
+  ioc_cross_cp: 'campaign IOC',
   host_window: 'same host ±1h',
   daimon_sev: 'same daimon+sev',
 };
@@ -29,9 +30,16 @@ const SIGNAL_LABEL: Record<SuggestionSignal, string> = {
 const SIGNAL_TONE: Record<SuggestionSignal, string> = {
   dedup_key: 'bg-purple-50 text-purple-800 border-purple-200',
   ioc: 'bg-rose-50 text-rose-800 border-rose-200',
+  ioc_cross_cp: 'bg-red-100 text-red-800 border-red-300',
   host_window: 'bg-amber-50 text-amber-800 border-amber-200',
   daimon_sev: 'bg-slate-50 text-slate-700 border-slate-200',
 };
+
+// Bulk-add score thresholds. Operators can "Add all ≥ N" to sweep
+// the high-confidence suggestions in one click. The value pairs with
+// the engine's signal weights — 80 catches an IOC match alone; 100
+// requires dedup_key, ioc_cross_cp, or any combination.
+const BULK_THRESHOLDS = [80, 100, 150];
 
 export function SuggestedFindingsCard({
   invID,
@@ -99,9 +107,46 @@ export function SuggestedFindingsCard({
     }
   }
 
+  // Bulk-add: link every suggestion whose score is ≥ minScore in one
+  // server round-trip. The bulk endpoint loops the same per-pair
+  // store path as `add()`, so tombstones still lift correctly.
+  async function bulkAdd(minScore: number) {
+    if (!items) return;
+    const eligible = items.filter((s) => s.Score >= minScore);
+    if (eligible.length === 0) return;
+    if (!confirm(`Link ${eligible.length} suggestion${eligible.length === 1 ? '' : 's'} (score ≥ ${minScore}) to this case?`)) return;
+    setBusy(true); setError(null);
+    try {
+      const result = await api.investigations.bulkLinkFindings(
+        invID,
+        eligible.map((s) => s.ID),
+        cpInstanceID,
+      );
+      onChange(); // parent reloads bundle
+      // Optimistic prune — only rows that actually linked.
+      const linkedIDs = new Set(result.results.filter((r) => r.ok).map((r) => r.finding_id));
+      setItems((curr) => (curr ?? []).filter((s) => !linkedIDs.has(s.ID)));
+      if (result.failed > 0) {
+        setError(`${result.linked} linked, ${result.failed} failed.`);
+      }
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // Per-threshold counts so the buttons can show "Add all ≥ 80 (3)".
+  const eligibleCounts = useMemo(() => {
+    if (!items) return new Map<number, number>();
+    return new Map(
+      BULK_THRESHOLDS.map((t) => [t, items.filter((s) => s.Score >= t).length]),
+    );
+  }, [items]);
+
   return (
     <div className="border border-border rounded-md bg-white">
-      <header className="px-4 py-2.5 border-b border-border flex items-center gap-2">
+      <header className="px-4 py-2.5 border-b border-border flex items-center gap-2 flex-wrap">
         <Lightbulb size={13} className="text-amber-600" />
         <h4 className="text-[11px] uppercase tracking-wide font-semibold text-ink-mute">
           Suggested findings
@@ -109,14 +154,33 @@ export function SuggestedFindingsCard({
         {items && items.length > 0 && (
           <span className="text-[11px] text-ink-mute">· {items.length}</span>
         )}
-        <button
-          onClick={() => load()}
-          disabled={busy}
-          className="ml-auto p-1 text-ink-mute hover:text-ink rounded-md disabled:opacity-50"
-          title="Refresh suggestions"
-        >
-          <RefreshCw size={12} />
-        </button>
+        <div className="ml-auto flex items-center gap-1.5">
+          {items && items.length > 1 && BULK_THRESHOLDS.map((t) => {
+            const n = eligibleCounts.get(t) ?? 0;
+            if (n < 2) return null; // hide buttons that wouldn't change anything
+            return (
+              <button
+                key={t}
+                onClick={() => bulkAdd(t)}
+                disabled={busy}
+                className="text-[11px] px-2 py-1 rounded-md bg-brand-50 text-brand-700 hover:bg-brand-100 border border-brand-200 disabled:opacity-50 inline-flex items-center gap-1"
+                title={`Link all ${n} suggestion${n === 1 ? '' : 's'} with score ≥ ${t}`}
+              >
+                <PlusSquare size={11} />
+                Add all ≥ {t}
+                <span className="font-mono opacity-70">({n})</span>
+              </button>
+            );
+          })}
+          <button
+            onClick={() => load()}
+            disabled={busy}
+            className="p-1 text-ink-mute hover:text-ink rounded-md disabled:opacity-50"
+            title="Refresh suggestions"
+          >
+            <RefreshCw size={12} />
+          </button>
+        </div>
       </header>
 
       {error && (

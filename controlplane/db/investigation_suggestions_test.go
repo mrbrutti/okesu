@@ -2,6 +2,7 @@ package db
 
 import (
 	"testing"
+	"time"
 )
 
 // TestSuggestFindings_DedupKeyMatch — most-confident signal.
@@ -129,6 +130,151 @@ func TestSuggestFindings_DismissTombstone(t *testing.T) {
 	}
 	if n != 0 {
 		t.Errorf("expected tombstone cleared after re-link, got count=%d", n)
+	}
+}
+
+// TestSuggestionSettings_DefaultsAndOverride — settings round-trip,
+// missing/zero fields fall back to defaults, persisted overrides
+// take effect at query time.
+func TestSuggestionSettings_DefaultsAndOverride(t *testing.T) {
+	st := openTempStore(t)
+
+	// First read with no row → defaults.
+	got, err := st.GetSuggestionSettings()
+	if err != nil {
+		t.Fatalf("get defaults: %v", err)
+	}
+	if got.Threshold != DefaultSuggestionThreshold {
+		t.Errorf("expected default threshold %d, got %d",
+			DefaultSuggestionThreshold, got.Threshold)
+	}
+	if got.Weights[SignalDedupKey] != 100 {
+		t.Errorf("expected dedup_key=100, got %d", got.Weights[SignalDedupKey])
+	}
+	if got.Weights[SignalIOCCrossCP] != 100 {
+		t.Errorf("expected ioc_cross_cp=100 default, got %d", got.Weights[SignalIOCCrossCP])
+	}
+
+	// Persist a partial override (just threshold) — defaults should
+	// fill in the rest.
+	if err := st.SetSuggestionSettings(SuggestionSettings{Threshold: 50}); err != nil {
+		t.Fatalf("set partial: %v", err)
+	}
+	got2, _ := st.GetSuggestionSettings()
+	if got2.Threshold != 50 {
+		t.Errorf("expected persisted threshold 50, got %d", got2.Threshold)
+	}
+	if got2.Weights[SignalDedupKey] != 100 {
+		t.Errorf("expected dedup_key default to fill in, got %d", got2.Weights[SignalDedupKey])
+	}
+}
+
+// TestSuggestFindings_RespectsThreshold — a higher persisted
+// threshold filters out weaker signals (single daimon_sev hit at
+// weight 30 with threshold 50 should be hidden).
+func TestSuggestFindings_RespectsThreshold(t *testing.T) {
+	st := openTempStore(t)
+	caseA, _ := st.CreateInvestigation(&InvestigationInsert{Title: "A"})
+
+	if _, err := st.Exec(`INSERT INTO events (id, ts, type, raw_json) VALUES (1, 1, 'finding', '{}')`); err != nil {
+		t.Fatalf("seed event: %v", err)
+	}
+	// 101 (linked) and 102 share daimon+severity only — score = 30.
+	// Use a recent ts so the daimon_sev 24h window catches them.
+	now := time.Now().UnixMilli()
+	if _, err := st.Exec(`
+		INSERT INTO findings (id, event_id, ts, agent, severity, title, raw_json)
+		VALUES
+		  (101, 1, ?, 'edr', 'HIGH', 'a', '{}'),
+		  (102, 1, ?, 'edr', 'HIGH', 'b', '{}')`,
+		now-1000, now); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	_ = st.LinkFindingToInvestigation(caseA, 101)
+
+	// Default threshold (30) → 102 surfaces.
+	got, _ := st.SuggestFindingsForInvestigation(caseA, 0, 10)
+	if len(got) != 1 {
+		t.Fatalf("baseline expected 1, got %+v", got)
+	}
+
+	// Bump persisted threshold to 50 → 102 hidden (score 30 < 50).
+	if err := st.SetSuggestionSettings(SuggestionSettings{Threshold: 50}); err != nil {
+		t.Fatalf("set threshold: %v", err)
+	}
+	got, _ = st.SuggestFindingsForInvestigation(caseA, 0, 10)
+	if len(got) != 0 {
+		t.Fatalf("expected [] with threshold 50, got %+v", got)
+	}
+}
+
+// TestSuggestFindings_IOCCrossCPSignal — the cross-CP IOC signal
+// only fires when the matched IOC has at least
+// IOCCrossCPMinObservations observations within the window.
+func TestSuggestFindings_IOCCrossCPSignal(t *testing.T) {
+	st := openTempStore(t)
+	caseA, _ := st.CreateInvestigation(&InvestigationInsert{Title: "A"})
+
+	if _, err := st.Exec(`INSERT INTO events (id, ts, type, raw_json) VALUES (1, 1, 'finding', '{}')`); err != nil {
+		t.Fatalf("seed event: %v", err)
+	}
+	if _, err := st.Exec(`
+		INSERT INTO findings (id, event_id, ts, severity, title, raw_json)
+		VALUES
+		  (201, 1, 1000, 'HIGH', 'linked',  '{}'),
+		  (202, 1, 2000, 'HIGH', 'related', '{}')`); err != nil {
+		t.Fatalf("seed findings: %v", err)
+	}
+	if _, err := st.Exec(`
+		INSERT INTO iocs (id, kind, normalized_value, severity_floor, value, source, first_seen, last_seen)
+		VALUES (1, 'sha256', 'abc', 'HIGH', 'abc', 'test', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`); err != nil {
+		t.Fatalf("seed ioc: %v", err)
+	}
+	// Two observations on the IOC: linked+related findings. 2 < default
+	// IOCCrossCPMinObservations (3), so the cross-CP signal should NOT
+	// fire — only the regular `ioc` signal at weight 80.
+	if _, err := st.Exec(`
+		INSERT INTO ioc_observations (ioc_id, finding_id, observed_at)
+		VALUES (1, 201, CURRENT_TIMESTAMP), (1, 202, CURRENT_TIMESTAMP)`); err != nil {
+		t.Fatalf("seed obs: %v", err)
+	}
+	_ = st.LinkFindingToInvestigation(caseA, 201)
+
+	got, err := st.SuggestFindingsForInvestigation(caseA, 0, 10)
+	if err != nil {
+		t.Fatalf("suggest: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != 202 {
+		t.Fatalf("expected [202], got %+v", got)
+	}
+	for _, sig := range got[0].Signals {
+		if sig == SignalIOCCrossCP {
+			t.Errorf("ioc_cross_cp signal should NOT fire with only 2 observations, signals=%v", got[0].Signals)
+		}
+	}
+
+	// Add a 3rd observation → cross-CP signal fires now.
+	if _, err := st.Exec(`
+		INSERT INTO ioc_observations (ioc_id, finding_id, observed_at)
+		VALUES (1, 202, CURRENT_TIMESTAMP)`); err != nil {
+		t.Fatalf("seed extra obs: %v", err)
+	}
+	got, _ = st.SuggestFindingsForInvestigation(caseA, 0, 10)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 row, got %+v", got)
+	}
+	hasCrossCP := false
+	for _, sig := range got[0].Signals {
+		if sig == SignalIOCCrossCP {
+			hasCrossCP = true
+		}
+	}
+	if !hasCrossCP {
+		t.Errorf("expected ioc_cross_cp signal at obs_count=3, signals=%v", got[0].Signals)
+	}
+	// Score should now be ioc(80) + ioc_cross_cp(100) = 180.
+	if got[0].Score != 180 {
+		t.Errorf("expected score 180 (ioc + ioc_cross_cp), got %d", got[0].Score)
 	}
 }
 

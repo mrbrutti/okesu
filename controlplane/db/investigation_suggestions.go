@@ -40,35 +40,25 @@ const (
 	SignalIOC        SuggestionSignal = "ioc"
 	SignalHostWindow SuggestionSignal = "host_window"
 	SignalDaimonSev  SuggestionSignal = "daimon_sev"
+	// SignalIOCCrossCP fires when a candidate finding's IOC has been
+	// observed widely (≥ N observations within the configured window).
+	// "Wide" approximates "seen across the federation" — the parent
+	// CP federates ioc_observations from each child, so high
+	// observation counts indicate a campaign-shaped IOC vs. a
+	// one-off cert/path. Stronger weight than the plain IOC signal.
+	SignalIOCCrossCP SuggestionSignal = "ioc_cross_cp"
 )
-
-// suggestionWeights assigns a fixed score to each signal. Tunable;
-// surfaced via DefaultSuggestionThreshold so a settings flag can
-// override the cutoff later (per the user's "settings variable"
-// directive — schema isn't wired yet, but the constant is the seam).
-var suggestionWeights = map[SuggestionSignal]int{
-	SignalDedupKey:   100,
-	SignalIOC:        80,
-	SignalHostWindow: 60,
-	SignalDaimonSev:  30,
-}
 
 // DefaultSuggestionThreshold filters the candidate set: any finding
 // whose total score is below this cutoff doesn't surface. 30 lets a
 // single daimon+severity match through (the weakest signal); raise to
 // hide weak suggestions.
+//
+// Default lives here so investigation_settings.go can reference it
+// without an import cycle. Admins override at runtime via the
+// settings page; the constant is the floor when the meta row is
+// missing or malformed.
 const DefaultSuggestionThreshold = 30
-
-// hostWindowMinutes is the ±window for the same-host signal. 60min is
-// the operating-band: short enough that "same host an hour later"
-// likely represents the same incident, long enough that ingestion
-// jitter doesn't drop legitimate correlations.
-const hostWindowMinutes = 60
-
-// daimonSevWindowHours is the lookback for the daimon+severity signal.
-// 24h matches the way operators triage daily — anything older is
-// historical context, not an active correlation.
-const daimonSevWindowHours = 24
 
 // SuggestedFinding is one candidate the workspace will offer. The
 // signals slice carries the rule names that fired so the UI can
@@ -94,31 +84,41 @@ type SuggestedFinding struct {
 //   - findings dismissed on this case (per-case tombstones)
 //   - the case's own findings (via the linked-out filter above)
 //
-// The query unions the four signals as separate sub-queries that each
-// produce (finding_id, signal) rows; we then GROUP BY finding_id and
-// sum the per-signal weights via a CASE expression. This keeps the
-// scoring transparent — the UI just shows what signals fired.
+// Reads tunable settings (weights, windows, thresholds) from the
+// `meta` k/v table — admins can adjust without redeploy. Falls back
+// to defaults when no row exists.
+//
+// `threshold` and `limit` (call args) override the persisted defaults
+// per request — the UI passes them when an operator wants a wider or
+// narrower view. Pass 0 to use the persisted/default values.
+//
+// The query unions the per-signal sub-queries that each produce
+// (finding_id, signal) rows; the outer SELECT pivots into one row
+// per candidate with the score (sum of fired weights) + a concatenated
+// signal list so the UI can show *why* each candidate surfaced.
 func (s *Store) SuggestFindingsForInvestigation(invID int64, threshold, limit int) ([]SuggestedFinding, error) {
+	settings, _ := s.GetSuggestionSettings()
+	return s.suggestFindingsWithSettings(invID, threshold, limit, settings)
+}
+
+func (s *Store) suggestFindingsWithSettings(invID int64, threshold, limit int, settings SuggestionSettings) ([]SuggestedFinding, error) {
 	if threshold <= 0 {
-		threshold = DefaultSuggestionThreshold
+		threshold = settings.Threshold
 	}
 	if limit <= 0 {
 		limit = 10
 	}
 
-	// Operator-friendly defaults: include all severities. The UI can
-	// add severity filtering later if signal volume becomes a problem.
-	hostWindowMs := int64((time.Duration(hostWindowMinutes) * time.Minute).Milliseconds())
-	daimonSevCutoffMs := time.Now().Add(-time.Duration(daimonSevWindowHours)*time.Hour).UnixMilli()
+	hostWindowMs := int64((time.Duration(settings.HostWindowMinutes) * time.Minute).Milliseconds())
+	daimonSevCutoffMs := time.Now().Add(-time.Duration(settings.DaimonSevWindowHours)*time.Hour).UnixMilli()
+	iocCrossCutoff := time.Now().Add(-time.Duration(settings.IOCCrossCPWindowHours) * time.Hour).UTC().Format("2006-01-02 15:04:05")
 
 	// Each sub-query produces (candidate_id, signal). The outer SELECT
 	// pivots signals into a single row per candidate with score + a
-	// concatenated signal list. SQLite uses GROUP_CONCAT; Postgres uses
-	// STRING_AGG — but GROUP_CONCAT exists in postgres-15 with the
-	// `string_agg` shim; we use GROUP_CONCAT to stay sqlite-native and
-	// have already validated postgres compatibility in the migrations
-	// runner used for tests (sqlite-only here; postgres CI exercises
-	// the schema migration but not these queries).
+	// concatenated signal list. SQLite + Postgres both understand
+	// GROUP_CONCAT/STRING_AGG; we use GROUP_CONCAT (sqlite-native);
+	// the postgres migrations run in CI, but the queries here only
+	// run against sqlite.
 	q := fmt.Sprintf(`
 WITH signals AS (
   -- Signal 1: dedup_key match against any linked finding.
@@ -146,7 +146,7 @@ WITH signals AS (
 
   UNION
 
-  -- Signal 3: same host within ±60min of any linked finding's ts.
+  -- Signal 3: same host within ±N min of any linked finding's ts.
   SELECT f.id AS candidate_id, '%s' AS signal
   FROM findings f
   JOIN findings linked
@@ -160,7 +160,7 @@ WITH signals AS (
 
   UNION
 
-  -- Signal 4: same daimon+severity within last 24h of any linked finding.
+  -- Signal 4: same daimon+severity within last N h of any linked finding.
   SELECT f.id AS candidate_id, '%s' AS signal
   FROM findings f
   JOIN findings linked
@@ -174,10 +174,33 @@ WITH signals AS (
     AND f.ts >= ?
     AND f.agent IS NOT NULL
     AND f.severity IS NOT NULL
+
+  UNION
+
+  -- Signal 5: cross-CP IOC pattern. Like signal 2, but only fires
+  -- when the matched IOC has been observed >= N times within the
+  -- IOCCrossCPWindowHours window (a campaign-shaped IOC, not a
+  -- one-off match). Federated parents aggregate observations from
+  -- each child, so observation count proxies for "seen across CPs"
+  -- until per-CP attribution lands.
+  SELECT obs_cand.finding_id AS candidate_id, '%s' AS signal
+  FROM ioc_observations obs_cand
+  JOIN ioc_observations obs_linked
+    ON obs_linked.ioc_id = obs_cand.ioc_id
+   AND obs_linked.finding_id != obs_cand.finding_id
+  JOIN investigation_findings ifj ON ifj.finding_id = obs_linked.finding_id
+  WHERE ifj.investigation_id = ?
+    AND obs_cand.finding_id IS NOT NULL
+    AND (
+      SELECT COUNT(*) FROM ioc_observations o2
+      WHERE o2.ioc_id = obs_cand.ioc_id
+        AND o2.observed_at >= ?
+    ) >= ?
 )
 SELECT f.id, f.ts, f.agent, f.host, f.severity, f.title,
        f.status, f.tags, f.subtype,
        SUM(CASE s.signal
+             WHEN '%s' THEN %d
              WHEN '%s' THEN %d
              WHEN '%s' THEN %d
              WHEN '%s' THEN %d
@@ -198,18 +221,20 @@ HAVING score >= ?
 ORDER BY score DESC, f.ts DESC
 LIMIT ?
 `,
-		SignalDedupKey, SignalIOC, SignalHostWindow, SignalDaimonSev,
-		SignalDedupKey, suggestionWeights[SignalDedupKey],
-		SignalIOC, suggestionWeights[SignalIOC],
-		SignalHostWindow, suggestionWeights[SignalHostWindow],
-		SignalDaimonSev, suggestionWeights[SignalDaimonSev],
+		SignalDedupKey, SignalIOC, SignalHostWindow, SignalDaimonSev, SignalIOCCrossCP,
+		SignalDedupKey, settings.Weights[SignalDedupKey],
+		SignalIOC, settings.Weights[SignalIOC],
+		SignalHostWindow, settings.Weights[SignalHostWindow],
+		SignalDaimonSev, settings.Weights[SignalDaimonSev],
+		SignalIOCCrossCP, settings.Weights[SignalIOCCrossCP],
 	)
 
 	rows, err := s.Query(q,
-		invID,                // signal 1
-		invID,                // signal 2
-		hostWindowMs, invID,  // signal 3
-		invID, daimonSevCutoffMs, // signal 4
+		invID,                                                     // signal 1
+		invID,                                                     // signal 2
+		hostWindowMs, invID,                                       // signal 3
+		invID, daimonSevCutoffMs,                                  // signal 4
+		invID, iocCrossCutoff, settings.IOCCrossCPMinObservations, // signal 5
 		invID, // exclude already-linked
 		invID, // exclude dismissed
 		threshold,
@@ -284,18 +309,18 @@ type RelatedCase struct {
 //   - non-active cases (closed/archived — operators don't bridge to
 //     historical cases from the Findings page)
 //
-// Note: this query references the *finding's* attributes (host, ts,
-// agent, severity, dedup_key) and joins each signal independently to
-// `investigation_findings.linked_findings` to find candidate cases.
+// Reads the same persisted SuggestionSettings as the workspace card.
 func (s *Store) ListRelatedCasesForFinding(findingID int64, threshold, limit int) ([]RelatedCase, error) {
+	settings, _ := s.GetSuggestionSettings()
 	if threshold <= 0 {
-		threshold = DefaultSuggestionThreshold
+		threshold = settings.Threshold
 	}
 	if limit <= 0 {
 		limit = 5
 	}
-	hostWindowMs := int64((time.Duration(hostWindowMinutes) * time.Minute).Milliseconds())
-	daimonSevCutoffMs := time.Now().Add(-time.Duration(daimonSevWindowHours)*time.Hour).UnixMilli()
+	hostWindowMs := int64((time.Duration(settings.HostWindowMinutes) * time.Minute).Milliseconds())
+	daimonSevCutoffMs := time.Now().Add(-time.Duration(settings.DaimonSevWindowHours)*time.Hour).UnixMilli()
+	iocCrossCutoff := time.Now().Add(-time.Duration(settings.IOCCrossCPWindowHours) * time.Hour).UTC().Format("2006-01-02 15:04:05")
 
 	q := fmt.Sprintf(`
 WITH signals AS (
@@ -323,7 +348,7 @@ WITH signals AS (
 
   UNION
 
-  -- Signal 3: same host within ±60min of any case-linked finding.
+  -- Signal 3: same host within ±N min of any case-linked finding.
   SELECT ifj.investigation_id AS case_id, '%s' AS signal
   FROM findings me
   JOIN findings linked
@@ -336,7 +361,7 @@ WITH signals AS (
 
   UNION
 
-  -- Signal 4: same daimon+severity within last 24h.
+  -- Signal 4: same daimon+severity within last N h.
   SELECT ifj.investigation_id AS case_id, '%s' AS signal
   FROM findings me
   JOIN findings linked
@@ -350,9 +375,28 @@ WITH signals AS (
   WHERE me.id = ?
     AND me.agent IS NOT NULL
     AND me.severity IS NOT NULL
+
+  UNION
+
+  -- Signal 5: cross-CP IOC. Same join as signal 2 but only fires
+  -- when the IOC has been observed >= N times in the configured
+  -- window — campaign-shaped, not a one-off match.
+  SELECT ifj.investigation_id AS case_id, '%s' AS signal
+  FROM ioc_observations my_obs
+  JOIN ioc_observations linked_obs
+    ON linked_obs.ioc_id = my_obs.ioc_id
+   AND linked_obs.finding_id != my_obs.finding_id
+  JOIN investigation_findings ifj ON ifj.finding_id = linked_obs.finding_id
+  WHERE my_obs.finding_id = ?
+    AND (
+      SELECT COUNT(*) FROM ioc_observations o2
+      WHERE o2.ioc_id = my_obs.ioc_id
+        AND o2.observed_at >= ?
+    ) >= ?
 )
 SELECT i.id, i.title, i.status,
        SUM(CASE s.signal
+             WHEN '%s' THEN %d
              WHEN '%s' THEN %d
              WHEN '%s' THEN %d
              WHEN '%s' THEN %d
@@ -374,18 +418,20 @@ HAVING score >= ?
 ORDER BY score DESC, i.updated_at DESC
 LIMIT ?
 `,
-		SignalDedupKey, SignalIOC, SignalHostWindow, SignalDaimonSev,
-		SignalDedupKey, suggestionWeights[SignalDedupKey],
-		SignalIOC, suggestionWeights[SignalIOC],
-		SignalHostWindow, suggestionWeights[SignalHostWindow],
-		SignalDaimonSev, suggestionWeights[SignalDaimonSev],
+		SignalDedupKey, SignalIOC, SignalHostWindow, SignalDaimonSev, SignalIOCCrossCP,
+		SignalDedupKey, settings.Weights[SignalDedupKey],
+		SignalIOC, settings.Weights[SignalIOC],
+		SignalHostWindow, settings.Weights[SignalHostWindow],
+		SignalDaimonSev, settings.Weights[SignalDaimonSev],
+		SignalIOCCrossCP, settings.Weights[SignalIOCCrossCP],
 	)
 
 	rows, err := s.Query(q,
-		findingID,                  // signal 1
-		findingID,                  // signal 2
-		hostWindowMs, findingID,    // signal 3
-		daimonSevCutoffMs, findingID, // signal 4
+		findingID,                                                     // signal 1
+		findingID,                                                     // signal 2
+		hostWindowMs, findingID,                                       // signal 3
+		daimonSevCutoffMs, findingID,                                  // signal 4
+		findingID, iocCrossCutoff, settings.IOCCrossCPMinObservations, // signal 5
 		findingID, // exclude already-linked cases
 		findingID, // exclude tombstoned cases
 		threshold,

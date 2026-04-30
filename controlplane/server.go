@@ -552,6 +552,8 @@ func (s *Server) routes() http.Handler {
 	// federate via the same `?cp=<id>` proxy convention.
 	r.Get("/api/v1/federation/investigations/{id}/suggested-findings", api.FederationSuggestFindings(s.store))
 	r.Put("/api/v1/federation/investigations/{id}/dismissed-findings/{finding_id}", api.FederationDismissSuggestedFinding(s.store))
+	// Phase 22.6.1 — bulk-link from workspace "Add all ≥ N" buttons.
+	r.Post("/api/v1/federation/investigations/{id}/bulk-link-findings", api.FederationBulkLinkFindings(s.store))
 	r.Post("/api/v1/federation/orchestrations", api.FederationOrchestrationCreate(s.store))
 	r.Put("/api/v1/federation/orchestrations/{id}", api.FederationOrchestrationUpdate(s.store))
 	r.Delete("/api/v1/federation/orchestrations/{id}", api.FederationOrchestrationDelete(s.store))
@@ -725,6 +727,10 @@ func (s *Server) routes() http.Handler {
 		r.Delete("/api/investigations/{id}/runs/{run_id}", api.UnlinkRunFromInvestigationHandler(s.store))
 		r.Get("/api/investigations/{id}/suggested-findings", api.FederatedSuggestFindings(s.store, s.fedAgg))
 		r.Put("/api/investigations/{id}/dismissed-findings/{finding_id}", api.FederatedDismissSuggestedFinding(s.store, s.fedAgg))
+		r.Post("/api/investigations/{id}/bulk-link-findings", api.FederatedBulkLinkFindings(s.store, s.fedAgg))
+		// Read of suggestion engine settings is open to any logged-in
+		// user (workspace card uses the threshold for labels).
+		r.Get("/api/investigations/settings", api.SuggestionSettingsHandler(s.store))
 
 		// Read endpoints (continued)
 		r.Get("/api/nodes", api.FederatedNodesList(s.store, s.fedAgg))
@@ -763,6 +769,8 @@ func (s *Server) routes() http.Handler {
 			r.Post("/api/deploy/binaries", api.BinaryUpload(s.store, s.cfg.DaemonBinariesDir))
 			r.Delete("/api/deploy/binaries/{name}", api.BinaryDelete(s.store))
 			r.Delete("/api/nodes/{id}/known-host", api.NodeKnownHostDelete(s.store))
+
+			r.Put("/api/investigations/settings", api.UpdateSuggestionSettingsHandler(s.store))
 
 			r.Get("/api/notifications/channels", api.ChannelsList(s.store))
 			r.Post("/api/notifications/channels", api.ChannelCreate(s.store))

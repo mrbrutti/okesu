@@ -10,6 +10,7 @@ import {
   KeyRound,
   Plug,
   ShieldCheck,
+  Sparkles,
   User as UserIcon,
   Users as UsersIcon,
 } from 'lucide-react';
@@ -29,6 +30,7 @@ import DatabaseSection from './settings/Database';
 import DeploySection from './settings/Deploy';
 import DisplaySection from './settings/Display';
 import CloudSection from './settings/Cloud';
+import InvestigationsSection from './settings/Investigations';
 
 interface Props {
   user: User;
@@ -45,6 +47,7 @@ const NAV: NavItem[] = [
   { to: 'profile',         label: 'Profile',        icon: UserIcon },
   { to: 'display',         label: 'Display',        icon: Eye },
   { to: 'users',           label: 'Users',          icon: UsersIcon,    adminOnly: true },
+  { to: 'investigations',  label: 'Investigations', icon: Sparkles,     adminOnly: true },
   { to: 'notifications',   label: 'Notifications',  icon: Bell,         adminOnly: true },
   { to: 'integrations',    label: 'Integrations',   icon: Plug,         adminOnly: true },
   { to: 'audit',           label: 'Audit log',      icon: ClipboardList, adminOnly: true },
@@ -99,6 +102,7 @@ export default function SettingsPage({ user }: Props) {
           <Route path="profile"        element={<ProfileSection user={user} />} />
           <Route path="display"        element={<DisplaySection />} />
           <Route path="users"          element={user.role === 'admin' ? <UsersSection /> : <Forbidden />} />
+          <Route path="investigations" element={user.role === 'admin' ? <InvestigationsSection /> : <Forbidden />} />
           <Route path="notifications"  element={user.role === 'admin' ? <NotificationsSection /> : <Forbidden />} />
           <Route path="integrations"   element={user.role === 'admin' ? <IntegrationsSection /> : <Forbidden />} />
           <Route path="audit"          element={user.role === 'admin' ? <AuditLogSection /> : <Forbidden />} />
