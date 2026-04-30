@@ -22,6 +22,16 @@ import (
 // URLParam so the same handler works in unit tests (which call it
 // directly without the chi router) and in production (which mounts it
 // behind chi-style {name} URL params on the mgmt plane).
+//
+// TODO(security): the mgmt plane is mTLS-gated but the handler does
+// not verify that the client cert's CN matches the {name} URL param.
+// Any daemon with a valid agent cert can read any other agent's
+// lessons. This is consistent with sibling mgmt-plane endpoints
+// (MgmtKnownIssues, MgmtFindingsLookup) which also don't cross-check.
+// Lessons are operator-supplied prompt material that flows into a
+// downstream LLM context, so this exposure deserves a phase-level
+// decision before more lesson-shaped surfaces land. A 4-line check
+// reading r.TLS.PeerCertificates[0].Subject.CommonName closes it.
 func ListAgentLessonsHandler(store *db.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		name := extractAgentNameFromLessonsPath(r.URL.Path)
