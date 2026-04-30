@@ -133,6 +133,78 @@ func TestSuggestFindings_DismissTombstone(t *testing.T) {
 	}
 }
 
+// TestAutoLinkFindingToTopCase — when AutoLinkThreshold is set and a
+// new finding scores above it against an active case, the engine
+// links it without operator action. Below threshold (or threshold==0)
+// → no link.
+func TestAutoLinkFindingToTopCase(t *testing.T) {
+	st := openTempStore(t)
+	caseA, _ := st.CreateInvestigation(&InvestigationInsert{Title: "case A"})
+
+	if _, err := st.Exec(`INSERT INTO events (id, ts, type, raw_json) VALUES (1, 1, 'finding', '{}')`); err != nil {
+		t.Fatalf("seed event: %v", err)
+	}
+	// 101 is linked to caseA, 102 has the same dedup_key so it scores
+	// 100 against caseA.
+	if _, err := st.Exec(`
+		INSERT INTO findings (id, event_id, ts, severity, title, dedup_key, raw_json)
+		VALUES
+		  (101, 1, 1000, 'HIGH', 'a', 'K', '{}'),
+		  (102, 1, 2000, 'HIGH', 'b', 'K', '{}')`); err != nil {
+		t.Fatalf("seed findings: %v", err)
+	}
+	_ = st.LinkFindingToInvestigation(caseA, 101)
+
+	// Disabled by default — autolink should no-op.
+	r, err := st.AutoLinkFindingToTopCase(102)
+	if err != nil {
+		t.Fatalf("autolink (disabled): %v", err)
+	}
+	if r != nil {
+		t.Errorf("expected nil result with autolink disabled, got %+v", r)
+	}
+	links, _ := st.ListInvestigationsForFinding(102)
+	if len(links) != 0 {
+		t.Errorf("finding 102 should not be linked yet, got %+v", links)
+	}
+
+	// Enable autolink at threshold=80 — finding 102 scores 100, fires.
+	if err := st.SetSuggestionSettings(SuggestionSettings{AutoLinkThreshold: 80}); err != nil {
+		t.Fatalf("set autolink: %v", err)
+	}
+	r, err = st.AutoLinkFindingToTopCase(102)
+	if err != nil {
+		t.Fatalf("autolink (enabled): %v", err)
+	}
+	if r == nil || r.InvestigationID != caseA {
+		t.Fatalf("expected autolink to caseA (id=%d), got %+v", caseA, r)
+	}
+	if r.Score < 80 {
+		t.Errorf("expected score >= 80 (threshold), got %d", r.Score)
+	}
+	links, _ = st.ListInvestigationsForFinding(102)
+	if len(links) != 1 || links[0].ID != caseA {
+		t.Errorf("expected finding 102 linked to caseA, got %+v", links)
+	}
+
+	// Threshold above achievable score — no link for a fresh finding.
+	if _, err := st.Exec(`
+		INSERT INTO findings (id, event_id, ts, severity, title, dedup_key, raw_json)
+		VALUES (103, 1, 3000, 'HIGH', 'c', 'K', '{}')`); err != nil {
+		t.Fatalf("seed 103: %v", err)
+	}
+	if err := st.SetSuggestionSettings(SuggestionSettings{AutoLinkThreshold: 200}); err != nil {
+		t.Fatalf("raise autolink: %v", err)
+	}
+	r, err = st.AutoLinkFindingToTopCase(103)
+	if err != nil {
+		t.Fatalf("autolink (high threshold): %v", err)
+	}
+	if r != nil {
+		t.Errorf("expected nil at threshold=200 (max score = dedup 100), got %+v", r)
+	}
+}
+
 // TestSuggestionSettings_DefaultsAndOverride — settings round-trip,
 // missing/zero fields fall back to defaults, persisted overrides
 // take effect at query time.

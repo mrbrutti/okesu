@@ -495,6 +495,9 @@ export interface SuggestionSettings {
   daimon_sev_window_hours: number;
   ioc_cross_cp_min_observations: number;
   ioc_cross_cp_window_hours: number;
+  /** When > 0, newly-projected findings whose top score against an
+   *  active case meets this value are auto-linked. 0 disables. */
+  autolink_threshold: number;
 }
 
 // BulkLinkResult — per-finding outcome from POST

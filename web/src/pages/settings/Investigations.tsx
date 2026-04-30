@@ -85,6 +85,7 @@ export default function InvestigationsSection() {
       daimon_sev_window_hours: 0,
       ioc_cross_cp_min_observations: 0,
       ioc_cross_cp_window_hours: 0,
+      autolink_threshold: 0,
     });
   }
 
@@ -132,6 +133,21 @@ export default function InvestigationsSection() {
           step={5}
           suffix="points"
           help={`Default 30. Raise to hide weaker correlations (e.g. lone daimon_sev hits at weight ${draft.weights.daimon_sev ?? 30}).`}
+        />
+      </Card>
+
+      <Card title="Autolink">
+        <p className="text-xs text-ink-dim mb-3">
+          When a newly-projected finding scores at or above this against an active case, the engine auto-links it without operator action. <strong>0 disables autolink</strong> (default — opt-in). Set higher than the suggestion threshold by design: surfacing a hint is cheap, auto-linking is a commitment.
+        </p>
+        <NumberRow
+          label="Autolink threshold"
+          value={draft.autolink_threshold}
+          onChange={(v) => setDraft({ ...draft, autolink_threshold: v })}
+          min={0}
+          step={20}
+          suffix={draft.autolink_threshold === 0 ? 'points (disabled)' : 'points'}
+          help="Suggested values: 200 (dedup_key + ioc, very high confidence) or 180 (ioc + ioc_cross_cp, campaign IOC)."
         />
       </Card>
 
