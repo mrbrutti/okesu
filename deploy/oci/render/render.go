@@ -11,7 +11,11 @@ import (
 	"bytes"
 	_ "embed"
 	"fmt"
+	"os"
+	"path/filepath"
 	"text/template"
+
+	"github.com/section9labs/okesu/controlplane"
 )
 
 // Inputs are everything the templates need. TerraformOut is the
@@ -90,4 +94,35 @@ func RenderEnvFile(in Inputs) ([]byte, error) {
 		return nil, fmt.Errorf("ANTHROPIC_API_KEY is required in OperatorEnv")
 	}
 	return render("okesu-cp.env", envTmpl, in)
+}
+
+// ValidateCPYAML writes body to a temp file and feeds it through the
+// CP's real LoadConfigFile loader. This is the drift-detector: if the
+// template emits a YAML field name that no longer matches the CP's
+// yamlConfig struct tags, this fails loudly during render — before
+// anything is scp'd to a real VM.
+//
+// Note: yaml.v3 operates in non-strict mode by default, so unknown
+// fields (e.g. federation fields that are env-var-only and have no
+// yamlConfig entry) are silently ignored. Only field-tag mismatches
+// where the loader EXPECTS a name we no longer emit cause silent data
+// loss; those are surfaced by inspecting the returned Config values
+// in the test, not by parse errors here.
+func ValidateCPYAML(body []byte) error {
+	dir, err := os.MkdirTemp("", "okesu-cp-validate-")
+	if err != nil {
+		return fmt.Errorf("tmpdir: %w", err)
+	}
+	defer os.RemoveAll(dir)
+
+	path := filepath.Join(dir, "cp.yaml")
+	if err := os.WriteFile(path, body, 0600); err != nil {
+		return fmt.Errorf("write tmp cp.yaml: %w", err)
+	}
+
+	var cfg controlplane.Config
+	if err := controlplane.LoadConfigFile(path, &cfg); err != nil {
+		return fmt.Errorf("controlplane.LoadConfigFile: %w", err)
+	}
+	return nil
 }

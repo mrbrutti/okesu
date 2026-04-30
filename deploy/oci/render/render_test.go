@@ -117,3 +117,17 @@ func TestRenderEnvFile_RequiresAnthropic(t *testing.T) {
 		t.Fatalf("RenderEnvFile with no ANTHROPIC_API_KEY should error")
 	}
 }
+
+func TestValidateCPYAML_AllModes(t *testing.T) {
+	for _, mode := range []string{"standalone", "parent", "child"} {
+		t.Run(mode, func(t *testing.T) {
+			body, err := RenderCPYAML(loadInputs(t, mode))
+			if err != nil {
+				t.Fatalf("RenderCPYAML: %v", err)
+			}
+			if err := ValidateCPYAML(body); err != nil {
+				t.Fatalf("ValidateCPYAML(%s): %v\n--- yaml\n%s", mode, err, body)
+			}
+		})
+	}
+}
