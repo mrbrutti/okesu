@@ -240,7 +240,11 @@ func s3AssetForPath(path string) string {
 //
 // Errors here are operator-facing — they bubble up to the dialog
 // the operator clicked Submit on. timeoutSec=0 uses the default.
-func (a *Aggregator) SubmitS3Directive(ctx context.Context, peer Peer, kind string, body json.RawMessage, issuedByEmail string) (*s3rpc.Response, error) {
+//
+// pathParams are forwarded into the s3rpc Request unchanged. Used for
+// directives whose underlying handler reads chi.URLParam (NodeDeploy
+// pulls {id} via this path). Nil for directives without path params.
+func (a *Aggregator) SubmitS3Directive(ctx context.Context, peer Peer, kind string, body json.RawMessage, issuedByEmail string, pathParams map[string]string) (*s3rpc.Response, error) {
 	if peer.Row.Transport != "s3_dead_drop" {
 		return nil, fmt.Errorf("SubmitS3Directive called on non-s3 peer (transport=%s)", peer.Row.Transport)
 	}
@@ -267,6 +271,7 @@ func (a *Aggregator) SubmitS3Directive(ctx context.Context, peer Peer, kind stri
 		Kind:         kind,
 		Body:         body,
 		IssuedByUser: issuedByEmail,
+		PathParams:   pathParams,
 	})
 }
 

@@ -547,6 +547,7 @@ func (s *Server) routes() http.Handler {
 		Secrets:           s.secrets,
 	}))
 	r.Post("/api/v1/federation/runs", api.FederationCreateRun(s.runs, s.tunReg, s.store, s.cfg.AgentFilesDirs))
+	r.Post("/api/v1/federation/runs/{id}/cancel", api.FederationCancelRun(s.runs, s.tunReg, s.store))
 
 	r.Get("/api/v1/cp/introspect", api.CPIntrospect(api.CPIntrospectDepsValue{
 		Store:           s.store,
@@ -847,7 +848,7 @@ func (s *Server) routes() http.Handler {
 				return s.cfg.EffectiveMgmtURL(), s.cfg.DaemonBinaryPath, binResolver
 			}))
 			r.Post("/api/runs", api.ForwardingCreateRun(s.runs, s.tunReg, s.store, s.cfg.AgentFilesDirs, s.fedAgg))
-			r.Post("/api/runs/{id}/cancel", api.CancelRun(s.runs, s.tunReg, s.store))
+			r.Post("/api/runs/{id}/cancel", api.ForwardingCancelRun(s.runs, s.tunReg, s.store, s.fedAgg))
 
 			// Phase 9: S3 dead-drop transport — operators manage
 			// bucket credentials + fleet keypairs via transport-configs,
@@ -1012,9 +1013,48 @@ func (s *Server) startFederationS3Dispatcher(ctx context.Context) {
 		return
 	}
 	srv.Register(s3rpc.KindCreateNode, api.NewS3CreateNodeHandler(s.store))
+	srv.Register(s3rpc.KindDeployDaimon,
+		api.NewS3DeployDaimonHandler(s.store, s.jobs, s, s.deployNodesConfig()))
+	srv.Register(s3rpc.KindCreateRun,
+		api.NewS3CreateRunHandler(s.runs, s.tunReg, s.store, s.cfg.AgentFilesDirs))
+	srv.Register(s3rpc.KindCancelRun,
+		api.NewS3CancelRunHandler(s.runs, s.tunReg, s.store))
+	srv.Register(s3rpc.KindFindingSetStatus,
+		api.NewS3FindingSetStatusHandler(s.store))
+	srv.Register(s3rpc.KindOrchestrationCreate,
+		api.NewS3OrchestrationCreateHandler(s.store))
+	srv.Register(s3rpc.KindOrchestrationUpdate,
+		api.NewS3OrchestrationUpdateHandler(s.store))
+	srv.Register(s3rpc.KindOrchestrationDelete,
+		api.NewS3OrchestrationDeleteHandler(s.store))
+	srv.Register(s3rpc.KindOrchestrationRunCreate,
+		api.NewS3OrchestrationRunCreateHandler(s.store, s.orchestra))
+	srv.Register(s3rpc.KindOrchestrationRunCancel,
+		api.NewS3OrchestrationRunCancelHandler(s.store))
+	srv.Register(s3rpc.KindOrchestrationStepApprove,
+		api.NewS3OrchestrationStepApproveHandler(s.store, s.orchestra))
+	srv.Register(s3rpc.KindOrchestrationRunsBulkCnl,
+		api.NewS3OrchestrationRunsBulkCancelHandler(s.store))
+	srv.Register(s3rpc.KindOrchestrationRunsBulkRetry,
+		api.NewS3OrchestrationRunsBulkRetryHandler(s.store, s.orchestra))
 	go srv.Run(ctx)
-	log.Printf("federation s3 dispatcher: polling cp/*/outbound/%s/req/ every %s",
+	log.Printf("federation s3 dispatcher: polling cp/*/outbound/%s/req/ every %s (13 kinds registered)",
 		meta.InstanceID, s3rpc.DefaultServerPollInterval)
+}
+
+// deployNodesConfig assembles the api.NodesConfig used by deploy and
+// install handlers. Factored out so the s3 dispatcher and the HTTP
+// route registration share one definition.
+func (s *Server) deployNodesConfig() api.NodesConfig {
+	return api.NodesConfig{
+		DaemonBinaryPath:  s.cfg.DaemonBinaryPath,
+		DaemonBinariesDir: s.cfg.DaemonBinariesDir,
+		DaimonFilesDir:    s.cfg.DaimonFilesDir,
+		WebhookSecret:     s.cfg.WebhookSecret,
+		WebhookURL:        s.cfg.EffectiveWebhookURL(),
+		MgmtURL:           s.cfg.EffectiveMgmtURL(),
+		Secrets:           s.secrets,
+	}
 }
 
 // federationPublisherConfig assembles the s3publisher.Config from
