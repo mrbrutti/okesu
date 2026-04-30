@@ -503,6 +503,7 @@ DB methods — agents never get CP credentials.
 | `set_finding_severity_override` | `{ finding_id, severity, reason? }` | Set operator-severity (CRITICAL/HIGH/MEDIUM/LOW/INFO). |
 | `link_run_to_finding` | `{ finding_id, reason? }` | Record a run ↔ finding association in `finding_run_links`. Surfaces in the finding-detail "auto-handled by run #N" line. |
 | `escalate` | `{ reason, severity? }` | Soft signal — operator review requested even if the run completed cleanly. |
+| `reflect_with_lessons` | `{ lessons: [string, ...] }` | Append one or more short lessons to `agent_lessons` for the step's agent. The daemon prepends the 10 newest (200 chars each) to its system prompt on the next tick. |
 
 Every applied action writes a `finding_edits` row tied to the
 orchestration run + step, so the finding-detail History panel shows
@@ -523,7 +524,7 @@ Each action kind is internally classified into one of:
 | read   | Pure read; no CP state change | (none yet) |
 | enrich | Outbound vendor call (no CP write) | (Phase 22.4: enrich_ioc) |
 | fetch  | Inbound content fetch | (none yet) |
-| create | New row inserted / link created | link_run_to_finding |
+| create | New row inserted / link created | link_run_to_finding, reflect_with_lessons |
 | modify | Existing row mutated | update_finding_status, set_finding_severity_override, add_finding_tag, remove_finding_tag |
 
 CP operators can set per-class auto-approve toggles in CP settings:
@@ -567,6 +568,37 @@ attributes; they just remain visible to downstream steps and the UI.
 The default-deny posture means an agent that decides on its own to
 request `update_finding_status` on a step missing that allowlist
 entry has its request silently dropped (and logged for the operator).
+
+### Recording lessons (`reflect_with_lessons`)
+
+Use this action when an orchestration run produces an insight worth
+remembering across runs — a heuristic that saved investigation time, a
+class of false positive to skip, a validation step the agent should
+run before recommending containment.
+
+```yaml
+- id: reflect
+  agent: investigator
+  actions:
+    - reflect_with_lessons
+  prompt: |
+    Reflect on this run. Emit an orchestration_result with attributes:
+      actions: [
+        {
+          "kind": "reflect_with_lessons",
+          "lessons": ["short imperative-tense lesson", ...]
+        }
+      ]
+```
+
+The next time the daemon ticks for `agent: investigator`, the lessons
+appear at the top of its system prompt under a `## Lessons from prior
+runs` header. Bounded to 10 newest (200 chars each); the daemon
+silently fails open if the CP is unreachable at fetch time.
+
+The action class is `create`, so operators with
+`policy.auto_approve.create: true` can let agents reflect without
+approval gates.
 
 ## Approval gates
 

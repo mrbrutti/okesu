@@ -47,6 +47,7 @@ orchestration author scoped permission deliberately.
 | `set_finding_severity_override` | `{ finding_id, severity, reason? }` | Set the operator-severity override (CRITICAL/HIGH/MEDIUM/LOW/INFO). Use this for noise → INFO downgrades. |
 | `link_run_to_finding` | `{ finding_id, reason? }` | Record this orchestration run as having handled the finding. Surfaces in the finding-detail page as "auto-handled by run #N". |
 | `escalate` | `{ reason, severity? }` | Soft signal that the on-call should review the run even though it ran cleanly. v1: logged; v2: surfaces on the dashboard's "needs review" tile. |
+| `reflect_with_lessons` | `{ lessons: [string, ...] }` | Append one or more short lessons to the agent's per-agent KV. The daemon prepends the most recent N (default 10, max 200 chars each) to its system prompt on the next tick. Use to capture cross-run insights — what worked, what didn't, what to validate before doing again. |
 
 ## Action classes
 
@@ -57,7 +58,7 @@ Each action kind is internally classified into one of:
 | read   | Pure read; no CP state change | (none yet) |
 | enrich | Outbound vendor call (no CP write) | (Phase 22.4: enrich_ioc) |
 | fetch  | Inbound content fetch | (none yet) |
-| create | New row inserted / link created | link_run_to_finding |
+| create | New row inserted / link created | link_run_to_finding, reflect_with_lessons |
 | modify | Existing row mutated | update_finding_status, set_finding_severity_override, add_finding_tag, remove_finding_tag |
 
 CP operators can set per-class auto-approve toggles in CP settings
@@ -68,6 +69,26 @@ Default: no class is auto-approved. Unknown action kinds map to
 `modify` (most-restrictive). `escalate_run` is intentionally absent
 from the registry — it's a soft signal, not a state mutation, and
 falls through to the `modify` default so it never auto-applies.
+
+## Action payloads
+
+### `reflect_with_lessons`
+
+```json
+{
+  "kind": "reflect_with_lessons",
+  "lessons": [
+    "be specific about which evidence supports the verdict",
+    "for cron-triggered runs, validate the host is still in scope before recommending containment"
+  ]
+}
+```
+
+Each entry is truncated to 200 characters server-side (UTF-8 safe — the
+truncation clips to a rune boundary so no invalid bytes leak into the
+daemon's next system prompt). Per-agent retention is the 10 newest
+entries; older ones are pruned on insert. Lesson text is global across
+agent_lessons rows scoped by agent_name.
 
 ## Conventions
 
