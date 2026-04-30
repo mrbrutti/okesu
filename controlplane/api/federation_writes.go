@@ -711,6 +711,24 @@ func FederationRelatedCasesForFinding(store *db.Store) http.HandlerFunc {
 	return requireFederationToken(store, RelatedCasesForFindingHandler(store))
 }
 
+// FederatedBulkLinkFindings — write proxy. Bulk-link reuses the same
+// per-pair store path as singular linkFinding, so each pair's
+// FK + tombstone semantics resolve on the owning child.
+func FederatedBulkLinkFindings(store *db.Store, agg *federation.Aggregator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		path := strings.Replace(r.URL.Path, "/api/investigations/", "/api/v1/federation/investigations/", 1)
+		if handled, _ := proxyWriteByQuery(w, r, agg, path, "", nil); handled {
+			return
+		}
+		BulkLinkFindingsHandler(store).ServeHTTP(w, r)
+	}
+}
+
+// FederationBulkLinkFindings — child-side, token-authed sibling.
+func FederationBulkLinkFindings(store *db.Store) http.HandlerFunc {
+	return requireFederationToken(store, BulkLinkFindingsHandler(store))
+}
+
 // FederatedOrchestrationDetail proxies a single GET via ?cp= to the
 // owning child CP, falling through to the local store otherwise.
 func FederatedOrchestrationDetail(store *db.Store, agg *federation.Aggregator) http.HandlerFunc {

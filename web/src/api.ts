@@ -483,7 +483,27 @@ export interface SuggestedFinding {
   Signals: SuggestionSignal[];
 }
 
-export type SuggestionSignal = 'dedup_key' | 'ioc' | 'host_window' | 'daimon_sev';
+export type SuggestionSignal = 'dedup_key' | 'ioc' | 'host_window' | 'daimon_sev' | 'ioc_cross_cp';
+
+// SuggestionSettings — tunable knobs for the investigation suggestion
+// engine, persisted in the meta k/v table. Mirrors the Go-side struct
+// — JSON keys are snake_case so the meta blob is operator-readable.
+export interface SuggestionSettings {
+  threshold: number;
+  weights: Partial<Record<SuggestionSignal, number>>;
+  host_window_minutes: number;
+  daimon_sev_window_hours: number;
+  ioc_cross_cp_min_observations: number;
+  ioc_cross_cp_window_hours: number;
+}
+
+// BulkLinkResult — per-finding outcome from POST
+// /api/investigations/{id}/bulk-link-findings.
+export interface BulkLinkResult {
+  linked: number;
+  failed: number;
+  results: { finding_id: number; ok: boolean; error?: string }[];
+}
 
 // RelatedCase — server-scored active case that might be related to a
 // given finding. Inverse view of SuggestedFinding (workspace card).
@@ -1023,6 +1043,28 @@ export const api = {
           body: JSON.stringify({ dismissed_by: opts?.dismissedBy ?? '' }),
         },
       );
+    },
+    bulkLinkFindings: (
+      invID: number,
+      findingIDs: number[],
+      cpInstanceID?: string,
+    ) => {
+      const qs = cpInstanceID ? `?cp=${encodeURIComponent(cpInstanceID)}` : '';
+      return request<BulkLinkResult>(
+        `/api/investigations/${invID}/bulk-link-findings${qs}`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ finding_ids: findingIDs }),
+        },
+      );
+    },
+    settings: {
+      get: () => request<SuggestionSettings>('/api/investigations/settings'),
+      put: (s: SuggestionSettings) =>
+        request<SuggestionSettings>('/api/investigations/settings', {
+          method: 'PUT',
+          body: JSON.stringify(s),
+        }),
     },
   },
 
