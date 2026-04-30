@@ -639,6 +639,10 @@ func (s *Server) routes() http.Handler {
 		r.Get("/api/iocs/{id}/relationships", api.ListIOCRelationshipsHandler(s.store))
 		// Phase 22.4 — STIX 2.1 bundle export. Supports ?kind= and ?since= filters.
 		r.Get("/api/stix2/iocs", api.STIX2ExportHandler(s.store))
+		// Phase 22.5 — YARA rule bundle export. Concatenates all yara_rule
+		// IOCs into a single .yar file the binary-analyzer agent feeds to
+		// the system `yara` CLI. Optional ?tag= filter.
+		r.Get("/api/catalog/yara-rules.yar", api.YARARulesYarHandler(s.store))
 
 		// Phase 22.3 — Investigations (T2 case workspace). CRUD plus
 		// notes and finding linking; viewer+ for now (no admin gate)
