@@ -25,6 +25,10 @@ func newAdaptiveSchedule(cfg DaemonConfig) *adaptiveSchedule {
 	if max <= 0 || max < min {
 		max = min
 	}
+	// growth: 1.5 is a reasonable default — interval doubles after ~1.7
+	// quiet ticks. TODO(phase-22.x): expose as DaemonConfig.IntervalGrowth
+	// once we see real workload tuning needs (security agents may want a
+	// gentler 1.2; pure cost-optimization agents may want 2.0).
 	return &adaptiveSchedule{min: min, max: max, current: min, growth: 1.5}
 }
 

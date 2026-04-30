@@ -70,3 +70,20 @@ func TestAdaptiveSchedule_FixedIntervalCompat(t *testing.T) {
 		}
 	}
 }
+
+func TestAdaptiveSchedule_MaxBelowMinNormalizesToFixed(t *testing.T) {
+	// max < min is operator typo territory. Constructor should normalize
+	// max=min and behave as a fixed-interval timer rather than growing
+	// past the (lower) max into invalid territory.
+	cfg := DaemonConfig{IntervalMin: 60 * time.Second, IntervalMax: 30 * time.Second}
+	sched := newAdaptiveSchedule(cfg)
+	if sched.max != 60*time.Second {
+		t.Fatalf("expected max normalized to min (60s); got %v", sched.max)
+	}
+	for range 10 {
+		sched.recordTick(false, false)
+	}
+	if sched.current != 60*time.Second {
+		t.Errorf("expected fixed-interval behavior at min; got %v", sched.current)
+	}
+}

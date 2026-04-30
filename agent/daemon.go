@@ -288,10 +288,15 @@ func RunDaemon(cfg Config, dcfg DaemonConfig) error {
 				findings, hadError := execTick(cfg, dcfg, hostname, t, lr, state, mgmt)
 				lastRunAt = time.Now()
 				if adaptive != nil {
+					wasAtCeiling := adaptive.atCeiling()
 					adaptive.recordTick(findings > 0, hadError)
 					// Persist the new interval so backoff survives restarts.
+					// SetCurrentInterval skips the disk write when the value
+					// is unchanged (e.g., every steady-state tick at ceiling).
 					state.SetCurrentInterval(dcfg.StateDir, cfg.Name, adaptive.current)
-					if adaptive.atCeiling() {
+					// Log only on the false→true transition into ceiling so a
+					// quiet host doesn't spam journald with one line per tick.
+					if !wasAtCeiling && adaptive.atCeiling() {
 						log.Printf("daemon.scheduler.at_ceiling agent=%s interval=%s", cfg.Name, adaptive.current)
 					}
 				}
