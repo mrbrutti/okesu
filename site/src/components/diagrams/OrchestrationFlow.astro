@@ -1,0 +1,51 @@
+---
+// Orchestrations concept-page anchor. 4-step DAG with a fan-out
+// step (purple-tinted) and an approval-gated step (red-tinted).
+---
+
+<svg viewBox="0 0 760 200" class="w-full h-auto" role="img" aria-label="Diagram: orchestration DAG — scan, fan-out edr-triage on 6 hosts, summarize, approval-gated contain.">
+  {/* step 1: scan */}
+  <rect x="20" y="70" width="120" height="60" rx="8" fill="#ffffff" stroke="#e5e7eb" />
+  <rect x="20" y="70" width="120" height="3" fill="#22c55e" />
+  <text x="80" y="98" text-anchor="middle" font-size="12" fill="#0f172a" font-weight="600">scan</text>
+  <text x="80" y="116" text-anchor="middle" font-size="10" fill="#64748b">1 host</text>
+
+  {/* step 2: fanout edr-triage */}
+  <rect x="200" y="50" width="160" height="100" rx="8" fill="#f5f3ff" stroke="#ede9fe" />
+  <rect x="200" y="50" width="160" height="3" fill="#7c3aed" />
+  <text x="280" y="78" text-anchor="middle" font-size="12" fill="#5b21b6" font-weight="600">edr-triage</text>
+  <text x="280" y="98" text-anchor="middle" font-size="10" fill="#64748b">6 hosts (fan-out)</text>
+  <g>
+    <circle cx="220" cy="120" r="3" fill="#22c55e" />
+    <circle cx="232" cy="120" r="3" fill="#22c55e" />
+    <circle cx="244" cy="120" r="3" fill="#22c55e" />
+    <circle cx="256" cy="120" r="3" fill="#22c55e" />
+    <circle cx="268" cy="120" r="3" fill="#ef4444" />
+    <circle cx="280" cy="120" r="3" fill="#3b82f6" />
+  </g>
+
+  {/* step 3: summarize */}
+  <rect x="420" y="70" width="120" height="60" rx="8" fill="#ffffff" stroke="#e5e7eb" />
+  <rect x="420" y="70" width="120" height="3" fill="#94a3b8" />
+  <text x="480" y="98" text-anchor="middle" font-size="12" fill="#0f172a" font-weight="600">summarize</text>
+  <text x="480" y="116" text-anchor="middle" font-size="10" fill="#64748b">local</text>
+
+  {/* step 4: contain (approval gated) */}
+  <rect x="600" y="70" width="140" height="60" rx="8" fill="#fef2f2" stroke="#fecaca" />
+  <rect x="600" y="70" width="140" height="3" fill="#ef4444" />
+  <text x="670" y="98" text-anchor="middle" font-size="12" fill="#b91c1c" font-weight="600">⏸ contain</text>
+  <text x="670" y="116" text-anchor="middle" font-size="10" fill="#b91c1c">approval required</text>
+
+  {/* arrows */}
+  <g stroke="#94a3b8" stroke-width="2" fill="none" marker-end="url(#arrow-tip-4)">
+    <line x1="140" y1="100" x2="200" y2="100" />
+    <line x1="360" y1="100" x2="420" y2="100" />
+    <line x1="540" y1="100" x2="600" y2="100" />
+  </g>
+
+  <defs>
+    <marker id="arrow-tip-4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#94a3b8" />
+    </marker>
+  </defs>
+</svg>

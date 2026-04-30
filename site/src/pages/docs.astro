@@ -1,0 +1,109 @@
+---
+import Base from '../layouts/Base.astro';
+
+interface DocLink {
+  title: string;
+  body: string;
+  href: string;
+  external?: boolean;
+}
+
+const concepts: DocLink[] = [
+  {
+    title: 'Daimons',
+    body: 'The runtime layer — long-running daemons on each host that listen for run dispatches and stream findings back.',
+    href: '/concepts/daimons',
+  },
+  {
+    title: 'Agents',
+    body: 'The capability layer — markdown specs declaring a prompt, a provider, and a JSONL emission contract.',
+    href: '/concepts/agents',
+  },
+  {
+    title: 'Orchestrations',
+    body: 'The coordination layer — YAML playbooks that sequence agents, fan out across hosts, gate on approval.',
+    href: '/concepts/orchestrations',
+  },
+];
+
+const reference: DocLink[] = [
+  {
+    title: 'Architecture',
+    body: 'High-level view of the platform: CP, daimons, the management tunnel, the federation hierarchy.',
+    href: 'https://github.com/mrbrutti/okesu/blob/main/docs/architecture.md',
+    external: true,
+  },
+  {
+    title: 'Installation',
+    body: 'The full INSTALL.md — every deployment shape, networking, lifecycle, OCI specifics.',
+    href: 'https://github.com/mrbrutti/okesu/blob/main/INSTALL.md',
+    external: true,
+  },
+  {
+    title: 'Orchestration spec',
+    body: 'YAML reference: every field, every modifier, every binding shape.',
+    href: 'https://github.com/mrbrutti/okesu/blob/main/docs/orchestrations.md',
+    external: true,
+  },
+  {
+    title: 'Daemon design',
+    body: 'How the daimon process is structured internally — config, scheduler, runtime, output sinks.',
+    href: 'https://github.com/mrbrutti/okesu/blob/main/docs/daemon.design.md',
+    external: true,
+  },
+  {
+    title: 'S3 transport',
+    body: 'Offline daimon deployment via S3 dead-drop — for hosts that can\'t maintain an outbound tunnel.',
+    href: 'https://github.com/mrbrutti/okesu/blob/main/docs/s3-transport.md',
+    external: true,
+  },
+  {
+    title: 'Roadmap',
+    body: 'What\'s shipped, what\'s in flight, what\'s on the horizon.',
+    href: 'https://github.com/mrbrutti/okesu/blob/main/docs/roadmap.md',
+    external: true,
+  },
+];
+---
+
+<Base
+  title="Docs"
+  description="Documentation index — concept pages and reference material for Okesu."
+>
+  <div class="max-w-page mx-auto px-6 py-12">
+    <h1 class="text-3xl font-bold text-ink mb-3">Documentation</h1>
+    <p class="text-base text-ink-dim leading-relaxed mb-10 max-w-2xl">
+      Concept introductions live here on the site. The reference material for spec formats, deployment shapes, and the platform's internal design lives as markdown in the GitHub repo — those links are below.
+    </p>
+
+    <section class="mb-12">
+      <h2 class="text-xs uppercase tracking-wide text-ink-mute font-bold mb-3">Concepts</h2>
+      <div class="grid md:grid-cols-3 gap-4">
+        {concepts.map(c => (
+          <a href={c.href} class="block bg-panel border border-border rounded-lg shadow-card p-5 hover:border-brand-100 hover:shadow-md transition-all">
+            <h3 class="text-[15px] font-semibold text-ink mb-1.5">{c.title}</h3>
+            <p class="text-xs text-ink-dim leading-relaxed">{c.body}</p>
+            <span class="text-xs text-brand-700 font-medium mt-3 inline-block">Read →</span>
+          </a>
+        ))}
+      </div>
+    </section>
+
+    <section>
+      <h2 class="text-xs uppercase tracking-wide text-ink-mute font-bold mb-3">Reference (on GitHub)</h2>
+      <div class="grid md:grid-cols-2 gap-3">
+        {reference.map(d => (
+          <a
+            href={d.href}
+            target={d.external ? '_blank' : undefined}
+            rel={d.external ? 'noopener' : undefined}
+            class="block bg-panel border border-border rounded-lg p-4 hover:border-brand-100 transition-colors"
+          >
+            <h3 class="text-sm font-semibold text-ink mb-1">{d.title}{d.external && <span class="ml-1 text-ink-mute">↗</span>}</h3>
+            <p class="text-xs text-ink-dim leading-relaxed">{d.body}</p>
+          </a>
+        ))}
+      </div>
+    </section>
+  </div>
+</Base>

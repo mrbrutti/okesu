@@ -1,0 +1,83 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Inter is loaded from Google Fonts in the Base layout. The system
+   font stack is the fallback. */
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background: theme('colors.bg');
+  color: theme('colors.ink.DEFAULT');
+  font-family: theme('fontFamily.sans');
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Code blocks rendered via the .code-block class throughout the site
+   share these styles so MDX content + Astro components read the
+   same way. */
+.code-block {
+  background: theme('colors.ink.DEFAULT');
+  color: #cbd5e1;
+  border-radius: theme('borderRadius.lg');
+  padding: 14px 18px;
+  font-family: theme('fontFamily.mono');
+  font-size: 12px;
+  line-height: 1.65;
+  overflow-x: auto;
+}
+.code-block .key { color: #c4b5fd; }   /* brand-300-ish */
+.code-block .str { color: #a7f3d0; }   /* emerald-200 */
+.code-block .cmt { color: theme('colors.ink.mute'); }
+
+/* The Concept page's body uses a constrained .prose-like rule that
+   doesn't pull in @tailwindcss/typography (we only need a few rules,
+   the plugin is overkill). */
+.concept-prose h2 {
+  font-size: 19px;
+  font-weight: 600;
+  color: theme('colors.ink.DEFAULT');
+  margin: 28px 0 10px;
+  scroll-margin-top: 80px;
+}
+.concept-prose p {
+  font-size: 14px;
+  line-height: 1.65;
+  margin-bottom: 12px;
+}
+.concept-prose .term {
+  font-weight: 600;
+  color: theme('colors.brand.700');
+}
+.concept-prose ul {
+  list-style: disc;
+  padding-left: 20px;
+  margin-bottom: 12px;
+  font-size: 14px;
+  line-height: 1.65;
+}
+.concept-prose code {
+  background: theme('colors.brand.50');
+  color: theme('colors.brand.700');
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-family: theme('fontFamily.mono');
+  font-size: 12px;
+}
+.concept-prose .code-block code {
+  background: transparent;
+  color: inherit;
+  padding: 0;
+}
+.concept-prose a {
+  color: theme('colors.brand.700');
+  font-weight: 500;
+}
+.concept-prose a:hover {
+  color: theme('colors.brand.600');
+  text-decoration: underline;
+}

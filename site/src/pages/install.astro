@@ -1,0 +1,100 @@
+---
+import Base from '../layouts/Base.astro';
+---
+
+<Base
+  title="Install"
+  description="Quick-start: install the Okesu binary, bootstrap a control plane, deploy a daimon, write your first orchestration."
+>
+  <div class="max-w-content mx-auto px-6 py-12">
+    <h1 class="text-3xl font-bold text-ink mb-3">Install Okesu</h1>
+    <p class="text-base text-ink-dim leading-relaxed mb-10">
+      A single Go binary, a few minutes of setup, and your first orchestration running on a real host.
+      This guide gets you from zero to a working CP with one daimon.
+    </p>
+
+    <section class="mb-10">
+      <h2 id="binary" class="text-xl font-semibold text-ink mb-3">1. Install the binary</h2>
+      <p class="text-sm text-ink-dim mb-3 leading-relaxed">
+        For now, build from source. Pre-built releases are on the roadmap.
+      </p>
+      <div class="code-block">
+<span class="cmt"># clone + build</span><br/>
+git clone https://github.com/mrbrutti/okesu.git<br/>
+cd okesu<br/>
+go build -o okesu ./cmd/okesu<br/>
+go build -o okesu-cp ./cmd/okesu-cp<br/>
+<br/>
+<span class="cmt"># install both binaries on PATH</span><br/>
+sudo install okesu okesu-cp /usr/local/bin/
+      </div>
+    </section>
+
+    <section class="mb-10">
+      <h2 id="cp" class="text-xl font-semibold text-ink mb-3">2. Bootstrap a control plane</h2>
+      <p class="text-sm text-ink-dim mb-3 leading-relaxed">
+        The CP is optional but you'll want it the moment you operate more than one daimon.
+        It serves the dashboard, receives findings, and dispatches orchestration steps.
+      </p>
+      <div class="code-block">
+<span class="cmt"># first-run init creates ./cp.db, generates the CA, prints an admin password</span><br/>
+okesu-cp init<br/>
+<br/>
+<span class="cmt"># start the CP — UI on https://localhost:8443, mTLS mgmt-plane on :8444</span><br/>
+okesu-cp serve
+      </div>
+      <p class="text-sm text-ink-dim mt-3 leading-relaxed">
+        Browse to <code>https://localhost:8443</code> — accept the self-signed cert (production deployments use a real cert via the CP config), log in with the admin password printed by <code>init</code>.
+      </p>
+    </section>
+
+    <section class="mb-10">
+      <h2 id="daimon" class="text-xl font-semibold text-ink mb-3">3. Deploy a daimon to a host</h2>
+      <p class="text-sm text-ink-dim mb-3 leading-relaxed">
+        From the dashboard, go to <strong>Fleet → Nodes → Add node</strong>. Paste the host's SSH connection details; the CP rsyncs the binary, writes the systemd unit, and registers the daimon. The auto-deploy flow handles upgrades in place.
+      </p>
+      <p class="text-sm text-ink-dim leading-relaxed">
+        Want to skip SSH and install manually? Drop the <code>okesu</code> binary on the host, run <code>okesu daemon register --cp https://your-cp:8443 --token &lt;bootstrap&gt;</code>, then start it with your init system of choice.
+      </p>
+    </section>
+
+    <section class="mb-10">
+      <h2 id="first-orch" class="text-xl font-semibold text-ink mb-3">4. Write your first orchestration</h2>
+      <p class="text-sm text-ink-dim mb-3 leading-relaxed">
+        From the dashboard, go to <strong>Automation → Orchestrations → New</strong>. Paste this:
+      </p>
+      <div class="code-block">
+<span class="cmt">---</span><br/>
+<span class="key">name</span>: hello-okesu<br/>
+<span class="key">description</span>: smoke test<br/>
+<span class="key">steps</span>:<br/>
+&nbsp;&nbsp;- <span class="key">id</span>: greet<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="key">agent</span>: instance-integrity<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="key">node</span>: <span class="str">"your-host-name"</span><br/>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="key">prompt</span>: <span class="str">"list the top 5 critical files on this host and confirm their hashes"</span>
+      </div>
+      <p class="text-sm text-ink-dim mt-3 leading-relaxed">
+        Save → click <strong>Run</strong> → watch the run-detail page render the DAG and the agent's findings stream in.
+      </p>
+    </section>
+
+    <section class="mb-10">
+      <h2 id="checklist" class="text-xl font-semibold text-ink mb-3">5. Production checklist</h2>
+      <ul class="text-sm text-ink-dim leading-relaxed space-y-2 list-disc pl-5">
+        <li>Swap SQLite for Postgres in the CP config when you cross a few thousand findings.</li>
+        <li>Federate environments by enabling the federation peer relationship (see the architecture doc on GitHub).</li>
+        <li>Open ports <strong>8443</strong> (UI/webhook) and <strong>8444</strong> (mTLS mgmt) only to the networks that need them.</li>
+        <li>Configure your LLM provider via env vars (<code>ANTHROPIC_API_KEY</code> etc) — same envvars on the CP for jobs-mode dispatch and on each daimon for tunnel-mode.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2 id="more" class="text-xl font-semibold text-ink mb-3">More</h2>
+      <ul class="text-sm space-y-1.5">
+        <li><a class="text-brand-700 font-medium hover:underline" href="https://github.com/mrbrutti/okesu/blob/main/INSTALL.md">Full INSTALL.md on GitHub</a></li>
+        <li><a class="text-brand-700 font-medium hover:underline" href="https://github.com/mrbrutti/okesu/blob/main/docs/architecture.md">Architecture reference</a></li>
+        <li><a class="text-brand-700 font-medium hover:underline" href="/docs">Docs index</a></li>
+      </ul>
+    </section>
+  </div>
+</Base>

@@ -1,0 +1,76 @@
+---
+layout: ../../layouts/Concept.astro
+title: Daimons
+subtitle: The runtime layer. A long-running daemon on every host that listens for run dispatches and streams findings back.
+glyph: ▦
+description: Daimons are Okesu's per-host runtime. They execute agents and emit findings to the control plane.
+toc:
+  - { id: what,        label: "What a daimon is" }
+  - { id: where,       label: "Where it runs" }
+  - { id: lifecycle,   label: "Lifecycle" }
+  - { id: contract,    label: "The dispatch contract" }
+  - { id: next,        label: "Where to next" }
+---
+
+import DaimonOnHost from '../../components/diagrams/DaimonOnHost.astro';
+
+<div class="bg-bg border border-border rounded-xl p-6 md:p-8 my-8">
+  <DaimonOnHost />
+</div>
+
+<h2 id="what">What a daimon is</h2>
+
+<p>A <span class="term">daimon</span> is the long-running daemon Okesu installs on each host. It listens for run dispatches from the control plane, executes the agent (Claude / Codex / a custom provider), and streams findings back over the management tunnel.</p>
+
+<p>One daimon per host. It's the piece that runs.</p>
+
+<p>The Go binary is called <code>okesu</code>; the same binary serves as daemon and CLI depending on the subcommand. Out of the box it ships with a small library of built-in agents (<code>edr</code>, <code>instance-integrity</code>, <code>instance-threat</code>, <code>sre-health</code>) so a fresh daimon has something to do on tick zero.</p>
+
+<h2 id="where">Where it runs</h2>
+
+<p>The daimon is a static Go binary. It runs anywhere a recent Linux or macOS host runs — no JVM, no Python, no agent framework. Memory footprint is modest (tens of megabytes idle). It needs:</p>
+
+<ul>
+  <li>Outbound HTTPS to the control plane (default port 8443) for dispatch + tunnel.</li>
+  <li>A writable directory for state (default <code>/var/lib/okesu</code>).</li>
+  <li>Credentials for the LLM provider it'll drive (env vars for Claude / Codex tokens).</li>
+</ul>
+
+<p>That's the deployment surface. Drop the binary in, hand it the CP URL and a bootstrap token, it registers and goes to work.</p>
+
+<h2 id="lifecycle">Lifecycle</h2>
+
+<p>A daimon's life:</p>
+
+<ul>
+  <li><span class="term">install</span> — drop the binary; create the systemd unit (or your supervisor of choice).</li>
+  <li><span class="term">register</span> — first contact with the CP; the CP issues the daimon a long-lived agent token bound to its hostname.</li>
+  <li><span class="term">heartbeat</span> — every few seconds the daimon ping-pongs with the CP so dispatches are deliverable.</li>
+  <li><span class="term">execute runs</span> — the CP dispatches a run (an agent invocation with prompt, inputs, dispatch mode); the daimon runs the agent and streams JSONL events back.</li>
+  <li><span class="term">upgrade in place</span> — the CP can push a new binary; the daimon swaps itself out under systemd and re-registers with the same identity.</li>
+</ul>
+
+<h2 id="contract">The dispatch contract</h2>
+
+<p>A run dispatch is a small JSON envelope. It tells the daimon which agent to run, what prompt to render, what inputs to bind, and what dispatch mode to use (<code>tunnel</code> for live tunnels, <code>jobs</code> for offline pull queue).</p>
+
+<div class="code-block">
+<span class="cmt">// what the daimon receives</span><br/>
+{`{`}<br/>
+&nbsp;&nbsp;<span class="key">"step_id"</span>: <span class="str">"scan@web-prod-01"</span>,<br/>
+&nbsp;&nbsp;<span class="key">"agent"</span>: <span class="str">"edr-investigator"</span>,<br/>
+&nbsp;&nbsp;<span class="key">"prompt"</span>: <span class="str">"check for C2 indicators around process 12345"</span>,<br/>
+&nbsp;&nbsp;<span class="key">"inputs"</span>: {`{`} <span class="key">"pid"</span>: <span class="str">12345</span> {`}`},<br/>
+&nbsp;&nbsp;<span class="key">"timeout"</span>: <span class="str">"5m"</span><br/>
+{`}`}
+</div>
+
+<p>What the daimon emits is a sequence of newline-delimited JSON events — most importantly <code>finding</code> events for security signals and a final <code>orchestration_result</code> for the structured payload downstream steps consume.</p>
+
+<h2 id="next">Where to next</h2>
+
+<ul>
+  <li><a href="/concepts/agents">Agents</a> — the prompt + tool definitions the daimon executes.</li>
+  <li><a href="/concepts/orchestrations">Orchestrations</a> — the YAML specs that dispatch runs to daimons in sequence.</li>
+  <li><a href="/install">Install Okesu</a> — drop a daimon onto your first host.</li>
+</ul>

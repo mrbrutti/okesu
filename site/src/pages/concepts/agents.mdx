@@ -1,0 +1,87 @@
+---
+layout: ../../layouts/Concept.astro
+title: Agents
+subtitle: The capability layer. Prompt-driven workers that run on a daimon and emit structured findings as JSONL.
+glyph: ✦
+description: Agents are Okesu's capability units — markdown specs with a prompt, a provider, and an emission contract.
+toc:
+  - { id: what,         label: "What an agent is" }
+  - { id: contract,     label: "The JSONL contract" }
+  - { id: authoring,    label: "Authoring an agent" }
+  - { id: builtins,     label: "Built-in agents" }
+  - { id: next,         label: "Where to next" }
+---
+
+import AgentLifecycle from '../../components/diagrams/AgentLifecycle.astro';
+
+<div class="bg-bg border border-border rounded-xl p-6 md:p-8 my-8">
+  <AgentLifecycle />
+</div>
+
+<h2 id="what">What an agent is</h2>
+
+<p>An <span class="term">agent</span> in Okesu is a markdown file with YAML frontmatter. The frontmatter declares identity, the LLM provider, the tools the agent can call, and the JSONL events it's expected to emit. The body of the file is the system prompt the LLM sees on every run.</p>
+
+<p>That's it. No SDK, no runtime framework. The daimon parses the spec, drives the LLM in a turn-by-turn loop with the declared tools available, and watches for the JSONL events the agent emits. When a <code>finding</code> event lands, it goes to the control plane.</p>
+
+<h2 id="contract">The JSONL contract</h2>
+
+<p>An agent emits a stream of newline-delimited JSON events. The two that matter to the control plane are:</p>
+
+<ul>
+  <li><code>finding</code> — a security signal: severity, title, optional category (process/file/network/cert/cloud), evidence, dedup key, attributes.</li>
+  <li><code>orchestration_result</code> — a single structured payload at the end of a run, surfaced as <code>{`{{stepN.result}}`}</code> in downstream orchestration steps. Optional but powerful for chained playbooks.</li>
+</ul>
+
+<p>Other event types (logs, progress, tool calls) are ignored by the CP but visible in the run's transcript. Agents are also free to emit nothing at all — a "no findings on this host" run is meaningful information.</p>
+
+<h2 id="authoring">Authoring an agent</h2>
+
+<p>A minimal agent looks like this:</p>
+
+<div class="code-block">
+<span class="cmt">---</span><br/>
+<span class="key">name</span>: edr-investigator<br/>
+<span class="key">version</span>: <span class="str">"1"</span><br/>
+<span class="key">description</span>: triage suspected C2 callbacks<br/>
+<br/>
+<span class="key">provider</span>: claude<br/>
+<span class="key">model</span>: claude-mythos-preview<br/>
+<span class="key">effort</span>: medium<br/>
+<span class="key">maxTurns</span>: 30<br/>
+<span class="key">timeout</span>: 5m<br/>
+<br/>
+<span class="key">tools</span>:<br/>
+&nbsp;&nbsp;- bash<br/>
+&nbsp;&nbsp;- read_file<br/>
+&nbsp;&nbsp;- search<br/>
+<span class="cmt">---</span><br/>
+You investigate suspected command-and-control callbacks on this host.<br/>
+Use ps, netstat, lsof, /proc to gather evidence. When you find a high-confidence<br/>
+indicator, emit a finding event with the appropriate severity.
+</div>
+
+<p>The same agent definition works whether the daimon is local-only or behind a federated CP — the dispatch mode is decided at the orchestration step, not the agent.</p>
+
+<h2 id="builtins">Built-in agents</h2>
+
+<p>Okesu ships with a small library of agents covering common security operations:</p>
+
+<ul>
+  <li><code>edr</code> — Linux EDR running on a 5-minute schedule.</li>
+  <li><code>instance-integrity</code> — file-integrity monitoring on critical paths.</li>
+  <li><code>instance-threat</code> — IMDS abuse, container escapes, cryptomining detection.</li>
+  <li><code>sre-health</code> — TLS expiry, deployment frequency, recent incident patterns.</li>
+  <li><code>edr-investigator</code> — interactive triage agent invoked by orchestrations.</li>
+  <li><code>forensic-collector</code> — volatile-state snapshotting for incident response.</li>
+</ul>
+
+<p>The full catalog is in the platform's Agents tab; each spec is a complete worked example you can copy and adapt.</p>
+
+<h2 id="next">Where to next</h2>
+
+<ul>
+  <li><a href="/concepts/daimons">Daimons</a> — what executes the agent.</li>
+  <li><a href="/concepts/orchestrations">Orchestrations</a> — sequence agents into playbooks.</li>
+  <li><a href="/install">Install Okesu</a> — bootstrap a CP and your first daimon.</li>
+</ul>

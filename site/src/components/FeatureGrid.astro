@@ -1,0 +1,47 @@
+---
+interface Feature {
+  title: string;
+  body: string;
+}
+
+const features: Feature[] = [
+  {
+    title: 'Federated control plane',
+    body: 'Run one CP per environment, federate them into a hierarchy. Findings + runs flow upstream; commands flow down.',
+  },
+  {
+    title: 'Multi-provider agents',
+    body: 'Run Claude, Codex, or your own provider. Same dispatch surface, same JSONL contract.',
+  },
+  {
+    title: 'Investigations as a workspace',
+    body: 'Group findings into a case file. Notes, timeline, and orchestrations all hang off one investigation entity.',
+  },
+  {
+    title: 'Approval gates + action allowlists',
+    body: 'Step-level human approval. Per-class allowlists for what an orchestration can mutate.',
+  },
+  {
+    title: 'Per-host fan-out',
+    body: 'Run an agent on N hosts in parallel; live histogram + per-host status in the run viewer.',
+  },
+  {
+    title: 'Single-binary install',
+    body: 'okesu and okesu-cp are static Go binaries. No runtime, no agent framework dependencies, just drop in.',
+  },
+];
+---
+
+<section class="max-w-page mx-auto px-6 py-12">
+  <div class="grid md:grid-cols-2 gap-x-12 gap-y-7">
+    {features.map(f => (
+      <div class="flex gap-3">
+        <div class="text-brand-700 text-sm shrink-0 mt-0.5">✓</div>
+        <div>
+          <h4 class="text-[13px] font-semibold text-ink mb-1">{f.title}</h4>
+          <p class="text-xs text-ink-dim leading-relaxed">{f.body}</p>
+        </div>
+      </div>
+    ))}
+  </div>
+</section>

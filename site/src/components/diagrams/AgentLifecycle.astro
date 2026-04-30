@@ -1,0 +1,43 @@
+---
+// Agents concept-page anchor. Prompt → run → JSONL → finding.
+---
+
+<svg viewBox="0 0 720 200" class="w-full h-auto" role="img" aria-label="Diagram: agent lifecycle — a prompt drives an LLM run, which streams JSONL events that resolve into findings.">
+  {/* prompt */}
+  <rect x="20" y="60" width="140" height="80" rx="8" fill="#ffffff" stroke="#e5e7eb" />
+  <rect x="20" y="60" width="140" height="3" fill="#7c3aed" />
+  <text x="90" y="92" text-anchor="middle" font-size="12" fill="#0f172a" font-weight="600">Prompt</text>
+  <text x="90" y="112" text-anchor="middle" font-size="10" fill="#64748b">+ tools</text>
+  <text x="90" y="126" text-anchor="middle" font-size="10" fill="#64748b">+ inputs</text>
+
+  {/* run */}
+  <rect x="220" y="60" width="180" height="80" rx="8" fill="#f5f3ff" stroke="#ede9fe" />
+  <text x="310" y="92" text-anchor="middle" font-size="12" fill="#5b21b6" font-weight="600">Run (LLM loop)</text>
+  <text x="310" y="112" text-anchor="middle" font-size="10" fill="#64748b">Claude · Codex · custom</text>
+  <text x="310" y="126" text-anchor="middle" font-size="10" fill="#64748b">tool calls + reasoning</text>
+
+  {/* JSONL stream */}
+  <rect x="460" y="60" width="120" height="80" rx="8" fill="#ffffff" stroke="#e5e7eb" />
+  <text x="520" y="92" text-anchor="middle" font-size="12" fill="#0f172a" font-weight="600">JSONL events</text>
+  <text x="520" y="112" text-anchor="middle" font-size="10" fill="#64748b">finding</text>
+  <text x="520" y="126" text-anchor="middle" font-size="10" fill="#64748b">orchestration_result</text>
+
+  {/* finding */}
+  <rect x="630" y="60" width="80" height="80" rx="8" fill="#ffffff" stroke="#e5e7eb" />
+  <rect x="630" y="60" width="80" height="3" fill="#22c55e" />
+  <text x="670" y="92" text-anchor="middle" font-size="12" fill="#0f172a" font-weight="600">Finding</text>
+  <text x="670" y="112" text-anchor="middle" font-size="10" fill="#64748b">in CP</text>
+
+  {/* arrows */}
+  <g stroke="#94a3b8" stroke-width="2" fill="none" marker-end="url(#arrow-tip-3)">
+    <line x1="160" y1="100" x2="220" y2="100" />
+    <line x1="400" y1="100" x2="460" y2="100" />
+    <line x1="580" y1="100" x2="630" y2="100" />
+  </g>
+
+  <defs>
+    <marker id="arrow-tip-3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#94a3b8" />
+    </marker>
+  </defs>
+</svg>

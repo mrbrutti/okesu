@@ -1,0 +1,14 @@
+# Astro build artefacts
+dist/
+.astro/
+
+# Node
+node_modules/
+
+# Local env
+.env
+.env.local
+
+# Editor
+.DS_Store
+.vscode/
