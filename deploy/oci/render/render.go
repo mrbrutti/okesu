@@ -28,41 +28,12 @@ var cpYAMLTmpl string
 //go:embed templates/okesu-cp.env.tmpl
 var envTmpl string
 
-// render is an unexported helper that executes a named template against
-// the given inputs and returns the rendered bytes. It exists to keep
-// bytes, fmt, and text/template in use at the scaffold stage so the
-// compiler does not reject the file before Tasks 2-5 fill in the real
-// exported functions.
-func render(name, tmplSrc string, in Inputs) ([]byte, error) {
-	t, err := template.New(name).Parse(tmplSrc)
-	if err != nil {
-		return nil, fmt.Errorf("render %s: parse: %w", name, err)
-	}
-	var buf bytes.Buffer
-	if err := t.Execute(&buf, in); err != nil {
-		return nil, fmt.Errorf("render %s: execute: %w", name, err)
-	}
-	return buf.Bytes(), nil
-}
-
-// RenderCPYAML renders cp.yaml.tmpl against the inputs. Returns the YAML
-// bytes ready to be written to /etc/okesu-cp/cp.yaml on the CP host.
-func RenderCPYAML(in Inputs) ([]byte, error) {
-	t, err := template.New("cp.yaml").Funcs(funcs).Parse(cpYAMLTmpl)
-	if err != nil {
-		return nil, fmt.Errorf("parse cp.yaml.tmpl: %w", err)
-	}
-	var buf bytes.Buffer
-	if err := t.Execute(&buf, in); err != nil {
-		return nil, fmt.Errorf("execute cp.yaml.tmpl: %w", err)
-	}
-	return buf.Bytes(), nil
-}
-
 // funcs are template helpers shared by every renderer.
 var funcs = template.FuncMap{
 	// tfval extracts the .value from `terraform output -json`'s shape:
 	//   { "name": { "sensitive": false, "type": "string", "value": "..." } }
+	// Returns an error if the key is missing or the value is not the expected
+	// wrapped shape. All fixtures must use { "value": ... } wrapping.
 	"tfval": func(m map[string]any, key string) (any, error) {
 		raw, ok := m[key]
 		if !ok {
@@ -70,7 +41,7 @@ var funcs = template.FuncMap{
 		}
 		shape, ok := raw.(map[string]any)
 		if !ok {
-			return raw, nil // already unwrapped (e.g. test fixture)
+			return nil, fmt.Errorf("terraform output %q: expected wrapped {\"value\":...} shape, got %T", key, raw)
 		}
 		v, ok := shape["value"]
 		if !ok {
@@ -87,9 +58,30 @@ var funcs = template.FuncMap{
 	},
 }
 
+// render executes a named template with funcs attached against the given
+// inputs and returns the rendered bytes. All exported renderers go through
+// this helper so there is exactly one parse-and-execute path in the package.
+func render(name, tmplSrc string, in Inputs) ([]byte, error) {
+	t, err := template.New(name).Funcs(funcs).Parse(tmplSrc)
+	if err != nil {
+		return nil, fmt.Errorf("render %s: parse: %w", name, err)
+	}
+	var buf bytes.Buffer
+	if err := t.Execute(&buf, in); err != nil {
+		return nil, fmt.Errorf("render %s: execute: %w", name, err)
+	}
+	return buf.Bytes(), nil
+}
+
+// RenderCPYAML renders cp.yaml.tmpl against the inputs. Returns the YAML
+// bytes ready to be written to /etc/okesu-cp/cp.yaml on the CP host.
+func RenderCPYAML(in Inputs) ([]byte, error) {
+	return render("cp.yaml", cpYAMLTmpl, in)
+}
+
 // RenderEnvFile renders the okesu-cp env file from the embedded template
 // and the given inputs. The function body is a stub; full implementation
-// comes in Task 3.
+// comes in Task 5.
 func RenderEnvFile(in Inputs) ([]byte, error) {
 	return render("okesu-cp.env", envTmpl, in)
 }

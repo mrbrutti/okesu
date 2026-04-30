@@ -8,6 +8,8 @@ import (
 	"testing"
 )
 
+// update is package-scoped so all golden tests share the -update flag.
+// Don't redeclare it in another *_test.go file in this package.
 var update = flag.Bool("update", false, "rewrite testdata/*.golden from current output")
 
 func loadInputs(t *testing.T, name string) Inputs {
@@ -52,4 +54,12 @@ func TestRenderCPYAML_Standalone(t *testing.T) {
 		t.Fatalf("RenderCPYAML: %v", err)
 	}
 	assertGolden(t, "cp.yaml.standalone", got)
+}
+
+func TestRenderCPYAML_Parent(t *testing.T) {
+	got, err := RenderCPYAML(loadInputs(t, "parent"))
+	if err != nil {
+		t.Fatalf("RenderCPYAML: %v", err)
+	}
+	assertGolden(t, "cp.yaml.parent", got)
 }
