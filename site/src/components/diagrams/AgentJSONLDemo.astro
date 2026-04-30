@@ -1,0 +1,93 @@
+---
+// Agents concept-page anchor. Stylized as a black terminal panel
+// that types JSONL events line-by-line. 10-second loop.
+//   t=0-1s    log
+//   t=1-3s    tool_call
+//   t=3-5s    tool_result
+//   t=5-7s    finding (highlighted)
+//   t=7-9s    orchestration_result (highlighted)
+//   t=9-10s   fade out + reset
+// Reduced motion: all 5 lines visible at once, static.
+---
+
+<div class="bg-[#0f172a] rounded-lg p-5 font-mono text-[11px] leading-relaxed overflow-hidden" role="img"
+     aria-label="Animated terminal: an agent emits five JSONL events — log, tool_call, tool_result, finding, orchestration_result.">
+
+  <div class="text-[#94a3b8] text-[10px] mb-2 flex items-center justify-between">
+    <span>agent: edr-investigator</span>
+    <span class="flex gap-1">
+      <span class="w-2 h-2 rounded-full bg-red-400/50"></span>
+      <span class="w-2 h-2 rounded-full bg-yellow-400/50"></span>
+      <span class="w-2 h-2 rounded-full bg-green-400/50"></span>
+    </span>
+  </div>
+
+  <div class="line-1"><span class="text-[#cbd5e1]">{`{"type":"log","msg":"investigating pid 12345"}`}</span></div>
+  <div class="line-2"><span class="text-[#cbd5e1]">{`{"type":"tool_call","tool":"bash","cmd":"ps -ef | grep ..."}`}</span></div>
+  <div class="line-3"><span class="text-[#cbd5e1]">{`{"type":"tool_result","exit":0}`}</span></div>
+  <div class="line-4 line-finding"><span>{`{"type":"finding","severity":"high","title":"suspicious outbound connection"}`}</span></div>
+  <div class="line-5 line-result"><span>{`{"type":"orchestration_result","attrs":{"pid":12345,"verdict":"c2_callback"}}`}</span></div>
+</div>
+
+<style>
+  .line-1, .line-2, .line-3, .line-4, .line-5 {
+    opacity: 0;
+    white-space: nowrap;
+    overflow: hidden;
+  }
+
+  .line-finding span {
+    background: rgba(196, 181, 253, 0.15);
+    color: #c4b5fd;
+    padding: 1px 4px;
+    border-radius: 3px;
+    font-weight: 500;
+  }
+  .line-result span {
+    background: rgba(167, 243, 208, 0.15);
+    color: #a7f3d0;
+    padding: 1px 4px;
+    border-radius: 3px;
+    font-weight: 500;
+  }
+
+  /* Final-frame state for reduced motion */
+  @media (prefers-reduced-motion: reduce) {
+    .line-1, .line-2, .line-3, .line-4, .line-5 { opacity: 1; }
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    /* Each line types in then stays. At t=9-10s all fade out for the loop reset. */
+    .line-1 { animation: line-1 10s linear infinite; }
+    .line-2 { animation: line-2 10s linear infinite; }
+    .line-3 { animation: line-3 10s linear infinite; }
+    .line-4 { animation: line-4 10s linear infinite; }
+    .line-5 { animation: line-5 10s linear infinite; }
+
+    @keyframes line-1 {
+      0%        { opacity: 0; }
+      8%, 90%   { opacity: 1; }
+      95%, 100% { opacity: 0; }
+    }
+    @keyframes line-2 {
+      0%, 18%   { opacity: 0; }
+      22%, 90%  { opacity: 1; }
+      95%, 100% { opacity: 0; }
+    }
+    @keyframes line-3 {
+      0%, 36%   { opacity: 0; }
+      40%, 90%  { opacity: 1; }
+      95%, 100% { opacity: 0; }
+    }
+    @keyframes line-4 {
+      0%, 54%   { opacity: 0; }
+      58%, 90%  { opacity: 1; }
+      95%, 100% { opacity: 0; }
+    }
+    @keyframes line-5 {
+      0%, 72%   { opacity: 0; }
+      76%, 90%  { opacity: 1; }
+      95%, 100% { opacity: 0; }
+    }
+  }
+</style>
