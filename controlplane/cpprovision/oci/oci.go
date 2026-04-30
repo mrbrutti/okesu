@@ -25,12 +25,14 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/oracle/oci-go-sdk/v65/common"
 	"github.com/oracle/oci-go-sdk/v65/core"
+	"github.com/oracle/oci-go-sdk/v65/workrequests"
 
 	"github.com/section9labs/okesu/controlplane/cpprovision"
 )
@@ -163,7 +165,17 @@ func (p ociProvisioner) Launch(ctx context.Context, req cpprovision.LaunchReques
 	if instance.Id != nil {
 		instanceID = instance.Id
 	}
-	log.Logf("✓ oci: instance launched id=%s state=%s", *instanceID, instance.LifecycleState)
+	// OCI returns the work-request id in the response header. We use
+	// it later (only on terminal-state failure) to read the operator-
+	// actionable rejection reason out of ListWorkRequestErrors —
+	// that's where messages like "Out of host capacity", "image arch
+	// incompatible with shape", "shape unavailable in this AD", etc.
+	// actually land. Instance.LifecycleState alone is generic.
+	workReqID := ""
+	if resp.OpcWorkRequestId != nil {
+		workReqID = *resp.OpcWorkRequestId
+	}
+	log.Logf("✓ oci: instance launched id=%s state=%s workRequest=%s", *instanceID, instance.LifecycleState, workReqID)
 
 	// Poll until RUNNING (or terminal). LaunchInstance returns
 	// PROVISIONING; the cloud-init only kicks in once we hit RUNNING.
@@ -202,7 +214,21 @@ func (p ociProvisioner) Launch(ctx context.Context, req cpprovision.LaunchReques
 			core.InstanceLifecycleStateTerminating,
 			core.InstanceLifecycleStateStopped,
 			core.InstanceLifecycleStateStopping:
-			return nil, fmt.Errorf("oci: instance reached terminal state %s before RUNNING", got.Instance.LifecycleState)
+			// Pull the operator-actionable rejection from the work
+			// request ("Out of host capacity", "image arch incompatible
+			// with shape", "shape unavailable in AD", quota errors).
+			// Best-effort — if the lookup fails we still return a
+			// useful state-name error rather than nothing.
+			reason := workRequestErrorReason(pollCtx, provider, workReqID)
+			msg := fmt.Sprintf("oci: instance %s reached terminal state %s before RUNNING",
+				*instanceID, got.Instance.LifecycleState)
+			if reason != "" {
+				msg += " — " + reason
+			} else if workReqID != "" {
+				msg += fmt.Sprintf(" (work request %s left no error log; check console: https://cloud.oracle.com/compute/instances/%s?region=%s)",
+					workReqID, *instanceID, region)
+			}
+			return nil, errors.New(msg)
 		}
 	}
 }
@@ -342,4 +368,38 @@ func lookupPublicIP(ctx context.Context, compute core.ComputeClient, provider co
 		}
 	}
 	return "", nil
+}
+
+// workRequestErrorReason fetches the operator-actionable error
+// messages OCI attaches to a launch's work request. Returns an
+// empty string on any kind of lookup failure — caller is expected
+// to fall back to a generic state-name error in that case.
+//
+// The shape of the response: ListWorkRequestErrors returns a slice
+// of {message, timestamp, code} entries. We join the messages with
+// "; " so a single launch failure that triggered multiple errors
+// (e.g. capacity + image-mismatch) lands as one operator-readable
+// string in cp_provisions.error.
+func workRequestErrorReason(ctx context.Context, provider common.ConfigurationProvider, workReqID string) string {
+	if workReqID == "" {
+		return ""
+	}
+	wr, err := workrequests.NewWorkRequestClientWithConfigurationProvider(provider)
+	if err != nil {
+		return ""
+	}
+	resp, err := wr.ListWorkRequestErrors(ctx, workrequests.ListWorkRequestErrorsRequest{
+		WorkRequestId: common.String(workReqID),
+	})
+	if err != nil {
+		return ""
+	}
+	parts := []string{}
+	for _, e := range resp.Items {
+		if e.Message == nil {
+			continue
+		}
+		parts = append(parts, strings.TrimSpace(*e.Message))
+	}
+	return strings.Join(parts, "; ")
 }
