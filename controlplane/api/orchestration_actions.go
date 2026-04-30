@@ -11,17 +11,32 @@
 package api
 
 import (
+	"context"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/section9labs/okesu/controlplane/api/enrichment"
 	"github.com/section9labs/okesu/controlplane/db"
 )
 
 // FindingActionApplier is wired into the orchestrator at server boot
 // via Engine.SetActionApplier.
 type FindingActionApplier struct {
-	store *db.Store
+	store      *db.Store
+	enrichment *enrichment.Service
 }
 
 func NewFindingActionApplier(store *db.Store) *FindingActionApplier {
 	return &FindingActionApplier{store: store}
+}
+
+// SetEnrichmentService installs the IOC-enrichment orchestrator backing
+// the EnrichIOC action. Called at boot from server.go after the
+// enrichment.Service is constructed. Safe to leave unset — EnrichIOC
+// then returns an error rather than silently swallowing the request.
+func (a *FindingActionApplier) SetEnrichmentService(s *enrichment.Service) {
+	a.enrichment = s
 }
 
 func (a *FindingActionApplier) UpdateFindingStatus(findingID int64, status, reason string, runID int64, stepID string) error {
@@ -85,4 +100,62 @@ func (a *FindingActionApplier) EscalateRun(runID int64, reason, severity string)
 	_ = reason
 	_ = severity
 	return nil
+}
+
+// EnrichIOC routes to the enrichment service: cache check, live vendor
+// calls, persist results in ioc_enrichments. Best-effort — partial
+// vendor failures are logged but don't fail the orchestration.
+func (a *FindingActionApplier) EnrichIOC(iocID, runID int64, stepID string) error {
+	if a.enrichment == nil {
+		return errors.New("enrichment service not configured")
+	}
+	rec, err := a.store.GetIOC(iocID)
+	if err != nil {
+		return fmt.Errorf("EnrichIOC: lookup ioc %d: %w", iocID, err)
+	}
+	_, err = a.enrichment.Enrich(context.Background(), rec.ID, rec.Kind, rec.NormalizedValue)
+	return err
+}
+
+// enrichmentStoreAdapter bridges *db.Store to enrichment.Store. The
+// adapter holds the default TTL so Upsert can stamp expires_at.
+type enrichmentStoreAdapter struct {
+	store *db.Store
+	ttl   time.Duration
+}
+
+// NewEnrichmentStoreAdapter constructs the cache-bridge that wraps a
+// *db.Store as an enrichment.Store. ttl is the default cache lifetime
+// applied to Upserts whose Result.TTL is zero.
+func NewEnrichmentStoreAdapter(store *db.Store, ttl time.Duration) enrichment.Store {
+	return &enrichmentStoreAdapter{store: store, ttl: ttl}
+}
+
+func (a *enrichmentStoreAdapter) GetFresh(iocID int64, adapter string) (*enrichment.Result, error) {
+	rec, err := a.store.GetFreshIOCEnrichment(iocID, adapter)
+	if err != nil {
+		return nil, err
+	}
+	return &enrichment.Result{
+		Adapter: rec.Adapter,
+		Verdict: rec.Verdict,
+		Score:   rec.Score,
+		RawJSON: rec.RawJSON,
+	}, nil
+}
+
+func (a *enrichmentStoreAdapter) Upsert(iocID int64, adapter string, r *enrichment.Result) error {
+	ttl := r.TTL
+	if ttl == 0 {
+		ttl = a.ttl
+	}
+	_, err := a.store.UpsertIOCEnrichment(&db.IOCEnrichmentInsert{
+		IOCID:     iocID,
+		Adapter:   adapter,
+		Verdict:   r.Verdict,
+		Score:     r.Score,
+		RawJSON:   r.RawJSON,
+		ExpiresAt: time.Now().Add(ttl),
+	})
+	return err
 }

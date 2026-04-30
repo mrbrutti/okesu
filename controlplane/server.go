@@ -32,6 +32,7 @@ import (
 	"github.com/section9labs/okesu/controlplane/adapters/redispubsub"
 	"github.com/section9labs/okesu/controlplane/adapters/sqliteevents"
 	"github.com/section9labs/okesu/controlplane/api"
+	"github.com/section9labs/okesu/controlplane/api/enrichment"
 	"github.com/section9labs/okesu/controlplane/auth"
 	"github.com/section9labs/okesu/controlplane/cpprovision"
 	awsprovisioner "github.com/section9labs/okesu/controlplane/cpprovision/aws"
@@ -349,10 +350,31 @@ func New(cfg Config) (*Server, error) {
 	if cfg.FleetOpenAIAPIKey != "" {
 		cpLocalEnv = append(cpLocalEnv, "OPENAI_API_KEY="+cfg.FleetOpenAIAPIKey)
 	}
+
+	// Phase 22.4: IOC enrichment service. Adapters self-skip when their
+	// API key is empty, so the service is harmless to construct on a CP
+	// with no vendor keys configured — the enrich_ioc action then
+	// returns an empty result rather than failing. The cache adapter
+	// (api.enrichmentStoreAdapter) carries the operator-configured TTL
+	// so each Upsert stamps a per-row expires_at.
+	enrichmentAdapters := []enrichment.Enricher{}
+	if cfg.Enrichment.VirusTotalAPIKey != "" {
+		enrichmentAdapters = append(enrichmentAdapters, &enrichment.VirusTotal{APIKey: cfg.Enrichment.VirusTotalAPIKey})
+	}
+	if cfg.Enrichment.AbuseIPDBAPIKey != "" {
+		enrichmentAdapters = append(enrichmentAdapters, &enrichment.AbuseIPDB{APIKey: cfg.Enrichment.AbuseIPDBAPIKey})
+	}
+	if cfg.Enrichment.ShodanAPIKey != "" {
+		enrichmentAdapters = append(enrichmentAdapters, &enrichment.Shodan{APIKey: cfg.Enrichment.ShodanAPIKey})
+	}
+	enrichmentStore := api.NewEnrichmentStoreAdapter(store, cfg.Enrichment.DefaultTTL)
+	enrichmentSvc := enrichment.New(enrichmentAdapters, enrichmentStore, cfg.Enrichment.DefaultTTL, cfg.Enrichment.RatePerSecond)
+
 	srv.orchestra = api.NewOrchestrationCoordinator(store, srv.runs, srv.tunReg, cfg.AgentFilesDirs, srv.fedAgg, api.CoordinatorOpts{
-		AutoDeployer:     autoDep,
-		CPLocalEnvExtras: cpLocalEnv,
-		ActionPolicy:     orchestrator.Policy{AutoApprove: cfg.Policy.AutoApprove},
+		AutoDeployer:      autoDep,
+		CPLocalEnvExtras:  cpLocalEnv,
+		ActionPolicy:      orchestrator.Policy{AutoApprove: cfg.Policy.AutoApprove},
+		EnrichmentService: enrichmentSvc,
 	})
 
 	// Wire the finding-trigger hook before the pipeline starts so we
