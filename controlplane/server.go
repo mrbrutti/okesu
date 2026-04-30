@@ -636,6 +636,8 @@ func (s *Server) routes() http.Handler {
 		// register before any future /api/iocs/{id} catch-all so chi
 		// doesn't try to ParseInt "cross-cp-patterns".
 		r.Get("/api/iocs/cross-cp-patterns", api.ListCrossCPPatternsHandler(s.store))
+		// Phase 22.B — single IOC record fetch (drawer / deep-link).
+		r.Get("/api/iocs/{id}", api.GetIOCHandler(s.store))
 		// Phase 22.4 — typed relationship edges for a single IOC (both
 		// directions). Sub-path must register before any /api/iocs/{id}
 		// catch-all so chi routes it correctly.
