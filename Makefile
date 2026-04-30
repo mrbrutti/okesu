@@ -317,3 +317,23 @@ oci-destroy: _oci-preflight
 	  EXPANDED=$$(eval echo $$SECRETS_DIR); \
 	  [ -d "$$EXPANDED" ] && rm -rf "$$EXPANDED" || true
 	@echo "▶ destroyed (mode=$(OCI_MODE))"
+
+# oci-print: human-readable dump of the operator-relevant outputs.
+# Parent mode prints the federation bundle for child enrollment.
+oci-print:
+	@cd $(OCI_DIR) && terraform output cp_public_ip ch_private_ip 2>/dev/null || true
+	@if [ "$(OCI_MODE)" = "parent" ]; then \
+	  echo; echo "── federation_outputs (paste into child's tfvars + .env.oci) ──"; \
+	  cd $(OCI_DIR) && terraform output -json federation_outputs 2>/dev/null | jq -r '.[] | to_entries[] | "  \(.key) = \"\(.value)\""' 2>/dev/null || \
+	  cd $(OCI_DIR) && terraform output federation_outputs; \
+	fi
+
+# oci-test: render-package goldens + terraform validate across all modules.
+oci-test: $(OCI_RENDER)
+	go test ./deploy/oci/render/...
+	@for d in deploy/oci/terraform deploy/oci/terraform/modules/*; do \
+	  [ -f "$$d/main.tf" ] || continue; \
+	  echo "=== $$d ==="; \
+	  (cd "$$d" && rm -rf .terraform && terraform init -backend=false -no-color >/dev/null && terraform validate -no-color); \
+	done
+	terraform fmt -check -recursive deploy/oci/terraform/
