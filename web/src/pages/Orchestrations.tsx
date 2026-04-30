@@ -60,6 +60,8 @@ import { BulkActionBar, BulkActionButton } from '../components/BulkActionBar';
 // that until they open an editor or a run-detail panel.
 const OrchestrationEditorCanvas = lazy(() => import('../components/OrchestrationEditorCanvas'));
 const OrchestrationRunCanvas = lazy(() => import('../components/OrchestrationRunCanvas'));
+import FanoutHostDrawer from '../components/FanoutHostDrawer';
+import FanoutHostListDrawer from '../components/FanoutHostListDrawer';
 
 type Tab = 'library' | 'runs';
 
@@ -1427,6 +1429,8 @@ function RunDetail({
   const [error, setError] = useState<string | null>(null);
   const [approving, setApproving] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [hostDrawer, setHostDrawer] = useState<{ stepID: string; host: string } | null>(null);
+  const [hostList, setHostList] = useState<string | null>(null); // step ID for list drawer
 
   const refresh = () => {
     api.orchestrationRunDetail(runID, cpInstanceID)
@@ -1573,6 +1577,8 @@ function RunDetail({
               onSelectStep={(id) => setExpanded((cur) => (cur === id ? null : id))}
               agentByStepID={agentByStepID}
               nodeByStepID={nodeByStepID}
+              onSelectHost={(stepID, host) => setHostDrawer({ stepID, host })}
+              onOpenHostList={(stepID) => setHostList(stepID)}
             />
           </Suspense>
         )}
@@ -1637,6 +1643,30 @@ function RunDetail({
           </section>
         )}
       </div>
+
+      {hostList && run?.steps && (() => {
+        const step = run.steps.find((s) => s.step_id === hostList);
+        if (!step) return null;
+        return (
+          <FanoutHostListDrawer
+            step={step}
+            onSelectHost={(host) => setHostDrawer({ stepID: step.step_id, host })}
+            onClose={() => setHostList(null)}
+          />
+        );
+      })()}
+
+      {hostDrawer && run?.steps && (() => {
+        const step = run.steps.find((s) => s.step_id === hostDrawer.stepID);
+        if (!step) return null;
+        return (
+          <FanoutHostDrawer
+            step={step}
+            host={hostDrawer.host}
+            onClose={() => setHostDrawer(null)}
+          />
+        );
+      })()}
     </div>
   );
 }
