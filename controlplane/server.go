@@ -589,6 +589,16 @@ func (s *Server) routes() http.Handler {
 		// or kind (e.g. all observed sha256s). Local-only for now.
 		r.Get("/api/iocs", api.ListIOCs(s.store))
 
+		// Phase 22.3 — Investigations (T2 case workspace). CRUD plus
+		// notes and finding linking; viewer+ for now (no admin gate)
+		// since cases are operator workflow, not config.
+		r.Get("/api/investigations", api.ListInvestigationsHandler(s.store))
+		r.Post("/api/investigations", api.CreateInvestigationHandler(s.store))
+		r.Get("/api/investigations/{id}", api.GetInvestigationHandler(s.store))
+		r.Patch("/api/investigations/{id}", api.UpdateInvestigationHandler(s.store))
+		r.Post("/api/investigations/{id}/notes", api.AddInvestigationNoteHandler(s.store))
+		r.Put("/api/investigations/{id}/findings/{finding_id}", api.LinkFindingToInvestigationHandler(s.store))
+
 		// Read endpoints (continued)
 		r.Get("/api/nodes", api.FederatedNodesList(s.store, s.fedAgg))
 		r.Get("/api/nodes/{id}", api.FederatedNodeDetail(s.store, s.fedAgg))
