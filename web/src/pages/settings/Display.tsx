@@ -1,5 +1,9 @@
-import { Activity, Eye, Layers, RefreshCw, Sparkles } from 'lucide-react';
-import { useLiveEventsPrefs, DEFAULTS } from '../../lib/preferences';
+import { Activity, Eye, Layers, RefreshCw, ShieldAlert, Sparkles } from 'lucide-react';
+import {
+  useIOCDisplayPrefs,
+  useLiveEventsPrefs,
+  DEFAULTS,
+} from '../../lib/preferences';
 
 // Settings → Display
 //
@@ -10,6 +14,7 @@ import { useLiveEventsPrefs, DEFAULTS } from '../../lib/preferences';
 
 export default function DisplaySection() {
   const [prefs, setPrefs] = useLiveEventsPrefs();
+  const [iocPrefs, setIOCPrefs] = useIOCDisplayPrefs();
 
   return (
     <div className="p-6 max-w-4xl space-y-6">
@@ -114,6 +119,44 @@ export default function DisplaySection() {
             Reset to defaults
           </button>
         </div>
+      </Card>
+
+      <Card
+        title="IOC display"
+        subtitle="How indicator-of-compromise values render across the dashboard."
+      >
+        <label className="flex items-start gap-2.5 text-sm cursor-pointer hover:bg-slate-50/50 rounded-md px-2 py-2 -mx-2">
+          <input
+            id="defang_iocs"
+            type="checkbox"
+            checked={iocPrefs.defang}
+            onChange={(e) => setIOCPrefs({ defang: e.target.checked })}
+            className="mt-0.5 rounded border-border text-brand-500 focus:ring-brand-500/30"
+          />
+          <span>
+            <span className="font-medium inline-flex items-center gap-1.5">
+              <ShieldAlert size={12} className="text-brand-500" />
+              Defang IOCs
+            </span>
+            <span className="block text-xs text-ink-dim mt-0.5">
+              Display{' '}
+              <code className="font-mono text-[11px] bg-slate-100 px-1 rounded">
+                1.2.3[.]4
+              </code>{' '}
+              instead of{' '}
+              <code className="font-mono text-[11px] bg-slate-100 px-1 rounded">
+                1.2.3.4
+              </code>{' '}
+              and{' '}
+              <code className="font-mono text-[11px] bg-slate-100 px-1 rounded">
+                hxxps://evil[.]com
+              </code>{' '}
+              instead of the live URL — so a stray click or copy doesn't
+              accidentally hit a malicious indicator. Hashes, CVE IDs, and
+              MITRE IDs render unchanged regardless. Default on.
+            </span>
+          </span>
+        </label>
       </Card>
     </div>
   );
