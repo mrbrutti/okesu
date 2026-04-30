@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { X } from 'lucide-react';
-import { api, type IOCRecord } from '../api';
+import { api, type FederatedIOCRecord } from '../api';
 import { cn } from '../lib/cn';
 
 export default function CatalogDrawer({
@@ -8,15 +8,17 @@ export default function CatalogDrawer({
   onClose,
   onOpenFullPage,
 }: {
-  ioc: IOCRecord;
+  ioc: FederatedIOCRecord;
   onClose: () => void;
   onOpenFullPage: () => void;
 }) {
   const [relCount, setRelCount] = useState<number | null>(null);
 
   useEffect(() => {
-    api.iocRelationships(ioc.ID).then(rels => setRelCount(rels?.length ?? 0)).catch(() => setRelCount(0));
-  }, [ioc.ID]);
+    api.iocRelationshipsByKV(ioc.Kind, ioc.NormalizedValue)
+       .then(rels => setRelCount(rels?.length ?? 0))
+       .catch(() => setRelCount(0));
+  }, [ioc.Kind, ioc.NormalizedValue]);
 
   return (
     <>
@@ -34,6 +36,20 @@ export default function CatalogDrawer({
             <div className="text-ink font-mono text-sm break-all">{ioc.Name || ioc.Value}</div>
             {ioc.Name && <div className="text-ink-mute font-mono text-[11px] break-all mt-1">{ioc.Value}</div>}
           </div>
+
+          {ioc.cp_sources && ioc.cp_sources.length > 0 && (
+            <div className="flex flex-wrap gap-1 mb-3">
+              {ioc.cp_sources.map(s => (
+                <span
+                  key={s.instance_id}
+                  className="px-1.5 py-0.5 text-[10px] rounded bg-slate-100 text-ink-dim ring-1 ring-border"
+                  title={s.region || s.display_name || s.instance_id}
+                >
+                  {s.display_name || s.instance_id}
+                </span>
+              ))}
+            </div>
+          )}
 
           <Section label="Identity">
             <KV k="Source" v={ioc.Source} />
