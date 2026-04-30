@@ -2273,3 +2273,15 @@ The wizard offers two paths:
 OCI's S3-compatible endpoint requires Customer Secret Keys, which the OCI provisioner auto-creates via the IAM SDK. MinIO is treated as S3-compatible and reuses the AWS S3 SDK with a custom endpoint pulled from the credential.
 
 `PATCH /api/transport-configs/{id}` permits partial updates of `name` and `scanner_interval_ms`. Identity fields (bucket, endpoint, access keys, region) are immutable — operators delete + re-add for identity changes. `DELETE` returns `409 Conflict` with a referencing-resources list if any node or enrollment_package references the row; federation_peers and cp_provisions FKs are `ON DELETE SET NULL` and don't block.
+
+## Fleet LLM API keys (Settings → LLM Keys)
+
+Operators manage the Anthropic + OpenAI API keys used by the fleet (agents/daimons/jobs) directly from `Settings → LLM Keys`. Persisted in the singleton `fleet_env` table (migration 045), AES-GCM sealed via the same master-key pattern `cloud_credentials` use, with a distinct HKDF info string (`okesu-fleet-env-v1`) for domain separation.
+
+Distribution channels:
+- **HTTPS pull** (`/api/v1/fleet/env`, mTLS-authed for daemons): the daemon's heartbeat loop polls and rewrites `/etc/okesu/jobs.env` on `version` change, then `systemctl restart okesu-jobs.service`.
+- **S3 dead-drop publish** (`fleet-env.json` artifact alongside findings/daimons/etc.): S3-deployed nodes' readers and S3-federated child CPs pick up the new artifact on their next bucket scan.
+
+Federation (`/api/v1/federation/fleet-env` for HTTPS-federated children, S3 artifact for S3-federated children): child stores received keys with `source = "federated_from_parent"` and republishes through its own channels — transitive propagation via existing publish/pull plumbing. Children can override locally; the override switches `source` to `"local"` and the federation poller stops overwriting. A brand-new (default `source=local`, `version=0`) row is treated as "empty" — federation can seed it without operators having to flip the source flag manually.
+
+Backwards compat: `OKESU_CP_FLEET_ANTHROPIC_API_KEY` / `OKESU_CP_FLEET_OPENAI_API_KEY` env vars seed the `fleet_env` row on first boot if it's empty. Once the operator saves through Settings, the DB wins forever.
