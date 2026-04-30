@@ -12,7 +12,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/section9labs/okesu/agent/s3transport"
 	"github.com/section9labs/okesu/controlplane/db"
+	"github.com/section9labs/okesu/controlplane/federation/s3rpc"
 )
 
 // Aggregator fans out federated read requests across all healthy
@@ -26,6 +28,27 @@ import (
 type Aggregator struct {
 	store  *db.Store
 	client *http.Client
+	// s3 holds the per-peer bucket-cached payloads that s3reader
+	// populates. FetchRaw consults this before doing its HTTPS GET
+	// when the peer's transport is s3_dead_drop — that's how
+	// federated findings/daimons surface from a child CP that has
+	// no inbound HTTPS path. Nil disables S3 federation reads.
+	s3 S3Source
+
+	// s3Clients caches one *s3transport.Client per transport_config_id
+	// so the parent's write-pipe submitter doesn't redo bucket connect
+	// handshakes for every directive. Populated lazily on first
+	// SubmitS3Directive against a given peer's transport config.
+	s3ClientsMu sync.Mutex
+	s3Clients   map[int64]*s3transport.Client
+}
+
+// S3Source is the read-side interface the aggregator uses to look
+// up bucket-cached payloads for s3_dead_drop peers. Implemented by
+// federation/s3reader's AssetCache — defined as an interface here
+// so aggregator.go doesn't import s3reader.
+type S3Source interface {
+	Get(peerID int64, asset string) ([]byte, bool)
 }
 
 func NewAggregator(store *db.Store) *Aggregator {
@@ -38,6 +61,14 @@ func NewAggregator(store *db.Store) *Aggregator {
 			},
 		},
 	}
+}
+
+// SetS3Source wires up the bucket-cached read path for s3_dead_drop
+// peers. Called once at server boot after both the aggregator and
+// s3reader have been constructed (the order matters because
+// s3reader's AssetCache must outlive the aggregator).
+func (a *Aggregator) SetS3Source(src S3Source) {
+	a.s3 = src
 }
 
 // PeerSnapshot is the parsed introspect cached on each peer row.
@@ -117,6 +148,32 @@ func (a *Aggregator) FetchJSON(ctx context.Context, peer Peer, path string, out 
 // param (e.g. /api/orchestration-runs?counts=1 returns a wrapper
 // object instead of an array). Same auth + size cap.
 func (a *Aggregator) FetchRaw(ctx context.Context, peer Peer, path string) ([]byte, error) {
+	// Phase A.2 — s3_dead_drop peers don't have an HTTPS path. Look
+	// up the cached bucket payload by mapping the federation API path
+	// to the asset name the publisher writes. Empty cache (publisher
+	// hasn't ticked yet, or that asset isn't in the publisher's
+	// schedule) returns "no data" rather than an error so federated
+	// reads degrade to "show local + known-S3-peer data" cleanly.
+	if peer.Row.Transport == "s3_dead_drop" {
+		if a.s3 == nil {
+			return nil, fmt.Errorf("%s: s3 source not configured", peer.Snapshot.DisplayName)
+		}
+		asset := s3AssetForPath(path)
+		if asset == "" {
+			return nil, fmt.Errorf("%s: s3 transport has no asset for path %s", peer.Snapshot.DisplayName, path)
+		}
+		body, ok := a.s3.Get(peer.Row.ID, asset)
+		if !ok {
+			// First poll hasn't completed yet, or the publisher
+			// doesn't write this asset. Empty array is the
+			// neutral element for the typical list endpoints; the
+			// federated handler caller will Unmarshal it into an
+			// empty slice and merge cleanly.
+			return []byte("[]"), nil
+		}
+		return body, nil
+	}
+
 	url := strings.TrimRight(peer.Row.URL, "/") + path
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -141,6 +198,117 @@ func (a *Aggregator) FetchRaw(ctx context.Context, peer Peer, path string) ([]by
 		return nil, fmt.Errorf("%s: HTTP %d: %s", peer.Snapshot.DisplayName, resp.StatusCode, snippet)
 	}
 	return body, nil
+}
+
+// s3AssetForPath maps a federation read path to the bucket asset
+// the publisher writes for it. Query strings are dropped — Phase A.2
+// publishes the unfiltered list and the parent-side filter is best-
+// effort (operators get all-S3-peer findings even with severity/etc
+// filters set in the URL). Phase B+ may publish per-filter snapshots
+// or parse-and-filter at the boundary; for now, the straight
+// path→asset map keeps the wiring trivial.
+func s3AssetForPath(path string) string {
+	// Strip query params.
+	if i := strings.IndexByte(path, '?'); i >= 0 {
+		path = path[:i]
+	}
+	switch {
+	case strings.HasPrefix(path, "/api/v1/federation/findings"):
+		return "findings.json"
+	case strings.HasPrefix(path, "/api/v1/federation/daimons"):
+		return "daimons.json"
+	case strings.HasPrefix(path, "/api/v1/federation/nodes"):
+		return "nodes.json"
+	case strings.HasPrefix(path, "/api/v1/federation/orchestrations"):
+		return "orchestrations.json"
+	// Phase B will add per-resource detail paths (.../findings/{id})
+	// once the write pipe lands — they need the same kind of
+	// request_id correlation as directives.
+	}
+	return ""
+}
+
+// SubmitS3Directive is the parent-side write helper — used by the
+// federation_writes forwarding handlers when target_cp_instance_id
+// names a peer with transport=s3_dead_drop. Wraps:
+//
+//   1. Build an s3 client from the peer's transport_config (cached
+//      on the Aggregator so per-Submit calls don't redo connect).
+//   2. Look up the parent's own instance_id (cp_meta singleton).
+//   3. Mint a request_id, write req/<id>.json, poll resp/<id>.json,
+//      return the typed Response.
+//
+// Errors here are operator-facing — they bubble up to the dialog
+// the operator clicked Submit on. timeoutSec=0 uses the default.
+//
+// pathParams are forwarded into the s3rpc Request unchanged. Used for
+// directives whose underlying handler reads chi.URLParam (NodeDeploy
+// pulls {id} via this path). Nil for directives without path params.
+func (a *Aggregator) SubmitS3Directive(ctx context.Context, peer Peer, kind string, body json.RawMessage, issuedByEmail string, pathParams map[string]string) (*s3rpc.Response, error) {
+	if peer.Row.Transport != "s3_dead_drop" {
+		return nil, fmt.Errorf("SubmitS3Directive called on non-s3 peer (transport=%s)", peer.Row.Transport)
+	}
+	if !peer.Row.TransportConfigID.Valid || peer.Row.TransportConfigID.Int64 == 0 {
+		return nil, errors.New("s3 peer has no transport_config_id")
+	}
+	if !peer.Row.BucketPrefix.Valid || peer.Row.BucketPrefix.String == "" {
+		return nil, errors.New("s3 peer has no bucket_prefix")
+	}
+
+	cli, err := a.s3ClientFor(ctx, peer.Row.TransportConfigID.Int64)
+	if err != nil {
+		return nil, fmt.Errorf("s3 client: %w", err)
+	}
+	meta, err := a.store.CPMeta()
+	if err != nil {
+		return nil, fmt.Errorf("read parent cp_meta: %w", err)
+	}
+	rpcClient, err := s3rpc.NewClient(cli, meta.InstanceID, peer.Row.BucketPrefix.String)
+	if err != nil {
+		return nil, err
+	}
+	return rpcClient.Submit(ctx, s3rpc.Request{
+		Kind:         kind,
+		Body:         body,
+		IssuedByUser: issuedByEmail,
+		PathParams:   pathParams,
+	})
+}
+
+// s3ClientFor returns a cached or freshly-built s3transport.Client
+// for the given transport_config_id. Cached because a busy parent
+// can issue many directives per tick to the same peer; we don't
+// want to redo connect handshakes for each.
+func (a *Aggregator) s3ClientFor(ctx context.Context, configID int64) (*s3transport.Client, error) {
+	a.s3ClientsMu.Lock()
+	if a.s3Clients == nil {
+		a.s3Clients = map[int64]*s3transport.Client{}
+	}
+	if cli, ok := a.s3Clients[configID]; ok {
+		a.s3ClientsMu.Unlock()
+		return cli, nil
+	}
+	a.s3ClientsMu.Unlock()
+
+	tc, err := a.store.GetTransportConfig(configID)
+	if err != nil {
+		return nil, fmt.Errorf("transport_config %d: %w", configID, err)
+	}
+	cli, err := s3transport.NewClient(ctx, s3transport.ClientConfig{
+		Bucket:    tc.Bucket,
+		Endpoint:  tc.ScannerEndpoint(),
+		Region:    tc.Region.String,
+		UseSSL:    tc.UseSSL,
+		AccessKey: tc.AccessKey.String,
+		SecretKey: tc.SecretKey.String,
+	})
+	if err != nil {
+		return nil, err
+	}
+	a.s3ClientsMu.Lock()
+	a.s3Clients[configID] = cli
+	a.s3ClientsMu.Unlock()
+	return cli, nil
 }
 
 // FanOutResult is one peer's outcome — either parsed rows (caller

@@ -42,6 +42,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/section9labs/okesu/agent"
+	"github.com/section9labs/okesu/controlplane/api/enrichment"
 	"github.com/section9labs/okesu/controlplane/audit"
 	"github.com/section9labs/okesu/controlplane/auth"
 	"github.com/section9labs/okesu/controlplane/db"
@@ -1284,6 +1285,13 @@ type CoordinatorOpts struct {
 	// today's gate-everything behaviour. See
 	// controlplane/orchestrator/action_class.go.
 	ActionPolicy orchestrator.Policy
+
+	// EnrichmentService backs the enrich_ioc action. Nil disables the
+	// action — the applier returns "enrichment service not configured"
+	// when an agent emits enrich_ioc on a CP without any vendor keys
+	// wired up. Threaded in from server.go after the per-vendor
+	// adapters + cache adapter are constructed from cfg.Enrichment.
+	EnrichmentService *enrichment.Service
 }
 
 func NewOrchestrationCoordinator(
@@ -1320,7 +1328,11 @@ func NewOrchestrationCoordinator(
 	engine.SetProgressSink(&stepNodeProgressSinkAdapter{store: store})
 	// Wire the action applier so agents' orchestration_result.actions
 	// produce real CP mutations (status / tags / severity / run links).
-	engine.SetActionApplier(NewFindingActionApplier(store))
+	applier := NewFindingActionApplier(store)
+	if opts.EnrichmentService != nil {
+		applier.SetEnrichmentService(opts.EnrichmentService)
+	}
+	engine.SetActionApplier(applier)
 	// Wire the data resolver so steps with `data:` blocks get their
 	// queries resolved against the CP store and bound into the
 	// prompt template — replaces the old "have the agent curl

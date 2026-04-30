@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"sort"
@@ -12,11 +13,37 @@ import (
 	"sync"
 	"time"
 
+	"github.com/go-chi/chi/v5"
+
+	"github.com/section9labs/okesu/controlplane/auth"
 	"github.com/section9labs/okesu/controlplane/db"
 	"github.com/section9labs/okesu/controlplane/federation"
+	"github.com/section9labs/okesu/controlplane/federation/s3rpc"
 	"github.com/section9labs/okesu/controlplane/orchestrator"
 	"github.com/section9labs/okesu/controlplane/tunnel"
 )
+
+// idPathParams extracts {id} from the chi route context. Used by the
+// per-resource forwarding wrappers to thread the URL parameter into
+// the s3 directive's PathParams. Returns nil when no `id` is bound.
+func idPathParams(r *http.Request) map[string]string {
+	if id := chi.URLParam(r, "id"); id != "" {
+		return map[string]string{"id": id}
+	}
+	return nil
+}
+
+// idStepPathParams extracts {id} + {stepID} from the chi route context
+// for the orchestration_step_approve directive. Returns nil if either
+// param is missing.
+func idStepPathParams(r *http.Request) map[string]string {
+	id := chi.URLParam(r, "id")
+	step := chi.URLParam(r, "stepID")
+	if id == "" || step == "" {
+		return nil
+	}
+	return map[string]string{"id": id, "stepID": step}
+}
 
 // Phase 9.7: federation writes.
 //
@@ -43,7 +70,16 @@ const proxyTimeout = 30 * time.Second
 //
 // The body is read once and re-attached to r.Body so a falling-through
 // caller can still decode it.
-func proxyIfTargetCP(w http.ResponseWriter, r *http.Request, agg *federation.Aggregator, federationPath string) (handled bool, err error) {
+//
+// `s3Kind` is the s3rpc directive kind to submit when the target peer's
+// transport is `s3_dead_drop`. Empty s3Kind means "this directive isn't
+// supported over s3 yet" — for those, an s3 target gets a 501 with a
+// hint pointing operators back to the read pipe / HTTPS path.
+//
+// `s3PathParams` carries chi-style URL parameters (e.g. {"id":"42"})
+// for directives whose underlying handler reads chi.URLParam. Nil for
+// directives without path params.
+func proxyIfTargetCP(w http.ResponseWriter, r *http.Request, agg *federation.Aggregator, federationPath, s3Kind string, s3PathParams map[string]string) (handled bool, err error) {
 	body, _ := io.ReadAll(r.Body)
 	r.Body = io.NopCloser(bytes.NewReader(body))
 
@@ -73,12 +109,19 @@ func proxyIfTargetCP(w http.ResponseWriter, r *http.Request, agg *federation.Agg
 		return true, nil
 	}
 
-	url := strings.TrimRight(target.Row.URL, "/") + federationPath
 	// Strip the target_cp_instance_id from the proxied body — the
 	// child doesn't need it (it's the ultimate target) and leaving
 	// it in could confuse downstream tooling.
 	cleaned, _ := stripTargetField(body)
 
+	// S3 dead-drop transport: the child doesn't have an inbound HTTPS
+	// path. Use the bucket write pipe (s3rpc) instead, which polls
+	// req/<id>.json and writes resp/<id>.json on the child's tick.
+	if target.Row.Transport == "s3_dead_drop" {
+		return forwardOverS3(w, r, agg, *target, s3Kind, cleaned, s3PathParams), nil
+	}
+
+	url := strings.TrimRight(target.Row.URL, "/") + federationPath
 	req, err := http.NewRequestWithContext(r.Context(), r.Method, url, bytes.NewReader(cleaned))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -115,6 +158,56 @@ func proxyIfTargetCP(w http.ResponseWriter, r *http.Request, agg *federation.Agg
 	return true, nil
 }
 
+// forwardOverS3 dispatches the directive via the s3 write pipe and
+// renders the child's Response back to the operator. Always returns
+// true (the caller has already decided this is the s3 path).
+//
+// Empty s3Kind = no Phase B handler exists for this directive yet;
+// surface a 501 telling the operator to use the HTTPS path.
+func forwardOverS3(w http.ResponseWriter, r *http.Request, agg *federation.Aggregator, peer federation.Peer, s3Kind string, body []byte, pathParams map[string]string) bool {
+	if s3Kind == "" {
+		http.Error(w,
+			fmt.Sprintf("target %s uses s3_dead_drop transport which does not yet support this directive — use the HTTPS path or wait for Phase B.1+",
+				peer.Snapshot.DisplayName),
+			http.StatusNotImplemented)
+		return true
+	}
+	issuedBy := ""
+	if u := auth.UserFromContext(r.Context()); u != nil {
+		issuedBy = u.Email
+	}
+	// Bound the wait at the s3rpc default; operators see the dialog
+	// "in flight" while we poll.
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
+	defer cancel()
+	resp, err := agg.SubmitS3Directive(ctx, peer, s3Kind, body, issuedBy, pathParams)
+	if err != nil {
+		http.Error(w, "s3 directive: "+err.Error(), http.StatusBadGateway)
+		return true
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Okesu-Forwarded-To", peer.Snapshot.InstanceID)
+	w.Header().Set("X-Okesu-Forward-Transport", "s3_dead_drop")
+	status := resp.HTTPStatus
+	if status == 0 {
+		if resp.Status == "ok" {
+			status = http.StatusOK
+		} else {
+			status = http.StatusBadGateway
+		}
+	}
+	w.WriteHeader(status)
+	if len(resp.Body) > 0 {
+		_, _ = w.Write(resp.Body)
+		return true
+	}
+	if resp.Error != "" {
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": resp.Error})
+		return true
+	}
+	return true
+}
+
 // stripTargetField removes target_cp_instance_id from a JSON body so
 // the child doesn't see the parent's targeting field.
 func stripTargetField(body []byte) ([]byte, error) {
@@ -132,7 +225,7 @@ func stripTargetField(body []byte) ([]byte, error) {
 // in the East CP from the Global UI without leaving the page.
 func ForwardingNodeCreate(store *db.Store, agg *federation.Aggregator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if handled, _ := proxyIfTargetCP(w, r, agg, "/api/v1/federation/nodes"); handled {
+		if handled, _ := proxyIfTargetCP(w, r, agg, "/api/v1/federation/nodes", s3rpc.KindCreateNode, nil); handled {
 			return
 		}
 		NodeCreate(store).ServeHTTP(w, r)
@@ -422,7 +515,7 @@ func FederationOrchestrationDetail(store *db.Store) http.HandlerFunc {
 // is created on the chosen child instead of the parent.
 func FederatedOrchestrationCreate(store *db.Store, agg *federation.Aggregator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if handled, _ := proxyIfTargetCP(w, r, agg, "/api/v1/federation/orchestrations"); handled {
+		if handled, _ := proxyIfTargetCP(w, r, agg, "/api/v1/federation/orchestrations", s3rpc.KindOrchestrationCreate, nil); handled {
 			return
 		}
 		OrchestrationCreate(store).ServeHTTP(w, r)
@@ -439,7 +532,7 @@ func FederationOrchestrationCreate(store *db.Store) http.HandlerFunc {
 func FederatedOrchestrationUpdate(store *db.Store, agg *federation.Aggregator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		path := strings.Replace(r.URL.Path, "/api/orchestrations/", "/api/v1/federation/orchestrations/", 1)
-		if handled, _ := proxyWriteByQuery(w, r, agg, path); handled {
+		if handled, _ := proxyWriteByQuery(w, r, agg, path, s3rpc.KindOrchestrationUpdate, idPathParams(r)); handled {
 			return
 		}
 		OrchestrationUpdate(store).ServeHTTP(w, r)
@@ -453,7 +546,7 @@ func FederationOrchestrationUpdate(store *db.Store) http.HandlerFunc {
 func FederatedOrchestrationDelete(store *db.Store, agg *federation.Aggregator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		path := strings.Replace(r.URL.Path, "/api/orchestrations/", "/api/v1/federation/orchestrations/", 1)
-		if handled, _ := proxyWriteByQuery(w, r, agg, path); handled {
+		if handled, _ := proxyWriteByQuery(w, r, agg, path, s3rpc.KindOrchestrationDelete, idPathParams(r)); handled {
 			return
 		}
 		OrchestrationDelete(store).ServeHTTP(w, r)
@@ -470,7 +563,7 @@ func FederationOrchestrationDelete(store *db.Store) http.HandlerFunc {
 func FederatedOrchestrationRunCreate(store *db.Store, coord *OrchestrationCoordinator, agg *federation.Aggregator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		path := strings.Replace(r.URL.Path, "/api/orchestrations/", "/api/v1/federation/orchestrations/", 1)
-		if handled, _ := proxyWriteByQuery(w, r, agg, path); handled {
+		if handled, _ := proxyWriteByQuery(w, r, agg, path, s3rpc.KindOrchestrationRunCreate, idPathParams(r)); handled {
 			return
 		}
 		OrchestrationRunCreate(store, coord).ServeHTTP(w, r)
@@ -612,7 +705,7 @@ func FederationOrchestrationRunDetail(store *db.Store) http.HandlerFunc {
 func FederatedOrchestrationStepApprove(store *db.Store, coord *OrchestrationCoordinator, agg *federation.Aggregator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		path := strings.Replace(r.URL.Path, "/api/orchestration-runs/", "/api/v1/federation/orchestration-runs/", 1)
-		if handled, _ := proxyWriteByQuery(w, r, agg, path); handled {
+		if handled, _ := proxyWriteByQuery(w, r, agg, path, s3rpc.KindOrchestrationStepApprove, idStepPathParams(r)); handled {
 			return
 		}
 		OrchestrationStepApprove(store, coord).ServeHTTP(w, r)
@@ -626,7 +719,7 @@ func FederationOrchestrationStepApprove(store *db.Store, coord *OrchestrationCoo
 func FederatedOrchestrationRunCancel(store *db.Store, agg *federation.Aggregator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		path := strings.Replace(r.URL.Path, "/api/orchestration-runs/", "/api/v1/federation/orchestration-runs/", 1)
-		if handled, _ := proxyWriteByQuery(w, r, agg, path); handled {
+		if handled, _ := proxyWriteByQuery(w, r, agg, path, s3rpc.KindOrchestrationRunCancel, idPathParams(r)); handled {
 			return
 		}
 		OrchestrationRunCancel(store).ServeHTTP(w, r)
@@ -644,7 +737,7 @@ func FederationOrchestrationRunCancel(store *db.Store) http.HandlerFunc {
 // split-and-fan-out needed.
 func FederatedOrchestrationRunsBulkCancel(store *db.Store, agg *federation.Aggregator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if handled, _ := proxyWriteByQuery(w, r, agg, "/api/v1/federation/orchestration-runs/bulk-cancel"); handled {
+		if handled, _ := proxyWriteByQuery(w, r, agg, "/api/v1/federation/orchestration-runs/bulk-cancel", s3rpc.KindOrchestrationRunsBulkCnl, nil); handled {
 			return
 		}
 		OrchestrationRunsBulkCancel(store).ServeHTTP(w, r)
@@ -661,7 +754,7 @@ func FederationOrchestrationRunsBulkCancel(store *db.Store) http.HandlerFunc {
 // endpoint.
 func FederatedOrchestrationRunsBulkRetry(store *db.Store, coord *OrchestrationCoordinator, agg *federation.Aggregator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if handled, _ := proxyWriteByQuery(w, r, agg, "/api/v1/federation/orchestration-runs/bulk-retry"); handled {
+		if handled, _ := proxyWriteByQuery(w, r, agg, "/api/v1/federation/orchestration-runs/bulk-retry", s3rpc.KindOrchestrationRunsBulkRetry, nil); handled {
 			return
 		}
 		OrchestrationRunsBulkRetry(store, coord).ServeHTTP(w, r)
@@ -678,7 +771,13 @@ func FederationOrchestrationRunsBulkRetry(store *db.Store, coord *OrchestrationC
 // the child's federation endpoint and the response streamed back. Used
 // by the Kanban-board status-drag flow so an operator can move a
 // federated finding between columns from the parent UI.
-func proxyWriteByQuery(w http.ResponseWriter, r *http.Request, agg *federation.Aggregator, federationPath string) (handled bool, err error) {
+//
+// `s3Kind` and `s3PathParams` mirror proxyIfTargetCP: when the resolved
+// peer's transport is `s3_dead_drop`, the request is dispatched via
+// the s3rpc write pipe instead of an HTTPS POST. Empty `s3Kind` =>
+// 501 for s3 peers (the directive isn't supported on this transport
+// yet).
+func proxyWriteByQuery(w http.ResponseWriter, r *http.Request, agg *federation.Aggregator, federationPath, s3Kind string, s3PathParams map[string]string) (handled bool, err error) {
 	cpID := r.URL.Query().Get("cp")
 	if cpID == "" {
 		return false, nil
@@ -697,6 +796,11 @@ func proxyWriteByQuery(w http.ResponseWriter, r *http.Request, agg *federation.A
 	}
 	body, _ := io.ReadAll(r.Body)
 	r.Body = io.NopCloser(bytes.NewReader(body))
+
+	if target.Row.Transport == "s3_dead_drop" {
+		return forwardOverS3(w, r, agg, *target, s3Kind, body, s3PathParams), nil
+	}
+
 	url := strings.TrimRight(target.Row.URL, "/") + federationPath
 	q := r.URL.Query()
 	q.Del("cp")
@@ -745,7 +849,7 @@ func proxyWriteByQuery(w http.ResponseWriter, r *http.Request, agg *federation.A
 func FederatedFindingSetStatus(store *db.Store, agg *federation.Aggregator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		path := strings.Replace(r.URL.Path, "/api/findings/", "/api/v1/federation/findings/", 1)
-		if handled, _ := proxyWriteByQuery(w, r, agg, path); handled {
+		if handled, _ := proxyWriteByQuery(w, r, agg, path, s3rpc.KindFindingSetStatus, idPathParams(r)); handled {
 			return
 		}
 		FindingSetStatus(store).ServeHTTP(w, r)

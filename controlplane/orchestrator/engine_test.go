@@ -436,6 +436,9 @@ func (f *fakeActionApplier) RecordAgentLesson(agentName, text string, runID int6
 	}{agentName, text, runID, stepID})
 	return nil
 }
+func (f *fakeActionApplier) EnrichIOC(iocID, runID int64, stepID string) error {
+	return nil
+}
 
 // TestEngine_ApprovalGate_PolicyMixedActionsStillGates confirms the
 // bypass requires every kind in the step's allowlist to be

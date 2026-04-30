@@ -32,6 +32,7 @@ import (
 	"github.com/section9labs/okesu/controlplane/adapters/redispubsub"
 	"github.com/section9labs/okesu/controlplane/adapters/sqliteevents"
 	"github.com/section9labs/okesu/controlplane/api"
+	"github.com/section9labs/okesu/controlplane/api/enrichment"
 	"github.com/section9labs/okesu/controlplane/auth"
 	"github.com/section9labs/okesu/controlplane/cpprovision"
 	awsprovisioner "github.com/section9labs/okesu/controlplane/cpprovision/aws"
@@ -41,6 +42,7 @@ import (
 	"github.com/section9labs/okesu/controlplane/federation"
 	"github.com/section9labs/okesu/controlplane/federation/s3publisher"
 	"github.com/section9labs/okesu/controlplane/federation/s3reader"
+	"github.com/section9labs/okesu/controlplane/federation/s3rpc"
 	"github.com/section9labs/okesu/controlplane/ioc/catalog"
 	"github.com/section9labs/okesu/controlplane/jobs"
 	"github.com/section9labs/okesu/controlplane/notify"
@@ -362,10 +364,31 @@ func New(cfg Config) (*Server, error) {
 	if cfg.FleetOpenAIAPIKey != "" {
 		cpLocalEnv = append(cpLocalEnv, "OPENAI_API_KEY="+cfg.FleetOpenAIAPIKey)
 	}
+
+	// Phase 22.4: IOC enrichment service. Adapters self-skip when their
+	// API key is empty, so the service is harmless to construct on a CP
+	// with no vendor keys configured — the enrich_ioc action then
+	// returns an empty result rather than failing. The cache adapter
+	// (api.enrichmentStoreAdapter) carries the operator-configured TTL
+	// so each Upsert stamps a per-row expires_at.
+	enrichmentAdapters := []enrichment.Enricher{}
+	if cfg.Enrichment.VirusTotalAPIKey != "" {
+		enrichmentAdapters = append(enrichmentAdapters, &enrichment.VirusTotal{APIKey: cfg.Enrichment.VirusTotalAPIKey})
+	}
+	if cfg.Enrichment.AbuseIPDBAPIKey != "" {
+		enrichmentAdapters = append(enrichmentAdapters, &enrichment.AbuseIPDB{APIKey: cfg.Enrichment.AbuseIPDBAPIKey})
+	}
+	if cfg.Enrichment.ShodanAPIKey != "" {
+		enrichmentAdapters = append(enrichmentAdapters, &enrichment.Shodan{APIKey: cfg.Enrichment.ShodanAPIKey})
+	}
+	enrichmentStore := api.NewEnrichmentStoreAdapter(store, cfg.Enrichment.DefaultTTL)
+	enrichmentSvc := enrichment.New(enrichmentAdapters, enrichmentStore, cfg.Enrichment.DefaultTTL, cfg.Enrichment.RatePerSecond)
+
 	srv.orchestra = api.NewOrchestrationCoordinator(store, srv.runs, srv.tunReg, cfg.AgentFilesDirs, srv.fedAgg, api.CoordinatorOpts{
-		AutoDeployer:     autoDep,
-		CPLocalEnvExtras: cpLocalEnv,
-		ActionPolicy:     orchestrator.Policy{AutoApprove: cfg.Policy.AutoApprove},
+		AutoDeployer:      autoDep,
+		CPLocalEnvExtras:  cpLocalEnv,
+		ActionPolicy:      orchestrator.Policy{AutoApprove: cfg.Policy.AutoApprove},
+		EnrichmentService: enrichmentSvc,
 	})
 
 	// Wire the finding-trigger hook before the pipeline starts so we
@@ -524,6 +547,7 @@ func (s *Server) routes() http.Handler {
 		Secrets:           s.secrets,
 	}))
 	r.Post("/api/v1/federation/runs", api.FederationCreateRun(s.runs, s.tunReg, s.store, s.cfg.AgentFilesDirs))
+	r.Post("/api/v1/federation/runs/{id}/cancel", api.FederationCancelRun(s.runs, s.tunReg, s.store))
 
 	r.Get("/api/v1/cp/introspect", api.CPIntrospect(api.CPIntrospectDepsValue{
 		Store:           s.store,
@@ -605,6 +629,17 @@ func (s *Server) routes() http.Handler {
 		// Phase 22.1 — IOC list. Filter by finding_id (drawer drill-down)
 		// or kind (e.g. all observed sha256s). Local-only for now.
 		r.Get("/api/iocs", api.ListIOCs(s.store))
+		// Phase 22.4 — cross-CP IOC pattern rollup. Drives the
+		// cross-cp-ioc-pattern-supervisor daimon. Static segment must
+		// register before any future /api/iocs/{id} catch-all so chi
+		// doesn't try to ParseInt "cross-cp-patterns".
+		r.Get("/api/iocs/cross-cp-patterns", api.ListCrossCPPatternsHandler(s.store))
+		// Phase 22.4 — typed relationship edges for a single IOC (both
+		// directions). Sub-path must register before any /api/iocs/{id}
+		// catch-all so chi routes it correctly.
+		r.Get("/api/iocs/{id}/relationships", api.ListIOCRelationshipsHandler(s.store))
+		// Phase 22.4 — STIX 2.1 bundle export. Supports ?kind= and ?since= filters.
+		r.Get("/api/stix2/iocs", api.STIX2ExportHandler(s.store))
 
 		// Phase 22.3 — Investigations (T2 case workspace). CRUD plus
 		// notes and finding linking; viewer+ for now (no admin gate)
@@ -809,7 +844,7 @@ func (s *Server) routes() http.Handler {
 				return s.cfg.EffectiveMgmtURL(), s.cfg.DaemonBinaryPath, binResolver
 			}))
 			r.Post("/api/runs", api.ForwardingCreateRun(s.runs, s.tunReg, s.store, s.cfg.AgentFilesDirs, s.fedAgg))
-			r.Post("/api/runs/{id}/cancel", api.CancelRun(s.runs, s.tunReg, s.store))
+			r.Post("/api/runs/{id}/cancel", api.ForwardingCancelRun(s.runs, s.tunReg, s.store, s.fedAgg))
 
 			// Phase 9: S3 dead-drop transport — operators manage
 			// bucket credentials + fleet keypairs via transport-configs,
@@ -909,14 +944,113 @@ func (s *Server) startFederationS3Publisher(ctx context.Context) {
 		log.Printf("federation s3 publisher: %v", err)
 		return
 	}
-	pub, err := s3publisher.New(ctx, *cfg, s.renderIntrospectJSON)
+	// Phase A.2/A.3 — extra assets the publisher writes alongside
+	// introspect.json. Each maps 1:1 with what the matching
+	// /api/v1/federation/* endpoint emits over HTTPS, so the
+	// aggregator's cached read returns the same wire shape.
+	assets := []s3publisher.Asset{
+		{Path: "findings.json", Render: s.renderFederationFindingsJSON},
+		{Path: "daimons.json", Render: s.renderFederationDaimonsJSON},
+		{Path: "nodes.json", Render: s.renderFederationNodesJSON},
+		{Path: "orchestrations.json", Render: s.renderFederationOrchestrationsJSON},
+	}
+	pub, err := s3publisher.New(ctx, *cfg, s.renderIntrospectJSON, assets...)
 	if err != nil {
 		log.Printf("federation s3 publisher: connect: %v", err)
 		return
 	}
 	go pub.Run(ctx)
-	log.Printf("federation s3 publisher: writing to %s/%s every 30s",
-		cfg.Bucket, cfg.BucketPrefix)
+	log.Printf("federation s3 publisher: writing to %s/%s every 30s (introspect + %d extra asset(s))",
+		cfg.Bucket, cfg.BucketPrefix, len(assets))
+}
+
+// startFederationS3Dispatcher starts the child-side write-pipe server
+// (Phase B). Polls cp/*/outbound/<self>/req/*.json for directives the
+// parent CP submitted, dispatches into the local HTTP handlers via the
+// s3rpc bridge, and writes the response back to
+// cp/<self>/outbound/<parent>/resp/<id>.json.
+//
+// Same enable gate as the publisher — if the bucket isn't configured,
+// the dispatcher silently skips (an offline bucket should never crash
+// the CP). The s3transport.Client used here is freshly built rather
+// than shared with the publisher because the publisher's client is
+// internal to that goroutine; the costs of one extra connect at boot
+// are negligible.
+func (s *Server) startFederationS3Dispatcher(ctx context.Context) {
+	cfg, err := s.federationPublisherConfig(ctx)
+	if err != nil {
+		log.Printf("federation s3 dispatcher: %v", err)
+		return
+	}
+	cli, err := s3transport.NewClient(ctx, s3transport.ClientConfig{
+		Bucket:    cfg.Bucket,
+		Endpoint:  cfg.Endpoint,
+		Region:    cfg.Region,
+		UseSSL:    cfg.UseSSL,
+		AccessKey: cfg.AccessKey,
+		SecretKey: cfg.SecretKey,
+	})
+	if err != nil {
+		log.Printf("federation s3 dispatcher: connect: %v", err)
+		return
+	}
+	meta, err := s.store.CPMeta()
+	if err != nil {
+		log.Printf("federation s3 dispatcher: cp_meta: %v", err)
+		return
+	}
+	if meta.InstanceID == "" {
+		log.Printf("federation s3 dispatcher: cp_meta has no instance_id (run --cp-instance-id on first boot)")
+		return
+	}
+	srv, err := s3rpc.New(cli, meta.InstanceID)
+	if err != nil {
+		log.Printf("federation s3 dispatcher: %v", err)
+		return
+	}
+	srv.Register(s3rpc.KindCreateNode, api.NewS3CreateNodeHandler(s.store))
+	srv.Register(s3rpc.KindDeployDaimon,
+		api.NewS3DeployDaimonHandler(s.store, s.jobs, s, s.deployNodesConfig()))
+	srv.Register(s3rpc.KindCreateRun,
+		api.NewS3CreateRunHandler(s.runs, s.tunReg, s.store, s.cfg.AgentFilesDirs))
+	srv.Register(s3rpc.KindCancelRun,
+		api.NewS3CancelRunHandler(s.runs, s.tunReg, s.store))
+	srv.Register(s3rpc.KindFindingSetStatus,
+		api.NewS3FindingSetStatusHandler(s.store))
+	srv.Register(s3rpc.KindOrchestrationCreate,
+		api.NewS3OrchestrationCreateHandler(s.store))
+	srv.Register(s3rpc.KindOrchestrationUpdate,
+		api.NewS3OrchestrationUpdateHandler(s.store))
+	srv.Register(s3rpc.KindOrchestrationDelete,
+		api.NewS3OrchestrationDeleteHandler(s.store))
+	srv.Register(s3rpc.KindOrchestrationRunCreate,
+		api.NewS3OrchestrationRunCreateHandler(s.store, s.orchestra))
+	srv.Register(s3rpc.KindOrchestrationRunCancel,
+		api.NewS3OrchestrationRunCancelHandler(s.store))
+	srv.Register(s3rpc.KindOrchestrationStepApprove,
+		api.NewS3OrchestrationStepApproveHandler(s.store, s.orchestra))
+	srv.Register(s3rpc.KindOrchestrationRunsBulkCnl,
+		api.NewS3OrchestrationRunsBulkCancelHandler(s.store))
+	srv.Register(s3rpc.KindOrchestrationRunsBulkRetry,
+		api.NewS3OrchestrationRunsBulkRetryHandler(s.store, s.orchestra))
+	go srv.Run(ctx)
+	log.Printf("federation s3 dispatcher: polling cp/*/outbound/%s/req/ every %s (13 kinds registered)",
+		meta.InstanceID, s3rpc.DefaultServerPollInterval)
+}
+
+// deployNodesConfig assembles the api.NodesConfig used by deploy and
+// install handlers. Factored out so the s3 dispatcher and the HTTP
+// route registration share one definition.
+func (s *Server) deployNodesConfig() api.NodesConfig {
+	return api.NodesConfig{
+		DaemonBinaryPath:  s.cfg.DaemonBinaryPath,
+		DaemonBinariesDir: s.cfg.DaemonBinariesDir,
+		DaimonFilesDir:    s.cfg.DaimonFilesDir,
+		WebhookSecret:     s.cfg.WebhookSecret,
+		WebhookURL:        s.cfg.EffectiveWebhookURL(),
+		MgmtURL:           s.cfg.EffectiveMgmtURL(),
+		Secrets:           s.secrets,
+	}
 }
 
 // federationPublisherConfig assembles the s3publisher.Config from
@@ -983,6 +1117,39 @@ func (s *Server) renderIntrospectJSON(ctx context.Context) ([]byte, error) {
 		},
 	})
 	return json.Marshal(resp)
+}
+
+// renderFederationFindingsJSON returns the JSON the
+// /api/v1/federation/findings endpoint would emit at default-filter
+// (open status, latest 1000). The parent's aggregator caches this
+// for s3 peers and serves federated /api/findings requests off it.
+//
+// Phase A.2 publishes the unfiltered list and the parent applies
+// query-param filters client-side at the boundary (best-effort —
+// see s3AssetForPath in the aggregator). Phase B+ may publish
+// per-filter snapshots if operator UX demands it.
+func (s *Server) renderFederationFindingsJSON(ctx context.Context) ([]byte, error) {
+	_ = ctx
+	return api.RenderFederationFindings(s.store, 1000)
+}
+
+// renderFederationDaimonsJSON / renderFederationNodesJSON /
+// renderFederationOrchestrationsJSON — Phase A.3 siblings to the
+// findings renderer. Same mechanic: produce the body the matching
+// federation endpoint would emit at default filters.
+func (s *Server) renderFederationDaimonsJSON(ctx context.Context) ([]byte, error) {
+	_ = ctx
+	return api.RenderFederationDaimons(s.store, 1000)
+}
+
+func (s *Server) renderFederationNodesJSON(ctx context.Context) ([]byte, error) {
+	_ = ctx
+	return api.RenderFederationNodes(s.store, 1000)
+}
+
+func (s *Server) renderFederationOrchestrationsJSON(ctx context.Context) ([]byte, error) {
+	_ = ctx
+	return api.RenderFederationOrchestrations(s.store)
 }
 
 // hooks so the rest of the CP doesn't need to know which transport
@@ -1098,7 +1265,14 @@ func (s *Server) Run(ctx context.Context) error {
 	// any federation_peers row with transport='s3_dead_drop'. No-op
 	// when no S3 peers are registered, so it's safe to start
 	// unconditionally; HTTPS-only operators pay nothing.
-	go s3reader.New(s.store, 0).Run(ctx)
+	//
+	// The AssetCache holds the bucket-fetched findings/etc the
+	// aggregator reads from for s3 peers. We construct it once and
+	// hand it to both the reader (which writes into it) and the
+	// aggregator (which reads from it via the S3Source interface).
+	s3AssetCache := s3reader.NewAssetCache()
+	s.fedAgg.SetS3Source(s3AssetCache)
+	go s3reader.New(s.store, 0, s3AssetCache).Run(ctx)
 
 	// Phase A — S3 dead-drop federation: child-side publisher.
 	// Enabled when FederationS3PublishPrefix is set AND we have
@@ -1109,6 +1283,7 @@ func (s *Server) Run(ctx context.Context) error {
 	if s.cfg.FederationS3PublishPrefix != "" &&
 		(s.cfg.FederationS3PublishConfigID > 0 || s.cfg.FederationS3PublishBucket != "") {
 		s.startFederationS3Publisher(ctx)
+		s.startFederationS3Dispatcher(ctx)
 	}
 
 	// Phase 22: SIGHUP triggers a re-scan of every IOC catalog

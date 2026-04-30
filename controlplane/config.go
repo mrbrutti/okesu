@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Config holds the runtime configuration for the Control Plane server.
@@ -158,6 +159,20 @@ type Config struct {
 	// drops a jobs.env on the node manually.
 	FleetAnthropicAPIKey string
 	FleetOpenAIAPIKey    string
+
+	// Enrichment carries the IOC-enrichment vendor API keys + the
+	// service-level defaults (Phase 22.4). Empty API keys disable the
+	// matching adapter at boot — the enrichment service silently skips
+	// adapters with no key configured. DefaultTTL gates how long a
+	// cached vendor result counts as fresh; RatePerSecond is the
+	// per-adapter token-bucket refill rate.
+	Enrichment struct {
+		VirusTotalAPIKey string
+		AbuseIPDBAPIKey  string
+		ShodanAPIKey     string
+		DefaultTTL       time.Duration
+		RatePerSecond    float64
+	}
 
 	// WebhookPublicURL is the absolute URL the deployed daemon should POST
 	// webhook events to. Defaults to derived from Listen ("https://localhost<port>")
@@ -326,7 +341,7 @@ func (c Config) Validate() error {
 // FromEnv returns a Config seeded with environment variable defaults.
 // CLI flags should overlay these values.
 func FromEnv() Config {
-	return Config{
+	cfg := Config{
 		Listen:        envOr("OKESU_CP_LISTEN", ":8443"),
 		DBPath:        envOr("OKESU_CP_DB", "./cp.db"),
 		CertFile:      os.Getenv("OKESU_CP_CERT"),
@@ -401,6 +416,20 @@ func FromEnv() Config {
 		CPDisplayName:   os.Getenv("OKESU_CP_DISPLAY_NAME"),
 		FederationToken: os.Getenv("OKESU_CP_FEDERATION_TOKEN"),
 	}
+
+	// Enrichment vendor keys + defaults (Phase 22.4). API keys come
+	// from env at this layer for legacy/dev parity; the canonical
+	// production path is ports.Secrets via resolveSecrets. DefaultTTL
+	// defaults to 24h (vendor reputation rarely shifts faster);
+	// RatePerSecond defaults to 1.0 (one lookup/sec/adapter — safe
+	// for free-tier VT/AbuseIPDB/Shodan).
+	cfg.Enrichment.VirusTotalAPIKey = os.Getenv("OKESU_CP_VIRUSTOTAL_API_KEY")
+	cfg.Enrichment.AbuseIPDBAPIKey = os.Getenv("OKESU_CP_ABUSEIPDB_API_KEY")
+	cfg.Enrichment.ShodanAPIKey = os.Getenv("OKESU_CP_SHODAN_API_KEY")
+	cfg.Enrichment.DefaultTTL = 24 * time.Hour
+	cfg.Enrichment.RatePerSecond = 1.0
+
+	return cfg
 }
 
 // envBool reads "1"/"true"/"yes" as true; anything else as false; empty as `def`.

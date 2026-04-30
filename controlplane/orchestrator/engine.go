@@ -96,6 +96,7 @@ type ActionApplier interface {
 	LinkRunToFinding(findingID int64, runID int64, stepID, reason string) error
 	EscalateRun(runID int64, reason, severity string) error
 	RecordAgentLesson(agentName, text string, runID int64, stepID string) error
+	EnrichIOC(iocID int64, runID int64, stepID string) error
 }
 
 // Orchestration is what Store.GetOrchestration returns — the parsed
@@ -753,6 +754,11 @@ func (e *Engine) dispatchAction(runID int64, step StepSpec, a Action) error {
 			}
 		}
 		return nil
+	case ActionEnrichIOC:
+		if a.IOCID == 0 {
+			return fmt.Errorf("missing ioc_id")
+		}
+		return e.applier.EnrichIOC(a.IOCID, runID, stepID)
 	}
 	return fmt.Errorf("unhandled kind %q", a.Kind)
 }

@@ -55,13 +55,28 @@ type Config struct {
 // imports from controlplane/api.
 type IntrospectFn func(ctx context.Context) ([]byte, error)
 
+// Asset is one named blob to publish per tick. The publisher writes
+// {Path} to {BucketPrefix}{Path} with Render's bytes as the body.
+// Phase A.2 uses this to publish findings/daimons/nodes alongside
+// introspect — a tiny extension of the same primitive.
+type Asset struct {
+	// Path within the bucket prefix, e.g. "findings.json".
+	Path string
+	// Render produces the bytes for this asset. Errors abort just
+	// this asset's publish; other assets in the same tick still try.
+	Render func(ctx context.Context) ([]byte, error)
+	// ContentType for the bucket object; defaults to application/json.
+	ContentType string
+}
+
 // Publisher writes the child CP's introspect snapshot to the bucket on
 // a tick. Run blocks until ctx is cancelled.
 type Publisher struct {
-	client    *s3transport.Client
-	prefix    string
+	client     *s3transport.Client
+	prefix     string
 	introspect IntrospectFn
-	interval  time.Duration
+	assets     []Asset
+	interval   time.Duration
 
 	mu   sync.Mutex
 	last time.Time
@@ -72,7 +87,7 @@ type Publisher struct {
 // Returns an error on bad config or unreachable bucket — the caller
 // should log + skip rather than crash, so an offline bucket doesn't
 // take the CP down.
-func New(ctx context.Context, cfg Config, fn IntrospectFn) (*Publisher, error) {
+func New(ctx context.Context, cfg Config, fn IntrospectFn, assets ...Asset) (*Publisher, error) {
 	if cfg.Bucket == "" || cfg.Endpoint == "" {
 		return nil, errors.New("s3publisher: bucket + endpoint required")
 	}
@@ -97,6 +112,7 @@ func New(ctx context.Context, cfg Config, fn IntrospectFn) (*Publisher, error) {
 		client:     cli,
 		prefix:     cfg.BucketPrefix,
 		introspect: fn,
+		assets:     assets,
 		interval:   cfg.Interval,
 	}, nil
 }
@@ -135,9 +151,12 @@ func (p *Publisher) LastPublishedAt() time.Time {
 	return p.last
 }
 
-// tick performs one publish cycle: introspect → bucket. Errors are
-// logged + cached on the Publisher; we don't propagate because the
-// loop must keep running across transient bucket outages.
+// tick performs one publish cycle: introspect → bucket, plus any
+// extra Assets. Errors are logged + cached on the Publisher; we
+// don't propagate because the loop must keep running across
+// transient bucket outages. A failure on one asset doesn't abort
+// the rest of the tick — the introspect snapshot is the most
+// important and is published first.
 func (p *Publisher) tick(ctx context.Context) {
 	body, err := p.introspect(ctx)
 	if err != nil {
@@ -157,6 +176,24 @@ func (p *Publisher) tick(ctx context.Context) {
 	if err := p.client.Put(ctx, p.prefix+"heartbeat.json", hb, "application/json"); err != nil {
 		p.recordErr("put heartbeat.json: " + err.Error())
 		return
+	}
+	// Phase A.2 extra assets — findings.json today, daimons/nodes
+	// follow in A.3. Each asset can fail independently; we log but
+	// don't abort the tick (the introspect that gates HealthyPeers
+	// is already on bucket).
+	for _, a := range p.assets {
+		body, err := a.Render(ctx)
+		if err != nil {
+			log.Printf("s3publisher %s: render %s: %v", p.prefix, a.Path, err)
+			continue
+		}
+		ct := a.ContentType
+		if ct == "" {
+			ct = "application/json"
+		}
+		if err := p.client.Put(ctx, p.prefix+a.Path, body, ct); err != nil {
+			log.Printf("s3publisher %s: put %s: %v", p.prefix, a.Path, err)
+		}
 	}
 	p.recordOK()
 }

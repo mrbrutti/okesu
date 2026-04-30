@@ -1951,3 +1951,240 @@ the agent's JSONL emission, so the DB row reflects what the agent
 emitted; the meeting executor mutates the in-memory DispatchedFinding
 as a defensive fallback for downstream env-binding when the agent
 forgets.
+
+## Cross-fleet pattern surfacing (Phase 22.4)
+
+Four pieces work together:
+
+1. **Cross-CP IOC pattern supervisor** — `agents/cross-cp-ioc-pattern-supervisor.md`
+   ticks every 5 minutes on the parent CP. Queries
+   `GET /api/iocs/cross-cp-patterns?min_observations=N&window_hours=H`
+   and emits a finding for each IOC that hits the threshold.
+
+2. **IOC enrichment + cache** — `enrich_ioc` orchestration action
+   (class: enrich) routes through a service that fans out to
+   VirusTotal, AbuseIPDB, and Shodan adapters with per-adapter rate
+   limits. Cached in `ioc_enrichments` (per-adapter row, TTL-bounded;
+   default 24h).
+
+3. **Typed IOC relationships** — `ioc_relationships` table holds
+   directed edges with a fixed v1 vocabulary
+   (resolves-to, exploits, hosted-at, belongs-to, signed-with,
+   dropped-by). Populated by enrichment + agent emissions; queryable
+   via `GET /api/iocs/{id}/relationships`.
+
+4. **STIX 2.1 export** — `GET /api/stix2/iocs` returns indicators +
+   relationships as a STIX 2.1 bundle for ingestion into MISP /
+   OpenCTI / other TIPs. Query params `?since=<RFC3339>&kind=<kind>`.
+---
+
+## Federation: parent ↔ child CPs
+
+A single tenant typically runs one **global** CP plus one or more
+**regional/edge** CPs. Operators want a single pane of glass: list
+nodes, findings, daimons, orchestrations across the whole fleet from
+the global UI; create or mutate resources on a chosen child without
+leaving the page. The federation layer covers both directions —
+**reads** (parent merges child rows into its lists) and **writes**
+(parent forwards mutations to a chosen child) — across two
+transports: HTTPS (mTLS, default) and S3 dead-drop.
+
+The S3 dead-drop transport is **federation-specific** — different
+from the Phase 9 S3 transport for nodes (§25). They share the
+underlying `agent/s3transport` package but use disjoint key prefixes
+and message shapes. A child CP behind a NAT/firewall with no inbound
+HTTPS path can still federate via a shared bucket.
+
+### Bucket layout (S3 federation)
+
+```
+s3://<bucket>/
+  cp/<self-id>/
+    outbound/<peer-id>/
+      introspect.json                     ← child publishes; parent reads
+      findings.json                       ← snapshot of recent findings
+      daimons.json                        ← child's daimon library
+      nodes.json                          ← child's node inventory
+      orchestrations.json                 ← child's orchestrations
+      req/<request-id>.json               ← parent writes directives here
+                                            (child reads on its tick)
+      resp/<request-id>.json              ← child writes responses here
+                                            (parent polls until match)
+```
+
+Symmetric: each side writes under its own
+`cp/<self>/outbound/<peer>/`. The two halves of a request live in
+two different `outbound/` trees — `cp/<parent>/outbound/<child>/req/`
+holds parent-issued directives; `cp/<child>/outbound/<parent>/resp/`
+holds the child's responses. Operators don't enumerate peers
+anywhere — the bucket layout is the discovery mechanism (the child's
+server lists `cp/*/outbound/<self>/req/` per tick to find every
+registered parent).
+
+### Read pipe (Phase A)
+
+Operator-facing list pages on the parent (Findings, Nodes,
+Daimons, Orchestrations, OrchestrationRuns) federate via fan-out:
+
+```go
+// controlplane/federation/aggregator.go
+agg.FanOut(ctx, func(ctx context.Context, peer Peer) error {
+    body, err := agg.FetchRaw(ctx, peer, "/api/v1/federation/findings")
+    // ...merge into shared accumulator...
+})
+```
+
+`FetchRaw` branches on `peer.Row.Transport`:
+
+- `https` (default) — token-authed GET against the child's
+  `/api/v1/federation/*` endpoint (4 MB cap, 8 s timeout per peer)
+- `s3_dead_drop` — looks up the bucket-cached payload via
+  `S3Source.Get(peerID, "findings.json")`. The publisher on the
+  child side writes those snapshots every 30 s; the reader on the
+  parent side polls `cp/<peer>/outbound/<self>/*.json` and stuffs
+  bytes into an in-memory `AssetCache`.
+
+Each row gets a `cp_source` tag so the UI can show provenance and
+deep-link `?cp=<id>` for detail GETs.
+
+```
+controlplane/federation/
+  aggregator.go      fan-out, transport-branched FetchRaw,
+                     S3Source interface (cached bucket bytes)
+  s3publisher/       child-side: writes introspect + extra assets
+                     (findings/daimons/nodes/orchestrations.json)
+                     every 30s
+  s3reader/          parent-side: polls bucket prefixes, fills
+                     AssetCache; one goroutine per bucket
+```
+
+### Write pipe (Phase B)
+
+Operator-initiated **writes** from the parent (Add Node, Deploy
+Daimon, Run Agent, Cancel Run, Set Finding Status, Orchestration
+CRUD + run trigger / cancel / step approve / bulk variants) need
+request/response correlation: the parent submits and waits; the
+child picks up the directive on its next scan tick, executes it,
+and writes the result back keyed by the same request id.
+
+`request_id` is a UUID minted at submit time. Correlation is purely
+by name — no extra index file. The child keeps an in-memory
+`executed[request_id]` cache (1 h TTL) so re-issued directives
+return the cached response without re-running.
+
+```go
+// controlplane/federation/s3rpc/types.go
+type Request struct {
+    RequestID    string
+    Kind         string            // "create_node", "deploy_daimon", ...
+    Body         json.RawMessage   // kind-specific payload
+    PathParams   map[string]string // chi {id} / {stepID} when needed
+    IssuedByUser string
+    IssuedAt     time.Time
+}
+
+type Response struct {
+    RequestID   string
+    Kind        string
+    Status      string          // "ok" | "error"
+    HTTPStatus  int             // mirrors the child's local handler
+    Body        json.RawMessage
+    Error       string
+    CompletedAt time.Time
+}
+```
+
+The same forwarding wrapper handles both transports — the helper
+peeks `target_cp_instance_id` (in body) or `?cp=<instance_id>` (in
+query) and routes to either `proxyIfTargetCP` / `proxyWriteByQuery`
+(HTTPS path) or `agg.SubmitS3Directive` (s3 path):
+
+```
+controlplane/api/
+  federation_writes.go             proxyIfTargetCP, proxyWriteByQuery
+                                   (transport-branched), idPathParams
+  federation_writes_deploy_run.go  Forwarding{NodeDeploy,CreateRun,
+                                   CancelRun}
+  federation_s3_dispatch.go        child-side bridges:
+                                   directive Request → synthetic
+                                   *http.Request → existing handler
+                                   → translate ResponseRecorder back
+                                   to s3rpc.Response
+controlplane/federation/s3rpc/
+  client.go                        parent-side Submit (writes req
+                                   object, polls resp object, returns
+                                   typed Response, deletes both)
+  server.go                        child-side dispatcher (multi-parent
+                                   aware, idempotency cache)
+```
+
+13 directive kinds wired today:
+
+| Kind | Underlying handler | Forwarding wrapper |
+|---|---|---|
+| `create_node` | `NodeCreate` | `ForwardingNodeCreate` |
+| `deploy_daimon` | `NodeDeploy` | `ForwardingNodeDeploy` |
+| `create_run` | `CreateRun` | `ForwardingCreateRun` |
+| `cancel_run` | `CancelRun` | `ForwardingCancelRun` |
+| `finding_set_status` | `FindingSetStatus` | `FederatedFindingSetStatus` |
+| `orchestration_create` | `OrchestrationCreate` | `FederatedOrchestrationCreate` |
+| `orchestration_update` | `OrchestrationUpdate` | `FederatedOrchestrationUpdate` |
+| `orchestration_delete` | `OrchestrationDelete` | `FederatedOrchestrationDelete` |
+| `orchestration_run_create` | `OrchestrationRunCreate` | `FederatedOrchestrationRunCreate` |
+| `orchestration_run_cancel` | `OrchestrationRunCancel` | `FederatedOrchestrationRunCancel` |
+| `orchestration_step_approve` | `OrchestrationStepApprove` | `FederatedOrchestrationStepApprove` |
+| `orchestration_runs_bulk_cancel` | `OrchestrationRunsBulkCancel` | `FederatedOrchestrationRunsBulkCancel` |
+| `orchestration_runs_bulk_retry` | `OrchestrationRunsBulkRetry` | `FederatedOrchestrationRunsBulkRetry` |
+
+Adding a new kind is a four-line change: a `Kind*` constant, a
+`NewS3*Handler` bridge that hands the local handler to
+`runHandlerForDirective`, a `srv.Register(...)` call in
+`startFederationS3Dispatcher`, and threading the kind into the
+forwarder's `proxyIfTargetCP` / `proxyWriteByQuery` call. No handler
+logic forks between transports — the bridge synthesizes an
+`*http.Request` and runs the existing local handler through it,
+re-attaching chi route params via `chi.NewRouteContext` and
+injecting a `federation@parent` user via `auth.WithUser` for audit
+emission.
+
+### Latency
+
+Worst-case round trip on the s3 path is ~60 s (one full child scan
+tick + one parent poll window). Defaults: child polls every 30 s,
+parent polls every 5 s, `Submit` times out at 90 s. The forwarding
+handler bounds each call at 2 min so a stalled child returns a
+clean 502 to the operator dialog rather than hanging the request.
+
+### Security trade-offs
+
+- **HTTPS path** — child has an inbound mTLS endpoint; the
+  per-peer federation token is presented via
+  `X-Okesu-Federation-Token`. Standard pinned-CA verification is a
+  Phase 9.7 concern; today the parent uses `InsecureSkipVerify`
+  against self-signed lab certs.
+- **S3 dead-drop path** — bucket IAM **is** the trust boundary.
+  Operators using this transport must scope the access keys to a
+  single `cp/<id>/` prefix per CP, enable bucket-level encryption,
+  and accept that any directive body (including
+  `deploy_daimon`'s SSH private key) transits the bucket. Documented
+  inline at `NewS3DeployDaimonHandler` so it's discoverable from
+  code.
+
+### Enrollment bundle (Phase A.1)
+
+Operators "add an s3-federated child" by minting a self-contained
+package on the parent. The bundle bakes the CP's own instance_id
+plus the bucket coordinates into env-vars, so the child's first
+boot uses `--cp-instance-id` to seed `cp_meta.instance_id`
+deterministically — no chicken-and-egg with the parent's
+registration row.
+
+```
+controlplane/api/cp_bundle_s3deaddrop.go    writer (env template + README)
+controlplane/db/cp_meta.go                  SeedCPInstanceID(id)
+controlplane/server.go                      boot honors --cp-instance-id
+```
+
+The Federation page's "Generate Bundle" dialog has a fourth radio
+for **S3 dead-drop**, with a transport_config picker for the bucket
+coords.
