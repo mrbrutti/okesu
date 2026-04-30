@@ -29,6 +29,7 @@ import {
 } from 'lucide-react';
 import { api, ApiError, type DashboardResponse, type InsightsEventsResponse, type InsightsFindingsResponse, type InsightsOrchestrationsTopResponse, type InsightsTriageOutcomesResponse, type OrchestrationRunStatus, type OrchestrationRunView, type TimeRange } from '../api';
 import { cn } from '../lib/cn';
+import { WarBridgeBanner } from '../components/WarBridgeBanner';
 
 const EventsTimelineChart = lazy(() =>
   import('../components/dashboard/DashboardCharts').then((m) => ({ default: m.EventsTimelineChart })),
@@ -207,6 +208,12 @@ export default function DashboardPage() {
             {error}
           </div>
         )}
+
+        {/* Phase 22.3 — war-bridge banner. Self-hides when there are
+            no active war-bridge findings, so the dashboard looks
+            unchanged in the common case and only this loud red strip
+            appears during an active escalation. */}
+        <WarBridgeBanner />
 
         {/* Federation banner — only when this CP federates from peers.
             Tells the operator the headline numbers below are aggregated
