@@ -422,6 +422,32 @@ func actorFromRequest(r *http.Request) string {
 	return ""
 }
 
+// InvestigationAuditHandler returns the case's chronological audit
+// timeline — created/closed/notes/finding-linked/run-linked events
+// merged from the existing tables (no new schema). Backs the
+// workspace's Audit tab.
+//
+// Path: /api/investigations/{id}/audit
+func InvestigationAuditHandler(store *db.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		invID, err := investigationIDFromChi(r)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		events, err := store.ListInvestigationAudit(invID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if events == nil {
+			events = []db.AuditEvent{}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(events)
+	}
+}
+
 // SuggestFindingsHandler returns scored finding candidates for a case's
 // Suggested findings card. Filters out already-linked + per-case-
 // dismissed candidates server-side.

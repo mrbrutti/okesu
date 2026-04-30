@@ -61,9 +61,10 @@ import {
 import { cn } from '../lib/cn';
 import { RunAgentDialog } from '../components/RunAgentDialog';
 import { SuggestedFindingsCard } from '../components/SuggestedFindingsCard';
+import { InvestigationAuditPanel } from '../components/InvestigationAuditPanel';
 
 type Resolution = 'resolved' | 'false_positive' | 'duplicate' | 'wont_fix';
-type Tab = 'overview' | 'findings' | 'runs' | 'iocs' | 'daimons' | 'orchestrations' | 'notes';
+type Tab = 'overview' | 'findings' | 'runs' | 'iocs' | 'daimons' | 'orchestrations' | 'notes' | 'audit';
 
 const RESOLUTION_OPTIONS: { value: Resolution; label: string; icon: typeof Check; tone: string }[] = [
   { value: 'resolved',       label: 'Resolved',        icon: CheckCircle2, tone: 'text-green-700' },
@@ -302,6 +303,7 @@ export default function InvestigationDetailPage() {
         <TabButton current={tab} value="daimons"       onClick={setTab} icon={Bot}          label="Daimons"         count={bundle.daimons.length} />
         <TabButton current={tab} value="orchestrations" onClick={setTab} icon={Activity}    label="Orchestrations" count={bundle.orchestrations.length} />
         <TabButton current={tab} value="notes"         onClick={setTab} icon={MessageSquarePlus} label="Notes"     count={bundle.notes.length} />
+        <TabButton current={tab} value="audit"         onClick={setTab} icon={ClipboardList} label="Audit" />
       </nav>
 
       <div className="flex-1 overflow-auto p-6 space-y-5">
@@ -342,6 +344,10 @@ export default function InvestigationDetailPage() {
 
         {tab === 'notes' && (
           <NotesPanel invID={invID} notes={bundle.notes} onChange={reload} />
+        )}
+
+        {tab === 'audit' && (
+          <InvestigationAuditPanel invID={invID} cpInstanceID={cpInstanceID} />
         )}
       </div>
 
