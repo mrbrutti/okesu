@@ -299,3 +299,11 @@ oci-install: oci-render
 	  echo "✖ healthcheck failed; tail of journalctl:"; \
 	  ssh -o StrictHostKeyChecking=no $(OCI_SSH_USER)@$$CP_IP 'sudo journalctl -u okesu-cp --no-pager -n 50'; \
 	  exit 1
+
+# The headline target: terraform apply + render + scp + start.
+oci-deploy: oci-build oci-apply oci-install
+	@echo "▶ deploy complete (mode=$(OCI_MODE))"
+
+# Iteration target: just re-render + reinstall. No terraform.
+oci-redeploy: oci-build oci-install
+	@echo "▶ redeploy complete (mode=$(OCI_MODE))"
