@@ -1,4 +1,4 @@
--- Phase 23.x postgres parity. See migrations/sqlite/038_step_node_dispatches.sql.
+-- Phase 23.x postgres parity. See migrations/sqlite/039_step_node_dispatches.sql.
 
 CREATE TABLE IF NOT EXISTS orchestration_step_node_dispatches (
   run_id          BIGINT      NOT NULL REFERENCES orchestration_runs(id) ON DELETE CASCADE,
