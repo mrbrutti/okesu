@@ -1,0 +1,21 @@
+#!/bin/bash
+# Cloud-init for the okesu-cp VM. Runs once at first boot.
+# Binary + cp.yaml are scp'd in by `make oci-install` after this.
+set -euo pipefail
+
+# Dedicated low-privilege user, matching scripts/install-cp.sh.
+groupadd --system okesu-cp || true
+useradd  --system --gid okesu-cp --home-dir /var/lib/okesu-cp --shell /sbin/nologin okesu-cp || true
+
+mkdir -p /var/lib/okesu-cp /var/log/okesu-cp /etc/okesu-cp /etc/okesu-cp/secrets
+chown -R okesu-cp:okesu-cp /var/lib/okesu-cp /var/log/okesu-cp /etc/okesu-cp
+chmod 0750 /etc/okesu-cp /etc/okesu-cp/secrets
+
+# Open the CP UI / mgmt ports through firewalld.
+if command -v firewall-cmd >/dev/null 2>&1; then
+  firewall-cmd --permanent --add-port=8443/tcp
+  firewall-cmd --permanent --add-port=8444/tcp
+  firewall-cmd --reload
+fi
+
+touch /var/log/okesu-cp/cloudinit.done
