@@ -99,7 +99,14 @@ func MergeIOCs(contribs []contribIOCs) []FederatedIOCRecord {
 		sort.Slice(m.CPSources, func(i, j int) bool { return m.CPSources[i].InstanceID < m.CPSources[j].InstanceID })
 		result = append(result, *m)
 	}
-	sort.Slice(result, func(i, j int) bool { return result[i].LastSeen.After(result[j].LastSeen) })
+	// Stable sort with secondary key on NormalizedValue so two rows with
+	// identical LastSeen always emit in the same order across calls.
+	sort.SliceStable(result, func(i, j int) bool {
+		if !result[i].LastSeen.Equal(result[j].LastSeen) {
+			return result[i].LastSeen.After(result[j].LastSeen)
+		}
+		return result[i].NormalizedValue < result[j].NormalizedValue
+	})
 	return result
 }
 
@@ -172,13 +179,16 @@ func MergeIOCObservations(contribs []contribObs) []FederatedIOCObservation {
 // First non-empty wins for Source/Confidence iterating in ascending
 // CP-ID order. CPSources lists every CP that recorded the edge.
 func MergeIOCRelationships(contribs []contribRels) []FederatedIOCRelationship {
-	sort.SliceStable(contribs, func(i, j int) bool { return contribs[i].cp.InstanceID < contribs[j].cp.InstanceID })
+	// Don't mutate the caller's slice — copy then sort.
+	sorted := make([]contribRels, len(contribs))
+	copy(sorted, contribs)
+	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].cp.InstanceID < sorted[j].cp.InstanceID })
 
 	type key struct {
 		sk, sv, p, ok, ov string
 	}
 	out := make(map[key]*FederatedIOCRelationship)
-	for _, c := range contribs {
+	for _, c := range sorted {
 		for _, r := range c.rows {
 			k := key{sk: r.SubjectKind, sv: r.SubjectValue, p: r.Predicate, ok: r.ObjectKind, ov: r.ObjectValue}
 			if existing, ok := out[k]; ok {
@@ -200,5 +210,22 @@ func MergeIOCRelationships(contribs []contribRels) []FederatedIOCRelationship {
 		sort.Slice(m.CPSources, func(i, j int) bool { return m.CPSources[i].InstanceID < m.CPSources[j].InstanceID })
 		result = append(result, *m)
 	}
+	// Stable wire-shape: sort by tuple so map-iteration randomness
+	// doesn't leak through to the API consumer.
+	sort.SliceStable(result, func(i, j int) bool {
+		if result[i].SubjectKind != result[j].SubjectKind {
+			return result[i].SubjectKind < result[j].SubjectKind
+		}
+		if result[i].SubjectValue != result[j].SubjectValue {
+			return result[i].SubjectValue < result[j].SubjectValue
+		}
+		if result[i].Predicate != result[j].Predicate {
+			return result[i].Predicate < result[j].Predicate
+		}
+		if result[i].ObjectKind != result[j].ObjectKind {
+			return result[i].ObjectKind < result[j].ObjectKind
+		}
+		return result[i].ObjectValue < result[j].ObjectValue
+	})
 	return result
 }

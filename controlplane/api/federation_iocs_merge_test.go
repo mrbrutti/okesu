@@ -160,3 +160,43 @@ func TestMergeIOCRelationships_DistinctTuples(t *testing.T) {
 		t.Errorf("expected 2 distinct tuples (different predicates); got %d", len(merged))
 	}
 }
+
+// Wire shape must be deterministic — Go map iteration is randomized,
+// so without an explicit final sort the order would shift between calls.
+// Lock in tuple-ascending order.
+func TestMergeIOCRelationships_DeterministicOutputOrder(t *testing.T) {
+	cpA := &CPSourceRef{InstanceID: "cp-a"}
+	rels := []db.IOCRelationshipPaired{
+		{SubjectKind: "domain", SubjectValue: "z.example", Predicate: "resolves-to", ObjectKind: "ipv4", ObjectValue: "9.9.9.9"},
+		{SubjectKind: "domain", SubjectValue: "a.example", Predicate: "resolves-to", ObjectKind: "ipv4", ObjectValue: "1.1.1.1"},
+		{SubjectKind: "domain", SubjectValue: "m.example", Predicate: "hosted-at", ObjectKind: "ipv4", ObjectValue: "5.5.5.5"},
+	}
+	merged := MergeIOCRelationships([]contribRels{{cp: cpA, rows: rels}})
+	if len(merged) != 3 {
+		t.Fatalf("expected 3 tuples; got %d", len(merged))
+	}
+	want := []string{"a.example", "m.example", "z.example"}
+	got := []string{merged[0].SubjectValue, merged[1].SubjectValue, merged[2].SubjectValue}
+	if !reflect.DeepEqual(want, got) {
+		t.Errorf("expected SubjectValue ascending %v; got %v", want, got)
+	}
+}
+
+// Mirrored by IOCs: equal LastSeen rows must emit in stable order.
+func TestMergeIOCs_StableOrderOnEqualLastSeen(t *testing.T) {
+	cpA := &CPSourceRef{InstanceID: "cp-a"}
+	common := mergeTs("2026-04-01T00:00:00Z")
+	rows := []*db.IOCRecord{
+		{Kind: "sha256", NormalizedValue: "zzz", Source: "catalog", LastSeen: common},
+		{Kind: "sha256", NormalizedValue: "aaa", Source: "catalog", LastSeen: common},
+	}
+	merged := MergeIOCs([]contribIOCs{{cp: cpA, rows: rows}})
+	if len(merged) != 2 {
+		t.Fatalf("expected 2 rows; got %d", len(merged))
+	}
+	// Ascending NormalizedValue tiebreaker.
+	if merged[0].NormalizedValue != "aaa" || merged[1].NormalizedValue != "zzz" {
+		t.Errorf("equal LastSeen tiebreak should be ascending NormalizedValue; got [%s, %s]",
+			merged[0].NormalizedValue, merged[1].NormalizedValue)
+	}
+}
