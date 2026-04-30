@@ -1,0 +1,46 @@
+---
+// Orchestrations / Branching on results. 7-second loop:
+//   left step finishes (green), result.pid: 12345 highlights and "flies"
+//   into next step's prompt where {{step1.result.pid}} becomes 12345.
+---
+
+<div class="grid grid-cols-2 gap-3 items-stretch" role="img"
+     aria-label="Animated demo: step 1 emits result.pid 12345; the value highlights and is bound into step 2's prompt where the placeholder resolves.">
+  <div class="bg-panel border border-border rounded-lg shadow-card p-3">
+    <div class="text-[10px] uppercase tracking-wide text-ink-mute font-semibold mb-1">step-1</div>
+    <div class="text-[12px] font-semibold text-ink mb-2">scan</div>
+    <div class="text-[10px] text-ink-dim font-mono">result:</div>
+    <div class="result-pid text-[10px] font-mono">
+      <span class="text-ink-dim">  pid: </span><span class="result-pid-value">12345</span>
+    </div>
+  </div>
+
+  <div class="bg-panel border border-border rounded-lg shadow-card p-3">
+    <div class="text-[10px] uppercase tracking-wide text-ink-mute font-semibold mb-1">step-2</div>
+    <div class="text-[12px] font-semibold text-ink mb-2">contain</div>
+    <div class="text-[10px] text-ink-dim font-mono">prompt:</div>
+    <div class="text-[10px] font-mono">
+      <span class="text-ink-dim">snapshot pid </span><span class="bound-value">{"{{step1.result.pid}}"}</span>
+    </div>
+  </div>
+</div>
+
+<style>
+  .result-pid-value { color: #22c55e; font-weight: 600; }
+  .bound-value { color: #5b21b6; font-weight: 600; }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .result-pid-value { animation: result-pid 7s linear infinite; }
+    @keyframes result-pid {
+      0%, 30%   { background-color: transparent; }
+      35%, 50%  { background-color: #dcfce7; padding: 1px 3px; border-radius: 3px; }
+      55%, 100% { background-color: transparent; padding: 1px 3px; }
+    }
+
+    .bound-value { animation: bound-value 7s linear infinite; }
+    @keyframes bound-value {
+      0%, 50%   { color: #5b21b6; }
+      55%, 100% { color: #22c55e; }
+    }
+  }
+</style>

@@ -1,0 +1,62 @@
+---
+// Orchestrations / Fan-out. 6-second loop:
+//   standalone fan-out card with 8 dots filling in left-to-right,
+//   histogram bar grows, headline counter ticks 0/8 → 8/8.
+---
+
+<div class="bg-panel border border-border rounded-lg shadow-card p-4 max-w-sm" role="img"
+     aria-label="Animated demo: a fan-out step card showing 8 hosts; the dot strip fills in left to right and the histogram bar grows from 0 to 100%.">
+  <div class="text-[11px] font-semibold text-ink mb-1">edr-triage</div>
+  <div class="text-[10px] text-ink-dim mb-2">8 hosts (fan-out)</div>
+
+  <div class="flex items-center gap-2 mb-2">
+    <div class="flex-1 h-2 bg-slate-200 rounded overflow-hidden">
+      <div class="hist-strip h-full bg-green-500"></div>
+    </div>
+    <span class="strip-count text-[10px] font-mono text-ink-dim">0/8</span>
+  </div>
+
+  <div class="flex gap-1">
+    <span class="strip-dot strip-dot-1 w-2.5 h-2.5 rounded-full"></span>
+    <span class="strip-dot strip-dot-2 w-2.5 h-2.5 rounded-full"></span>
+    <span class="strip-dot strip-dot-3 w-2.5 h-2.5 rounded-full"></span>
+    <span class="strip-dot strip-dot-4 w-2.5 h-2.5 rounded-full"></span>
+    <span class="strip-dot strip-dot-5 w-2.5 h-2.5 rounded-full"></span>
+    <span class="strip-dot strip-dot-6 w-2.5 h-2.5 rounded-full"></span>
+    <span class="strip-dot strip-dot-7 w-2.5 h-2.5 rounded-full"></span>
+    <span class="strip-dot strip-dot-8 w-2.5 h-2.5 rounded-full"></span>
+  </div>
+</div>
+
+<style>
+  .hist-strip { width: 0%; }
+  .strip-dot { background-color: #cbd5e1; }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .hist-strip { animation: hist-strip-grow 6s linear infinite; }
+    @keyframes hist-strip-grow {
+      0%, 100% { width: 0; }
+      90%      { width: 100%; }
+    }
+
+    .strip-dot-1 { animation: strip-dot 6s linear 0.3s infinite; }
+    .strip-dot-2 { animation: strip-dot 6s linear 0.7s infinite; }
+    .strip-dot-3 { animation: strip-dot 6s linear 1.1s infinite; }
+    .strip-dot-4 { animation: strip-dot 6s linear 1.5s infinite; }
+    .strip-dot-5 { animation: strip-dot 6s linear 1.9s infinite; }
+    .strip-dot-6 { animation: strip-dot 6s linear 2.3s infinite; }
+    .strip-dot-7 { animation: strip-dot 6s linear 2.7s infinite; }
+    .strip-dot-8 { animation: strip-dot 6s linear 3.1s infinite; }
+    @keyframes strip-dot {
+      0%       { background-color: #cbd5e1; }
+      5%, 85%  { background-color: #22c55e; }
+      90%, 100% { background-color: #cbd5e1; }
+    }
+
+    .strip-count { animation: strip-count-pulse 6s linear infinite; }
+    @keyframes strip-count-pulse {
+      0%, 100% { opacity: 0.5; }
+      50%      { opacity: 1; }
+    }
+  }
+</style>
