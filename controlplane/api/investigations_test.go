@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/json"
 	"net/http/httptest"
 	"strconv"
@@ -109,5 +110,55 @@ func TestGetInvestigation_HTTP_ReturnsBundle(t *testing.T) {
 	}
 	if len(resp.Notes) != 1 {
 		t.Errorf("expected 1 note; got %d", len(resp.Notes))
+	}
+}
+
+// TestLinkFindingToInvestigation_HTTP_Links exercises the only handler
+// with non-trivial path parsing — three segments after the prefix,
+// hardcoded `findings` middle, two ParseInts.
+func TestLinkFindingToInvestigation_HTTP_Links(t *testing.T) {
+	st := newTestStore(t)
+	invID, _ := st.CreateInvestigation(&db.InvestigationInsert{Title: "case"})
+	eventID, err := st.InsertEvent(&db.Event{
+		Ts: 1, Type: "finding", Agent: sql.NullString{String: "t", Valid: true}, RawJSON: "{}",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	findingID, _ := st.InsertFinding(&db.FindingInsert{
+		EventID: eventID, Ts: 1, Title: "x", Severity: "MEDIUM",
+	})
+
+	rec := httptest.NewRecorder()
+	path := "/api/investigations/" + strconv.FormatInt(invID, 10) + "/findings/" + strconv.FormatInt(findingID, 10)
+	req := httptest.NewRequest("PUT", path, nil)
+	LinkFindingToInvestigationHandler(st)(rec, req)
+	if rec.Code != 204 {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+
+	got, _ := st.ListFindingsForInvestigation(invID)
+	if len(got) != 1 || got[0] != findingID {
+		t.Errorf("expected linked finding %d; got %v", findingID, got)
+	}
+}
+
+// TestLinkFindingToInvestigation_HTTP_RejectsMalformedPath confirms the
+// path parser refuses misshapen URLs.
+func TestLinkFindingToInvestigation_HTTP_RejectsMalformedPath(t *testing.T) {
+	st := newTestStore(t)
+	cases := []string{
+		"/api/investigations/1/whatever/2",          // wrong middle segment
+		"/api/investigations/notanumber/findings/5", // bad investigation id
+		"/api/investigations/1/findings/notanumber", // bad finding id
+		"/api/investigations/1",                     // too few segments
+	}
+	for _, p := range cases {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("PUT", p, nil)
+		LinkFindingToInvestigationHandler(st)(rec, req)
+		if rec.Code != 400 {
+			t.Errorf("path %q: status = %d, want 400", p, rec.Code)
+		}
 	}
 }
