@@ -918,6 +918,14 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(req),
     }),
+  /** Partial update. Only fields with a value are persisted; payload
+   *  keys with empty strings are dropped server-side so secret
+   *  fields the operator didn't re-type stay intact. */
+  cloudCredentialUpdate: (id: number, req: CloudCredentialUpdateRequest) =>
+    request<CloudCredential>(`/api/cloud-credentials/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(req),
+    }),
   cloudCredentialDelete: (id: number) =>
     request<void>(`/api/cloud-credentials/${id}`, { method: 'DELETE' }),
   cloudCredentialTest: (id: number) =>
@@ -1679,6 +1687,15 @@ export interface CloudCredentialCreateRequest {
   name: string;
   region?: string;
   payload: Record<string, string>;
+}
+
+/** Partial update: only fields the operator actually changed. Payload
+ *  keys with empty/undefined values are dropped server-side, so secret
+ *  fields stay intact unless re-typed. */
+export interface CloudCredentialUpdateRequest {
+  name?: string;
+  region?: string;
+  payload?: Record<string, string>;
 }
 
 // Phase 21.3 — managed CP provisioning.

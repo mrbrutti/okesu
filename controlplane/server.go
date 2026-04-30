@@ -646,6 +646,9 @@ func (s *Server) routes() http.Handler {
 			// authorise spending on the operator's cloud account.
 			r.Get("/api/cloud-credentials", api.CloudCredentialsList(s.store))
 			r.Post("/api/cloud-credentials", api.CloudCredentialCreate(s.store))
+			// In-place edit. Partial: {name?, region?, payload?}. Secret
+			// fields stay intact unless the operator re-types them.
+			r.Put("/api/cloud-credentials/{id}", api.CloudCredentialUpdate(s.store))
 			r.Delete("/api/cloud-credentials/{id}", api.CloudCredentialDelete(s.store))
 			r.Post("/api/cloud-credentials/{id}/test", api.CloudCredentialTest(s.store))
 			// Phase 21.5 — per-credential monthly USD budget. Empty body
