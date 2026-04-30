@@ -341,6 +341,34 @@ export interface IOCRelationship {
   Confidence: string;
 }
 
+// FederatedIOCRecord is the merged wire shape returned by federated
+// catalog endpoints — IOCRecord fields plus the list of CPs that
+// contribute to this merged row. Server marshals the embedded record
+// flat (PascalCase) plus snake_case cp_sources.
+export interface FederatedIOCRecord extends IOCRecord {
+  cp_sources: CPSourceRef[];
+}
+
+// FederatedIOCObservation tags each observation row with its origin CP.
+// No dedup across CPs — observations are per-host events.
+export interface FederatedIOCObservation extends IOCObservation {
+  cp_source: CPSourceRef;
+}
+
+// FederatedIOCRelationship: deduped tuple-based edge with origin CPs.
+// Replaces the int-id-based IOCRelationship for federation paths
+// (per-CP int row ids aren't comparable across the fleet).
+export interface FederatedIOCRelationship {
+  SubjectKind: string;
+  SubjectValue: string;
+  Predicate: string;
+  ObjectKind: string;
+  ObjectValue: string;
+  Source: string;
+  Confidence: string;
+  cp_sources: CPSourceRef[];
+}
+
 // Investigation mirrors controlplane/db.Investigation. The Go struct
 // has no `json:"…"` tags, so the encoder uses Go's default capitalized
 // field names — keep the casing here in lockstep with the server type.
@@ -711,7 +739,7 @@ export const api = {
     if (filter.source)    p.set('source', filter.source);
     if (filter.q)         p.set('q', filter.q);
     const qs = p.toString();
-    return request<IOCRecord[]>(`/api/iocs${qs ? '?' + qs : ''}`);
+    return request<FederatedIOCRecord[]>(`/api/iocs${qs ? '?' + qs : ''}`);
   },
 
   ioc: (id: number) =>
@@ -722,6 +750,15 @@ export const api = {
 
   iocRelationships: (id: number) =>
     request<IOCRelationship[]>(`/api/iocs/${id}/relationships`),
+
+  iocByKV: (kind: string, value: string) =>
+    request<FederatedIOCRecord>(`/api/iocs/by-kv?kind=${encodeURIComponent(kind)}&value=${encodeURIComponent(value)}`),
+
+  iocObservationsByKV: (kind: string, value: string) =>
+    request<FederatedIOCObservation[]>(`/api/iocs/by-kv/observations?kind=${encodeURIComponent(kind)}&value=${encodeURIComponent(value)}`),
+
+  iocRelationshipsByKV: (kind: string, value: string) =>
+    request<FederatedIOCRelationship[]>(`/api/iocs/by-kv/relationships?kind=${encodeURIComponent(kind)}&value=${encodeURIComponent(value)}`),
 
   findings: (filter: FindingsFilter = {}) => {
     const p = new URLSearchParams();
