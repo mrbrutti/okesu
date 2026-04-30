@@ -227,3 +227,12 @@ oci-apply: _oci-preflight
 	cd $(OCI_DIR) && terraform init -input=false
 	cd $(OCI_DIR) && terraform apply -auto-approve -var-file=$(abspath $(OCI_TFVARS))
 	@echo "▶ terraform apply done"
+
+oci-render: _oci-preflight $(OCI_RENDER)
+	@mkdir -p dist/oci/$(OCI_MODE)
+	cd $(OCI_DIR) && terraform output -json > $(abspath dist/oci/$(OCI_MODE))/tf.json
+	$(OCI_RENDER) render-cp-yaml --mode=$(OCI_MODE) --env=$(OCI_ENV) --validate \
+	  < dist/oci/$(OCI_MODE)/tf.json > dist/oci/$(OCI_MODE)/cp.yaml
+	$(OCI_RENDER) render-env --mode=$(OCI_MODE) --env=$(OCI_ENV) \
+	  < dist/oci/$(OCI_MODE)/tf.json > dist/oci/$(OCI_MODE)/okesu-cp.env
+	@echo "▶ rendered dist/oci/$(OCI_MODE)/{cp.yaml,okesu-cp.env}"
