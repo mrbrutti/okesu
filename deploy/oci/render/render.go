@@ -79,9 +79,11 @@ func RenderCPYAML(in Inputs) ([]byte, error) {
 	return render("cp.yaml", cpYAMLTmpl, in)
 }
 
-// RenderEnvFile renders the okesu-cp env file from the embedded template
-// and the given inputs. The function body is a stub; full implementation
-// comes in Task 5.
+// RenderEnvFile renders the systemd EnvironmentFile from the embedded
+// okesu-cp.env.tmpl template against the given inputs. The result is
+// written to /etc/default/okesu-cp on the CP host so that the
+// okesu-cp.service unit picks up secrets (API keys, OIDC client secret)
+// that are not present in cp.yaml.
 func RenderEnvFile(in Inputs) ([]byte, error) {
 	return render("okesu-cp.env", envTmpl, in)
 }

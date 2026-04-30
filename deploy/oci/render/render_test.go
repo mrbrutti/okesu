@@ -71,3 +71,14 @@ func TestRenderCPYAML_Child(t *testing.T) {
 	}
 	assertGolden(t, "cp.yaml.child", got)
 }
+
+func TestRenderEnvFile(t *testing.T) {
+	in := loadInputs(t, "standalone")
+	in.OperatorEnv["ANTHROPIC_API_KEY"] = "sk-ant-test"
+	in.OperatorEnv["OPENAI_API_KEY"] = "sk-openai-test"
+	got, err := RenderEnvFile(in)
+	if err != nil {
+		t.Fatalf("RenderEnvFile: %v", err)
+	}
+	assertGolden(t, "okesu-cp.env", got)
+}
