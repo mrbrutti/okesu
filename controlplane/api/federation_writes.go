@@ -51,7 +51,11 @@ const proxyTimeout = 30 * time.Second
 // transport is `s3_dead_drop`. Empty s3Kind means "this directive isn't
 // supported over s3 yet" — for those, an s3 target gets a 501 with a
 // hint pointing operators back to the read pipe / HTTPS path.
-func proxyIfTargetCP(w http.ResponseWriter, r *http.Request, agg *federation.Aggregator, federationPath, s3Kind string) (handled bool, err error) {
+//
+// `s3PathParams` carries chi-style URL parameters (e.g. {"id":"42"})
+// for directives whose underlying handler reads chi.URLParam. Nil for
+// directives without path params.
+func proxyIfTargetCP(w http.ResponseWriter, r *http.Request, agg *federation.Aggregator, federationPath, s3Kind string, s3PathParams map[string]string) (handled bool, err error) {
 	body, _ := io.ReadAll(r.Body)
 	r.Body = io.NopCloser(bytes.NewReader(body))
 
@@ -90,7 +94,7 @@ func proxyIfTargetCP(w http.ResponseWriter, r *http.Request, agg *federation.Agg
 	// path. Use the bucket write pipe (s3rpc) instead, which polls
 	// req/<id>.json and writes resp/<id>.json on the child's tick.
 	if target.Row.Transport == "s3_dead_drop" {
-		return forwardOverS3(w, r, agg, *target, s3Kind, cleaned), nil
+		return forwardOverS3(w, r, agg, *target, s3Kind, cleaned, s3PathParams), nil
 	}
 
 	url := strings.TrimRight(target.Row.URL, "/") + federationPath
@@ -136,7 +140,7 @@ func proxyIfTargetCP(w http.ResponseWriter, r *http.Request, agg *federation.Agg
 //
 // Empty s3Kind = no Phase B handler exists for this directive yet;
 // surface a 501 telling the operator to use the HTTPS path.
-func forwardOverS3(w http.ResponseWriter, r *http.Request, agg *federation.Aggregator, peer federation.Peer, s3Kind string, body []byte) bool {
+func forwardOverS3(w http.ResponseWriter, r *http.Request, agg *federation.Aggregator, peer federation.Peer, s3Kind string, body []byte, pathParams map[string]string) bool {
 	if s3Kind == "" {
 		http.Error(w,
 			fmt.Sprintf("target %s uses s3_dead_drop transport which does not yet support this directive — use the HTTPS path or wait for Phase B.1+",
@@ -152,7 +156,7 @@ func forwardOverS3(w http.ResponseWriter, r *http.Request, agg *federation.Aggre
 	// "in flight" while we poll.
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
 	defer cancel()
-	resp, err := agg.SubmitS3Directive(ctx, peer, s3Kind, body, issuedBy)
+	resp, err := agg.SubmitS3Directive(ctx, peer, s3Kind, body, issuedBy, pathParams)
 	if err != nil {
 		http.Error(w, "s3 directive: "+err.Error(), http.StatusBadGateway)
 		return true
@@ -197,7 +201,7 @@ func stripTargetField(body []byte) ([]byte, error) {
 // in the East CP from the Global UI without leaving the page.
 func ForwardingNodeCreate(store *db.Store, agg *federation.Aggregator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if handled, _ := proxyIfTargetCP(w, r, agg, "/api/v1/federation/nodes", s3rpc.KindCreateNode); handled {
+		if handled, _ := proxyIfTargetCP(w, r, agg, "/api/v1/federation/nodes", s3rpc.KindCreateNode, nil); handled {
 			return
 		}
 		NodeCreate(store).ServeHTTP(w, r)
@@ -487,7 +491,7 @@ func FederationOrchestrationDetail(store *db.Store) http.HandlerFunc {
 // is created on the chosen child instead of the parent.
 func FederatedOrchestrationCreate(store *db.Store, agg *federation.Aggregator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if handled, _ := proxyIfTargetCP(w, r, agg, "/api/v1/federation/orchestrations", ""); handled {
+		if handled, _ := proxyIfTargetCP(w, r, agg, "/api/v1/federation/orchestrations", "", nil); handled {
 			return
 		}
 		OrchestrationCreate(store).ServeHTTP(w, r)

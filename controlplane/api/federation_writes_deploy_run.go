@@ -17,8 +17,11 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/go-chi/chi/v5"
+
 	"github.com/section9labs/okesu/controlplane/db"
 	"github.com/section9labs/okesu/controlplane/federation"
+	"github.com/section9labs/okesu/controlplane/federation/s3rpc"
 	"github.com/section9labs/okesu/controlplane/jobs"
 	"github.com/section9labs/okesu/controlplane/tunnel"
 )
@@ -35,7 +38,14 @@ func ForwardingNodeDeploy(store *db.Store, reg *jobs.Registry, deployer NodeDepl
 		// Translate the parent's local URL to the federation form.
 		// /api/nodes/42/deploy → /api/v1/federation/nodes/42/deploy
 		fedPath := strings.Replace(r.URL.Path, "/api/nodes/", "/api/v1/federation/nodes/", 1)
-		if handled, _ := proxyIfTargetCP(w, r, agg, fedPath, ""); handled {
+		// For the s3 transport, we can't rely on the URL — the
+		// directive's PathParams must carry {id}. Pull it from chi
+		// (the parent's router has already matched and bound it).
+		s3Params := map[string]string{}
+		if id := chi.URLParam(r, "id"); id != "" {
+			s3Params["id"] = id
+		}
+		if handled, _ := proxyIfTargetCP(w, r, agg, fedPath, s3rpc.KindDeployDaimon, s3Params); handled {
 			return
 		}
 		NodeDeploy(store, reg, deployer, cfg).ServeHTTP(w, r)
@@ -61,7 +71,7 @@ func FederationNodeDeploy(store *db.Store, reg *jobs.Registry, deployer NodeDepl
 // federated rows, which is enough for the operator to follow along.
 func ForwardingCreateRun(reg *RunRegistry, tunReg *tunnel.Registry, store *db.Store, agentDirs []string, agg *federation.Aggregator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if handled, _ := proxyIfTargetCP(w, r, agg, "/api/v1/federation/runs", ""); handled {
+		if handled, _ := proxyIfTargetCP(w, r, agg, "/api/v1/federation/runs", s3rpc.KindCreateRun, nil); handled {
 			return
 		}
 		CreateRun(reg, tunReg, store, agentDirs).ServeHTTP(w, r)

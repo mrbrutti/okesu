@@ -17,9 +17,13 @@ import (
 	"encoding/json"
 	"net/http"
 
+	"github.com/go-chi/chi/v5"
+
 	"github.com/section9labs/okesu/controlplane/auth"
 	"github.com/section9labs/okesu/controlplane/db"
 	"github.com/section9labs/okesu/controlplane/federation/s3rpc"
+	"github.com/section9labs/okesu/controlplane/jobs"
+	"github.com/section9labs/okesu/controlplane/tunnel"
 )
 
 // NewS3CreateNodeHandler returns an s3rpc.Handler that dispatches a
@@ -39,6 +43,34 @@ func NewS3CreateNodeHandler(store *db.Store) s3rpc.Handler {
 	}
 }
 
+// NewS3DeployDaimonHandler dispatches a `deploy_daimon` directive into
+// NodeDeploy. The directive's PathParams must include `id` (the
+// child-side node id); ForwardingNodeDeploy populates this on the
+// parent side from the request URL.
+//
+// Security note: deploy bodies typically include an SSH private key for
+// the child-side node. That key transits the shared bucket — operators
+// using s3 federation must trust the bucket's IAM/encryption to the
+// same level they'd trust an mTLS-protected HTTPS hop.
+func NewS3DeployDaimonHandler(store *db.Store, reg *jobs.Registry, deployer NodeDeployer, cfg NodesConfig) s3rpc.Handler {
+	h := NodeDeploy(store, reg, deployer, cfg)
+	return func(ctx context.Context, req s3rpc.Request) s3rpc.Response {
+		return runHandlerForDirective(ctx, h, req, http.MethodPost, "/api/nodes/{id}/deploy", req.IssuedByUser)
+	}
+}
+
+// NewS3CreateRunHandler dispatches a `create_run` directive into
+// CreateRun. The body shape matches what the parent's "Run Agent"
+// dialog posts; the child resolves the `node` field against its own
+// tunnel registry, so federated runs are bound by the child's
+// connected fleet.
+func NewS3CreateRunHandler(reg *RunRegistry, tunReg *tunnel.Registry, store *db.Store, agentDirs []string) s3rpc.Handler {
+	h := CreateRun(reg, tunReg, store, agentDirs)
+	return func(ctx context.Context, req s3rpc.Request) s3rpc.Response {
+		return runHandlerForDirective(ctx, h, req, http.MethodPost, "/api/runs", req.IssuedByUser)
+	}
+}
+
 // runHandlerForDirective is the common bridge: build an http.Request
 // carrying the directive Body, attach a synthetic user matching the
 // parent's audit identity, dispatch, and translate the recorder's
@@ -55,6 +87,19 @@ func runHandlerForDirective(
 	}
 	httpReq, _ := http.NewRequestWithContext(ctx, method, path, bytes.NewReader(body))
 	httpReq.Header.Set("Content-Type", "application/json")
+
+	// chi.URLParam reads from the route context attached to the
+	// request. Handlers like NodeDeploy use it to pull `{id}` out of
+	// the path. We can't run the real router (the synthetic request
+	// bypasses it), so we set up the context manually with whatever
+	// path params the directive carried.
+	if len(req.PathParams) > 0 {
+		rctx := chi.NewRouteContext()
+		for k, v := range req.PathParams {
+			rctx.URLParams.Add(k, v)
+		}
+		httpReq = httpReq.WithContext(context.WithValue(httpReq.Context(), chi.RouteCtxKey, rctx))
+	}
 
 	// Synthetic user — handlers that emit audit entries pull email
 	// from auth.UserFromContext. The federation token gate uses
