@@ -231,8 +231,71 @@ oci-apply: _oci-preflight
 oci-render: _oci-preflight $(OCI_RENDER)
 	@mkdir -p dist/oci/$(OCI_MODE)
 	cd $(OCI_DIR) && terraform output -json > $(abspath dist/oci/$(OCI_MODE))/tf.json
-	$(OCI_RENDER) render-cp-yaml --mode=$(OCI_MODE) --env=$(OCI_ENV) --validate \
+	@# Synthesize a transient env file. For parent mode, inject FEDERATION_TOKEN
+	@# from the terraform-generated secrets dir.
+	@cp $(OCI_ENV) dist/oci/$(OCI_MODE)/env.injected
+	@if [ "$(OCI_MODE)" = "parent" ]; then \
+	  SECRETS_DIR=$$(grep '^secrets_dir' $(OCI_TFVARS) | sed -E 's/^.*=[[:space:]]*"([^"]+)"/\1/'); \
+	  TOKEN_PATH="$$(eval echo $$SECRETS_DIR)/federation/token"; \
+	  if [ ! -f "$$TOKEN_PATH" ]; then \
+	    echo "✖ parent mode: federation token not found at $$TOKEN_PATH (run 'make oci-apply' first)" >&2; exit 1; fi; \
+	  echo "FEDERATION_TOKEN=$$(cat "$$TOKEN_PATH")" >> dist/oci/$(OCI_MODE)/env.injected; \
+	fi
+	$(OCI_RENDER) render-cp-yaml --mode=$(OCI_MODE) --env=dist/oci/$(OCI_MODE)/env.injected --validate \
 	  < dist/oci/$(OCI_MODE)/tf.json > dist/oci/$(OCI_MODE)/cp.yaml
-	$(OCI_RENDER) render-env --mode=$(OCI_MODE) --env=$(OCI_ENV) \
+	$(OCI_RENDER) render-env --mode=$(OCI_MODE) --env=dist/oci/$(OCI_MODE)/env.injected \
 	  < dist/oci/$(OCI_MODE)/tf.json > dist/oci/$(OCI_MODE)/okesu-cp.env
 	@echo "▶ rendered dist/oci/$(OCI_MODE)/{cp.yaml,okesu-cp.env}"
+
+# Number of retries waiting for cp-vm to be sshable (cloud-init may
+# still be running) and waiting for the CP /health endpoint to come
+# up after start.
+OCI_SSH_RETRIES    ?= 12
+OCI_HEALTH_RETRIES ?= 18
+
+# arch of the binary to upload — match cp-vm's shape.
+OCI_CP_ARCH ?= amd64
+OCI_CP_BIN  ?= $(CP_DIR)/okesu-cp-linux-$(OCI_CP_ARCH)
+
+oci-install: oci-render
+	@CP_IP=$$(cd $(OCI_DIR) && terraform output -raw cp_public_ip); \
+	  echo "▶ cp-vm = $$CP_IP"; \
+	  for i in $$(seq 1 $(OCI_SSH_RETRIES)); do \
+	    ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 $(OCI_SSH_USER)@$$CP_IP true 2>/dev/null && break; \
+	    echo "  waiting for ssh ($$i/$(OCI_SSH_RETRIES))…"; sleep 10; \
+	  done; \
+	  echo "▶ uploading binary + config"; \
+	  scp -q -o StrictHostKeyChecking=no $(OCI_CP_BIN) $(OCI_SSH_USER)@$$CP_IP:/tmp/okesu-cp.new; \
+	  scp -q -o StrictHostKeyChecking=no dist/oci/$(OCI_MODE)/cp.yaml      $(OCI_SSH_USER)@$$CP_IP:/tmp/cp.yaml.new; \
+	  scp -q -o StrictHostKeyChecking=no dist/oci/$(OCI_MODE)/okesu-cp.env $(OCI_SSH_USER)@$$CP_IP:/tmp/okesu-cp.env.new; \
+	  scp -q -o StrictHostKeyChecking=no systemd/okesu-cp.service          $(OCI_SSH_USER)@$$CP_IP:/tmp/okesu-cp.service.new; \
+	  echo "▶ uploading secrets dir"; \
+	  SECRETS_DIR=$$(grep '^secrets_dir' $(OCI_TFVARS) | sed -E 's/^.*=[[:space:]]*"([^"]+)"/\1/'); \
+	  rsync -aq --delete -e "ssh -o StrictHostKeyChecking=no" \
+	    "$$(eval echo $$SECRETS_DIR)/" \
+	    $(OCI_SSH_USER)@$$CP_IP:/tmp/secrets/; \
+	  echo "▶ atomically installing + reload + restart"; \
+	  ssh -o StrictHostKeyChecking=no $(OCI_SSH_USER)@$$CP_IP 'sudo bash -se' <<-'BASH'; \
+	    set -euo pipefail; \
+	    install -m 0755 -o root -g root /tmp/okesu-cp.new /usr/local/bin/okesu-cp; \
+	    install -m 0640 -o root -g okesu-cp /tmp/cp.yaml.new /etc/okesu-cp/cp.yaml; \
+	    install -m 0640 -o root -g okesu-cp /tmp/okesu-cp.env.new /etc/default/okesu-cp; \
+	    install -m 0644 -o root -g root /tmp/okesu-cp.service.new /etc/systemd/system/okesu-cp.service; \
+	    rm -rf /etc/okesu-cp/secrets; \
+	    mv /tmp/secrets /etc/okesu-cp/secrets; \
+	    chown -R okesu-cp:okesu-cp /etc/okesu-cp/secrets; \
+	    chmod -R go-rwx /etc/okesu-cp/secrets; \
+	    systemctl daemon-reload; \
+	    systemctl enable --now okesu-cp; \
+	    systemctl restart okesu-cp; \
+	  BASH \
+	  echo "▶ waiting for /health"; \
+	  for i in $$(seq 1 $(OCI_HEALTH_RETRIES)); do \
+	    if curl -ksS --max-time 5 https://$$CP_IP:8443/health >/dev/null; then \
+	      echo "✔ CP up at https://$$CP_IP:8443"; exit 0; \
+	    fi; \
+	    echo "  health probe $$i/$(OCI_HEALTH_RETRIES)…"; sleep 5; \
+	  done; \
+	  echo "✖ healthcheck failed; tail of journalctl:"; \
+	  ssh -o StrictHostKeyChecking=no $(OCI_SSH_USER)@$$CP_IP 'sudo journalctl -u okesu-cp --no-pager -n 50'; \
+	  exit 1
