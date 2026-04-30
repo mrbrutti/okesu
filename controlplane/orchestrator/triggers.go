@@ -25,15 +25,20 @@ import (
 // We deliberately keep it tight — the filter expression is executed
 // on every finding, so cheap field access matters.
 type FindingPayload struct {
-	ID         int64             `json:"id"`
-	Severity   string            `json:"severity"`
-	Title      string            `json:"title"`
-	Agent      string            `json:"agent"`
-	Host       string            `json:"host"`
-	Category   string            `json:"category"`
-	DedupKey   string            `json:"dedup_key"`
-	Resource   string            `json:"resource"`
-	Attributes map[string]any    `json:"attributes,omitempty"`
+	ID         int64          `json:"id"`
+	Severity   string         `json:"severity"`
+	Title      string         `json:"title"`
+	Agent      string         `json:"agent"`
+	Host       string         `json:"host"`
+	Category   string         `json:"category"`
+	// Phase 22.6 — subtype is the orthogonal classification used for
+	// findings emitted by orchestration agents (hypothesis,
+	// meeting_minutes, etc). Required for the t2-hypothesis-test
+	// orchestration's filter to match `finding.subtype == 'hypothesis'`.
+	Subtype    string         `json:"subtype"`
+	DedupKey   string         `json:"dedup_key"`
+	Resource   string         `json:"resource"`
+	Attributes map[string]any `json:"attributes,omitempty"`
 }
 
 // EvaluateFindingFilter runs an orchestration's `trigger.filter`
@@ -61,6 +66,7 @@ func findingMap(p FindingPayload) map[string]any {
 		"agent":      p.Agent,
 		"host":       p.Host,
 		"category":   p.Category,
+		"subtype":    p.Subtype,
 		"dedup_key":  p.DedupKey,
 		"resource":   p.Resource,
 		"attributes": p.Attributes,
@@ -80,6 +86,7 @@ func FindingTriggerPayload(p FindingPayload) string {
 		"agent":      p.Agent,
 		"host":       p.Host,
 		"category":   p.Category,
+		"subtype":    p.Subtype,
 		"dedup_key":  p.DedupKey,
 		"resource":   p.Resource,
 	}
