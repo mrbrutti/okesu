@@ -534,6 +534,11 @@ func (s *Server) routes() http.Handler {
 	// proxy to navigate.
 	r.Get("/api/v1/federation/investigations", api.FederationInvestigationsList(s.store))
 	r.Get("/api/v1/federation/investigations/{id}", api.FederationInvestigationDetail(s.store))
+	// Phase 22.7 — write proxy for "open in investigation" flows
+	// originating from federated findings. The parent UI sends ?cp=
+	// when the finding lives on a child; the wrapper above forwards.
+	r.Post("/api/v1/federation/investigations", api.FederationCreateInvestigation(s.store))
+	r.Put("/api/v1/federation/investigations/{id}/findings/{finding_id}", api.FederationLinkFindingToInvestigation(s.store))
 	r.Post("/api/v1/federation/orchestrations", api.FederationOrchestrationCreate(s.store))
 	r.Put("/api/v1/federation/orchestrations/{id}", api.FederationOrchestrationUpdate(s.store))
 	r.Delete("/api/v1/federation/orchestrations/{id}", api.FederationOrchestrationDelete(s.store))
@@ -684,12 +689,12 @@ func (s *Server) routes() http.Handler {
 		// proxies via ?cp= for remotes; falls through to local
 		// otherwise.
 		r.Get("/api/investigations", api.FederatedInvestigationsList(s.store, s.fedAgg))
-		r.Post("/api/investigations", api.CreateInvestigationHandler(s.store))
+		r.Post("/api/investigations", api.FederatedCreateInvestigation(s.store, s.fedAgg))
 		r.Post("/api/investigations/by-dedup", api.UpsertInvestigationByDedupHandler(s.store))
 		r.Get("/api/investigations/{id}", api.FederatedInvestigationDetail(s.store, s.fedAgg))
 		r.Patch("/api/investigations/{id}", api.UpdateInvestigationHandler(s.store))
 		r.Post("/api/investigations/{id}/notes", api.AddInvestigationNoteHandler(s.store))
-		r.Put("/api/investigations/{id}/findings/{finding_id}", api.LinkFindingToInvestigationHandler(s.store))
+		r.Put("/api/investigations/{id}/findings/{finding_id}", api.FederatedLinkFindingToInvestigation(s.store, s.fedAgg))
 		r.Delete("/api/investigations/{id}/findings/{finding_id}", api.UnlinkFindingFromInvestigationHandler(s.store))
 		r.Put("/api/investigations/{id}/runs/{run_id}", api.LinkRunToInvestigationHandler(s.store))
 		r.Delete("/api/investigations/{id}/runs/{run_id}", api.UnlinkRunFromInvestigationHandler(s.store))
