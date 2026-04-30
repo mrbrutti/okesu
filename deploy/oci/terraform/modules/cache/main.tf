@@ -48,3 +48,8 @@ output "url_no_password" {
 output "cluster_id" {
   value = oci_redis_redis_cluster.main.id
 }
+
+output "endpoint" {
+  description = "Bare FQDN — Makefile/render package combine with port + auth themselves."
+  value       = local.endpoint
+}
