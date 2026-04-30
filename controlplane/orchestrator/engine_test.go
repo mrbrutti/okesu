@@ -627,6 +627,129 @@ func (r *recordingResolver) Resolve(_ context.Context, query string, params map[
 	return map[string]any{"valid": true}, nil
 }
 
+// recorderSink captures every OnDispatchStart / OnDispatchEnd call
+// for assertion. Used by the fan-out progress test below.
+type recorderSink struct {
+	mu     sync.Mutex
+	starts []startEvent
+	ends   []endEvent
+}
+
+type startEvent struct {
+	RunID  int64
+	StepID string
+	Host   string
+}
+
+type endEvent struct {
+	RunID         int64
+	StepID        string
+	Host          string
+	Status        string
+	AgentRunID    string
+	FindingsCount int
+	Error         string
+}
+
+func (r *recorderSink) OnDispatchStart(runID int64, stepID, host string, _ time.Time) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.starts = append(r.starts, startEvent{runID, stepID, host})
+	return nil
+}
+
+func (r *recorderSink) OnDispatchEnd(runID int64, stepID, host string,
+	status, agentRunID string, findingsCount int, _, errorStr string, _ time.Time) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.ends = append(r.ends, endEvent{
+		RunID: runID, StepID: stepID, Host: host,
+		Status: status, AgentRunID: agentRunID,
+		FindingsCount: findingsCount, Error: errorStr,
+	})
+	return nil
+}
+
+func TestFanOut_PersistsPerHostProgress(t *testing.T) {
+	spec := mustParse(t, `---
+name: fanout
+description: parallel host scan
+steps:
+  - id: scan
+    agent: edr-triage
+    nodes: [h1, h2, h3]
+    prompt: "scan {{trigger.host}}"
+---`)
+	orch := &Orchestration{ID: 1, Name: "fanout", Spec: spec, Enabled: true}
+	run := &RunRecord{ID: 42, OrchestrationID: 1, Status: RunStatusPending, TriggerKind: "manual"}
+
+	disp := &fakeDispatcher{
+		resultByStep: map[string]DispatchResult{
+			// fakeDispatcher keys by req.StepID, which fanOut sets to
+			// step.ID + "@" + host — so we can return per-host
+			// distinct payloads.
+			"scan@h1": {Status: StepStatusCompleted, RunID: "r1", Findings: []DispatchedFinding{{Title: "f1"}, {Title: "f2"}}},
+			"scan@h2": {Status: StepStatusCompleted, RunID: "r2"},
+		},
+		errByStep: map[string]error{
+			"scan@h3": context.DeadlineExceeded,
+		},
+	}
+	store := newFakeStore(orch, run)
+	sink := &recorderSink{}
+
+	eng := NewEngine(store, disp)
+	eng.SetProgressSink(sink)
+	if err := eng.Run(context.Background(), run.ID); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// Three start events, three end events.
+	if got := len(sink.starts); got != 3 {
+		t.Errorf("starts = %d, want 3", got)
+	}
+	if got := len(sink.ends); got != 3 {
+		t.Errorf("ends = %d, want 3", got)
+	}
+
+	// runID and stepID are threaded through to every event — this is
+	// the primary-key contract that Task 6's DB sink will depend on.
+	for _, s := range sink.starts {
+		if s.RunID != run.ID || s.StepID != "scan" {
+			t.Errorf("start event has wrong runID/stepID: %+v", s)
+		}
+	}
+	for _, e := range sink.ends {
+		if e.RunID != run.ID || e.StepID != "scan" {
+			t.Errorf("end event has wrong runID/stepID: %+v", e)
+		}
+	}
+
+	// Build host → end-event map for status / findings_count assertions.
+	endByHost := map[string]endEvent{}
+	for _, e := range sink.ends {
+		endByHost[e.Host] = e
+	}
+	if len(endByHost) != 3 {
+		t.Fatalf("expected end events for all 3 hosts, got %d distinct: %v", len(endByHost), endByHost)
+	}
+	if e := endByHost["h1"]; e.Status != StepStatusCompleted || e.FindingsCount != 2 {
+		t.Errorf("h1 end = %+v", e)
+	}
+	if e := endByHost["h2"]; e.Status != StepStatusCompleted || e.FindingsCount != 0 {
+		t.Errorf("h2 end = %+v", e)
+	}
+	if e := endByHost["h3"]; e.Status != StepStatusFailed || e.Error == "" {
+		t.Errorf("h3 end = %+v (expected failed with error)", e)
+	}
+
+	// byNode still lands in result_json for template back-compat.
+	stepRec, _ := store.GetOrchestrationStep(run.ID, "scan")
+	if !strings.Contains(stepRec.ResultJSON, `"byNode"`) {
+		t.Errorf("expected byNode in result_json, got %q", stepRec.ResultJSON)
+	}
+}
+
 // TestEngine_AppliesReflectWithLessons confirms the engine dispatches
 // each lesson string from a reflect_with_lessons action through the
 // applier, with step.Agent threaded as the agent_name. Without this
