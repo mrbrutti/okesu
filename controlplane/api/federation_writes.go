@@ -636,6 +636,26 @@ func FederationLinkRunToInvestigation(store *db.Store) http.HandlerFunc {
 	return requireFederationToken(store, LinkRunToInvestigationHandler(store))
 }
 
+// FederatedListInvestigationsForFinding — read proxy for the
+// case-membership lookup used by the InvestigateDialog. Without
+// this wrapper, asking "what cases is this federated finding in?"
+// hits the parent's local DB (which doesn't have the finding) and
+// silently returns 0 rows.
+func FederatedListInvestigationsForFinding(store *db.Store, agg *federation.Aggregator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		path := strings.Replace(r.URL.Path, "/api/findings/", "/api/v1/federation/findings/", 1)
+		if handled, _ := proxyToCPByQuery(w, r, agg, path); handled {
+			return
+		}
+		ListInvestigationsForFindingHandler(store).ServeHTTP(w, r)
+	}
+}
+
+// FederationListInvestigationsForFinding — child-side, token-authed.
+func FederationListInvestigationsForFinding(store *db.Store) http.HandlerFunc {
+	return requireFederationToken(store, ListInvestigationsForFindingHandler(store))
+}
+
 // FederatedOrchestrationDetail proxies a single GET via ?cp= to the
 // owning child CP, falling through to the local store otherwise.
 func FederatedOrchestrationDetail(store *db.Store, agg *federation.Aggregator) http.HandlerFunc {

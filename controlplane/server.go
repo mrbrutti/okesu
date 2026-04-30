@@ -534,6 +534,8 @@ func (s *Server) routes() http.Handler {
 	// proxy to navigate.
 	r.Get("/api/v1/federation/investigations", api.FederationInvestigationsList(s.store))
 	r.Get("/api/v1/federation/investigations/{id}", api.FederationInvestigationDetail(s.store))
+	// Phase 22.8 — federated finding-side case-membership lookup.
+	r.Get("/api/v1/federation/findings/{id}/investigations", api.FederationListInvestigationsForFinding(s.store))
 	// Phase 22.7 — write proxies. Open-investigation from a federated
 	// finding (FederationCreateInvestigation), add-to-existing
 	// (FederationLinkFindingToInvestigation), and workspace-driven
@@ -659,7 +661,7 @@ func (s *Server) routes() http.Handler {
 		// Phase 22.6 — case membership lookup. Used by the
 		// t2-hypothesis-test orchestration to discover which cases
 		// need a verdict note + by the UI's finding-detail panel.
-		r.Get("/api/findings/{id}/investigations", api.ListInvestigationsForFindingHandler(s.store))
+		r.Get("/api/findings/{id}/investigations", api.FederatedListInvestigationsForFinding(s.store, s.fedAgg))
 
 		// Phase 22.1 — IOC list. Filter by finding_id (drawer drill-down)
 		// or kind (e.g. all observed sha256s). Local-only for now.
