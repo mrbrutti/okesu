@@ -31,6 +31,7 @@ export default function NotificationsSection() {
       </header>
 
       <ChannelsCard />
+      <RoutingMatrixCard />
       <RulesCard />
       <DeliveriesCard />
     </div>
@@ -322,6 +323,188 @@ function channelSummary(c: Channel): string {
 }
 
 // ── Rules ──────────────────────────────────────────────────────────────────
+
+// ── Routing matrix ─────────────────────────────────────────────────────────
+//
+// Visual grid: channel × severity. The cell shows how many enabled
+// rules route the column's severity to the row's channel, accounting
+// for the ladder semantics of `min_severity` (a rule with
+// min_severity=HIGH covers HIGH and CRITICAL).
+//
+// Operators get two answers at a glance:
+//   - "Is anyone paged for CRITICAL?" — a column with no green cells
+//     is a coverage gap, called out with a red header.
+//   - "Which channels are noisy?" — wide green rows = receives many
+//     severities. The Slack channel that catches INFO+ stands out.
+//
+// Disabled rules + disabled channels don't contribute to coverage.
+// The card is read-only — it links operators to the Rules card below
+// for actual editing.
+
+const SEV_LADDER: readonly string[] = ['INFO', 'LOW', 'MEDIUM', 'HIGH', 'CRITICAL'];
+
+function severityLevel(s: string): number {
+  const i = SEV_LADDER.indexOf(s.toUpperCase());
+  return i < 0 ? 0 : i;
+}
+
+function RoutingMatrixCard() {
+  const [channels, setChannels] = useState<Channel[]>([]);
+  const [rules, setRules] = useState<Rule[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all([api.channels(), api.rules()])
+      .then(([cs, rs]) => {
+        if (cancelled) return;
+        setChannels(cs);
+        setRules(rs);
+        setError(null);
+      })
+      .catch((e) => { if (!cancelled) setError(String(e)); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, []);
+
+  if (loading) {
+    return (
+      <Card title="Routing matrix" subtitle="Channel × severity coverage">
+        <p className="text-sm text-ink-mute">Loading…</p>
+      </Card>
+    );
+  }
+
+  if (channels.length === 0) {
+    return (
+      <Card title="Routing matrix" subtitle="Channel × severity coverage">
+        <p className="text-sm text-ink-mute">Add a channel to start visualising routing.</p>
+      </Card>
+    );
+  }
+
+  // Compute the per-cell rule list: for (channel, severity) the cell
+  // is the set of enabled rules where rule.channel_id matches AND
+  // severityLevel(rule.min_severity) <= severityLevel(severity). The
+  // channel must also be enabled — disabled channels contribute zero
+  // coverage even if rules point at them.
+  const cellRules = (channelID: number, sev: string): Rule[] => {
+    const channel = channels.find((c) => c.id === channelID);
+    if (!channel || !channel.enabled) return [];
+    const targetLvl = severityLevel(sev);
+    return rules.filter((r) =>
+      r.enabled
+      && r.channel_id === channelID
+      && severityLevel(r.min_severity) <= targetLvl,
+    );
+  };
+
+  // Per-column coverage: any channel covers this severity at all?
+  // Severity columns with zero coverage get the red "gap" header.
+  const columnCovered = SEV_LADDER.map((sev) =>
+    channels.some((c) => cellRules(c.id, sev).length > 0),
+  );
+
+  return (
+    <Card
+      title="Routing matrix"
+      subtitle="Channel × severity coverage. Disabled rules and channels don't contribute."
+    >
+      {error && <Notice tone="err">{error}</Notice>}
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs border-collapse">
+          <thead>
+            <tr>
+              <th className="text-left text-[10px] uppercase tracking-wide text-ink-mute font-semibold pb-2 pr-3 align-bottom">
+                Channel
+              </th>
+              {SEV_LADDER.map((sev, i) => (
+                <th
+                  key={sev}
+                  className={cn(
+                    'text-center text-[10px] uppercase tracking-wide font-semibold pb-2 px-2 align-bottom',
+                    columnCovered[i] ? 'text-ink-mute' : 'text-red-700',
+                  )}
+                  title={columnCovered[i] ? '' : `No channel routes ${sev} findings — gap`}
+                >
+                  {sev}
+                  {!columnCovered[i] && <div className="text-[9px] normal-case font-normal mt-0.5">no coverage</div>}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {[...channels].sort((a, b) => a.name.localeCompare(b.name)).map((ch) => (
+              <tr key={ch.id} className="border-t border-border">
+                <td className="py-2 pr-3 align-middle">
+                  <div className="flex items-center gap-1.5">
+                    {(() => {
+                      const Icon = channelTypeIcon(ch.type);
+                      return (
+                        <span className={cn('inline-flex items-center justify-center w-5 h-5 rounded text-white shrink-0', channelTypeBg(ch.type))}>
+                          <Icon size={11} />
+                        </span>
+                      );
+                    })()}
+                    <span className="text-sm font-medium truncate max-w-[160px]">{ch.name}</span>
+                    {!ch.enabled && (
+                      <span className="text-[9px] uppercase tracking-wide text-ink-mute bg-yellow-50 ring-1 ring-yellow-200 px-1 py-0.5 rounded">
+                        off
+                      </span>
+                    )}
+                  </div>
+                </td>
+                {SEV_LADDER.map((sev) => {
+                  const matched = cellRules(ch.id, sev);
+                  return (
+                    <td key={sev} className="px-2 py-2 align-middle text-center">
+                      <MatrixCell rules={matched} />
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="text-[11px] text-ink-mute mt-3">
+        Edit rules below. A rule with <code className="bg-slate-100 px-1 rounded">min_severity=HIGH</code> covers
+        HIGH and CRITICAL.
+      </p>
+    </Card>
+  );
+}
+
+// MatrixCell renders one (channel, severity) intersection. Tone
+// strengthens with the rule count — empty cell is a deliberate
+// visual void so coverage gaps read as gaps. The tooltip lists the
+// rule names + their filter substrings so an operator can hover a
+// surprising cell to see why it lit up (or didn't).
+function MatrixCell({ rules }: { rules: Rule[] }) {
+  if (rules.length === 0) {
+    return <span className="block w-7 h-7 mx-auto rounded border border-dashed border-slate-200" />;
+  }
+  const intensity =
+    rules.length === 1 ? 'bg-emerald-100 text-emerald-800 ring-emerald-200'
+    : rules.length === 2 ? 'bg-emerald-200 text-emerald-900 ring-emerald-300'
+    : 'bg-emerald-300 text-emerald-900 ring-emerald-400';
+  const summary = rules.map((r) => {
+    const filters = [
+      r.agent_substring ? `agent~"${r.agent_substring}"` : '',
+      r.host_substring  ? `host~"${r.host_substring}"`   : '',
+    ].filter(Boolean).join(' · ');
+    return filters ? `${r.name} (${filters})` : r.name;
+  }).join('\n');
+  return (
+    <span
+      className={cn('inline-flex items-center justify-center w-7 h-7 rounded ring-1 text-[11px] font-semibold tabular-nums', intensity)}
+      title={summary}
+    >
+      {rules.length}
+    </span>
+  );
+}
 
 function RulesCard() {
   const [rules, setRules] = useState<Rule[] | null>(null);
