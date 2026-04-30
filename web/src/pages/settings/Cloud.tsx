@@ -22,6 +22,7 @@ import { cn } from '../../lib/cn';
 const CLOUDS: Array<{ kind: CloudKind; label: string; provisioned: boolean }> = [
   { kind: 'oci',          label: 'Oracle Cloud (OCI)',  provisioned: true  },
   { kind: 'aws',          label: 'AWS',                  provisioned: true  },
+  { kind: 'minio',        label: 'MinIO (S3-compatible)', provisioned: true  },
   { kind: 'gcp',          label: 'Google Cloud',         provisioned: false },
   { kind: 'azure',        label: 'Microsoft Azure',      provisioned: false },
   { kind: 'digitalocean', label: 'DigitalOcean',         provisioned: false },
@@ -552,6 +553,15 @@ function fieldsForCloud(cloud: CloudKind): FieldSpec[] {
         { key: 'role_arn',          label: 'Role ARN (optional)', placeholder: 'arn:aws:iam::123:role/CPProvisioner',
           hint: 'When set, the CP will sts:AssumeRole into this ARN before making API calls.' },
       ];
+    case 'minio':
+      return [
+        { key: 'endpoint',          label: 'Endpoint',          required: true, placeholder: 'https://minio.example:9000',
+          hint: 'S3-compatible URL of your MinIO deployment.' },
+        { key: 'access_key_id',     label: 'Access key',        required: true, placeholder: 'admin' },
+        { key: 'secret_access_key', label: 'Secret key',        required: true, secret: true },
+        { key: 'region',            label: 'Region (optional)', placeholder: 'us-east-1',
+          hint: "Most MinIO deployments are regionless; defaults to 'us-east-1' if blank." },
+      ];
     case 'gcp':
       return [
         { key: 'service_account_json', label: 'Service account JSON', required: true, secret: true, multiline: true, rows: 10,
@@ -581,6 +591,7 @@ function defaultRegionFor(cloud: CloudKind): string {
   switch (cloud) {
     case 'oci': return 'us-ashburn-1';
     case 'aws': return 'us-east-1';
+    case 'minio': return '';
     case 'gcp': return 'us-central1';
     case 'azure': return 'eastus';
     case 'digitalocean': return 'nyc3';

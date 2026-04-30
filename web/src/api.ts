@@ -2161,7 +2161,7 @@ export interface FederationPeerAddReq {
 }
 
 // Phase 21.2 — cloud credentials.
-export type CloudKind = 'oci' | 'aws' | 'gcp' | 'azure' | 'digitalocean';
+export type CloudKind = 'oci' | 'aws' | 'gcp' | 'azure' | 'digitalocean' | 'minio';
 
 export interface CloudCredential {
   id: number;
