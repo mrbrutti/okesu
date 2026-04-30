@@ -391,6 +391,17 @@ export type OrchestrationStepStatus =
   | 'failed'
   | 'skipped';
 
+export interface StepNodeDispatchView {
+  host: string;
+  status: 'pending' | 'running' | 'completed' | 'failed';
+  agent_run_id?: string;
+  findings_count: number;
+  output_tail?: string;
+  error?: string;
+  started_at?: string;
+  ended_at?: string;
+}
+
 export interface OrchestrationStepView {
   step_id: string;
   step_idx: number;
@@ -404,6 +415,10 @@ export interface OrchestrationStepView {
   ended_at?: string;
   error?: string;
   approved_at?: string;
+  /** Phase 23.x: per-host fan-out dispatches. Present when the step
+   *  used `nodes:` (fan-out). Empty for single-node steps and legacy
+   *  runs without byNode data. */
+  per_node?: StepNodeDispatchView[];
 }
 
 export interface OrchestrationRunView {
