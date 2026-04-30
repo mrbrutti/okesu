@@ -71,6 +71,91 @@ func NewS3CreateRunHandler(reg *RunRegistry, tunReg *tunnel.Registry, store *db.
 	}
 }
 
+// NewS3FindingSetStatusHandler dispatches a `finding_set_status`
+// directive into FindingSetStatus. PathParams must include `id`.
+func NewS3FindingSetStatusHandler(store *db.Store) s3rpc.Handler {
+	h := FindingSetStatus(store)
+	return func(ctx context.Context, req s3rpc.Request) s3rpc.Response {
+		return runHandlerForDirective(ctx, h, req, http.MethodPost, "/api/findings/{id}/status", req.IssuedByUser)
+	}
+}
+
+// NewS3OrchestrationCreateHandler dispatches `orchestration_create`
+// into OrchestrationCreate.
+func NewS3OrchestrationCreateHandler(store *db.Store) s3rpc.Handler {
+	h := OrchestrationCreate(store)
+	return func(ctx context.Context, req s3rpc.Request) s3rpc.Response {
+		return runHandlerForDirective(ctx, h, req, http.MethodPost, "/api/orchestrations", req.IssuedByUser)
+	}
+}
+
+// NewS3OrchestrationUpdateHandler dispatches `orchestration_update`
+// into OrchestrationUpdate. PathParams must include `id`.
+func NewS3OrchestrationUpdateHandler(store *db.Store) s3rpc.Handler {
+	h := OrchestrationUpdate(store)
+	return func(ctx context.Context, req s3rpc.Request) s3rpc.Response {
+		return runHandlerForDirective(ctx, h, req, http.MethodPut, "/api/orchestrations/{id}", req.IssuedByUser)
+	}
+}
+
+// NewS3OrchestrationDeleteHandler dispatches `orchestration_delete`
+// into OrchestrationDelete. PathParams must include `id`.
+func NewS3OrchestrationDeleteHandler(store *db.Store) s3rpc.Handler {
+	h := OrchestrationDelete(store)
+	return func(ctx context.Context, req s3rpc.Request) s3rpc.Response {
+		return runHandlerForDirective(ctx, h, req, http.MethodDelete, "/api/orchestrations/{id}", req.IssuedByUser)
+	}
+}
+
+// NewS3OrchestrationRunCreateHandler dispatches `orchestration_run_create`
+// into OrchestrationRunCreate. PathParams must include `id`.
+func NewS3OrchestrationRunCreateHandler(store *db.Store, coord *OrchestrationCoordinator) s3rpc.Handler {
+	h := OrchestrationRunCreate(store, coord)
+	return func(ctx context.Context, req s3rpc.Request) s3rpc.Response {
+		return runHandlerForDirective(ctx, h, req, http.MethodPost, "/api/orchestrations/{id}/run", req.IssuedByUser)
+	}
+}
+
+// NewS3OrchestrationRunCancelHandler dispatches `orchestration_run_cancel`
+// into OrchestrationRunCancel. PathParams must include `id`.
+func NewS3OrchestrationRunCancelHandler(store *db.Store) s3rpc.Handler {
+	h := OrchestrationRunCancel(store)
+	return func(ctx context.Context, req s3rpc.Request) s3rpc.Response {
+		return runHandlerForDirective(ctx, h, req, http.MethodPost, "/api/orchestration-runs/{id}/cancel", req.IssuedByUser)
+	}
+}
+
+// NewS3OrchestrationStepApproveHandler dispatches
+// `orchestration_step_approve` into OrchestrationStepApprove.
+// PathParams must include `id` + `stepID`.
+func NewS3OrchestrationStepApproveHandler(store *db.Store, coord *OrchestrationCoordinator) s3rpc.Handler {
+	h := OrchestrationStepApprove(store, coord)
+	return func(ctx context.Context, req s3rpc.Request) s3rpc.Response {
+		return runHandlerForDirective(ctx, h, req, http.MethodPost,
+			"/api/orchestration-runs/{id}/steps/{stepID}/approve", req.IssuedByUser)
+	}
+}
+
+// NewS3OrchestrationRunsBulkCancelHandler dispatches
+// `orchestration_runs_bulk_cancel` into OrchestrationRunsBulkCancel.
+func NewS3OrchestrationRunsBulkCancelHandler(store *db.Store) s3rpc.Handler {
+	h := OrchestrationRunsBulkCancel(store)
+	return func(ctx context.Context, req s3rpc.Request) s3rpc.Response {
+		return runHandlerForDirective(ctx, h, req, http.MethodPost,
+			"/api/orchestration-runs/bulk-cancel", req.IssuedByUser)
+	}
+}
+
+// NewS3OrchestrationRunsBulkRetryHandler dispatches
+// `orchestration_runs_bulk_retry` into OrchestrationRunsBulkRetry.
+func NewS3OrchestrationRunsBulkRetryHandler(store *db.Store, coord *OrchestrationCoordinator) s3rpc.Handler {
+	h := OrchestrationRunsBulkRetry(store, coord)
+	return func(ctx context.Context, req s3rpc.Request) s3rpc.Response {
+		return runHandlerForDirective(ctx, h, req, http.MethodPost,
+			"/api/orchestration-runs/bulk-retry", req.IssuedByUser)
+	}
+}
+
 // runHandlerForDirective is the common bridge: build an http.Request
 // carrying the directive Body, attach a synthetic user matching the
 // parent's audit identity, dispatch, and translate the recorder's

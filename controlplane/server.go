@@ -979,10 +979,27 @@ func (s *Server) startFederationS3Dispatcher(ctx context.Context) {
 		api.NewS3DeployDaimonHandler(s.store, s.jobs, s, s.deployNodesConfig()))
 	srv.Register(s3rpc.KindCreateRun,
 		api.NewS3CreateRunHandler(s.runs, s.tunReg, s.store, s.cfg.AgentFilesDirs))
+	srv.Register(s3rpc.KindFindingSetStatus,
+		api.NewS3FindingSetStatusHandler(s.store))
+	srv.Register(s3rpc.KindOrchestrationCreate,
+		api.NewS3OrchestrationCreateHandler(s.store))
+	srv.Register(s3rpc.KindOrchestrationUpdate,
+		api.NewS3OrchestrationUpdateHandler(s.store))
+	srv.Register(s3rpc.KindOrchestrationDelete,
+		api.NewS3OrchestrationDeleteHandler(s.store))
+	srv.Register(s3rpc.KindOrchestrationRunCreate,
+		api.NewS3OrchestrationRunCreateHandler(s.store, s.orchestra))
+	srv.Register(s3rpc.KindOrchestrationRunCancel,
+		api.NewS3OrchestrationRunCancelHandler(s.store))
+	srv.Register(s3rpc.KindOrchestrationStepApprove,
+		api.NewS3OrchestrationStepApproveHandler(s.store, s.orchestra))
+	srv.Register(s3rpc.KindOrchestrationRunsBulkCnl,
+		api.NewS3OrchestrationRunsBulkCancelHandler(s.store))
+	srv.Register(s3rpc.KindOrchestrationRunsBulkRetry,
+		api.NewS3OrchestrationRunsBulkRetryHandler(s.store, s.orchestra))
 	go srv.Run(ctx)
-	log.Printf("federation s3 dispatcher: polling cp/*/outbound/%s/req/ every %s (kinds: %s, %s, %s)",
-		meta.InstanceID, s3rpc.DefaultServerPollInterval,
-		s3rpc.KindCreateNode, s3rpc.KindDeployDaimon, s3rpc.KindCreateRun)
+	log.Printf("federation s3 dispatcher: polling cp/*/outbound/%s/req/ every %s (12 kinds registered)",
+		meta.InstanceID, s3rpc.DefaultServerPollInterval)
 }
 
 // deployNodesConfig assembles the api.NodesConfig used by deploy and

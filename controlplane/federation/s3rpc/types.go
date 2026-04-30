@@ -74,17 +74,18 @@ type Response struct {
 // constants so a typo in either end produces a compile error rather
 // than a silent "no handler" rejection on the child.
 const (
-	KindCreateNode   = "create_node"
-	KindDeployDaimon = "deploy_daimon"
-	KindCreateRun    = "create_run"
-	// Future kinds the write pipe gains in B.2+:
-	//
-	// KindCancelRun              = "cancel_run"
-	// KindFindingSetStatus       = "finding_set_status"
-	// KindOrchestrationCreate    = "orchestration_create"
-	// KindOrchestrationUpdate    = "orchestration_update"
-	// KindOrchestrationDelete    = "orchestration_delete"
-	// KindOrchestrationRunCreate = "orchestration_run_create"
+	KindCreateNode                 = "create_node"
+	KindDeployDaimon               = "deploy_daimon"
+	KindCreateRun                  = "create_run"
+	KindFindingSetStatus           = "finding_set_status"
+	KindOrchestrationCreate        = "orchestration_create"
+	KindOrchestrationUpdate        = "orchestration_update"
+	KindOrchestrationDelete        = "orchestration_delete"
+	KindOrchestrationRunCreate     = "orchestration_run_create"
+	KindOrchestrationRunCancel     = "orchestration_run_cancel"
+	KindOrchestrationStepApprove   = "orchestration_step_approve"
+	KindOrchestrationRunsBulkCnl   = "orchestration_runs_bulk_cancel"
+	KindOrchestrationRunsBulkRetry = "orchestration_runs_bulk_retry"
 )
 
 // Default poll cadences. Child scans for new req objects this often;
