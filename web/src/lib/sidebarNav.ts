@@ -40,11 +40,12 @@ export type NavSection =
 // Top-to-bottom order in the sidebar. Add new top-level items, group
 // items, or whole new groups here; Layout.tsx is generic.
 //
-// Federation stays flat at the top until it has siblings (decision #3
-// in the spec — don't group prematurely).
+// Group layout follows the relationship hierarchy:
+//   Fleet:      CPs (Federation) → Nodes
+//   Automation: Daimons → Agents → Orchestrations  (run on nodes,
+//               authored top-down by who consumes whom)
 export const sidebarNav: NavSection[] = [
   { kind: 'leaf', item: { to: '/dashboard',  label: 'Dashboard',  icon: LayoutDashboard, enabled: true } },
-  { kind: 'leaf', item: { to: '/federation', label: 'Federation', icon: Network,         enabled: true } },
   { kind: 'divider' },
   { kind: 'group', group: {
     id: 'triage', label: 'Triage', items: [
@@ -56,14 +57,15 @@ export const sidebarNav: NavSection[] = [
   }},
   { kind: 'group', group: {
     id: 'automation', label: 'Automation', items: [
+      { to: '/daimons',        label: 'Daimons',        icon: Layers,   enabled: true },
       { to: '/agents',         label: 'Agents',         icon: Sparkles, enabled: true },
       { to: '/orchestrations', label: 'Orchestrations', icon: Workflow, enabled: true },
     ],
   }},
   { kind: 'group', group: {
     id: 'fleet', label: 'Fleet', items: [
-      { to: '/daimons', label: 'Daimons', icon: Layers, enabled: true },
-      { to: '/nodes',   label: 'Nodes',   icon: Server, enabled: true },
+      { to: '/federation', label: 'Federation', icon: Network, enabled: true },
+      { to: '/nodes',      label: 'Nodes',      icon: Server,  enabled: true },
     ],
   }},
   { kind: 'divider' },
