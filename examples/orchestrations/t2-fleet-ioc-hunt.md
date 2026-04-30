@@ -32,6 +32,11 @@ steps:
   - id: scope
     agent: investigator
     node: "{{trigger.source_host}}"
+    actions:
+      - update_finding_status
+      - set_finding_severity_override
+      - add_finding_tag
+      - link_run_to_finding
     data:
       ioc:
         query: iocs.lookup
@@ -82,6 +87,11 @@ steps:
       - mixed-east-1
       - mixed-west-1
     timeout: 8m
+    actions:
+      - update_finding_status
+      - set_finding_severity_override
+      - add_finding_tag
+      - link_run_to_finding
     continue_on_error: true
     prompt: |
       Hunt for IOC `{{scope.result.normalized_ioc}}` ({{trigger.ioc_kind}}) on this host.
@@ -160,6 +170,11 @@ steps:
     when: "{{heatmap.result.recommended_action == 'quarantine'}}"
     agent: incident-responder
     timeout: 10m
+    actions:
+      - update_finding_status
+      - set_finding_severity_override
+      - add_finding_tag
+      - link_run_to_finding
     prompt: |
       Containment for IOC `{{scope.result.normalized_ioc}}`. Operator approved.
 

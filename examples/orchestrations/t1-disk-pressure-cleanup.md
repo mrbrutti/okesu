@@ -26,6 +26,11 @@ steps:
   - id: scope
     agent: investigator
     node: "{{trigger.host}}"
+    actions:
+      - update_finding_status
+      - set_finding_severity_override
+      - add_finding_tag
+      - link_run_to_finding
     prompt: |
       Scope disk pressure on {{trigger.host}} for finding #{{trigger.finding_id}}.
 
@@ -52,6 +57,11 @@ steps:
     agent: investigator
     node: "{{trigger.host}}"
     timeout: 5m
+    actions:
+      - update_finding_status
+      - set_finding_severity_override
+      - add_finding_tag
+      - link_run_to_finding
     prompt: |
       Apply ONLY these safe cleanups on {{trigger.host}}. Stop after each
       one and reassess; abort if anything looks risky.

@@ -34,6 +34,11 @@ steps:
   - id: triage
     agent: investigator
     node: "{{trigger.host}}"
+    actions:
+      - update_finding_status
+      - set_finding_severity_override
+      - add_finding_tag
+      - link_run_to_finding
     prompt: |
       Investigate finding #{{trigger.finding_id}} on {{trigger.host}}.
 
@@ -54,6 +59,11 @@ steps:
     agent: binary-analyzer
     node: "{{trigger.host}}"
     timeout: 10m
+    actions:
+      - update_finding_status
+      - set_finding_severity_override
+      - add_finding_tag
+      - link_run_to_finding
     prompt: |
       Analyze the binary at {{triage.result.path}} (sha256
       {{triage.result.sha256}}).
@@ -74,6 +84,11 @@ steps:
       - threat-fedora-2
       - threat-debian-2
     timeout: 8m
+    actions:
+      - update_finding_status
+      - set_finding_severity_override
+      - add_finding_tag
+      - link_run_to_finding
     continue_on_error: true   # one host's hunt failing doesn't kill the chain
     prompt: |
       Hunt for the IOCs from the previous step on this host.
