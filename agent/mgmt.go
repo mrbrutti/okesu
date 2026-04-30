@@ -335,6 +335,92 @@ func (m *MgmtPlane) StartConfigPoller(
 	}()
 }
 
+// StartFleetEnvPoll polls /api/v1/fleet/env on every heartbeat tick.
+// On version change, rewrites /etc/okesu/jobs.env atomically and
+// restarts okesu-jobs.service so the new env is picked up.
+//
+// Best-effort: errors are logged via Emit but never crash the
+// daemon. A daemon running as a non-root user (no permission to
+// write /etc/okesu/jobs.env or call systemctl) logs once and goes
+// quiet — the operator can install/upgrade manually from the CP
+// Settings UI in that case.
+func (m *MgmtPlane) StartFleetEnvPoll(ctx context.Context) {
+	interval := time.Duration(m.cfg.HeartbeatSec) * time.Second
+	if interval <= 0 {
+		interval = defaultHeartbeatSec * time.Second
+	}
+	go func() {
+		var lastVersion int64 = -1
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				v, err := m.pollFleetEnvOnce(lastVersion)
+				if err != nil {
+					Emit(Event{Type: EventText, Agent: m.agent.Name, Host: m.host,
+						Text: fmt.Sprintf("fleet-env poll error: %v", err)})
+					continue
+				}
+				lastVersion = v
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+}
+
+// pollFleetEnvOnce GETs /api/v1/fleet/env. Returns the new last-
+// observed version (== lastVersion when unchanged or upstream is
+// empty). Rewrites /etc/okesu/jobs.env and restarts okesu-jobs only
+// when the version actually advances.
+func (m *MgmtPlane) pollFleetEnvOnce(lastVersion int64) (int64, error) {
+	url := m.cfg.URL + "/api/v1/fleet/env"
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return lastVersion, err
+	}
+	req.Header.Set("Accept", "application/json")
+	resp, err := m.client.Do(req)
+	if err != nil {
+		return lastVersion, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		// CP doesn't ship fleet-env (older build) — quietly skip.
+		return lastVersion, nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		return lastVersion, fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	var body struct {
+		AnthropicAPIKey string `json:"anthropic_api_key"`
+		OpenAIAPIKey    string `json:"openai_api_key"`
+		Version         int64  `json:"version"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return lastVersion, fmt.Errorf("decode: %w", err)
+	}
+	if body.Version == lastVersion {
+		return lastVersion, nil
+	}
+	if err := writeJobsEnvAtomic(body.AnthropicAPIKey, body.OpenAIAPIKey); err != nil {
+		return lastVersion, fmt.Errorf("write jobs.env: %w", err)
+	}
+	if err := restartJobsService(); err != nil {
+		// jobs.env is now updated; restart failed (likely non-root or
+		// systemd-less environment). Surface a one-liner to the CP
+		// event log; the new env will pick up on the next manual
+		// restart of okesu-jobs.service.
+		Emit(Event{Type: EventText, Agent: m.agent.Name, Host: m.host,
+			Text: fmt.Sprintf("fleet-env: jobs.env updated to v%d but systemctl restart failed: %v", body.Version, err)})
+	} else {
+		Emit(Event{Type: EventText, Agent: m.agent.Name, Host: m.host,
+			Text: fmt.Sprintf("fleet-env: jobs.env updated to v%d", body.Version)})
+	}
+	return body.Version, nil
+}
+
 // FetchDefinition retrieves the canonical *.md content for this daemon
 // from the CP. Used by the hot-reload callback when a hash mismatch is
 // detected. Returns the body bytes and the X-Definition-Hash header so

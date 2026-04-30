@@ -348,7 +348,7 @@ func New(cfg Config) (*Server, error) {
 		if cfg.DaemonBinariesDir != "" {
 			binResolver = api.NewDBBinaryResolver(store)
 		}
-		dep, derr := api.NewFleetAutoDeployer(store, srv, cfg.FleetSSHKeyPath, cfg.EffectiveMgmtURL(), cfg.DaemonBinaryPath, binResolver, cfg.FleetAnthropicAPIKey, cfg.FleetOpenAIAPIKey)
+		dep, derr := api.NewFleetAutoDeployer(store, srv, cfg.FleetSSHKeyPath, cfg.EffectiveMgmtURL(), cfg.DaemonBinaryPath, binResolver)
 		if derr != nil {
 			log.Printf("orchestrator auto-deploy disabled: %v", derr)
 		} else if dep != nil {
@@ -369,12 +369,71 @@ func New(cfg Config) (*Server, error) {
 	// via the orchestrator `data:` block + the api-package data
 	// resolver — see data_resolver.go. The earlier "log in via curl
 	// using OKESU_CP_ADMIN_PASSWORD" workaround has been removed.
-	var cpLocalEnv []string
-	if cfg.FleetAnthropicAPIKey != "" {
-		cpLocalEnv = append(cpLocalEnv, "ANTHROPIC_API_KEY="+cfg.FleetAnthropicAPIKey)
+
+	// Backwards-compat seed: if the operator had set
+	// OKESU_CP_FLEET_ANTHROPIC_API_KEY / OKESU_CP_FLEET_OPENAI_API_KEY
+	// on a previous boot but never used the Settings UI, copy the env
+	// values into fleet_env exactly once so subsequent CP restarts and
+	// node deploys read from the DB. Skipped when the row already has
+	// keys or when no env vars are set.
+	if mk, err := store.MasterKeyFromMeta(); err == nil {
+		if fe, err := store.GetFleetEnv(); err == nil {
+			if !fe.HasAnthropic && !fe.HasOpenAI && (cfg.FleetAnthropicAPIKey != "" || cfg.FleetOpenAIAPIKey != "") {
+				update := db.FleetEnvUpdate{UpdatedByUserEmail: "boot:env-seed"}
+				if cfg.FleetAnthropicAPIKey != "" {
+					k := cfg.FleetAnthropicAPIKey
+					update.AnthropicAPIKey = &k
+				}
+				if cfg.FleetOpenAIAPIKey != "" {
+					k := cfg.FleetOpenAIAPIKey
+					update.OpenAIAPIKey = &k
+				}
+				if _, err := store.UpsertFleetEnv(mk, update); err != nil {
+					log.Printf("fleet_env: env-seed failed: %v", err)
+				} else {
+					log.Printf("fleet_env: seeded from OKESU_CP_FLEET_*_API_KEY env vars")
+				}
+			}
+		}
 	}
-	if cfg.FleetOpenAIAPIKey != "" {
-		cpLocalEnv = append(cpLocalEnv, "OPENAI_API_KEY="+cfg.FleetOpenAIAPIKey)
+
+	// fleetEnvExtrasProvider returns ANTHROPIC_API_KEY / OPENAI_API_KEY
+	// env strings to merge into cp-local subprocess env. Read on each
+	// dispatch so operator key rotations (via Settings → LLM Keys) land
+	// without a CP restart. Falls back to cfg env vars on transient DB
+	// errors so operator-set keys persist even during a brief DB hiccup.
+	fleetEnvExtras := func() []string {
+		var out []string
+		mk, mkErr := store.MasterKeyFromMeta()
+		if mkErr != nil {
+			// No master key yet (uninitialized CP) — fall back to env.
+			if cfg.FleetAnthropicAPIKey != "" {
+				out = append(out, "ANTHROPIC_API_KEY="+cfg.FleetAnthropicAPIKey)
+			}
+			if cfg.FleetOpenAIAPIKey != "" {
+				out = append(out, "OPENAI_API_KEY="+cfg.FleetOpenAIAPIKey)
+			}
+			return out
+		}
+		fe, err := store.GetFleetEnvWithKeys(mk)
+		if err != nil {
+			// Transient DB error — fall back to env to keep the spawn working.
+			log.Printf("fleet_env: GetFleetEnvWithKeys failed (cp-local spawn): %v", err)
+			if cfg.FleetAnthropicAPIKey != "" {
+				out = append(out, "ANTHROPIC_API_KEY="+cfg.FleetAnthropicAPIKey)
+			}
+			if cfg.FleetOpenAIAPIKey != "" {
+				out = append(out, "OPENAI_API_KEY="+cfg.FleetOpenAIAPIKey)
+			}
+			return out
+		}
+		if fe.HasAnthropic {
+			out = append(out, "ANTHROPIC_API_KEY="+fe.AnthropicAPIKey)
+		}
+		if fe.HasOpenAI {
+			out = append(out, "OPENAI_API_KEY="+fe.OpenAIAPIKey)
+		}
+		return out
 	}
 
 	// Phase 22.4: IOC enrichment service. Adapters self-skip when their
@@ -398,7 +457,7 @@ func New(cfg Config) (*Server, error) {
 
 	srv.orchestra = api.NewOrchestrationCoordinator(store, srv.runs, srv.tunReg, cfg.AgentFilesDirs, srv.fedAgg, api.CoordinatorOpts{
 		AutoDeployer:      autoDep,
-		CPLocalEnvExtras:  cpLocalEnv,
+		CPLocalEnvExtras:  fleetEnvExtras,
 		ActionPolicy:      orchestrator.Policy{AutoApprove: cfg.Policy.AutoApprove},
 		EnrichmentService: enrichmentSvc,
 	})
@@ -607,6 +666,10 @@ func (s *Server) routes() http.Handler {
 	r.Get("/api/v1/federation/iocs/by-kv", api.FederationIOCByKV(s.store))
 	r.Get("/api/v1/federation/iocs/by-kv/observations", api.FederationIOCObservationsByKV(s.store))
 	r.Get("/api/v1/federation/iocs/by-kv/relationships", api.FederationIOCRelationshipsByKV(s.store))
+	// Fleet-env federation endpoint: parent CP fetches child LLM key
+	// config via federation token so it can propagate keys to child
+	// fleet nodes during deploy.
+	r.Get("/api/v1/federation/fleet-env", api.FleetEnvFederation(s.store))
 
 	// Phase 9.7: federation writes. Token-authed POST endpoints the
 	// parent's forwarding handlers proxy to when an operator picks a
@@ -845,6 +908,15 @@ func (s *Server) routes() http.Handler {
 			r.Get("/api/cloud-credentials/{id}/oci/images", api.CloudDiscoveryOCIImages(s.store))
 			r.Get("/api/cloud-credentials/{id}/oci/shapes", api.CloudDiscoveryOCIShapes(s.store))
 
+			// Fleet-env (Settings → LLM Keys). Operator-facing endpoints:
+			// GET returns masked summary (last4 only); PUT applies partial
+			// update; override-local / revert-to-parent flip the source flag
+			// for federated children.
+			r.Get("/api/fleet-env", api.FleetEnvGet(s.store))
+			r.Put("/api/fleet-env", api.FleetEnvPut(s.store, nil))
+			r.Post("/api/fleet-env/override-local", api.FleetEnvOverrideLocal(s.store, nil))
+			r.Post("/api/fleet-env/revert-to-parent", api.FleetEnvRevertToParent(s.store, nil))
+
 			// Phase 9.5: federation peers — admin-only because adding a
 			// peer means storing a credential for an outbound CP.
 			r.Get("/api/federation/peers", api.FederationListPeers(s.store))
@@ -1081,6 +1153,7 @@ func (s *Server) startFederationS3Publisher(ctx context.Context) {
 		{Path: "nodes.json", Render: s.renderFederationNodesJSON},
 		{Path: "orchestrations.json", Render: s.renderFederationOrchestrationsJSON},
 		{Path: "investigations.json", Render: s.renderFederationInvestigationsJSON},
+		{Path: "fleet-env.json", Render: s.renderFederationFleetEnvJSON},
 	}
 	pub, err := s3publisher.New(ctx, *cfg, s.renderIntrospectJSON, assets...)
 	if err != nil {
@@ -1288,6 +1361,33 @@ func (s *Server) renderFederationOrchestrationsJSON(ctx context.Context) ([]byte
 	return api.RenderFederationOrchestrations(s.store)
 }
 
+// renderFederationFleetEnvJSON renders the fleet_env row as the
+// fleet-env.json artifact published to each federated peer's
+// outbound bucket path. Plaintext on the wire — but the bucket
+// blob is encrypted to the per-peer fleet keypair by the publisher
+// before write (Phase 9.7).
+func (s *Server) renderFederationFleetEnvJSON(ctx context.Context) ([]byte, error) {
+	_ = ctx
+	mk, err := s.store.MasterKeyFromMeta()
+	if err != nil {
+		return nil, err
+	}
+	fe, err := s.store.GetFleetEnvWithKeys(mk)
+	if err != nil {
+		return nil, err
+	}
+	out := struct {
+		AnthropicAPIKey string `json:"anthropic_api_key"`
+		OpenAIAPIKey    string `json:"openai_api_key"`
+		Version         int64  `json:"version"`
+	}{
+		AnthropicAPIKey: fe.AnthropicAPIKey,
+		OpenAIAPIKey:    fe.OpenAIAPIKey,
+		Version:         fe.Version,
+	}
+	return json.Marshal(out)
+}
+
 // hooks so the rest of the CP doesn't need to know which transport
 // the data arrived through.
 func (s *Server) startS3Scanner(ctx context.Context, c db.TransportConfig) {
@@ -1386,6 +1486,11 @@ func (s *Server) mgmtRoutes() http.Handler {
 	// alongside known-issues so the daemon can fetch via the same
 	// authenticated channel it already uses.
 	r.Get("/api/v1/agents/{name}/lessons", api.ListAgentLessonsHandler(s.store))
+
+	// Fleet-env: daemon nodes fetch LLM keys from the CP at boot and
+	// on rotation. Same mTLS gate as heartbeat — cert CN identifies
+	// the node, no session cookie required.
+	r.Get("/api/v1/fleet/env", api.FleetEnvDaemon(s.store))
 
 	// Pull-mode jobs queue (Phase D). The jobs runtime on each node
 	// polls /jobs, claims work, streams output via /output, and

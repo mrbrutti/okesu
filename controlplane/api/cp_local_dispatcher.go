@@ -42,11 +42,11 @@ type cpLocalDispatcher struct {
 	reg         *RunRegistry
 	store       *db.Store
 	agentDirs   []string
-	okesuBinary string   // resolved path to the okesu CLI
-	envExtras   []string // env vars merged into the subprocess (API keys)
+	okesuBinary string          // resolved path to the okesu CLI
+	envExtras   func() []string // read on each dispatch so fleet_env updates land without process restart
 }
 
-func newCPLocalDispatcher(reg *RunRegistry, store *db.Store, agentDirs []string, okesuBinary string, envExtras []string) *cpLocalDispatcher {
+func newCPLocalDispatcher(reg *RunRegistry, store *db.Store, agentDirs []string, okesuBinary string, envExtras func() []string) *cpLocalDispatcher {
 	return &cpLocalDispatcher{
 		reg:         reg,
 		store:       store,
@@ -122,7 +122,11 @@ func (d *cpLocalDispatcher) Dispatch(ctx context.Context, req orchestrator.Dispa
 
 	cmd := exec.CommandContext(ctx, d.okesuBinary, "auto", "--agent", req.AgentName, "--prompt-file", promptPath)
 	cmd.Dir = tempDir
-	cmd.Env = append(os.Environ(), d.envExtras...)
+	extras := []string{}
+	if d.envExtras != nil {
+		extras = d.envExtras()
+	}
+	cmd.Env = append(os.Environ(), extras...)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

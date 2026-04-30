@@ -1273,11 +1273,13 @@ type CoordinatorOpts struct {
 	// Empty means "auto-resolve" (PATH lookup, then dir-of-CP-binary).
 	CPLocalOkesuBinary string
 
-	// CPLocalEnvExtras are env vars merged into the cp-local
+	// CPLocalEnvExtras returns env vars merged into the cp-local
 	// subprocess's environment — typically API keys for the agent
 	// provider. Format: "KEY=value". Inherited env from the CP
-	// process is used as the base.
-	CPLocalEnvExtras []string
+	// process is used as the base. Called on each dispatch —
+	// return value not cached, so key rotations land without a
+	// CP restart.
+	CPLocalEnvExtras func() []string
 
 	// ActionPolicy carries the operator-set per-class auto-approve
 	// toggle — the orchestrator engine consults it at the

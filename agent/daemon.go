@@ -113,6 +113,7 @@ func RunDaemon(cfg Config, dcfg DaemonConfig) error {
 		mgmt.SetLocalDefinitionVersion(cfg.DefinitionVersion)
 
 		mgmt.StartHeartbeat(mgmtCtx, state)
+		mgmt.StartFleetEnvPoll(mgmtCtx)
 		mgmt.StartKnownIssuesPoller(mgmtCtx)
 		mgmt.StartConfigPoller(mgmtCtx, func(rc remoteConfig) {
 			// Hot-apply non-destructive config changes.
