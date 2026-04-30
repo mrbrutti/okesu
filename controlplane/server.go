@@ -666,6 +666,10 @@ func (s *Server) routes() http.Handler {
 	r.Get("/api/v1/federation/iocs/by-kv", api.FederationIOCByKV(s.store))
 	r.Get("/api/v1/federation/iocs/by-kv/observations", api.FederationIOCObservationsByKV(s.store))
 	r.Get("/api/v1/federation/iocs/by-kv/relationships", api.FederationIOCRelationshipsByKV(s.store))
+	// Fleet-env federation endpoint: parent CP fetches child LLM key
+	// config via federation token so it can propagate keys to child
+	// fleet nodes during deploy.
+	r.Get("/api/v1/federation/fleet-env", api.FleetEnvFederation(s.store))
 
 	// Phase 9.7: federation writes. Token-authed POST endpoints the
 	// parent's forwarding handlers proxy to when an operator picks a
@@ -903,6 +907,15 @@ func (s *Server) routes() http.Handler {
 			r.Get("/api/cloud-credentials/{id}/oci/subnets", api.CloudDiscoveryOCISubnets(s.store))
 			r.Get("/api/cloud-credentials/{id}/oci/images", api.CloudDiscoveryOCIImages(s.store))
 			r.Get("/api/cloud-credentials/{id}/oci/shapes", api.CloudDiscoveryOCIShapes(s.store))
+
+			// Fleet-env (Settings → LLM Keys). Operator-facing endpoints:
+			// GET returns masked summary (last4 only); PUT applies partial
+			// update; override-local / revert-to-parent flip the source flag
+			// for federated children.
+			r.Get("/api/fleet-env", api.FleetEnvGet(s.store))
+			r.Put("/api/fleet-env", api.FleetEnvPut(s.store, nil))
+			r.Post("/api/fleet-env/override-local", api.FleetEnvOverrideLocal(s.store, nil))
+			r.Post("/api/fleet-env/revert-to-parent", api.FleetEnvRevertToParent(s.store, nil))
 
 			// Phase 9.5: federation peers — admin-only because adding a
 			// peer means storing a credential for an outbound CP.
@@ -1445,6 +1458,11 @@ func (s *Server) mgmtRoutes() http.Handler {
 	// alongside known-issues so the daemon can fetch via the same
 	// authenticated channel it already uses.
 	r.Get("/api/v1/agents/{name}/lessons", api.ListAgentLessonsHandler(s.store))
+
+	// Fleet-env: daemon nodes fetch LLM keys from the CP at boot and
+	// on rotation. Same mTLS gate as heartbeat — cert CN identifies
+	// the node, no session cookie required.
+	r.Get("/api/v1/fleet/env", api.FleetEnvDaemon(s.store))
 
 	// Pull-mode jobs queue (Phase D). The jobs runtime on each node
 	// polls /jobs, claims work, streams output via /output, and
