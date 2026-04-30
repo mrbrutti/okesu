@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/section9labs/okesu/controlplane/db"
@@ -28,9 +29,12 @@ func STIX2ExportHandler(store *db.Store) http.HandlerFunc {
 		since := r.URL.Query().Get("since")
 		var sinceTime time.Time
 		if since != "" {
-			if t, err := time.Parse(time.RFC3339, since); err == nil {
-				sinceTime = t
+			t, err := time.Parse(time.RFC3339, since)
+			if err != nil {
+				http.Error(w, "since: not valid RFC3339", http.StatusBadRequest)
+				return
 			}
+			sinceTime = t
 		}
 
 		iocs, err := store.ListIOCs(filter)
@@ -69,6 +73,7 @@ func STIX2ExportHandler(store *db.Store) http.HandlerFunc {
 		// Add relationships referenced by exported IOCs. ListIOCRelationships
 		// returns both directions; dedupe by relationship ID so a single
 		// edge isn't emitted twice when both endpoints are exported.
+		now := time.Now().UTC().Format(time.RFC3339)
 		seenRel := make(map[int64]bool)
 		for _, ioc := range iocs {
 			rels, err := store.ListIOCRelationships(ioc.ID)
@@ -89,8 +94,8 @@ func STIX2ExportHandler(store *db.Store) http.HandlerFunc {
 					"type":              "relationship",
 					"spec_version":      "2.1",
 					"id":                stixID("relationship", strconv.FormatInt(rel.ID, 10)),
-					"created":           time.Now().UTC().Format(time.RFC3339),
-					"modified":          time.Now().UTC().Format(time.RFC3339),
+					"created":           now,
+					"modified":          now,
 					"relationship_type": rel.Predicate,
 					"source_ref":        subjID,
 					"target_ref":        objID,
@@ -121,25 +126,34 @@ func stixID(stixType, key string) string {
 
 // stixPatternFor builds the STIX-2.1 pattern string for an IOC.
 func stixPatternFor(kind, value string) string {
+	v := stixEscapeValue(value)
 	switch kind {
 	case "sha256":
-		return fmt.Sprintf("[file:hashes.'SHA-256' = '%s']", value)
+		return fmt.Sprintf("[file:hashes.'SHA-256' = '%s']", v)
 	case "sha1":
-		return fmt.Sprintf("[file:hashes.'SHA-1' = '%s']", value)
+		return fmt.Sprintf("[file:hashes.'SHA-1' = '%s']", v)
 	case "md5":
-		return fmt.Sprintf("[file:hashes.'MD5' = '%s']", value)
+		return fmt.Sprintf("[file:hashes.'MD5' = '%s']", v)
 	case "ipv4":
-		return fmt.Sprintf("[ipv4-addr:value = '%s']", value)
+		return fmt.Sprintf("[ipv4-addr:value = '%s']", v)
 	case "ipv6":
-		return fmt.Sprintf("[ipv6-addr:value = '%s']", value)
+		return fmt.Sprintf("[ipv6-addr:value = '%s']", v)
 	case "domain":
-		return fmt.Sprintf("[domain-name:value = '%s']", value)
+		return fmt.Sprintf("[domain-name:value = '%s']", v)
 	case "url":
-		return fmt.Sprintf("[url:value = '%s']", value)
+		return fmt.Sprintf("[url:value = '%s']", v)
 	case "cve":
-		return fmt.Sprintf("[vulnerability:name = '%s']", value)
+		return fmt.Sprintf("[vulnerability:name = '%s']", v)
 	}
-	return fmt.Sprintf("[x-okesu-ioc:kind = '%s' AND x-okesu-ioc:value = '%s']", kind, value)
+	return fmt.Sprintf("[x-okesu-ioc:kind = '%s' AND x-okesu-ioc:value = '%s']", kind, v)
+}
+
+// stixEscapeValue escapes backslashes and single quotes so that values are
+// safe to embed inside STIX 2.1 single-quoted string literals.
+func stixEscapeValue(v string) string {
+	v = strings.ReplaceAll(v, `\`, `\\`)
+	v = strings.ReplaceAll(v, `'`, `\'`)
+	return v
 }
 
 // stixLabels maps Okesu's IOC metadata to the STIX 2.1 indicator-type-ov
