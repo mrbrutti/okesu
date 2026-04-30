@@ -208,6 +208,39 @@ func TestLoadDir_ExplicitNameOverridesParsed(t *testing.T) {
 	}
 }
 
+// Same precedence rule must apply to tags: an explicit `tags:` list in
+// the YAML wrapper beats whatever the rule body's `: tag1 tag2`
+// declaration says. Locks in the override path for the slice field
+// (the override guard is `len(entryTags) == 0`, so an explicit list
+// of any length must short-circuit parsing).
+func TestLoadDir_ExplicitTagsOverrideParsed(t *testing.T) {
+	dir := t.TempDir()
+	yaml := `iocs:
+  - kind: yara_rule
+    tags:
+      - curator-tag-one
+      - curator-tag-two
+    value: |
+      rule TestRule : ignored-body-tag
+      {
+          condition: true
+      }
+`
+	if err := os.WriteFile(filepath.Join(dir, "rule.yaml"), []byte(yaml), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	entries, err := LoadDir(dir)
+	if err != nil {
+		t.Fatalf("LoadDir: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry; got %d", len(entries))
+	}
+	if entries[0].Tags != "curator-tag-one,curator-tag-two" {
+		t.Errorf("Tags = %q, want curator-tag-one,curator-tag-two (explicit YAML must win)", entries[0].Tags)
+	}
+}
+
 func TestLoadDir_SigmaRuleAutoFills(t *testing.T) {
 	dir := t.TempDir()
 	yaml := `iocs:
