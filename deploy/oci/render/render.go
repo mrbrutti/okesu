@@ -85,15 +85,49 @@ func RenderCPYAML(in Inputs) ([]byte, error) {
 
 // RenderEnvFile renders /etc/default/okesu-cp from operator env. The
 // systemd unit references this file via EnvironmentFile=. Returns an
-// error if any required operator env var (currently: ANTHROPIC_API_KEY)
-// is missing or empty — agent jobs need it to function, and a
-// silently-empty value would produce a broken-CP-at-runtime rather
-// than a fail-at-render.
+// error if any required operator env var is missing or empty.
+//
+// Required for all modes: ANTHROPIC_API_KEY (agent jobs need it to
+// function; a silently-empty value produces a broken CP at runtime).
+//
+// Mode-aware additional requirements:
+//   - "parent": FEDERATION_TOKEN (the parent CP issues enrollment tokens;
+//     without this the federation endpoint silently rejects all children).
+//   - "child": PARENT_FEDERATION_TOKEN, PARENT_FEDERATION_BUCKET,
+//     PARENT_FEDERATION_ENDPOINT, PARENT_FEDERATION_REGION,
+//     PARENT_FEDERATION_ACCESS_KEY, PARENT_FEDERATION_SECRET_KEY
+//     (every one of these is needed for the child to publish to the
+//     parent's S3 dead-drop; any missing field breaks publishing silently).
 func RenderEnvFile(in Inputs) ([]byte, error) {
 	if in.OperatorEnv["ANTHROPIC_API_KEY"] == "" {
 		return nil, fmt.Errorf("ANTHROPIC_API_KEY is required in OperatorEnv")
 	}
+	for _, k := range requiredKeysFor(in.Mode) {
+		if in.OperatorEnv[k] == "" {
+			return nil, fmt.Errorf("%s is required in OperatorEnv for mode=%s", k, in.Mode)
+		}
+	}
 	return render("okesu-cp.env", envTmpl, in)
+}
+
+// requiredKeysFor returns the mode-specific operator env keys that must be
+// non-empty before RenderEnvFile will produce output. The ANTHROPIC_API_KEY
+// check is handled separately and is not included in this list.
+func requiredKeysFor(mode string) []string {
+	switch mode {
+	case "parent":
+		return []string{"FEDERATION_TOKEN"}
+	case "child":
+		return []string{
+			"PARENT_FEDERATION_TOKEN",
+			"PARENT_FEDERATION_BUCKET",
+			"PARENT_FEDERATION_ENDPOINT",
+			"PARENT_FEDERATION_REGION",
+			"PARENT_FEDERATION_ACCESS_KEY",
+			"PARENT_FEDERATION_SECRET_KEY",
+		}
+	}
+	return nil
 }
 
 // ValidateCPYAML writes body to a temp file and feeds it through the

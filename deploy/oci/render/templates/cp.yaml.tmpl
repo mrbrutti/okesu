@@ -35,19 +35,3 @@ blob_bucket:     "{{ tfval .TerraformOut "blob_bucket" }}"
 blob_region:     "{{ tfval .TerraformOut "blob_region" }}"
 
 event_ttl_days: 30
-{{- if eq .Mode "parent" }}
-
-federation_token: "${secret:federation/token}"
-cp_instance_id:   "cp-parent-001"
-{{- end }}
-{{- if eq .Mode "child" }}
-
-federation_token:                "{{ envOr .OperatorEnv "PARENT_FEDERATION_TOKEN" "" }}"
-cp_instance_id:                  "{{ envOr .OperatorEnv "CP_INSTANCE_ID" "cp-child-001" }}"
-federation_s3_publish_bucket:    "{{ envOr .OperatorEnv "PARENT_FEDERATION_BUCKET" "" }}"
-federation_s3_publish_endpoint:  "{{ envOr .OperatorEnv "PARENT_FEDERATION_ENDPOINT" "" }}"
-federation_s3_publish_region:    "{{ envOr .OperatorEnv "PARENT_FEDERATION_REGION" "" }}"
-federation_s3_publish_use_ssl:   true
-federation_s3_publish_access_key: "{{ envOr .OperatorEnv "PARENT_FEDERATION_ACCESS_KEY" "" }}"
-federation_s3_publish_secret_key: "${secret:parent/secret-key}"
-{{- end }}
