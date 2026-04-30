@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   ArrowUpRight,
   Check,
   CheckCircle2,
   ChevronRight,
+  ClipboardList,
   Clock,
   Columns,
   Cpu,
@@ -865,6 +866,7 @@ interface DrawerProps {
 }
 
 export function FindingDrawer({ id, cpInstanceID, onClose, onChanged }: DrawerProps) {
+  const navigate = useNavigate();
   const [f, setF] = useState<Finding | null>(null);
   const [related, setRelated] = useState<Finding[]>([]);
   const [busy, setBusy] = useState(false);
@@ -873,6 +875,29 @@ export function FindingDrawer({ id, cpInstanceID, onClose, onChanged }: DrawerPr
   const [investigations, setInvestigations] = useState<RunListItem[]>([]);
   const [investigateOpen, setInvestigateOpen] = useState(false);
   const [iocs, setIOCs] = useState<IOCRecord[]>([]);
+
+  // Phase 22.3 — open the finding as a new T2 case. The backend
+  // POST /api/investigations supports `from_finding_id` for one-call
+  // create + link, so this is a single round-trip + a route push.
+  async function openInInvestigation() {
+    if (!f) return;
+    const defaultTitle = f.title || `Finding #${f.id}`;
+    const title = window.prompt('Title for the new investigation?', defaultTitle);
+    if (!title) return;
+    setBusy(true); setError(null);
+    try {
+      const inv = await api.investigations.create({
+        title,
+        summary: f.evidence || '',
+        from_finding_id: f.id,
+      });
+      navigate(`/investigations/${inv.ID}`);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
 
   useEffect(() => {
     setF(null);
@@ -1199,6 +1224,14 @@ export function FindingDrawer({ id, cpInstanceID, onClose, onChanged }: DrawerPr
             title="Run an agent on the affected host with this finding's context"
           >
             <Sparkles size={11} /> Investigate
+          </button>
+          <button
+            onClick={openInInvestigation}
+            disabled={busy}
+            className="inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded-md ring-1 ring-border text-ink-dim hover:text-ink hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed"
+            title="Open a T2 case for this finding"
+          >
+            <ClipboardList size={11} /> Open in investigation
           </button>
           <Link
             to={`/events?agent=${encodeURIComponent(f.agent || '')}`}
