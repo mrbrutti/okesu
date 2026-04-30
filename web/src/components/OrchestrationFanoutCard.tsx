@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Handle, Position, type NodeProps, type Node } from '@xyflow/react';
-import { CheckCircle2, Cpu, Loader2, Pause, XCircle, AlertCircle, ChevronRight } from 'lucide-react';
+import { CheckCircle2, Cpu, Loader2, Pause, XCircle, AlertCircle, ChevronRight, ChevronDown } from 'lucide-react';
 import { cn } from '../lib/cn';
 import { fanoutAutoExpand } from '../lib/fanoutAutoExpand';
 import type { OrchestrationStepStatus, StepNodeDispatchView } from '../api';
@@ -184,9 +184,82 @@ export function FanoutCardView({ data, selected }: NodeProps<FanoutCardNode>) {
         )}
       </div>
 
-      {/* Expanded host rows + large-mode footer button — wired in Task 11 */}
+      {/* Expanded host rows — only when n ≤ 20 and expanded */}
+      {!isLarge && expanded && data.perNode.length > 0 && (
+        <div className="border-t border-slate-100">
+          {data.perNode.map((h) => {
+            const hostDuration = formatHostDuration(h);
+            const isFailed = h.status === 'failed';
+            const isLive = h.status === 'running';
+            return (
+              <button
+                key={h.host}
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  data.onSelectHost?.(data.stepID, h.host);
+                }}
+                className={cn(
+                  'w-full flex items-center gap-2 px-3 py-1.5 border-t border-slate-100 first:border-t-0',
+                  'hover:bg-slate-50 text-left text-[10px] font-mono',
+                  isFailed && 'text-red-700',
+                  isLive && 'text-blue-700',
+                  !isFailed && !isLive && 'text-ink-dim',
+                )}
+              >
+                <span className={cn('w-1.5 h-1.5 rounded-full shrink-0', hostDot(h.status))} />
+                <span className="flex-1 truncate">{h.host}</span>
+                {h.findings_count > 0 && (
+                  <span className="bg-brand-50 text-brand-700 ring-1 ring-brand-200 px-1 rounded text-[9px] font-semibold">
+                    {h.findings_count}
+                  </span>
+                )}
+                {hostDuration && <span className="text-[9px] text-ink-mute">{hostDuration}</span>}
+                <ChevronRight size={10} className="text-slate-300 shrink-0" />
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Large-mode footer button — only when n > 20 */}
+      {isLarge && (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            data.onOpenHostList?.(data.stepID);
+          }}
+          className="w-full text-[11px] text-brand-700 hover:bg-brand-50 border-t border-slate-100 px-3 py-2 inline-flex items-center justify-between"
+        >
+          <span>View all {counts.total} hosts</span>
+          <ChevronRight size={12} />
+        </button>
+      )}
+
+      {/* Manual collapse toggle — only when ≤20 and not auto-locked-open */}
+      {!isLarge && counts.total > 4 && (
+        <div className="text-center text-[9px] text-ink-mute py-1 border-t border-dashed border-slate-200 select-none">
+          {expanded ? (
+            <span className="inline-flex items-center gap-1"><ChevronDown size={9} /> click to collapse</span>
+          ) : (
+            <span className="inline-flex items-center gap-1"><ChevronRight size={9} /> click to expand · {counts.total} hosts</span>
+          )}
+        </div>
+      )}
 
       <Handle type="source" position={Position.Right} className="!bg-slate-400 !w-2 !h-2 !border-0" />
     </div>
   );
+}
+
+function formatHostDuration(h: StepNodeDispatchView): string {
+  if (!h.started_at) return '';
+  const start = Date.parse(h.started_at);
+  const end = h.ended_at ? Date.parse(h.ended_at) : Date.now();
+  const seconds = Math.max(0, (end - start) / 1000);
+  const suffix = h.ended_at ? '' : '…';
+  if (seconds < 10)  return `${seconds.toFixed(1)}s${suffix}`;
+  if (seconds < 600) return `${Math.round(seconds)}s${suffix}`;
+  return `${Math.round(seconds / 60)}m${suffix}`;
 }
