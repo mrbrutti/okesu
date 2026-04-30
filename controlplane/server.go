@@ -391,6 +391,21 @@ func New(cfg Config) (*Server, error) {
 		EnrichmentService: enrichmentSvc,
 	})
 
+	// Wire the enrichment-trigger dispatch path. Each fresh cache
+	// write (NOT cache hits — see EnrichedEvent doc) probes the
+	// `ioc_enriched`-trigger orchestrations. Done after the
+	// coordinator is constructed so OnEnrichment is bound.
+	enrichmentSvc.SetEnrichedHook(func(e enrichment.EnrichedEvent) {
+		srv.orchestra.OnEnrichment(orchestrator.EnrichmentPayload{
+			IOCID:           e.IOCID,
+			IOCKind:         e.IOCKind,
+			NormalizedValue: e.NormalizedValue,
+			Adapter:         e.Adapter,
+			Verdict:         e.Verdict,
+			Score:           e.Score,
+		})
+	})
+
 	// Wire the finding-trigger hook before the pipeline starts so we
 	// don't miss the first projected finding after boot.
 	pipelineWorker.SetFindingHook(func(e eventpipeline.FindingProjectedEvent) {
