@@ -128,6 +128,25 @@ type MgmtPlane struct {
 	localDefinitionVersion string
 }
 
+// HTTPClient returns the mgmt-plane's mTLS-configured *http.Client.
+// Exposed so peers in this package (e.g. lessons fetch) can reuse the
+// same authenticated channel. Returns nil if MgmtPlane is nil.
+func (m *MgmtPlane) HTTPClient() *http.Client {
+	if m == nil {
+		return nil
+	}
+	return m.client
+}
+
+// URL returns the configured CP mgmt-plane base URL (e.g.
+// "https://cp.example:8444"). Returns "" if MgmtPlane is nil.
+func (m *MgmtPlane) URL() string {
+	if m == nil {
+		return ""
+	}
+	return m.cfg.URL
+}
+
 // SetLocalDefinitionHash records the daemon's currently-loaded definition
 // hash. Called once at startup with the hash of the file the daemon
 // loaded, and again after each successful hot-reload. Concurrent-safe.
