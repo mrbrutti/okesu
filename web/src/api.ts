@@ -1875,6 +1875,12 @@ export interface CPProvisionRequest {
   credential_id: number;
   cloud_params?: Record<string, unknown>;
   parent_url?: string;
+  /** Phase 21.6 — federation transport. Empty / 'https' uses the
+   *  existing mTLS bootstrap callback. 's3_dead_drop' uses the bucket
+   *  pipe; transport_config_id must also be set. */
+  transport?: 'https' | 's3_dead_drop';
+  /** Required when transport === 's3_dead_drop'. */
+  transport_config_id?: number;
   /** Phase 21.5 — bypasses the budget check; submit returns 409 otherwise. */
   force_over_budget?: boolean;
 }
