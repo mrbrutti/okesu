@@ -186,6 +186,52 @@ func (s *Store) ListIOCObservations(iocID int64) ([]IOCObservation, error) {
 	return out, rows.Err()
 }
 
+// IOCPattern is one row of cross-CP observation rollup.
+type IOCPattern struct {
+	IOCID             int64  `json:"ioc_id"`
+	Kind              string `json:"kind"`
+	NormalizedValue   string `json:"normalized_value"`
+	TotalObservations int    `json:"total_observations"`
+	DistinctRuns      int    `json:"distinct_runs"`
+}
+
+// ListCrossCPIOCPatterns returns IOCs with >=minObservations within
+// the window. The federated parent CP receives observations from every
+// child it polls, so "cross-CP" maps to "many observations across
+// distinct runs" until per-CP attribution lands in a future phase.
+//
+// Note on timestamp format: SQLite's CURRENT_TIMESTAMP stores text as
+// "YYYY-MM-DD HH:MM:SS" (UTC, no TZ). Pass the cutoff in that exact
+// shape so lexical comparison aligns with stored values; passing a
+// time.Time risks the driver formatting it as RFC3339, which sorts
+// differently as a string and would silently exclude in-range rows.
+func (s *Store) ListCrossCPIOCPatterns(minObservations int, since time.Time) ([]IOCPattern, error) {
+	cutoff := since.UTC().Format("2006-01-02 15:04:05")
+	rows, err := s.Query(`
+		SELECT iocs.id, iocs.kind, iocs.normalized_value,
+		       COUNT(ioc_observations.id) AS total,
+		       COUNT(DISTINCT ioc_observations.orchestration_run_id) AS distinct_runs
+		FROM iocs
+		JOIN ioc_observations ON ioc_observations.ioc_id = iocs.id
+		WHERE ioc_observations.observed_at >= ?
+		GROUP BY iocs.id, iocs.kind, iocs.normalized_value
+		HAVING COUNT(ioc_observations.id) >= ?
+		ORDER BY total DESC`, cutoff, minObservations)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []IOCPattern
+	for rows.Next() {
+		var p IOCPattern
+		if err := rows.Scan(&p.IOCID, &p.Kind, &p.NormalizedValue, &p.TotalObservations, &p.DistinctRuns); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
 // LookupIOC fetches by (kind, normalized_value). Returns sql.ErrNoRows if absent.
 func (s *Store) LookupIOC(kind, normalizedValue string) (*IOCRecord, error) {
 	row := s.QueryRow(`SELECT id FROM iocs WHERE kind = ? AND normalized_value = ?`, kind, normalizedValue)

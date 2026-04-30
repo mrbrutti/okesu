@@ -614,6 +614,11 @@ func (s *Server) routes() http.Handler {
 		// Phase 22.1 — IOC list. Filter by finding_id (drawer drill-down)
 		// or kind (e.g. all observed sha256s). Local-only for now.
 		r.Get("/api/iocs", api.ListIOCs(s.store))
+		// Phase 22.4 — cross-CP IOC pattern rollup. Drives the
+		// cross-cp-ioc-pattern-supervisor daimon. Static segment must
+		// register before any future /api/iocs/{id} catch-all so chi
+		// doesn't try to ParseInt "cross-cp-patterns".
+		r.Get("/api/iocs/cross-cp-patterns", api.ListCrossCPPatternsHandler(s.store))
 
 		// Phase 22.3 — Investigations (T2 case workspace). CRUD plus
 		// notes and finding linking; viewer+ for now (no admin gate)
