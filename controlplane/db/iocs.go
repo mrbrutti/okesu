@@ -257,6 +257,8 @@ func (s *Store) LookupIOC(kind, normalizedValue string) (*IOCRecord, error) {
 type IOCListFilter struct {
 	Kind      string
 	FindingID int64
+	Source    string // "catalog" | "observed" | "" (any)
+	Query     string // matches value, name, or tags via LIKE %q% (case-insensitive)
 	Limit     int
 }
 
@@ -281,6 +283,17 @@ func (s *Store) ListIOCs(f IOCListFilter) ([]*IOCRecord, error) {
 		joinObs = true
 		clauses = append(clauses, "ioc_observations.finding_id = ?")
 		args = append(args, f.FindingID)
+	}
+	if f.Source != "" {
+		clauses = append(clauses, "iocs.source = ?")
+		args = append(args, f.Source)
+	}
+	if f.Query != "" {
+		// Case-insensitive LIKE %q% across value, name, tags. SQLite's
+		// LOWER on both sides is portable to postgres without rewrites.
+		clauses = append(clauses, "(LOWER(iocs.value) LIKE ? OR LOWER(COALESCE(iocs.name,'')) LIKE ? OR LOWER(COALESCE(iocs.tags,'')) LIKE ?)")
+		needle := "%" + strings.ToLower(f.Query) + "%"
+		args = append(args, needle, needle, needle)
 	}
 	where := ""
 	if len(clauses) > 0 {

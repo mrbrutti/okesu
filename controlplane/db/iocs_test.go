@@ -182,6 +182,43 @@ func TestUpsertIOC_CatalogReloadUpdatesNameAndTags(t *testing.T) {
 	}
 }
 
+func TestListIOCs_FilterBySource(t *testing.T) {
+	s := openTempStore(t)
+	s.UpsertIOC(&IOCUpsert{Kind: "sha256", Value: "a", NormalizedValue: "a", Source: "catalog"})
+	s.UpsertIOC(&IOCUpsert{Kind: "sha256", Value: "b", NormalizedValue: "b", Source: "observed"})
+
+	rows, err := s.ListIOCs(IOCListFilter{Source: "catalog"})
+	if err != nil {
+		t.Fatalf("ListIOCs: %v", err)
+	}
+	if len(rows) != 1 || rows[0].NormalizedValue != "a" {
+		t.Errorf("expected only catalog row 'a'; got %+v", rows)
+	}
+}
+
+func TestListIOCs_FilterByQuery(t *testing.T) {
+	s := openTempStore(t)
+	s.UpsertIOC(&IOCUpsert{Kind: "sha256", Value: "AbCdEf", NormalizedValue: "abcdef", Source: "catalog", Name: "WannaCry sample"})
+	s.UpsertIOC(&IOCUpsert{Kind: "sha256", Value: "abc999", NormalizedValue: "abc999", Source: "catalog", Tags: "ransomware,emotet"})
+	s.UpsertIOC(&IOCUpsert{Kind: "ipv4", Value: "1.2.3.4", NormalizedValue: "1.2.3.4", Source: "observed"})
+
+	// Match by value (case-insensitive)
+	rows, _ := s.ListIOCs(IOCListFilter{Query: "ABCD"})
+	if len(rows) != 1 || rows[0].NormalizedValue != "abcdef" {
+		t.Errorf("query=ABCD expected one match (abcdef); got %+v", rows)
+	}
+	// Match by name
+	rows, _ = s.ListIOCs(IOCListFilter{Query: "wannacry"})
+	if len(rows) != 1 || rows[0].Name != "WannaCry sample" {
+		t.Errorf("query=wannacry expected one match by name; got %+v", rows)
+	}
+	// Match by tag
+	rows, _ = s.ListIOCs(IOCListFilter{Query: "emotet"})
+	if len(rows) != 1 || rows[0].NormalizedValue != "abc999" {
+		t.Errorf("query=emotet expected one match by tag; got %+v", rows)
+	}
+}
+
 func TestUpsertIOC_ObservedDoesNotOverwriteCatalog(t *testing.T) {
 	s := openTempStore(t)
 	// Seed a catalog row with curated metadata.
