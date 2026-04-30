@@ -24,7 +24,7 @@ import {
   ThumbsDown,
   X,
 } from 'lucide-react';
-import { api, type Finding, type FindingGroup, type FindingsSummary, type FindingStatus, type IOCRecord, type RelatedCase, type RunListItem } from '../api';
+import { api, type Finding, type FindingGroup, type FindingsSummary, type FindingStatus, type IOCRecord, type RelatedCase, type RunListItem, type SavedSearch, type FindingsFilterConfig } from '../api';
 import { FindingHistory, History as HistoryIcon } from '../components/FindingHistory';
 import { cn } from '../lib/cn';
 import { useIOCDisplayPrefs } from '../lib/preferences';
@@ -41,6 +41,7 @@ import { useSelection } from '../lib/useSelection';
 import { BulkActionBar, BulkActionButton } from '../components/BulkActionBar';
 import { CPSourceChip } from '../components/CPSourceChip';
 import FindingsKanban from '../components/FindingsKanban';
+import { SavedSearchesBar } from '../components/SavedSearchesBar';
 
 const PAGE_SIZE = 250;
 
@@ -104,6 +105,68 @@ export default function FindingsPage() {
   // per-group).
   const sel = useSelection<string>();
   const [bulkBusy, setBulkBusy] = useState<null | FindingStatus>(null);
+  // Saved searches (operator-named filter sets). Loaded once on
+  // mount; the default-tagged search is applied on first render
+  // when no filters are already set via URL params.
+  const [savedSearches, setSavedSearches] = useState<SavedSearch[]>([]);
+  const [defaultApplied, setDefaultApplied] = useState(false);
+  const refreshSearches = () => {
+    api.savedSearches.list('findings').then(setSavedSearches).catch(() => { /* ignore */ });
+  };
+  useEffect(() => { refreshSearches(); }, []);
+  // Apply the default search once after the list lands. Skip if any
+  // filter is already set (URL deep-link or operator already
+  // changed something) so we don't clobber an explicit intent.
+  useEffect(() => {
+    if (defaultApplied || savedSearches.length === 0) return;
+    const def = savedSearches.find((s) => s.is_default);
+    if (!def) { setDefaultApplied(true); return; }
+    const hasExistingFilters =
+      state !== 'queue' || selectedSevs.length > 0 || agentFilter || hostFilter || categoryFilter;
+    if (!hasExistingFilters) {
+      try {
+        const cfg: FindingsFilterConfig = JSON.parse(def.config_json);
+        applyFilterConfig(cfg);
+      } catch {
+        /* malformed config — leave defaults */
+      }
+    }
+    setDefaultApplied(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [savedSearches]);
+
+  // Snapshot of the current filter set, used to label the active
+  // saved search and as the payload for "Save current".
+  const currentFilterConfig = useMemo<FindingsFilterConfig>(() => ({
+    view,
+    state,
+    severity: selectedSevs.length ? selectedSevs : undefined,
+    agent: agentFilter || undefined,
+    host: hostFilter || undefined,
+    category: categoryFilter || undefined,
+  }), [view, state, selectedSevs, agentFilter, hostFilter, categoryFilter]);
+
+  // Active saved-search id: the one whose config_json deep-equals
+  // the current filter set. Stringify-compare is cheap (the configs
+  // are tiny) and avoids dragging in deep-equal.
+  const activeSavedID = useMemo(() => {
+    const target = JSON.stringify(currentFilterConfig);
+    for (const s of savedSearches) {
+      try {
+        if (JSON.stringify(JSON.parse(s.config_json)) === target) return s.id;
+      } catch { /* skip malformed */ }
+    }
+    return null;
+  }, [savedSearches, currentFilterConfig]);
+
+  function applyFilterConfig(cfg: FindingsFilterConfig) {
+    if (cfg.view) setView(cfg.view as View);
+    if (cfg.state) setState(cfg.state as State);
+    setSelectedSevs((cfg.severity ?? []) as Sev[]);
+    setAgentFilter(cfg.agent ?? '');
+    setHostFilter(cfg.host ?? '');
+    setCategoryFilter(cfg.category ?? '');
+  }
 
   const refresh = useMemo(() => () => {
     api.findings({
@@ -229,6 +292,23 @@ export default function FindingsPage() {
           )}
         </div>
       )}
+
+      {/* Saved searches strip — operator-named filter sets. Default
+          search auto-applies on mount; "Save current" persists the
+          full filter shape (view, state, severity, agent, host,
+          category) under a name. */}
+      <div className="px-6 py-2 flex items-center border-b border-border bg-panel/40">
+        <SavedSearchesBar
+          searches={savedSearches}
+          currentConfig={currentFilterConfig}
+          activeID={activeSavedID}
+          onApply={(s) => {
+            try { applyFilterConfig(JSON.parse(s.config_json) as FindingsFilterConfig); }
+            catch { /* malformed — ignore */ }
+          }}
+          onSearchesChange={refreshSearches}
+        />
+      </div>
 
       {/* Filter bar */}
       <div className="px-6 py-3 flex flex-wrap items-center gap-3 border-b border-border bg-panel/40">

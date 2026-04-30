@@ -430,6 +430,34 @@ export interface InvestigationFindingItem {
 
 export type LinkMethod = 'manual' | 'bulk' | 'auto-promote' | 'autolink' | 'import';
 
+// SavedSearch — operator's named filter set. `scope='findings'` is
+// the only consumer in v1; the field stays so future surfaces (cases,
+// runs, IOCs) get the same primitive without API changes.
+export interface SavedSearch {
+  id: number;
+  user_id: number;
+  name: string;
+  scope: string;
+  /** JSON-encoded filter shape; opaque to the server. The Findings
+   *  page parses this as FindingsFilterConfig. */
+  config_json: string;
+  is_default: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Findings-scoped saved-search payload. The page persists every
+ *  field it filters by here. Fields are optional so an empty saved
+ *  search renders the default "all queue" view. */
+export interface FindingsFilterConfig {
+  view?: 'grouped' | 'recent' | 'kanban';
+  state?: 'queue' | 'all' | string;
+  severity?: string[];
+  agent?: string;
+  host?: string;
+  category?: string;
+}
+
 // InvestigationAuditEvent — one row in the case timeline. Kinds are
 // stable enums; the `details` shape is dictated by `kind` (see
 // controlplane/db/investigation_audit.go for the wire contract).
@@ -991,6 +1019,36 @@ export const api = {
       method: 'DELETE',
       body: JSON.stringify({ fingerprint }),
     }),
+
+  // Phase 22.7 — operator-saved searches. Per-(user, scope) named
+  // filter sets the Findings page persists so operators don't re-type
+  // every filter. is_default is per-(user, scope); creating or
+  // updating a row with is_default=true clears the previous default.
+  savedSearches: {
+    list: (scope: string = 'findings') =>
+      request<SavedSearch[]>(`/api/saved-searches?scope=${encodeURIComponent(scope)}`),
+    create: (req: { name: string; scope?: string; config: object; is_default?: boolean }) =>
+      request<SavedSearch>('/api/saved-searches', {
+        method: 'POST',
+        body: JSON.stringify({
+          name: req.name,
+          scope: req.scope ?? 'findings',
+          config_json: req.config,
+          is_default: req.is_default ?? false,
+        }),
+      }),
+    update: (id: number, patch: { name?: string; config?: object; is_default?: boolean }) =>
+      request<void>(`/api/saved-searches/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          ...(patch.name !== undefined ? { name: patch.name } : {}),
+          ...(patch.config !== undefined ? { config_json: patch.config } : {}),
+          ...(patch.is_default !== undefined ? { is_default: patch.is_default } : {}),
+        }),
+      }),
+    delete: (id: number) =>
+      request<void>(`/api/saved-searches/${id}`, { method: 'DELETE' }),
+  },
 
   // Phase 22.3 — investigations (T2 case workspace). Operators open
   // a case from a finding, link more findings/runs as the case
