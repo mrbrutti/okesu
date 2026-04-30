@@ -656,6 +656,7 @@ func (s *Server) routes() http.Handler {
 		// since cases are operator workflow, not config.
 		r.Get("/api/investigations", api.ListInvestigationsHandler(s.store))
 		r.Post("/api/investigations", api.CreateInvestigationHandler(s.store))
+		r.Post("/api/investigations/by-dedup", api.UpsertInvestigationByDedupHandler(s.store))
 		r.Get("/api/investigations/{id}", api.GetInvestigationHandler(s.store))
 		r.Patch("/api/investigations/{id}", api.UpdateInvestigationHandler(s.store))
 		r.Post("/api/investigations/{id}/notes", api.AddInvestigationNoteHandler(s.store))

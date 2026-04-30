@@ -214,6 +214,72 @@ func GetInvestigationHandler(store *db.Store) http.HandlerFunc {
 	}
 }
 
+// UpsertInvestigationByDedupHandler is the entry point for daimons
+// that auto-open investigations. Idempotent — given the same
+// `external_key`, callers always get back the same row, so a
+// background scanner can safely re-emit on every tick.
+//
+// Body shape:
+//
+//	{
+//	  "external_key": "cross-cp-pattern:42",
+//	  "title":        "Cross-CP IOC pattern: sha256 abc…",
+//	  "summary":      "Observed on N hosts across M CPs in last 1h.",
+//	  "link_findings_by_ioc_id": 42,   // optional — if set, finds every
+//	                                   //   finding whose observations
+//	                                   //   reference this IOC and links
+//	                                   //   them to the case.
+//	  "created_by":   "cross-cp-pattern-investigator"
+//	}
+//
+// Response: 200 with `{investigation: ..., created: bool, linked_findings: N}`.
+// Status code is intentionally 200 even on first-create — the caller
+// is asking "give me the investigation for this dedup key", not
+// "create exactly one"; 200 keeps the contract uniform across both
+// outcomes. A `created` flag in the body lets the caller
+// differentiate when needed.
+func UpsertInvestigationByDedupHandler(store *db.Store) http.HandlerFunc {
+	type req struct {
+		ExternalKey         string `json:"external_key"`
+		Title               string `json:"title"`
+		Summary             string `json:"summary,omitempty"`
+		CreatedBy           string `json:"created_by,omitempty"`
+		LinkFindingsByIOCID int64  `json:"link_findings_by_ioc_id,omitempty"`
+	}
+	type resp struct {
+		Investigation  *db.Investigation `json:"investigation"`
+		Created        bool              `json:"created"`
+		LinkedFindings int               `json:"linked_findings"`
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		var in req
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			http.Error(w, "bad json", http.StatusBadRequest)
+			return
+		}
+		if in.ExternalKey == "" {
+			http.Error(w, "external_key is required", http.StatusBadRequest)
+			return
+		}
+		inv, created, err := store.UpsertInvestigationByExternalKey(
+			in.ExternalKey, in.Title, in.Summary, in.CreatedBy)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		var linked int
+		if in.LinkFindingsByIOCID > 0 {
+			linked, _ = store.LinkFindingsByIOCObservations(inv.ID, in.LinkFindingsByIOCID)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp{
+			Investigation:  inv,
+			Created:        created,
+			LinkedFindings: linked,
+		})
+	}
+}
+
 // LinkRunToInvestigationHandler adds an orchestration_run to the
 // case. PUT /api/investigations/{id}/runs/{run_id}.
 func LinkRunToInvestigationHandler(store *db.Store) http.HandlerFunc {
