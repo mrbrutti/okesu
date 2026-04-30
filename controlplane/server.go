@@ -642,6 +642,8 @@ func (s *Server) routes() http.Handler {
 		// directions). Sub-path must register before any /api/iocs/{id}
 		// catch-all so chi routes it correctly.
 		r.Get("/api/iocs/{id}/relationships", api.ListIOCRelationshipsHandler(s.store))
+		// Phase 22.C — observation history for a single IOC (Catalog detail Observations tab).
+		r.Get("/api/iocs/{id}/observations", api.ListIOCObservationsHandler(s.store))
 		// Phase 22.4 — STIX 2.1 bundle export. Supports ?kind= and ?since= filters.
 		r.Get("/api/stix2/iocs", api.STIX2ExportHandler(s.store))
 		// Phase 22.5 — YARA rule bundle export. Concatenates all yara_rule
