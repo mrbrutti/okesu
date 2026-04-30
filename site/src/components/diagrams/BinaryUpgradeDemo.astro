@@ -1,0 +1,69 @@
+---
+// Daimons / Auto-deploy & upgrades. 6-second loop:
+//   binary file slides CP → host, daimon "swaps" (old fades, new appears),
+//   "upgraded to v0.42.0" tick appears.
+---
+
+<div class="bg-bg border border-border rounded-lg p-5" role="img"
+     aria-label="Animated demo: a binary file rsyncs from the control plane to a host, the daimon process swaps in place, the host shows 'upgraded'.">
+  <svg viewBox="0 0 480 130" class="w-full h-auto">
+    <!-- CP -->
+    <rect x="20" y="40" width="80" height="50" rx="6" fill="#f5f3ff" stroke="#ede9fe" />
+    <text x="60" y="68" text-anchor="middle" font-size="11" fill="#5b21b6" font-weight="600">CP</text>
+
+    <!-- Binary file (in transit) -->
+    <g class="binary-file">
+      <rect x="100" y="48" width="60" height="34" rx="4" fill="#ffffff" stroke="#5b21b6" stroke-width="1.5" />
+      <text x="130" y="66" text-anchor="middle" font-size="10" fill="#5b21b6" font-family="ui-monospace">okesu</text>
+      <text x="130" y="78" text-anchor="middle" font-size="8" fill="#5b21b6" font-family="ui-monospace">v0.42.0</text>
+    </g>
+
+    <!-- Host -->
+    <rect x="380" y="20" width="90" height="100" rx="8" fill="#fafafa" stroke="#e5e7eb" stroke-dasharray="4 3" />
+    <text x="425" y="36" text-anchor="middle" font-size="9" fill="#94a3b8" font-family="ui-monospace">host</text>
+
+    <!-- Old daimon (fades) -->
+    <g class="daimon-old">
+      <rect x="395" y="50" width="60" height="34" rx="4" fill="#ffffff" stroke="#e5e7eb" />
+      <text x="425" y="68" text-anchor="middle" font-size="10" fill="#64748b" font-family="ui-monospace">v0.41.0</text>
+      <text x="425" y="80" text-anchor="middle" font-size="8" fill="#94a3b8">running</text>
+    </g>
+
+    <!-- New daimon (appears) -->
+    <g class="daimon-new">
+      <rect x="395" y="50" width="60" height="34" rx="4" fill="#ffffff" stroke="#22c55e" stroke-width="1.5" />
+      <text x="425" y="68" text-anchor="middle" font-size="10" fill="#22c55e" font-family="ui-monospace">v0.42.0</text>
+      <text x="425" y="80" text-anchor="middle" font-size="8" fill="#22c55e">upgraded</text>
+    </g>
+
+    <!-- Arrow -->
+    <line x1="100" y1="65" x2="380" y2="65" stroke="#94a3b8" stroke-width="1" stroke-dasharray="2 2" />
+  </svg>
+</div>
+
+<style>
+  .binary-file { transform: translateX(0); opacity: 0; }
+  .daimon-new { opacity: 0; }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .binary-file { animation: bin-fly 6s ease-in-out infinite; }
+    @keyframes bin-fly {
+      0%, 5%    { transform: translateX(0); opacity: 0; }
+      10%       { transform: translateX(0); opacity: 1; }
+      55%       { transform: translateX(280px); opacity: 1; }
+      62%, 100% { transform: translateX(280px); opacity: 0; }
+    }
+
+    .daimon-old { animation: daimon-old 6s linear infinite; }
+    @keyframes daimon-old {
+      0%, 60%   { opacity: 1; }
+      65%, 100% { opacity: 0; }
+    }
+
+    .daimon-new { animation: daimon-new 6s linear infinite; }
+    @keyframes daimon-new {
+      0%, 60%   { opacity: 0; }
+      65%, 100% { opacity: 1; }
+    }
+  }
+</style>

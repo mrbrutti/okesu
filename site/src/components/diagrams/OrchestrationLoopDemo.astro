@@ -1,0 +1,198 @@
+---
+// Home-page anchor. 12-second loop:
+//   t=0-1s    All 4 steps fade in as pending (slate)
+//   t=1-3s    Step 1 (scan) pulses blue → completes (green)
+//   t=3-7s    Step 2 (edr-triage, fan-out) pulses; dots fill in;
+//             histogram bar grows
+//   t=7-9s    Step 3 (summarize) pulses blue → completes
+//   t=9-11s   Step 4 (contain, approval-gated) amber-pulses → click → green
+//   t=11-12s  All steps reset (fade out → fade in pending)
+//
+// Reduced motion: all steps render in their settled completed state.
+//
+// CSS-only. No JS. animation-delay sequences each phase off the same
+// 12s clock.
+---
+
+<svg viewBox="0 0 880 220" class="w-full h-auto" role="img"
+     aria-label="Animated diagram: a four-step orchestration loops through scan, fan-out edr-triage on six hosts, summarize, and approval-gated contain.">
+  <!-- Step 1: scan -->
+  <g class="step step-1">
+    <rect class="step-bg" x="20" y="80" width="140" height="80" rx="8" />
+    <rect class="step-stripe step-1-stripe" x="20" y="80" width="140" height="3" />
+    <text x="90" y="112" text-anchor="middle" font-size="13" fill="#0f172a" font-weight="600">scan</text>
+    <text x="90" y="130" text-anchor="middle" font-size="10" fill="#64748b">edr-investigator</text>
+    <text x="90" y="146" text-anchor="middle" font-size="10" fill="#64748b">1 host</text>
+  </g>
+
+  <!-- Step 2: fanout edr-triage -->
+  <g class="step step-2">
+    <rect class="step-bg step-fanout" x="220" y="60" width="200" height="120" rx="8" />
+    <rect class="step-stripe step-2-stripe" x="220" y="60" width="200" height="3" />
+    <text x="320" y="92" text-anchor="middle" font-size="13" fill="#5b21b6" font-weight="600">edr-triage</text>
+    <text x="320" y="110" text-anchor="middle" font-size="10" fill="#64748b">6 hosts (fan-out)</text>
+    <!-- histogram -->
+    <rect x="240" y="125" width="160" height="6" rx="2" fill="#e2e8f0" />
+    <rect class="hist-fill" x="240" y="125" height="6" rx="2" fill="#22c55e" />
+    <!-- dot strip -->
+    <g class="dots">
+      <circle class="dot dot-1" cx="245" cy="148" r="4" fill="#cbd5e1" />
+      <circle class="dot dot-2" cx="265" cy="148" r="4" fill="#cbd5e1" />
+      <circle class="dot dot-3" cx="285" cy="148" r="4" fill="#cbd5e1" />
+      <circle class="dot dot-4" cx="305" cy="148" r="4" fill="#cbd5e1" />
+      <circle class="dot dot-5" cx="325" cy="148" r="4" fill="#cbd5e1" />
+      <circle class="dot dot-6" cx="345" cy="148" r="4" fill="#cbd5e1" />
+    </g>
+    <text class="dot-count" x="395" y="152" text-anchor="end" font-size="10" fill="#64748b" font-family="ui-monospace">0/6</text>
+  </g>
+
+  <!-- Step 3: summarize -->
+  <g class="step step-3">
+    <rect class="step-bg" x="480" y="80" width="140" height="80" rx="8" />
+    <rect class="step-stripe step-3-stripe" x="480" y="80" width="140" height="3" />
+    <text x="550" y="112" text-anchor="middle" font-size="13" fill="#0f172a" font-weight="600">summarize</text>
+    <text x="550" y="130" text-anchor="middle" font-size="10" fill="#64748b">orchestrator</text>
+    <text x="550" y="146" text-anchor="middle" font-size="10" fill="#64748b">local</text>
+  </g>
+
+  <!-- Step 4: contain (approval gated) -->
+  <g class="step step-4">
+    <rect class="step-bg step-approval" x="680" y="80" width="180" height="80" rx="8" />
+    <rect class="step-stripe step-4-stripe" x="680" y="80" width="180" height="3" />
+    <text x="770" y="108" text-anchor="middle" font-size="13" fill="#b91c1c" font-weight="600">⏸ contain</text>
+    <text x="770" y="126" text-anchor="middle" font-size="10" fill="#b91c1c">approval required</text>
+    <rect class="approve-btn" x="722" y="135" width="96" height="18" rx="4" fill="#fbbf24" />
+    <text class="approve-btn-text" x="770" y="148" text-anchor="middle" font-size="10" fill="#ffffff" font-weight="600">Approve</text>
+  </g>
+
+  <!-- Edges -->
+  <g class="edges" stroke="#94a3b8" stroke-width="2" fill="none" marker-end="url(#arr-loop)">
+    <line class="edge edge-1" x1="160" y1="120" x2="220" y2="120" stroke-dasharray="60" />
+    <line class="edge edge-2" x1="420" y1="120" x2="480" y2="120" stroke-dasharray="60" />
+    <line class="edge edge-3" x1="620" y1="120" x2="680" y2="120" stroke-dasharray="60" />
+  </g>
+
+  <defs>
+    <marker id="arr-loop" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#94a3b8" />
+    </marker>
+  </defs>
+</svg>
+
+<style>
+  .step-bg {
+    fill: #ffffff;
+    stroke: #e5e7eb;
+  }
+  .step-fanout {
+    fill: #f5f3ff;
+    stroke: #ede9fe;
+  }
+  .step-approval {
+    fill: #fef2f2;
+    stroke: #fecaca;
+  }
+  .step-stripe { fill: #cbd5e1; }
+  .hist-fill { width: 0%; }
+  .dot { fill: #cbd5e1; }
+  .approve-btn { transform-origin: center; }
+
+  @media (prefers-reduced-motion: no-preference) {
+    /* Whole-loop cadence: 12s */
+    .step { animation: okesu-fade-in 12s ease-out infinite; }
+    .edge { animation: okesu-edge-dash 0.8s ease-out infinite, okesu-fade-in 12s ease-out infinite; }
+
+    /* Step 1 stripe: pending (slate) → running blue → completed green */
+    .step-1-stripe {
+      animation: step1-stripe 12s linear infinite;
+    }
+    @keyframes step1-stripe {
+      0%, 8%   { fill: #cbd5e1; }            /* pending */
+      8%, 18%  { fill: #3b82f6; }            /* running 1-3s */
+      18%, 100% { fill: #22c55e; }           /* completed */
+    }
+
+    /* Step 2 stripe: pending → running (3-7s) → completed */
+    .step-2-stripe {
+      animation: step2-stripe 12s linear infinite;
+    }
+    @keyframes step2-stripe {
+      0%, 25%   { fill: #cbd5e1; }
+      25%, 58%  { fill: #3b82f6; }
+      58%, 100% { fill: #ef4444; }           /* one host failed → step is failed */
+    }
+
+    /* Step 2 histogram fill (3-7s = 25-58% of 12s) */
+    .hist-fill {
+      animation: hist-grow 12s linear infinite;
+    }
+    @keyframes hist-grow {
+      0%, 25%   { width: 0; }
+      58%, 100% { width: 160px; }            /* match the bg width */
+    }
+
+    /* Per-dot color shifts during 3-7s. Each dot lights up at a
+       slightly different moment within that window. */
+    .dot-1 { animation: dot-1 12s linear infinite; }
+    .dot-2 { animation: dot-2 12s linear infinite; }
+    .dot-3 { animation: dot-3 12s linear infinite; }
+    .dot-4 { animation: dot-4 12s linear infinite; }
+    .dot-5 { animation: dot-5 12s linear infinite; }
+    .dot-6 { animation: dot-6 12s linear infinite; }
+    @keyframes dot-1 { 0%, 28% { fill: #cbd5e1; } 30%, 100% { fill: #22c55e; } }
+    @keyframes dot-2 { 0%, 32% { fill: #cbd5e1; } 34%, 100% { fill: #22c55e; } }
+    @keyframes dot-3 { 0%, 36% { fill: #cbd5e1; } 38%, 100% { fill: #22c55e; } }
+    @keyframes dot-4 { 0%, 40% { fill: #cbd5e1; } 42%, 100% { fill: #22c55e; } }
+    @keyframes dot-5 { 0%, 44% { fill: #cbd5e1; } 46%, 100% { fill: #ef4444; } }   /* failed */
+    @keyframes dot-6 { 0%, 48% { fill: #cbd5e1; } 50%, 100% { fill: #22c55e; } }
+
+    .dot-count { animation: count-update 12s linear infinite; }
+    @keyframes count-update {
+      0%, 28%   { opacity: 0; }
+      30%, 100% { opacity: 1; }
+    }
+
+    /* Step 3 stripe: pending → running (7-9s) → completed */
+    .step-3-stripe {
+      animation: step3-stripe 12s linear infinite;
+    }
+    @keyframes step3-stripe {
+      0%, 58%   { fill: #cbd5e1; }
+      58%, 75%  { fill: #3b82f6; }
+      75%, 100% { fill: #22c55e; }
+    }
+
+    /* Step 4 stripe: pending → amber pulse (9-11s) → green on approve */
+    .step-4-stripe {
+      animation: step4-stripe 12s linear infinite;
+    }
+    @keyframes step4-stripe {
+      0%, 75%   { fill: #cbd5e1; }
+      75%, 92%  { fill: #fbbf24; }            /* amber */
+      92%, 100% { fill: #22c55e; }
+    }
+
+    /* Approve button: hidden until step 4 amber phase, then "depresses"
+       at 11s and disappears. */
+    .approve-btn, .approve-btn-text {
+      animation: approve-btn-anim 12s linear infinite;
+    }
+    @keyframes approve-btn-anim {
+      0%, 75%   { opacity: 0; transform: scale(1); }
+      78%, 90%  { opacity: 1; transform: scale(1); }
+      91%       { opacity: 1; transform: scale(0.92); }
+      92%, 100% { opacity: 0; transform: scale(1); }
+    }
+
+    /* Step containers: slight scale-up when running */
+    .step-2 .step-bg {
+      animation: pulse-scale 12s linear infinite;
+      transform-origin: center;
+      transform-box: fill-box;
+    }
+    @keyframes pulse-scale {
+      0%, 25%, 58%, 100% { transform: scale(1); }
+      30%, 50%           { transform: scale(1.02); }
+    }
+  }
+</style>

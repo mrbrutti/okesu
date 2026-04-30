@@ -1,0 +1,139 @@
+---
+// Daimons concept-page anchor. 8-second loop:
+//   t=0-2s    Dispatch arrow travels CP → daimon. Daimon pulses blue.
+//   t=2-6s    Three "tool call" rows tick in inside the daimon
+//   t=6-8s    Finding card slides out daimon → CP, severity stripe red
+// Reduced motion: settled state — daimon green, finding visible.
+---
+
+<svg viewBox="0 0 720 240" class="w-full h-auto" role="img"
+     aria-label="Animated diagram: a daimon receives a dispatched run from the control plane, executes the agent loop, and returns a finding.">
+  <!-- CP marker -->
+  <rect x="20" y="100" width="100" height="40" rx="6" fill="#f5f3ff" stroke="#ede9fe" />
+  <text x="70" y="125" text-anchor="middle" font-size="12" fill="#5b21b6" font-weight="600">Control Plane</text>
+
+  <!-- Host box -->
+  <rect x="240" y="40" width="320" height="160" rx="10" fill="#fafafa" stroke="#e5e7eb" stroke-dasharray="4 3" />
+  <text x="252" y="60" font-size="11" fill="#94a3b8" font-family="ui-monospace">host: web-prod-01</text>
+
+  <!-- Daimon process inside the host -->
+  <rect class="daimon-box" x="280" y="80" width="240" height="100" rx="8" fill="#ffffff" stroke="#e5e7eb" />
+  <text x="400" y="100" text-anchor="middle" font-size="13" fill="#0f172a" font-weight="600">daimon (okesu)</text>
+
+  <!-- Tool-call rows -->
+  <g class="tool-rows">
+    <g class="tool-row tool-row-1">
+      <text x="295" y="125" font-size="10" fill="#64748b" font-family="ui-monospace">▸ ps -ef | grep …</text>
+      <text class="tool-result tool-result-1" x="500" y="125" font-size="10" fill="#22c55e" text-anchor="end" font-family="ui-monospace">✓</text>
+    </g>
+    <g class="tool-row tool-row-2">
+      <text x="295" y="143" font-size="10" fill="#64748b" font-family="ui-monospace">▸ read /proc/12345/cmdline</text>
+      <text class="tool-result tool-result-2" x="500" y="143" font-size="10" fill="#22c55e" text-anchor="end" font-family="ui-monospace">✓</text>
+    </g>
+    <g class="tool-row tool-row-3">
+      <text x="295" y="161" font-size="10" fill="#64748b" font-family="ui-monospace">▸ correlate netstat → C2 IOC</text>
+      <text class="tool-result tool-result-3" x="500" y="161" font-size="10" fill="#ef4444" text-anchor="end" font-family="ui-monospace">⚠</text>
+    </g>
+  </g>
+
+  <!-- Dispatch arrow CP → daimon -->
+  <line class="dispatch-arrow" x1="120" y1="115" x2="280" y2="115"
+        stroke="#5b21b6" stroke-width="2" stroke-dasharray="6 4"
+        marker-end="url(#arr-disp)" />
+  <text class="dispatch-label" x="200" y="106" text-anchor="middle" font-size="10" fill="#5b21b6">dispatch run</text>
+
+  <!-- Return arrow daimon → CP, with finding card -->
+  <line class="return-arrow" x1="280" y1="155" x2="120" y2="155"
+        stroke="#5b21b6" stroke-width="2" stroke-dasharray="6 4"
+        marker-end="url(#arr-disp)" />
+  <text class="return-label" x="200" y="172" text-anchor="middle" font-size="10" fill="#5b21b6">findings (JSONL)</text>
+
+  <!-- Finding card -->
+  <g class="finding-card">
+    <rect x="600" y="80" width="100" height="80" rx="6" fill="#ffffff" stroke="#e5e7eb" />
+    <rect x="600" y="80" width="100" height="3" fill="#dc2626" />
+    <text x="650" y="106" text-anchor="middle" font-size="10" fill="#0f172a" font-weight="600">finding</text>
+    <text x="650" y="124" text-anchor="middle" font-size="9" fill="#64748b">severity: high</text>
+    <text x="650" y="138" text-anchor="middle" font-size="9" fill="#64748b">C2 callback</text>
+  </g>
+
+  <defs>
+    <marker id="arr-disp" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#5b21b6" />
+    </marker>
+  </defs>
+</svg>
+
+<style>
+  .tool-row, .tool-result, .finding-card { opacity: 0; }
+
+  /* Final-frame state for reduced motion */
+  @media (prefers-reduced-motion: reduce) {
+    .tool-row, .tool-result, .finding-card { opacity: 1; }
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    /* 8s loop — everything synced */
+    .dispatch-arrow {
+      stroke-dasharray: 160;
+      animation: dispatch-grow 8s linear infinite;
+    }
+    @keyframes dispatch-grow {
+      0%        { stroke-dashoffset: 160; }
+      20%       { stroke-dashoffset: 0; }
+      100%      { stroke-dashoffset: 0; }
+    }
+
+    .daimon-box {
+      animation: daimon-pulse 8s ease-in-out infinite;
+    }
+    @keyframes daimon-pulse {
+      0%, 24%, 76%, 100% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0); stroke: #e5e7eb; }
+      26%, 74%           { box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.3); stroke: #3b82f6; }
+    }
+
+    .tool-row-1 {
+      animation: tool-row-1 8s linear infinite;
+    }
+    @keyframes tool-row-1 {
+      0%, 30%   { opacity: 0; }
+      32%, 92%  { opacity: 1; }
+      94%, 100% { opacity: 0; }
+    }
+    .tool-row-2 {
+      animation: tool-row-2 8s linear infinite;
+    }
+    @keyframes tool-row-2 {
+      0%, 42%   { opacity: 0; }
+      44%, 92%  { opacity: 1; }
+      94%, 100% { opacity: 0; }
+    }
+    .tool-row-3 {
+      animation: tool-row-3 8s linear infinite;
+    }
+    @keyframes tool-row-3 {
+      0%, 56%   { opacity: 0; }
+      58%, 92%  { opacity: 1; }
+      94%, 100% { opacity: 0; }
+    }
+
+    .return-arrow {
+      stroke-dasharray: 160;
+      animation: return-grow 8s linear infinite;
+    }
+    @keyframes return-grow {
+      0%, 75%   { stroke-dashoffset: 160; }
+      85%       { stroke-dashoffset: 0; }
+      100%      { stroke-dashoffset: 0; }
+    }
+
+    .finding-card {
+      animation: finding-appear 8s linear infinite;
+    }
+    @keyframes finding-appear {
+      0%, 80%   { opacity: 0; transform: translateX(20px); }
+      85%, 95%  { opacity: 1; transform: translateX(0); }
+      96%, 100% { opacity: 0; transform: translateX(0); }
+    }
+  }
+</style>

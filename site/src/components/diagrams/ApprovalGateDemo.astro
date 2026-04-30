@@ -1,0 +1,42 @@
+---
+// Orchestrations / Approval gates. 5-second loop:
+//   single step card pulses amber, approve button click-pulses, card turns green.
+---
+
+<div class="bg-panel border border-border rounded-lg shadow-card p-4 max-w-xs gate-card" role="img"
+     aria-label="Animated demo: an approval-gated step card pulses amber, the Approve button is auto-clicked, the card resolves to green.">
+  <div class="text-[11px] font-semibold text-ink mb-0.5">contain</div>
+  <div class="text-[10px] gate-label mb-2">approval required</div>
+
+  <button type="button" aria-disabled="true" class="gate-btn w-full text-[11px] font-semibold rounded px-3 py-1.5">
+    <span class="gate-btn-text">Approve</span>
+  </button>
+</div>
+
+<style>
+  .gate-card { border-top: 3px solid #fbbf24; transition: none; }
+  .gate-label { color: #b45309; }
+  .gate-btn { background-color: #fbbf24; color: #ffffff; }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .gate-card { animation: gate-card 5s ease-in-out infinite; }
+    @keyframes gate-card {
+      0%, 60%   { border-top-color: #fbbf24; box-shadow: 0 0 0 4px rgba(251, 191, 36, 0.4); }
+      75%, 100% { border-top-color: #22c55e; box-shadow: none; }
+    }
+
+    .gate-label { animation: gate-label 5s linear infinite; }
+    @keyframes gate-label {
+      0%, 60%   { color: #b45309; }
+      75%, 100% { color: #15803d; }
+    }
+
+    .gate-btn { animation: gate-btn 5s ease-in-out infinite; }
+    @keyframes gate-btn {
+      0%, 60%   { background-color: #fbbf24; transform: scale(1); }
+      63%       { transform: scale(0.95); }
+      66%       { transform: scale(1); }
+      70%, 100% { background-color: #22c55e; transform: scale(1); }
+    }
+  }
+</style>

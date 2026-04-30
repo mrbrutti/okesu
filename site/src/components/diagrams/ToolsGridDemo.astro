@@ -1,0 +1,46 @@
+---
+// Agents / Tools an agent can call. 6-second loop:
+//   five tool tiles pulse brand-purple in sequence.
+---
+
+<div class="grid grid-cols-5 gap-2" role="img"
+     aria-label="Animated demo: five tool tiles — bash, read_file, search, write_file, web_fetch — pulse in sequence to show the agent's tool surface.">
+  <div class="tool-tile tool-1 bg-panel border border-border rounded-md p-3 text-center">
+    <div class="text-[18px] mb-1">⌘</div>
+    <div class="text-[10px] font-mono text-ink-dim">bash</div>
+  </div>
+  <div class="tool-tile tool-2 bg-panel border border-border rounded-md p-3 text-center">
+    <div class="text-[18px] mb-1">📄</div>
+    <div class="text-[10px] font-mono text-ink-dim">read_file</div>
+  </div>
+  <div class="tool-tile tool-3 bg-panel border border-border rounded-md p-3 text-center">
+    <div class="text-[18px] mb-1">🔍</div>
+    <div class="text-[10px] font-mono text-ink-dim">search</div>
+  </div>
+  <div class="tool-tile tool-4 bg-panel border border-border rounded-md p-3 text-center">
+    <div class="text-[18px] mb-1">✏</div>
+    <div class="text-[10px] font-mono text-ink-dim">write_file</div>
+  </div>
+  <div class="tool-tile tool-5 bg-panel border border-border rounded-md p-3 text-center">
+    <div class="text-[18px] mb-1">🌐</div>
+    <div class="text-[10px] font-mono text-ink-dim">web_fetch</div>
+  </div>
+</div>
+
+<style>
+  .tool-tile { transform: scale(1); border-color: #e5e7eb; }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .tool-1 { animation: tool-pulse 6s ease-in-out 0.0s infinite; }
+    .tool-2 { animation: tool-pulse 6s ease-in-out 1.0s infinite; }
+    .tool-3 { animation: tool-pulse 6s ease-in-out 2.0s infinite; }
+    .tool-4 { animation: tool-pulse 6s ease-in-out 3.0s infinite; }
+    .tool-5 { animation: tool-pulse 6s ease-in-out 4.0s infinite; }
+
+    @keyframes tool-pulse {
+      0%, 90%, 100% { transform: scale(1); border-color: #e5e7eb; background-color: #ffffff; }
+      6%            { transform: scale(1.05); border-color: #ede9fe; background-color: #f5f3ff; }
+      14%           { transform: scale(1); border-color: #e5e7eb; background-color: #ffffff; }
+    }
+  }
+</style>

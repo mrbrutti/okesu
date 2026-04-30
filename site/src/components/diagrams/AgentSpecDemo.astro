@@ -1,0 +1,56 @@
+---
+// Agents / Authoring. 8-second loop:
+//   YAML card on left, "Run" button auto-clicks at t=2s,
+//   running agent panel slides in on the right at t=3-7s,
+//   reset at t=7-8s.
+---
+
+<div class="bg-bg border border-border rounded-lg p-5" role="img"
+     aria-label="Animated demo: a YAML agent spec is shown on the left; a Run button auto-clicks; a running agent panel slides in on the right.">
+  <div class="grid grid-cols-2 gap-4 items-start">
+    <div class="bg-[#0f172a] rounded-lg p-3 font-mono text-[10px] leading-relaxed">
+      <div class="text-[#94a3b8]">---</div>
+      <div><span class="text-[#c4b5fd]">name</span>: edr-investigator</div>
+      <div><span class="text-[#c4b5fd]">provider</span>: <span class="text-[#a7f3d0]">claude</span></div>
+      <div><span class="text-[#c4b5fd]">tools</span>: [bash, read_file]</div>
+      <div class="text-[#94a3b8]">---</div>
+      <div class="text-[#cbd5e1] mt-1">You investigate C2 callbacks…</div>
+
+      <div class="run-btn mt-3 inline-block bg-brand-500 text-white text-[10px] font-semibold px-2 py-1 rounded">▶ Run</div>
+    </div>
+
+    <div class="agent-running bg-panel border border-border rounded-lg p-3">
+      <div class="flex items-center gap-2 mb-1.5">
+        <span class="w-2 h-2 rounded-full bg-blue-500"></span>
+        <span class="text-[12px] font-semibold text-ink">edr-investigator</span>
+        <span class="ml-auto text-[10px] text-blue-700 font-mono">running</span>
+      </div>
+      <div class="text-[10px] text-ink-dim font-mono leading-relaxed">
+        <div>▸ ps -ef | grep …</div>
+        <div>▸ correlate netstat → IOC</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<style>
+  .run-btn { transform: scale(1); }
+  .agent-running { opacity: 0; }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .run-btn { animation: run-btn 8s ease-in-out infinite; }
+    @keyframes run-btn {
+      0%, 25%   { transform: scale(1); background-color: #7c3aed; }
+      28%       { transform: scale(0.92); background-color: #5b21b6; }
+      32%, 90%  { transform: scale(1); background-color: #7c3aed; }
+      95%, 100% { transform: scale(1); background-color: #7c3aed; }
+    }
+
+    .agent-running { animation: agent-appear 8s linear infinite; }
+    @keyframes agent-appear {
+      0%, 32%   { opacity: 0; transform: translateX(20px); }
+      40%, 90%  { opacity: 1; transform: translateX(0); }
+      95%, 100% { opacity: 0; transform: translateX(0); }
+    }
+  }
+</style>
