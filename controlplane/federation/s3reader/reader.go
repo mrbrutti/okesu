@@ -129,6 +129,7 @@ var extraAssets = []string{
 	"daimons.json",
 	"nodes.json",
 	"orchestrations.json",
+	"investigations.json",
 }
 
 // peerClient is the cached s3 client for one peer + its prefix. We

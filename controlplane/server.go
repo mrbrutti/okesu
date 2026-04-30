@@ -529,6 +529,11 @@ func (s *Server) routes() http.Handler {
 	// Phase B: orchestration federation endpoints.
 	r.Get("/api/v1/federation/orchestrations", api.FederationOrchestrationsList(s.store))
 	r.Get("/api/v1/federation/orchestrations/{id}", api.FederationOrchestrationDetail(s.store))
+	// Phase 22.6 — investigations federation read pipe. Detail is
+	// child-scoped (workspace tabs are per-CP); parent UI uses ?cp=
+	// proxy to navigate.
+	r.Get("/api/v1/federation/investigations", api.FederationInvestigationsList(s.store))
+	r.Get("/api/v1/federation/investigations/{id}", api.FederationInvestigationDetail(s.store))
 	r.Post("/api/v1/federation/orchestrations", api.FederationOrchestrationCreate(s.store))
 	r.Put("/api/v1/federation/orchestrations/{id}", api.FederationOrchestrationUpdate(s.store))
 	r.Delete("/api/v1/federation/orchestrations/{id}", api.FederationOrchestrationDelete(s.store))
@@ -674,10 +679,14 @@ func (s *Server) routes() http.Handler {
 		// Phase 22.3 — Investigations (T2 case workspace). CRUD plus
 		// notes and finding linking; viewer+ for now (no admin gate)
 		// since cases are operator workflow, not config.
-		r.Get("/api/investigations", api.ListInvestigationsHandler(s.store))
+		// Phase 22.6 — investigations now federate. The list merges
+		// local + each child's, tagging remotes with cp_source. Detail
+		// proxies via ?cp= for remotes; falls through to local
+		// otherwise.
+		r.Get("/api/investigations", api.FederatedInvestigationsList(s.store, s.fedAgg))
 		r.Post("/api/investigations", api.CreateInvestigationHandler(s.store))
 		r.Post("/api/investigations/by-dedup", api.UpsertInvestigationByDedupHandler(s.store))
-		r.Get("/api/investigations/{id}", api.GetInvestigationHandler(s.store))
+		r.Get("/api/investigations/{id}", api.FederatedInvestigationDetail(s.store, s.fedAgg))
 		r.Patch("/api/investigations/{id}", api.UpdateInvestigationHandler(s.store))
 		r.Post("/api/investigations/{id}/notes", api.AddInvestigationNoteHandler(s.store))
 		r.Put("/api/investigations/{id}/findings/{finding_id}", api.LinkFindingToInvestigationHandler(s.store))
@@ -987,6 +996,7 @@ func (s *Server) startFederationS3Publisher(ctx context.Context) {
 		{Path: "daimons.json", Render: s.renderFederationDaimonsJSON},
 		{Path: "nodes.json", Render: s.renderFederationNodesJSON},
 		{Path: "orchestrations.json", Render: s.renderFederationOrchestrationsJSON},
+		{Path: "investigations.json", Render: s.renderFederationInvestigationsJSON},
 	}
 	pub, err := s3publisher.New(ctx, *cfg, s.renderIntrospectJSON, assets...)
 	if err != nil {
@@ -1179,6 +1189,14 @@ func (s *Server) renderFederationDaimonsJSON(ctx context.Context) ([]byte, error
 func (s *Server) renderFederationNodesJSON(ctx context.Context) ([]byte, error) {
 	_ = ctx
 	return api.RenderFederationNodes(s.store, 1000)
+}
+
+// renderFederationInvestigationsJSON — Phase 22.6 sibling to the
+// other federation publisher renderers. Returns the same shape
+// /api/v1/federation/investigations emits at default filters.
+func (s *Server) renderFederationInvestigationsJSON(ctx context.Context) ([]byte, error) {
+	_ = ctx
+	return api.RenderFederationInvestigations(s.store, 500)
 }
 
 func (s *Server) renderFederationOrchestrationsJSON(ctx context.Context) ([]byte, error) {

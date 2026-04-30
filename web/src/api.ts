@@ -356,6 +356,12 @@ export interface Investigation {
   CreatedAt: string; // RFC3339
   ClosedAt: string;  // RFC3339, "0001-01-01T00:00:00Z" when not closed
   UpdatedAt: string;
+  /** Auto-opener dedup handle (Phase 22.5+). Empty for manual cases. */
+  ExternalKey?: string;
+  /** Phase 22.6 — present iff this case lives on a federated child CP.
+   *  UI shows the child's display_name as a badge and routes detail
+   *  navigation through ?cp=<instance_id>. */
+  cp_source?: CPSourceRef;
 }
 
 // InvestigationNote mirrors controlplane/db.InvestigationNote — same
@@ -829,8 +835,10 @@ export const api = {
       request<Investigation[]>(
         `/api/investigations${status ? `?status=${encodeURIComponent(status)}` : ''}`,
       ),
-    get: (id: number) =>
-      request<InvestigationDetail>(`/api/investigations/${id}`),
+    get: (id: number, cpInstanceID?: string) => {
+      const qs = cpInstanceID ? `?cp=${encodeURIComponent(cpInstanceID)}` : '';
+      return request<InvestigationDetail>(`/api/investigations/${id}${qs}`);
+    },
     create: (req: { title: string; summary?: string; from_finding_id?: number; created_by?: string }) =>
       request<Investigation>('/api/investigations', {
         method: 'POST',

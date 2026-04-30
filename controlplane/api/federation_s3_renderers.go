@@ -79,3 +79,28 @@ func RenderFederationOrchestrations(store *db.Store) ([]byte, error) {
 	}
 	return json.Marshal(out)
 }
+
+// RenderFederationInvestigations mirrors ListInvestigationsHandler's
+// default-filter output: every investigation regardless of status,
+// newest-first, capped at limit. Federated investigation cases let
+// an operator on the parent CP see open work on s3-mode children
+// without leaving the global UI.
+//
+// Returns the bare list (no enrichment) — the workspace tabs
+// (findings/runs/IOCs/etc) per case stay scoped to the owning CP
+// and load via the existing ?cp= proxy when an operator clicks
+// through to detail. That keeps the per-tick payload bounded
+// regardless of how many cases a child has.
+func RenderFederationInvestigations(store *db.Store, limit int) ([]byte, error) {
+	if limit <= 0 || limit > 5000 {
+		limit = 500
+	}
+	rows, err := store.ListInvestigations("", limit)
+	if err != nil {
+		return nil, err
+	}
+	if rows == nil {
+		rows = []*db.Investigation{}
+	}
+	return json.Marshal(rows)
+}
