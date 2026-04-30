@@ -1504,6 +1504,22 @@ export const api = {
       body: JSON.stringify({ monthly_budget_usd: monthlyBudgetUSD }),
     }),
 
+  // Fleet-env (Settings → LLM Keys). GET returns the masked summary;
+  // PUT applies a partial patch (omit field = leave alone, "" =
+  // delete, non-empty = overwrite). On a federated child the
+  // override-local / revert-to-parent endpoints flip the source flag
+  // without touching the keys themselves.
+  fleetEnv: () => request<FleetEnvSummary>('/api/fleet-env'),
+  fleetEnvUpdate: (patch: FleetEnvPatch) =>
+    request<FleetEnvSummary>('/api/fleet-env', {
+      method: 'PUT',
+      body: JSON.stringify(patch),
+    }),
+  fleetEnvOverrideLocal: () =>
+    request<FleetEnvSummary>('/api/fleet-env/override-local', { method: 'POST' }),
+  fleetEnvRevertToParent: () =>
+    request<FleetEnvSummary>('/api/fleet-env/revert-to-parent', { method: 'POST' }),
+
   // Phase 21.3 — managed CP provisioning. The registry is empty in
   // 21.3a (the framework PR); per-cloud impls register against it in
   // 21.3b (OCI), 21.3c (AWS), etc. Until then cpProvisionersList()
@@ -2363,6 +2379,28 @@ export interface CloudCredentialUpdateRequest {
   name?: string;
   region?: string;
   payload?: Record<string, string>;
+}
+
+// Fleet-env (Settings → LLM Keys). Holds Anthropic + OpenAI keys
+// distributed to nodes (mTLS) and federated child CPs (federation
+// token). The summary never carries plaintext — only `*_set` and
+// `*_last4`. PUT semantics mirror cloud credentials: omitted = leave
+// alone, "" = delete, non-empty = overwrite.
+export interface FleetEnvSummary {
+  anthropic_set: boolean;
+  anthropic_last4: string;
+  openai_set: boolean;
+  openai_last4: string;
+  version: number;
+  source: 'local' | 'federated_from_parent';
+  parent_cp_id: string | null;
+  updated_at: string;
+  updated_by_user_email: string | null;
+}
+
+export interface FleetEnvPatch {
+  anthropic_api_key?: string;
+  openai_api_key?: string;
 }
 
 // Phase 21.3 — managed CP provisioning.
