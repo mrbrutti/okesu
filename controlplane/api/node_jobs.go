@@ -89,7 +89,14 @@ func MgmtJobsPoll(store *db.Store) http.HandlerFunc {
 // Each call appends one chunk to the underlying run's run_lines so
 // the existing SSE stream sees them. Cert CN must match the node
 // that claimed the job (no cross-node spoofing).
-func MgmtJobOutput(store *db.Store) http.HandlerFunc {
+//
+// `reg` is the live-Run registry — when an ad-hoc CreateRun used the
+// pull-mode dispatch path, the Run object lives in `reg` and this
+// handler notifies its in-memory subscribers so SSE clients tail
+// chunks in real time, the same way the tunnel path's consume()
+// loop does. Pass nil to skip in-memory notification (orchestration
+// step path doesn't need it — it polls node_jobs status directly).
+func MgmtJobOutput(reg *RunRegistry, store *db.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		jobID, ok := jobIDFromURL(r)
 		if !ok {
@@ -132,6 +139,16 @@ func MgmtJobOutput(store *db.Store) http.HandlerFunc {
 			http.Error(w, "append: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
+		// Notify the live in-memory Run if this run came from an
+		// ad-hoc CreateRun via the pull path. Tunnel-path runs use
+		// consume() and never go through this code; orchestration
+		// step pulls don't register a live Run at all (reg is nil
+		// for those, by design — they poll node_jobs directly).
+		if reg != nil {
+			if live := reg.Get(job.RunID.String); live != nil {
+				live.AppendLine(chunk.Data)
+			}
+		}
 		// Bump the runtime's liveness on every chunk so the
 		// orchestrator's freshness check stays green across long-running
 		// jobs that block the runtime's poll loop. Without this, a job
@@ -163,7 +180,12 @@ func currentTunnelRunning(store *db.Store, nodeID int64) bool {
 // jobsDispatcher polls GetNodeJob to see status flip to terminal —
 // no signalling channel needed, which keeps the whole flow stateless
 // across CP restarts.
-func MgmtJobExit(store *db.Store) http.HandlerFunc {
+//
+// `reg` carries the same live-Run registry as MgmtJobOutput so an
+// ad-hoc CreateRun's SSE subscribers see the `done` event when the
+// pull-mode runtime POSTs its terminal exit. Pass nil for paths that
+// don't need live notification (orchestration step polling).
+func MgmtJobExit(reg *RunRegistry, store *db.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		jobID, ok := jobIDFromURL(r)
 		if !ok {
@@ -201,6 +223,14 @@ func MgmtJobExit(store *db.Store) http.HandlerFunc {
 				runStatus = db.RunStatusFailed
 			}
 			_ = store.FinishRun(job.RunID.String, runStatus, payload.ExitCode, payload.Error)
+			// Live SSE: notify subscribers + remove from registry.
+			// Idempotent — extra calls are no-ops.
+			if reg != nil {
+				if live := reg.Get(job.RunID.String); live != nil {
+					live.Complete(runStatus)
+					reg.Forget(live.ID)
+				}
+			}
 		}
 		w.WriteHeader(http.StatusNoContent)
 	}

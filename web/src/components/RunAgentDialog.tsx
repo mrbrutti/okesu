@@ -21,6 +21,7 @@ import {
   type Investigation,
   type InvestigationDetail,
   type InvestigationFindingItem,
+  type ReachableNode,
 } from '../api';
 import MarkdownEditor from './LazyMarkdownEditor';
 
@@ -49,7 +50,10 @@ export function RunAgentDialog({
   onLaunched: (runID: string) => void;
 }) {
   const [agents, setAgents] = useState<AgentLibraryItem[]>([]);
-  const [nodes, setNodes] = useState<string[]>([]);
+  // `nodes` was a `string[]` of tunnel-attached hosts. It's now a
+  // ReachableNode[] so the picker can show every dispatchable node
+  // (tunnel + HTTPS pull) with a transport chip per row.
+  const [nodes, setNodes] = useState<ReachableNode[]>([]);
   const [agent, setAgent] = useState<string>(() => localStorage.getItem(PREF_LAST_AGENT) ?? '');
   const [node, setNode] = useState<string>(() => localStorage.getItem(PREF_LAST_NODE) ?? '');
   const [template, setTemplate] = useState<TemplateKind>('default');
@@ -81,16 +85,17 @@ export function RunAgentDialog({
 
   useEffect(() => {
     api.agentLibrary().then(setAgents).catch(() => setAgents([]));
-    api.connectedNodes().then(setNodes).catch(() => setNodes([]));
+    api.reachableNodes().then(setNodes).catch(() => setNodes([]));
   }, []);
 
-  // Default node: the first linked host that's also tunnel-connected,
-  // else the first connected node, else operator's last choice.
+  // Default node: the first linked host that's also reachable,
+  // else the first reachable node, else operator's last choice.
   useEffect(() => {
     if (node) return;
     if (!nodes.length) return;
-    const linkedAndConnected = linkedHosts.find((h) => nodes.includes(h));
-    setNode(linkedAndConnected ?? nodes[0]);
+    const reachableNames = nodes.map((n) => n.name);
+    const linkedAndReachable = linkedHosts.find((h) => reachableNames.includes(h));
+    setNode(linkedAndReachable ?? nodes[0].name);
   }, [nodes, linkedHosts, node]);
 
   async function launch() {
@@ -184,17 +189,42 @@ export function RunAgentDialog({
             <Field label="Node">
               <select value={node} onChange={(e) => setNode(e.target.value)} className={inputCls}>
                 <option value="">Select…</option>
-                {/* Linked-and-connected hosts go first as a usability nicety.
-                    Connected-but-not-linked nodes follow as fallback options. */}
-                {linkedHosts.filter((h) => nodes.includes(h)).map((h) => (
-                  <option key={`linked-${h}`} value={h}>{h} — case host</option>
+                {/* Linked + reachable hosts go first as a usability
+                    nicety. Other reachable nodes follow as fallbacks.
+                    Each row shows the dispatch method so the operator
+                    can tell apart real-time tunnel from queue-and-claim
+                    (pull); the run launches successfully either way. */}
+                {nodes.filter((n) => linkedHosts.includes(n.name)).map((n) => (
+                  <option key={`linked-${n.name}`} value={n.name}>
+                    {n.name} — case host · {n.method}
+                  </option>
                 ))}
-                {nodes.filter((n) => !linkedHosts.includes(n)).map((n) => (
-                  <option key={n} value={n}>{n}</option>
+                {nodes.filter((n) => !linkedHosts.includes(n.name)).map((n) => (
+                  <option key={n.name} value={n.name}>
+                    {n.name} · {n.method}
+                  </option>
                 ))}
               </select>
+              {/* Method-aware hint: when the chosen node uses pull
+                  dispatch, set expectations — output streams as the
+                  okesu-jobs runtime claims and reports back, which can
+                  introduce a brief startup delay vs. tunnel real-time. */}
+              {(() => {
+                const sel = nodes.find((n) => n.name === node);
+                if (!sel) return null;
+                if (sel.method === 'pull') {
+                  return (
+                    <p className="mt-1 text-[11px] text-ink-mute">
+                      Pull dispatch — the node's <code>okesu-jobs</code> runtime claims this on its next poll. Output streams as it arrives.
+                    </p>
+                  );
+                }
+                return null;
+              })()}
               {nodes.length === 0 && (
-                <p className="mt-1 text-[11px] text-ink-mute">No connected nodes. Open a tunnel from <code>okesu node</code> first.</p>
+                <p className="mt-1 text-[11px] text-ink-mute">
+                  No reachable nodes. Start <code>okesu node</code> (tunnel) or <code>okesu-jobs.service</code> (pull) on a host first.
+                </p>
               )}
             </Field>
           </div>
