@@ -6,7 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
-	"strings"
+
+	"github.com/go-chi/chi/v5"
 
 	"github.com/section9labs/okesu/controlplane/db"
 )
@@ -63,7 +64,7 @@ func CreateInvestigationHandler(store *db.Store) http.HandlerFunc {
 // resolution, summary.
 func UpdateInvestigationHandler(store *db.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		id, err := investigationIDFromPath(r.URL.Path, "/api/investigations/")
+		id, err := investigationIDFromChi(r)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -97,7 +98,7 @@ func UpdateInvestigationHandler(store *db.Store) http.HandlerFunc {
 // /api/investigations/{id}/notes.
 func AddInvestigationNoteHandler(store *db.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		id, err := investigationIDFromPath(r.URL.Path, "/api/investigations/")
+		id, err := investigationIDFromChi(r)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -161,7 +162,7 @@ func ListInvestigationsHandler(store *db.Store) http.HandlerFunc {
 // small for cases that link hundreds of rows.
 func GetInvestigationHandler(store *db.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		id, err := investigationIDFromPath(r.URL.Path, "/api/investigations/")
+		id, err := investigationIDFromChi(r)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -223,15 +224,9 @@ func GetInvestigationHandler(store *db.Store) http.HandlerFunc {
 // Path: /api/findings/{id}/investigations
 func ListInvestigationsForFindingHandler(store *db.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// Path: /api/findings/{id}/investigations — extract the {id}.
-		segs := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/findings/"), "/")
-		if len(segs) < 2 || segs[1] != "investigations" {
-			http.Error(w, "path must be /api/findings/{id}/investigations", http.StatusBadRequest)
-			return
-		}
-		findingID, err := strconv.ParseInt(segs[0], 10, 64)
+		findingID, err := childIDFromChi(r, "id")
 		if err != nil {
-			http.Error(w, "bad finding id", http.StatusBadRequest)
+			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 		invs, err := store.ListInvestigationsForFinding(findingID)
@@ -314,7 +309,12 @@ func UpsertInvestigationByDedupHandler(store *db.Store) http.HandlerFunc {
 // case. PUT /api/investigations/{id}/runs/{run_id}.
 func LinkRunToInvestigationHandler(store *db.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		invID, runID, err := invAndChildID(r.URL.Path, "/api/investigations/", "runs")
+		invID, err := investigationIDFromChi(r)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		runID, err := childIDFromChi(r, "run_id")
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -332,7 +332,12 @@ func LinkRunToInvestigationHandler(store *db.Store) http.HandlerFunc {
 // Idempotent — 204 even when the row didn't exist.
 func UnlinkFindingFromInvestigationHandler(store *db.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		invID, fid, err := invAndChildID(r.URL.Path, "/api/investigations/", "findings")
+		invID, err := investigationIDFromChi(r)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		fid, err := childIDFromChi(r, "finding_id")
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -349,7 +354,12 @@ func UnlinkFindingFromInvestigationHandler(store *db.Store) http.HandlerFunc {
 // DELETE /api/investigations/{id}/runs/{run_id}. Idempotent.
 func UnlinkRunFromInvestigationHandler(store *db.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		invID, runID, err := invAndChildID(r.URL.Path, "/api/investigations/", "runs")
+		invID, err := investigationIDFromChi(r)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		runID, err := childIDFromChi(r, "run_id")
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -362,44 +372,20 @@ func UnlinkRunFromInvestigationHandler(store *db.Store) http.HandlerFunc {
 	}
 }
 
-// invAndChildID parses /api/investigations/{id}/{kind}/{child} into
-// (invID, childID). Returns an error on shape mismatch or
-// non-integer ids. Tolerant of the kind keyword being either
-// "findings" or "runs".
-func invAndChildID(path, prefix, kind string) (int64, int64, error) {
-	rest := strings.TrimPrefix(path, prefix)
-	segs := strings.Split(rest, "/")
-	if len(segs) < 3 || segs[1] != kind {
-		return 0, 0, fmt.Errorf("path must match /api/investigations/{id}/%s/{child_id}", kind)
-	}
-	invID, err := strconv.ParseInt(segs[0], 10, 64)
-	if err != nil {
-		return 0, 0, fmt.Errorf("bad investigation id: %w", err)
-	}
-	childID, err := strconv.ParseInt(segs[2], 10, 64)
-	if err != nil {
-		return 0, 0, fmt.Errorf("bad %s id: %w", kind, err)
-	}
-	return invID, childID, nil
-}
-
 // LinkFindingToInvestigationHandler adds a finding to an investigation.
-// Path: /api/investigations/{id}/findings/{finding_id}.
+// Path: /api/investigations/{id}/findings/{finding_id}. Mounted on
+// the operator-facing route AND the federation route — chi.URLParam
+// hides the prefix difference between the two.
 func LinkFindingToInvestigationHandler(store *db.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		segs := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/investigations/"), "/")
-		if len(segs) < 3 || segs[1] != "findings" {
-			http.Error(w, "bad path", http.StatusBadRequest)
+		invID, err := investigationIDFromChi(r)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		invID, err := strconv.ParseInt(segs[0], 10, 64)
+		findingID, err := childIDFromChi(r, "finding_id")
 		if err != nil {
-			http.Error(w, "bad investigation id", http.StatusBadRequest)
-			return
-		}
-		findingID, err := strconv.ParseInt(segs[2], 10, 64)
-		if err != nil {
-			http.Error(w, "bad finding id", http.StatusBadRequest)
+			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 		if err := store.LinkFindingToInvestigation(invID, findingID); err != nil {
@@ -410,21 +396,36 @@ func LinkFindingToInvestigationHandler(store *db.Store) http.HandlerFunc {
 	}
 }
 
-// investigationIDFromPath strips the prefix and parses the next segment
-// as the investigation id. Tolerant of trailing path segments (e.g.
-// "/api/investigations/42/notes" yields 42).
-func investigationIDFromPath(path, prefix string) (int64, error) {
-	rest := strings.TrimPrefix(path, prefix)
-	if rest == "" {
+// investigationIDFromChi reads the {id} URL parameter and parses it
+// to int64. Replaces the older path-prefix parser so a single
+// handler can be mounted under both `/api/investigations/{id}` and
+// `/api/v1/federation/investigations/{id}` without prefix-aware
+// dispatching — chi already binds the parameter the same way for
+// both routes.
+func investigationIDFromChi(r *http.Request) (int64, error) {
+	raw := chi.URLParam(r, "id")
+	if raw == "" {
 		return 0, errors.New("investigation id required")
 	}
-	first := rest
-	if i := strings.Index(rest, "/"); i >= 0 {
-		first = rest[:i]
-	}
-	id, err := strconv.ParseInt(first, 10, 64)
+	id, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil {
-		return 0, errors.New("bad investigation id")
+		return 0, fmt.Errorf("bad investigation id: %w", err)
 	}
 	return id, nil
 }
+
+// childIDFromChi reads a sibling URL parameter (`{finding_id}` or
+// `{run_id}`) and parses it. Used by the link/unlink handlers on
+// both the operator-facing route and the federation route.
+func childIDFromChi(r *http.Request, paramName string) (int64, error) {
+	raw := chi.URLParam(r, paramName)
+	if raw == "" {
+		return 0, fmt.Errorf("%s required", paramName)
+	}
+	id, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("bad %s: %w", paramName, err)
+	}
+	return id, nil
+}
+

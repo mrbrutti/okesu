@@ -2,15 +2,32 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/go-chi/chi/v5"
+
 	"github.com/section9labs/okesu/controlplane/db"
 )
+
+// withChiParams attaches a chi route context with the supplied
+// key/value URL params to a test request — needed because the
+// handlers now read params via chi.URLParam (so they work under both
+// `/api/investigations/{id}` and `/api/v1/federation/investigations/{id}`)
+// but httptest.NewRequest bypasses chi's router.
+func withChiParams(req *http.Request, kv ...string) *http.Request {
+	rctx := chi.NewRouteContext()
+	for i := 0; i+1 < len(kv); i += 2 {
+		rctx.URLParams.Add(kv[i], kv[i+1])
+	}
+	return req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+}
 
 func TestCreateInvestigation_HTTP(t *testing.T) {
 	st := newTestStore(t)
@@ -39,6 +56,7 @@ func TestUpdateInvestigation_HTTP_ClosesWithResolution(t *testing.T) {
 	body, _ := json.Marshal(map[string]any{"status": "closed", "resolution": "resolved"})
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("PATCH", "/api/investigations/"+strconv.FormatInt(id, 10), bytes.NewReader(body))
+	req = withChiParams(req, "id", strconv.FormatInt(id, 10))
 	UpdateInvestigationHandler(st)(rec, req)
 	if rec.Code != 200 {
 		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
@@ -59,6 +77,7 @@ func TestAddInvestigationNote_HTTP(t *testing.T) {
 	})
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("POST", "/api/investigations/"+strconv.FormatInt(id, 10)+"/notes", bytes.NewReader(body))
+	req = withChiParams(req, "id", strconv.FormatInt(id, 10))
 	AddInvestigationNoteHandler(st)(rec, req)
 	if rec.Code != 201 {
 		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
@@ -94,6 +113,7 @@ func TestGetInvestigation_HTTP_ReturnsBundle(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("GET", "/api/investigations/"+strconv.FormatInt(id, 10), nil)
+	req = withChiParams(req, "id", strconv.FormatInt(id, 10))
 	GetInvestigationHandler(st)(rec, req)
 	if rec.Code != 200 {
 		t.Fatalf("status = %d", rec.Code)
@@ -132,6 +152,10 @@ func TestLinkFindingToInvestigation_HTTP_Links(t *testing.T) {
 	rec := httptest.NewRecorder()
 	path := "/api/investigations/" + strconv.FormatInt(invID, 10) + "/findings/" + strconv.FormatInt(findingID, 10)
 	req := httptest.NewRequest("PUT", path, nil)
+	req = withChiParams(req,
+		"id", strconv.FormatInt(invID, 10),
+		"finding_id", strconv.FormatInt(findingID, 10),
+	)
 	LinkFindingToInvestigationHandler(st)(rec, req)
 	if rec.Code != 204 {
 		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
@@ -143,22 +167,29 @@ func TestLinkFindingToInvestigation_HTTP_Links(t *testing.T) {
 	}
 }
 
-// TestLinkFindingToInvestigation_HTTP_RejectsMalformedPath confirms the
-// path parser refuses misshapen URLs.
-func TestLinkFindingToInvestigation_HTTP_RejectsMalformedPath(t *testing.T) {
+// TestLinkFindingToInvestigation_HTTP_RejectsBadParams confirms the
+// handler returns 400 when the chi-bound params can't parse to int64.
+// Routing-shape rejections (wrong middle segment, missing segments)
+// don't reach the handler now — chi's router screens them first.
+func TestLinkFindingToInvestigation_HTTP_RejectsBadParams(t *testing.T) {
 	st := newTestStore(t)
-	cases := []string{
-		"/api/investigations/1/whatever/2",          // wrong middle segment
-		"/api/investigations/notanumber/findings/5", // bad investigation id
-		"/api/investigations/1/findings/notanumber", // bad finding id
-		"/api/investigations/1",                     // too few segments
+	cases := []struct {
+		name      string
+		invID     string
+		findingID string
+	}{
+		{"bad investigation id", "notanumber", "5"},
+		{"bad finding id", "1", "notanumber"},
+		{"empty investigation id", "", "5"},
+		{"empty finding id", "1", ""},
 	}
-	for _, p := range cases {
+	for _, c := range cases {
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest("PUT", p, nil)
+		req := httptest.NewRequest("PUT", "/api/investigations/x/findings/y", nil)
+		req = withChiParams(req, "id", c.invID, "finding_id", c.findingID)
 		LinkFindingToInvestigationHandler(st)(rec, req)
 		if rec.Code != 400 {
-			t.Errorf("path %q: status = %d, want 400", p, rec.Code)
+			t.Errorf("%s: status = %d, want 400", c.name, rec.Code)
 		}
 	}
 }
