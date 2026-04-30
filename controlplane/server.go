@@ -619,6 +619,8 @@ func (s *Server) routes() http.Handler {
 		// register before any future /api/iocs/{id} catch-all so chi
 		// doesn't try to ParseInt "cross-cp-patterns".
 		r.Get("/api/iocs/cross-cp-patterns", api.ListCrossCPPatternsHandler(s.store))
+		// Phase 22.4 — STIX 2.1 bundle export. Supports ?kind= and ?since= filters.
+		r.Get("/api/stix2/iocs", api.STIX2ExportHandler(s.store))
 
 		// Phase 22.3 — Investigations (T2 case workspace). CRUD plus
 		// notes and finding linking; viewer+ for now (no admin gate)
