@@ -349,6 +349,12 @@ function ManagedDeployPanel({ onClose }: { onClose: () => void }) {
   const [credentialID, setCredentialID] = useState<number | null>(null);
   const [displayName, setDisplayName] = useState('');
   const [region, setRegion] = useState('');
+  // Phase 21.6 — transport choice. 'https' uses the existing mTLS
+  // bootstrap callback; 's3_dead_drop' uses the bucket pipe so the
+  // new CP doesn't need an inbound connection back to the parent.
+  const [transport, setTransport] = useState<'https' | 's3_dead_drop'>('https');
+  const [transportConfigID, setTransportConfigID] = useState<number | null>(null);
+  const [transportConfigs, setTransportConfigs] = useState<TransportConfigSummary[] | null>(null);
   // Structured cloud_params — populated by per-cloud form components.
   // Submitting an empty object hits the worker's validator instantly,
   // so the form below blocks submit until required keys are present.
@@ -397,6 +403,22 @@ function ManagedDeployPanel({ onClose }: { onClose: () => void }) {
       .catch((e) => setError(String(e)));
   }, []);
 
+  // Phase 21.6 — load transport_configs lazily once the operator
+  // picks the s3_dead_drop transport. The list is small.
+  useEffect(() => {
+    if (transport === 's3_dead_drop' && transportConfigs === null) {
+      api.transportConfigs()
+        .then((rows) => {
+          setTransportConfigs(rows);
+          if (rows.length > 0 && transportConfigID === null) {
+            setTransportConfigID(rows[0].id);
+          }
+        })
+        .catch((e) => setError('load transport configs: ' + String(e)));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [transport]);
+
   // Auto-pick the first registered cloud + first credential of that
   // cloud as a usability nicety.
   useEffect(() => {
@@ -429,6 +451,10 @@ function ManagedDeployPanel({ onClose }: { onClose: () => void }) {
       setError(`missing required cloud_params: ${missing.join(', ')}`);
       return;
     }
+    if (transport === 's3_dead_drop' && !transportConfigID) {
+      setError('pick a bucket (transport_config) for the s3_dead_drop transport');
+      return;
+    }
     setBusy(true); setError(null);
     try {
       const row = await api.cpProvisionCreate({
@@ -437,6 +463,8 @@ function ManagedDeployPanel({ onClose }: { onClose: () => void }) {
         cloud,
         credential_id: credentialID,
         cloud_params: cloudParams,
+        transport: transport === 'https' ? undefined : transport,
+        transport_config_id: transport === 's3_dead_drop' ? (transportConfigID ?? undefined) : undefined,
         force_over_budget: overrideBudget || undefined,
       });
       setSubmitted({ id: row.id, status: row.status });
@@ -547,6 +575,58 @@ function ManagedDeployPanel({ onClose }: { onClose: () => void }) {
             className="w-full px-3 py-1.5 text-sm border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500/30"
           />
         </Field>
+        <Field label="Federation transport" hint="How the new CP talks back to this parent. HTTPS works when the new VM has inbound access to this CP; S3 dead-drop is the bucket pipe — slower (~60s round trip) but works through any NAT / firewall.">
+          <div className="space-y-1.5">
+            <label className="flex items-start gap-2 cursor-pointer">
+              <input
+                type="radio"
+                checked={transport === 'https'}
+                onChange={() => setTransport('https')}
+                className="mt-0.5"
+              />
+              <div className="text-xs">
+                <div className="font-medium text-ink">HTTPS (mTLS bootstrap)</div>
+                <div className="text-ink-mute">New CP calls back to <code>/api/v1/cp/bootstrap</code> after first boot. Fastest; needs the parent reachable from the new VM.</div>
+              </div>
+            </label>
+            <label className="flex items-start gap-2 cursor-pointer">
+              <input
+                type="radio"
+                checked={transport === 's3_dead_drop'}
+                onChange={() => setTransport('s3_dead_drop')}
+                className="mt-0.5"
+              />
+              <div className="text-xs">
+                <div className="font-medium text-ink">S3 dead-drop</div>
+                <div className="text-ink-mute">Bucket pipe; both ends only need outbound HTTPS to the bucket. Pre-registers the federation peer at bundle time — no inbound bootstrap callback.</div>
+              </div>
+            </label>
+          </div>
+        </Field>
+        {transport === 's3_dead_drop' && (
+          <Field label="Bucket (transport_config)" hint="Which bucket the new CP publishes to + this parent reads from. Pick an existing transport_config that both ends can reach.">
+            {transportConfigs === null ? (
+              <div className="text-xs text-ink-mute">loading…</div>
+            ) : transportConfigs.length === 0 ? (
+              <div className="text-xs text-amber-700">
+                No transport_configs configured. Add one under Settings → Cloud → Object storage buckets,
+                or via Nodes → Add Node → S3 dead-drop, before continuing.
+              </div>
+            ) : (
+              <select
+                value={transportConfigID ?? ''}
+                onChange={(e) => setTransportConfigID(e.target.value ? Number(e.target.value) : null)}
+                className="w-full px-3 py-1.5 text-sm border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500/30 bg-panel"
+              >
+                {transportConfigs.map((tc) => (
+                  <option key={tc.id} value={tc.id}>
+                    {tc.name} · {tc.bucket} @ {tc.endpoint}
+                  </option>
+                ))}
+              </select>
+            )}
+          </Field>
+        )}
         {cloud && credentialID && (
           <CloudParamsForm
             cloud={cloud}
