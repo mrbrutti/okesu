@@ -534,11 +534,14 @@ func (s *Server) routes() http.Handler {
 	// proxy to navigate.
 	r.Get("/api/v1/federation/investigations", api.FederationInvestigationsList(s.store))
 	r.Get("/api/v1/federation/investigations/{id}", api.FederationInvestigationDetail(s.store))
-	// Phase 22.7 — write proxy for "open in investigation" flows
-	// originating from federated findings. The parent UI sends ?cp=
-	// when the finding lives on a child; the wrapper above forwards.
+	// Phase 22.7 — write proxies. Open-investigation from a federated
+	// finding (FederationCreateInvestigation), add-to-existing
+	// (FederationLinkFindingToInvestigation), and workspace-driven
+	// run linking (FederationLinkRunToInvestigation) all go through
+	// the same `?cp=<id>` proxy convention as the read paths.
 	r.Post("/api/v1/federation/investigations", api.FederationCreateInvestigation(s.store))
 	r.Put("/api/v1/federation/investigations/{id}/findings/{finding_id}", api.FederationLinkFindingToInvestigation(s.store))
+	r.Put("/api/v1/federation/investigations/{id}/runs/{run_id}", api.FederationLinkRunToInvestigation(s.store))
 	r.Post("/api/v1/federation/orchestrations", api.FederationOrchestrationCreate(s.store))
 	r.Put("/api/v1/federation/orchestrations/{id}", api.FederationOrchestrationUpdate(s.store))
 	r.Delete("/api/v1/federation/orchestrations/{id}", api.FederationOrchestrationDelete(s.store))
@@ -696,7 +699,7 @@ func (s *Server) routes() http.Handler {
 		r.Post("/api/investigations/{id}/notes", api.AddInvestigationNoteHandler(s.store))
 		r.Put("/api/investigations/{id}/findings/{finding_id}", api.FederatedLinkFindingToInvestigation(s.store, s.fedAgg))
 		r.Delete("/api/investigations/{id}/findings/{finding_id}", api.UnlinkFindingFromInvestigationHandler(s.store))
-		r.Put("/api/investigations/{id}/runs/{run_id}", api.LinkRunToInvestigationHandler(s.store))
+		r.Put("/api/investigations/{id}/runs/{run_id}", api.FederatedLinkRunToInvestigation(s.store, s.fedAgg))
 		r.Delete("/api/investigations/{id}/runs/{run_id}", api.UnlinkRunFromInvestigationHandler(s.store))
 
 		// Read endpoints (continued)
