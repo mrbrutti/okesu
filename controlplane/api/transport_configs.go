@@ -40,11 +40,18 @@ import (
 // ───────────────────────── transport_configs ─────────────────────────
 
 type transportConfigJSON struct {
-	ID                int64  `json:"id"`
-	Name              string `json:"name"`
-	Kind              string `json:"kind"`
+	ID   int64  `json:"id"`
+	Name string `json:"name"`
+	Kind string `json:"kind"`
+	// Bucket + Endpoint are what nodes embed in their bootstrap.json.
+	// EndpointInternal, when set, is what the CP scanner dials —
+	// useful when the CP can reach the bucket over a private VPC
+	// endpoint that public clients can't resolve. NULL on the wire
+	// (omitempty + nullable string) means "scanner falls back to
+	// Endpoint".
 	Bucket            string `json:"bucket"`
 	Endpoint          string `json:"endpoint"`
+	EndpointInternal  string `json:"endpoint_internal,omitempty"`
 	Region            string `json:"region,omitempty"`
 	UseSSL            bool   `json:"use_ssl"`
 	AccessKey         string `json:"access_key,omitempty"`
@@ -64,6 +71,7 @@ func toTransportConfigJSON(c db.TransportConfig) transportConfigJSON {
 		Kind:              c.Kind,
 		Bucket:            c.Bucket,
 		Endpoint:          c.Endpoint,
+		EndpointInternal:  c.EndpointInternal.String,
 		Region:            c.Region.String,
 		UseSSL:            c.UseSSL,
 		AccessKey:         c.AccessKey.String,
@@ -82,6 +90,7 @@ type transportConfigReq struct {
 	Kind              string `json:"kind"`
 	Bucket            string `json:"bucket"`
 	Endpoint          string `json:"endpoint"`
+	EndpointInternal  string `json:"endpoint_internal,omitempty"`    // empty = scanner falls back to Endpoint
 	Region            string `json:"region,omitempty"`
 	UseSSL            bool   `json:"use_ssl"`
 	AccessKey         string `json:"access_key,omitempty"`
@@ -143,6 +152,7 @@ func TransportConfigCreate(store *db.Store) http.HandlerFunc {
 			Kind:              req.Kind,
 			Bucket:            req.Bucket,
 			Endpoint:          req.Endpoint,
+			EndpointInternal:  sql.NullString{String: req.EndpointInternal, Valid: req.EndpointInternal != ""},
 			Region:            sql.NullString{String: req.Region, Valid: req.Region != ""},
 			UseSSL:            req.UseSSL,
 			AccessKey:         sql.NullString{String: req.AccessKey, Valid: req.AccessKey != ""},
@@ -205,6 +215,11 @@ func TransportConfigUpdate(store *db.Store) http.HandlerFunc {
 		existing.Kind = req.Kind
 		existing.Bucket = req.Bucket
 		existing.Endpoint = req.Endpoint
+		// Setting EndpointInternal to "" on update is meaningful — it
+		// clears the override so the scanner falls back to Endpoint.
+		// We don't preserve the previous value when the operator sends
+		// an empty string, only when the field is missing entirely.
+		existing.EndpointInternal = sql.NullString{String: req.EndpointInternal, Valid: req.EndpointInternal != ""}
 		existing.Region = sql.NullString{String: req.Region, Valid: req.Region != ""}
 		existing.UseSSL = req.UseSSL
 		existing.AccessKey = sql.NullString{String: req.AccessKey, Valid: req.AccessKey != ""}

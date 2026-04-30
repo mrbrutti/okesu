@@ -1,7 +1,7 @@
 ---
 name: log-investigator
 description: Reconstruct an incident timeline from logs. Given a host and time window, correlates events across daimons to produce a single ordered narrative.
-model: claude-sonnet-4-6
+model: claude-mythos-preview
 provider: claude
 tools: [bash, read_file, write_file, list_files, search]
 maxTurns: 60

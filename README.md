@@ -142,7 +142,7 @@ shape; the body is the system prompt:
 name: my-watchdog
 description: Watch for foo. Emit findings when bar.
 provider: claude
-model: claude-opus-4-7
+model: claude-mythos-preview
 tools: [bash, read_file]
 maxTurns: 30
 interval: 60s

@@ -211,7 +211,7 @@ codex fork SESSION_ID
 | **Skip permissions** | `--dangerously-skip-permissions` | `--sandbox danger-full-access -a never` |
 | **Non-interactive** | `-p "prompt"` | `codex exec "prompt"` |
 | **Streaming output** | `--output-format stream-json` | `--json` (exec mode) |
-| **Model override** | `--model claude-opus-4-1` | `-m gpt-4o` |
+| **Model override** | `--model claude-mythos-preview` | `-m gpt-4o` |
 | **Bare mode** | `--bare` | N/A |
 | **System prompt** | `--system-prompt-file <path>` | `.codex/instructions.md` (auto-loaded) |
 | **Session resume** | `--resume <session_id>` | `codex resume [SESSION_ID]` |

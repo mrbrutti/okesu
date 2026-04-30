@@ -665,7 +665,7 @@ overlap: skip           # "skip" (default) | "queue"
 
 # Provider config (same as task mode)
 provider: claude
-model: claude-opus-4-6
+model: claude-mythos-preview
 effort: low             # daemon ticks should be fast and cheap
 maxTurns: 10            # hard cap — a tick that runs 10 turns is almost certainly stuck
 

@@ -905,6 +905,57 @@ export const api = {
   refreshFederationPeer: (id: number) =>
     request<FederationPeer>(`/api/federation/peers/${id}/refresh`, { method: 'POST' }),
 
+  // Phase 21.2 — cloud credentials. Payload-only fields (the cloud-
+  // specific secrets) are write-only at this layer: list/get/test
+  // never roundtrip the plaintext through the browser. Editing means
+  // re-entering the secrets from scratch.
+  cloudCredentialsList: (cloud?: string) => {
+    const qs = cloud ? `?cloud=${encodeURIComponent(cloud)}` : '';
+    return request<CloudCredential[]>(`/api/cloud-credentials${qs}`);
+  },
+  cloudCredentialCreate: (req: CloudCredentialCreateRequest) =>
+    request<CloudCredential>('/api/cloud-credentials', {
+      method: 'POST',
+      body: JSON.stringify(req),
+    }),
+  cloudCredentialDelete: (id: number) =>
+    request<void>(`/api/cloud-credentials/${id}`, { method: 'DELETE' }),
+  cloudCredentialTest: (id: number) =>
+    request<{ ok: boolean; message: string }>(`/api/cloud-credentials/${id}/test`, { method: 'POST' }),
+  // Phase 21.5 — set or clear the per-credential monthly USD budget.
+  // Pass null to clear; the budget enforcement on cp_provision.create
+  // re-reads this value on every submit.
+  cloudCredentialBudget: (id: number, monthlyBudgetUSD: number | null) =>
+    request<CloudCredential>(`/api/cloud-credentials/${id}/budget`, {
+      method: 'PUT',
+      body: JSON.stringify({ monthly_budget_usd: monthlyBudgetUSD }),
+    }),
+
+  // Phase 21.3 — managed CP provisioning. The registry is empty in
+  // 21.3a (the framework PR); per-cloud impls register against it in
+  // 21.3b (OCI), 21.3c (AWS), etc. Until then cpProvisionersList()
+  // returns {clouds: []} and the +Add CP modal's Managed-deploy tab
+  // shows a "no clouds yet" message.
+  cpProvisionersList: () =>
+    request<{ clouds: string[] }>('/api/federation/cp-provisioners'),
+  cpProvisionsList: (limit?: number) => {
+    const qs = limit ? `?limit=${limit}` : '';
+    return request<CPProvision[]>(`/api/federation/cp-provisions${qs}`);
+  },
+  cpProvision: (id: number) =>
+    request<CPProvision>(`/api/federation/cp-provisions/${id}`),
+  cpProvisionCreate: (req: CPProvisionRequest) =>
+    request<CPProvision>('/api/federation/cp-provision', {
+      method: 'POST',
+      body: JSON.stringify(req),
+    }),
+  // Phase 21.5 — read-only cost preview for the +Add CP modal.
+  cpProvisionEstimate: (req: CPProvisionEstimateRequest) =>
+    request<CPProvisionEstimate>('/api/federation/cp-provision/estimate', {
+      method: 'POST',
+      body: JSON.stringify(req),
+    }),
+
   // Phase 21.1 — generate a bootstrap bundle for a fresh child CP.
   // Returns the tar.gz response as a Blob the caller hands to the
   // browser's download flow. The endpoint sends Content-Disposition
@@ -933,6 +984,7 @@ export interface CPBundleRequest {
   display_name: string;
   region: string;
   format: 'dockerfile-tarball' | 'compose-tarball' | 'terraform';
+  cloud?: 'oci' | 'aws';
   parent_url?: string;
   child_host?: string;
   child_port?: number;
@@ -1043,6 +1095,10 @@ export interface CreateRunReq {
   /** Optional. Links the run to a finding so the FindingDrawer surfaces
    *  it as an "investigation" attached to that finding. */
   finding_id?: number;
+  /** Phase 9.7: when set, the parent forwards the create call to the
+   *  named child CP. Set this from the node's `cp_source.instance_id`
+   *  when running an agent against a federated node. */
+  target_cp_instance_id?: string;
 }
 
 export interface RunListItem {
@@ -1172,6 +1228,10 @@ export interface NodeDeployReq {
   openai_api_key?: string;
   include_webhook?: boolean;
   include_mgmt_cert?: boolean;
+  /** Phase 9.7: when set, the parent forwards the deploy call to the
+   *  named child CP. Set this from the target node's
+   *  `cp_source.instance_id` when deploying to a federated node. */
+  target_cp_instance_id?: string;
 }
 
 // ── Runs-tab filter shape (Phase 12.1) ──────────────────────────────────────
@@ -1234,7 +1294,10 @@ export interface TransportConfigSummary {
   name: string;
   kind: string;            // 's3'
   bucket: string;
+  /** Public/external endpoint nodes embed in their bootstrap.json. */
   endpoint: string;
+  /** Optional private endpoint the CP scanner dials; empty falls back to `endpoint`. */
+  endpoint_internal?: string;
   region?: string;
   use_ssl: boolean;
   access_key?: string;
@@ -1252,6 +1315,7 @@ export interface TransportConfigCreateReq {
   kind: string;            // 's3'
   bucket: string;
   endpoint: string;
+  endpoint_internal?: string;
   region?: string;
   use_ssl: boolean;
   access_key?: string;
@@ -1558,4 +1622,102 @@ export interface FederationPeerAddReq {
   url: string;
   token: string;
   display_name?: string;
+}
+
+// Phase 21.2 — cloud credentials.
+export type CloudKind = 'oci' | 'aws' | 'gcp' | 'azure' | 'digitalocean';
+
+export interface CloudCredential {
+  id: number;
+  cloud: CloudKind;
+  name: string;
+  region?: string;
+  monthly_budget_usd?: number;
+  created_at: string;
+  created_by_email?: string;
+  last_used_at?: string;
+  last_test_at?: string;
+  last_test_ok?: boolean;
+  last_test_error?: string;
+}
+
+export interface CloudCredentialCreateRequest {
+  cloud: CloudKind;
+  name: string;
+  region?: string;
+  payload: Record<string, string>;
+}
+
+// Phase 21.3 — managed CP provisioning.
+export type CPProvisionStatus =
+  | 'queued'
+  | 'starting'
+  | 'cloud_init_running'
+  | 'bootstrap_pending'
+  | 'ready'
+  | 'failed'
+  | 'cancelled';
+
+export interface CPProvision {
+  id: number;
+  display_name: string;
+  region: string;
+  cloud: CloudKind;
+  credential_name?: string;
+  cloud_params?: Record<string, unknown>;
+  status: CPProvisionStatus;
+  cloud_resource_id?: string;
+  cloud_resource_url?: string;
+  peer_id?: number;
+  log?: string;
+  error?: string;
+  est_cost_per_hour_usd?: number;
+  instance_shape?: string;
+  created_at: string;
+  started_at?: string;
+  ended_at?: string;
+  created_by_email?: string;
+}
+
+export interface CPProvisionRequest {
+  display_name: string;
+  region: string;
+  cloud: CloudKind;
+  credential_id: number;
+  cloud_params?: Record<string, unknown>;
+  parent_url?: string;
+  /** Phase 21.5 — bypasses the budget check; submit returns 409 otherwise. */
+  force_over_budget?: boolean;
+}
+
+// Phase 21.5 — cost estimate preview body + response.
+export interface CPProvisionEstimateRequest {
+  cloud: CloudKind;
+  credential_id?: number;
+  cloud_params?: Record<string, unknown>;
+}
+
+export interface CPProvisionEstimate {
+  hourly_usd?: number;
+  monthly_usd?: number;
+  instance_shape?: string;
+  catalog_version: string;
+  note?: string;
+  monthly_budget_usd?: number;
+  current_monthly_usd?: number;
+  projected_monthly_usd?: number;
+  unknown_active_count?: number;
+  would_exceed_budget?: boolean;
+}
+
+// Phase 21.5 — structured 409 from cp-provision when over budget.
+export interface CPProvisionBudgetExceeded {
+  error: string;
+  reason: 'budget_exceeded';
+  credential_id: number;
+  monthly_budget_usd: number;
+  current_monthly_usd: number;
+  projected_monthly_usd: number;
+  new_monthly_usd: number;
+  unknown_active_count: number;
 }

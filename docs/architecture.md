@@ -240,7 +240,7 @@ Agent files are Markdown with YAML frontmatter. They encode both persona (body =
 ---
 name: edr-agent
 description: Endpoint detection and response daemon
-model: claude-opus-4-6
+model: claude-mythos-preview
 provider: claude               # "claude" | "codex"
 tools: [bash, read_file, search]
 maxTurns: 50

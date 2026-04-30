@@ -1,7 +1,7 @@
 ---
 name: incident-responder
 description: Active-incident response playbook. Drives containment, evidence preservation, communications, and post-incident artefact generation. Use when something is on fire NOW.
-model: claude-opus-4-7
+model: claude-mythos-preview
 provider: claude
 tools: [bash, read_file, write_file, list_files, search]
 maxTurns: 80

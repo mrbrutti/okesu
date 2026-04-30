@@ -8,7 +8,7 @@ description: >
 
 # ── Provider ─────────────────────────────────────────────────────────────────
 provider: claude
-model: claude-sonnet-4-6
+model: claude-mythos-preview
 effort: low
 maxTurns: 12
 

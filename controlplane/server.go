@@ -30,6 +30,9 @@ import (
 	"github.com/section9labs/okesu/controlplane/adapters/redispubsub"
 	"github.com/section9labs/okesu/controlplane/adapters/sqliteevents"
 	"github.com/section9labs/okesu/controlplane/api"
+	"github.com/section9labs/okesu/controlplane/cpprovision"
+	awsprovisioner "github.com/section9labs/okesu/controlplane/cpprovision/aws"
+	ociprovisioner "github.com/section9labs/okesu/controlplane/cpprovision/oci"
 	"github.com/section9labs/okesu/controlplane/eventpipeline"
 	"github.com/section9labs/okesu/controlplane/auth"
 	"github.com/section9labs/okesu/controlplane/db"
@@ -66,6 +69,19 @@ type Server struct {
 	notify     *notify.Worker
 	fedPoller  *federation.Poller     // Phase 9 parent-side federation
 	fedAgg     *federation.Aggregator // Phase 9.6 federated reads
+	// fedFindingFanout polls child CPs for newly-projected findings
+	// and routes them through the local orchestration coordinator's
+	// OnFinding hook. See controlplane/api/federation_finding_fanout.go.
+	fedFindingFanout *api.FederationFindingFanout
+	// cpProvisioners is the registry of per-cloud CP-provisioning
+	// implementations. Per-cloud impls (OCI in 21.3b, AWS in 21.3c)
+	// register against this from server.New() below.
+	cpProvisioners *cpprovision.Registry
+	// bundleCache holds the generated child-CP bundle bytes the
+	// cloud-init script fetches via /api/federation/cp-bundle/download.
+	// Populated by RunCPProvisionWorker, drained by the bootstrap
+	// handler when the new CP completes its bootstrap exchange.
+	bundleCache    *api.BundleCache
 	http       *http.Server
 	mgmtHTTP *http.Server       // mTLS-protected management plane
 }
@@ -261,18 +277,25 @@ func New(cfg Config) (*Server, error) {
 	db.SetCertFingerprintFn(packaging.CertFingerprint)
 
 	srv := &Server{
-		cfg:        cfg,
-		store:      store,
-		eventStore: eventStore,
-		queue:      queue,
-		secrets:    secrets,
-		mgr:        mgr,
-		bcast:      bcast,
-		ca:         ca,
-		jobs:       jobs.New(500),
-		tunReg:     tunnel.NewRegistry(),
-		runs:       api.NewRunRegistry(),
+		cfg:            cfg,
+		store:          store,
+		eventStore:     eventStore,
+		queue:          queue,
+		secrets:        secrets,
+		mgr:            mgr,
+		bcast:          bcast,
+		ca:             ca,
+		jobs:           jobs.New(500),
+		tunReg:         tunnel.NewRegistry(),
+		runs:           api.NewRunRegistry(),
+		cpProvisioners: cpprovision.NewRegistry(),
+		bundleCache:    api.NewBundleCache(),
 	}
+	// Phase 21.3b/c — register per-cloud provisioners. Each cloud
+	// implementation lives in its own subpackage so adding a new one
+	// is one import + one Register() call.
+	srv.cpProvisioners.Register(ociprovisioner.New())
+	srv.cpProvisioners.Register(awsprovisioner.New())
 	srv.notify = &notify.Worker{
 		Store:      store,
 		Subscriber: bcast,
@@ -352,6 +375,14 @@ func New(cfg Config) (*Server, error) {
 			log.Printf("eventpipeline worker exited: %v", err)
 		}
 	}()
+
+	// Federated finding fan-out (#155): poll each child CP's findings
+	// and route newly-projected ones through the local OnFinding hook
+	// so orchestrations installed on the parent fire for findings
+	// projected anywhere in the federation. No-op when there are no
+	// peers; cheap when there are.
+	srv.fedFindingFanout = api.NewFederationFindingFanout(srv.fedAgg, srv.orchestra.OnFinding, 0)
+	go srv.fedFindingFanout.Run(pipelineCtx)
 
 	// Phase 4: OIDC. Optional — boot continues if discovery fails so the CP
 	// stays available with password auth even when the IDP is unreachable.
@@ -470,6 +501,16 @@ func (s *Server) routes() http.Handler {
 	// parent's forwarding handlers proxy to when an operator picks a
 	// target child CP from the Global UI.
 	r.Post("/api/v1/federation/nodes", api.FederationNodeCreate(s.store))
+	r.Post("/api/v1/federation/nodes/{id}/deploy", api.FederationNodeDeploy(s.store, s.jobs, s, api.NodesConfig{
+		DaemonBinaryPath:  s.cfg.DaemonBinaryPath,
+		DaemonBinariesDir: s.cfg.DaemonBinariesDir,
+		DaimonFilesDir:    s.cfg.DaimonFilesDir,
+		WebhookSecret:     s.cfg.WebhookSecret,
+		WebhookURL:        s.cfg.EffectiveWebhookURL(),
+		MgmtURL:           s.cfg.EffectiveMgmtURL(),
+		Secrets:           s.secrets,
+	}))
+	r.Post("/api/v1/federation/runs", api.FederationCreateRun(s.runs, s.tunReg, s.store, s.cfg.AgentFilesDirs))
 
 	r.Get("/api/v1/cp/introspect", api.CPIntrospect(api.CPIntrospectDepsValue{
 		Store:           s.store,
@@ -489,7 +530,12 @@ func (s *Server) routes() http.Handler {
 	// Phase 21.1 — child CPs call this exactly once with the
 	// bootstrap token from their bundle. Public on purpose: the
 	// token is the auth, and after this single exchange it's burned.
-	r.Post("/api/v1/cp/bootstrap", api.CPBootstrapHandler(s.store, s.fedPoller))
+	r.Post("/api/v1/cp/bootstrap", api.CPBootstrapHandler(s.store, s.fedPoller, s.bundleCache))
+	// Phase 21.3b — bundle download for managed deploys. The
+	// cloud-init script in the launched VM uses Bearer auth via
+	// the bootstrap token to fetch the cached tar.gz. Public on
+	// the UI port (no cookie auth needed; the token is the auth).
+	r.Get("/api/federation/cp-bundle/download", api.CPBundleDownloadHandler(s.store, s.bundleCache))
 
 	// Public auth endpoints.
 	r.Post("/api/auth/login", api.LoginHandler(s.store, s.mgr))
@@ -595,6 +641,17 @@ func (s *Server) routes() http.Handler {
 			r.Post("/api/tokens", api.TokenCreate(s.store))
 			r.Delete("/api/tokens/{id}", api.TokenRevoke(s.store))
 
+			// Phase 21.2 — cloud credentials. Admin-only because the
+			// payloads are encrypted secrets that, once decrypted,
+			// authorise spending on the operator's cloud account.
+			r.Get("/api/cloud-credentials", api.CloudCredentialsList(s.store))
+			r.Post("/api/cloud-credentials", api.CloudCredentialCreate(s.store))
+			r.Delete("/api/cloud-credentials/{id}", api.CloudCredentialDelete(s.store))
+			r.Post("/api/cloud-credentials/{id}/test", api.CloudCredentialTest(s.store))
+			// Phase 21.5 — per-credential monthly USD budget. Empty body
+			// (or {"monthly_budget_usd": null}) clears the cap.
+			r.Put("/api/cloud-credentials/{id}/budget", api.CloudCredentialBudgetUpdate(s.store))
+
 			// Phase 9.5: federation peers — admin-only because adding a
 			// peer means storing a credential for an outbound CP.
 			r.Get("/api/federation/peers", api.FederationListPeers(s.store))
@@ -612,7 +669,34 @@ func (s *Server) routes() http.Handler {
 				LinuxBinaryPath:   s.cfg.CPBootstrapBinaryPath,
 				LinuxImageTarPath: s.cfg.CPBootstrapImageTarPath,
 				Version:           Version(),
-			}))
+			}, s.bundleCache, s.cfg.EffectivePublicURL()))
+
+			// Phase 21.3 — managed CP provisioning. Admin-only.
+			// The Provisioner registry is populated by per-cloud
+			// impls registered in server.New() below — OCI ships in
+			// 21.3b, AWS in 21.3c, etc.
+			r.Get("/api/federation/cp-provisioners", api.CPProvisionersListHandler(s.cpProvisioners))
+			r.Post("/api/federation/cp-provision", api.CPProvisionCreateHandler(
+				s.store, s.cpProvisioners, s.cfg.EffectivePublicURL(),
+				api.CPProvisionWorkerConfig{
+					Store:    s.store,
+					Registry: s.cpProvisioners,
+					Cache:    s.bundleCache,
+					Bundle: api.CPBundleConfig{
+						ParentMgmtURL:     s.cfg.EffectivePublicURL(),
+						LinuxBinaryPath:   s.cfg.CPBootstrapBinaryPath,
+						LinuxImageTarPath: s.cfg.CPBootstrapImageTarPath,
+						Version:           Version(),
+					},
+					ParentBaseURL: s.cfg.EffectivePublicURL(),
+				},
+			))
+			r.Get("/api/federation/cp-provisions", api.CPProvisionsListHandler(s.store))
+			r.Get("/api/federation/cp-provisions/{id}", api.CPProvisionGetHandler(s.store))
+			// Phase 21.5 — read-only cost preview the +Add CP modal
+			// hits on every form change. Same body shape as the
+			// create endpoint; never mints tokens or inserts rows.
+			r.Post("/api/federation/cp-provision/estimate", api.CPProvisionEstimateHandler(s.store))
 
 			// System / database (admin)
 			r.Get("/api/system/db/stats", api.DBStats(s.store, api.SystemDBConfig{
@@ -653,15 +737,15 @@ func (s *Server) routes() http.Handler {
 			r.Post("/api/nodes/{id}/rollback-binary", api.NodeRollbackBinary(s.store, s.jobs, api.NodesConfig{
 				Secrets: s.secrets,
 			}))
-			r.Post("/api/nodes/{id}/deploy", api.NodeDeploy(s.store, s.jobs, s, api.NodesConfig{
+			r.Post("/api/nodes/{id}/deploy", api.ForwardingNodeDeploy(s.store, s.jobs, s, api.NodesConfig{
 				DaemonBinaryPath:  s.cfg.DaemonBinaryPath,
 				DaemonBinariesDir: s.cfg.DaemonBinariesDir,
-				DaimonFilesDir:     s.cfg.DaimonFilesDir,
+				DaimonFilesDir:    s.cfg.DaimonFilesDir,
 				WebhookSecret:     s.cfg.WebhookSecret,
 				WebhookURL:        s.cfg.EffectiveWebhookURL(),
 				MgmtURL:           s.cfg.EffectiveMgmtURL(),
 				Secrets:           s.secrets,
-			}))
+			}, s.fedAgg))
 			// Phase 4: install the host-side jobs runtime on a node.
 			// Operator-triggered (via the Nodes UI) — body carries the
 			// SSH credential, the CP issues a fresh node-cert and runs
@@ -673,7 +757,7 @@ func (s *Server) routes() http.Handler {
 				}
 				return s.cfg.EffectiveMgmtURL(), s.cfg.DaemonBinaryPath, binResolver
 			}))
-			r.Post("/api/runs", api.CreateRun(s.runs, s.tunReg, s.store, s.cfg.AgentFilesDirs))
+			r.Post("/api/runs", api.ForwardingCreateRun(s.runs, s.tunReg, s.store, s.cfg.AgentFilesDirs, s.fedAgg))
 			r.Post("/api/runs/{id}/cancel", api.CancelRun(s.runs, s.tunReg, s.store))
 
 			// Phase 9: S3 dead-drop transport — operators manage
@@ -756,8 +840,12 @@ func resolvePackageBinary(s *Server, target string) ([]byte, error) {
 // hooks so the rest of the CP doesn't need to know which transport
 // the data arrived through.
 func (s *Server) startS3Scanner(ctx context.Context, c db.TransportConfig) {
+	// ScannerEndpoint resolves to endpoint_internal when set, else
+	// the public endpoint — operators in split-horizon VPCs save
+	// egress here, while everyone else gets the same single-endpoint
+	// behavior the scanner had pre-Phase-9.x.
 	cli, err := s3transport.NewClient(ctx, s3transport.ClientConfig{
-		Endpoint:  c.Endpoint,
+		Endpoint:  c.ScannerEndpoint(),
 		Region:    c.Region.String,
 		Bucket:    c.Bucket,
 		AccessKey: c.AccessKey.String,

@@ -9,7 +9,7 @@ description: >
 
 # ── Provider ─────────────────────────────────────────────────────────────────
 provider: claude
-model: claude-sonnet-4-6
+model: claude-mythos-preview
 effort: medium
 maxTurns: 12
 
