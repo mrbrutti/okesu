@@ -61,6 +61,11 @@ type Finding struct {
 	IOCConfidence     string
 	IOCAttribution    string
 	IOCClassification string
+
+	// Phase 22.3 — finding subtype. Identifies the structured shape of
+	// attributes (e.g. "hypothesis", "meeting_minutes"). Orthogonal to
+	// Category. Empty = no special rendering.
+	Subtype string
 }
 
 // EffectiveSeverity returns the operator override if present, otherwise
@@ -171,6 +176,9 @@ type FindingInsert struct {
 	IOCConfidence     string
 	IOCAttribution    string
 	IOCClassification string
+
+	// Phase 22.3 — finding subtype. Empty = no special rendering.
+	Subtype string
 }
 
 // InsertFinding stores a finding row tied to an event. If a per-fingerprint
@@ -202,8 +210,9 @@ func (s *Store) InsertFinding(f *FindingInsert) (int64, error) {
 			resource, evidence, dedup_key, raw_json,
 			category, process_pid, process_name, path, network_endpoint, cve, tags, attributes,
 			status, operator_severity, severity_override_at,
-			cluster_id, ioc_confidence, ioc_attribution, ioc_classification
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, `+overrideAtCol+`, ?, ?, ?, ?)
+			cluster_id, ioc_confidence, ioc_attribution, ioc_classification,
+			subtype
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, `+overrideAtCol+`, ?, ?, ?, ?, ?)
 	`,
 		f.EventID, f.Ts,
 		nullable(f.Agent), nullable(f.Host), nullable(f.Severity), nullable(f.Title),
@@ -213,6 +222,7 @@ func (s *Store) InsertFinding(f *FindingInsert) (int64, error) {
 		nullable(f.NetworkEndpoint), nullable(f.CVE), nullable(f.Tags), nullable(f.Attributes),
 		operatorSeverity,
 		nullable(f.ClusterID), nullable(f.IOCConfidence), nullable(f.IOCAttribution), nullable(f.IOCClassification),
+		nullable(f.Subtype),
 	)
 	if err != nil {
 		return 0, err
@@ -286,7 +296,8 @@ func (s *Store) ListFindings(f FindingFilter) ([]*Finding, error) {
 	             status, triage_note, triaged_at, triaged_by_user_id, triaged_by_email,
 	             operator_severity, severity_override_at, severity_override_by,
 	             COALESCE(cluster_id, ''), COALESCE(ioc_confidence, ''),
-	             COALESCE(ioc_attribution, ''), COALESCE(ioc_classification, '')
+	             COALESCE(ioc_attribution, ''), COALESCE(ioc_classification, ''),
+	             COALESCE(subtype, '')
 	      FROM findings`
 	if len(clauses) > 0 {
 		q += " WHERE " + strings.Join(clauses, " AND ")
@@ -314,6 +325,7 @@ func (s *Store) ListFindings(f FindingFilter) ([]*Finding, error) {
 			&fr.Status, &fr.TriageNote, &fr.TriagedAt, &fr.TriagedByUser, &fr.TriagedByEmail,
 			&fr.OperatorSeverity, &fr.SeverityOverrideAt, &fr.SeverityOverrideByID,
 			&fr.ClusterID, &fr.IOCConfidence, &fr.IOCAttribution, &fr.IOCClassification,
+			&fr.Subtype,
 		); err != nil {
 			return nil, err
 		}
@@ -336,7 +348,8 @@ func (s *Store) FindingByID(id int64) (*Finding, error) {
 		       status, triage_note, triaged_at, triaged_by_user_id, triaged_by_email,
 		       operator_severity, severity_override_at, severity_override_by,
 		       COALESCE(cluster_id, ''), COALESCE(ioc_confidence, ''),
-		       COALESCE(ioc_attribution, ''), COALESCE(ioc_classification, '')
+		       COALESCE(ioc_attribution, ''), COALESCE(ioc_classification, ''),
+		       COALESCE(subtype, '')
 		FROM findings WHERE id = ?
 	`, id).Scan(
 		&fr.ID, &fr.EventID, &fr.Ts,
@@ -349,6 +362,7 @@ func (s *Store) FindingByID(id int64) (*Finding, error) {
 		&fr.Status, &fr.TriageNote, &fr.TriagedAt, &fr.TriagedByUser, &fr.TriagedByEmail,
 		&fr.OperatorSeverity, &fr.SeverityOverrideAt, &fr.SeverityOverrideByID,
 		&fr.ClusterID, &fr.IOCConfidence, &fr.IOCAttribution, &fr.IOCClassification,
+		&fr.Subtype,
 	)
 	if err != nil {
 		return nil, err
