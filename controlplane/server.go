@@ -909,15 +909,15 @@ func (s *Server) startFederationS3Publisher(ctx context.Context) {
 		log.Printf("federation s3 publisher: %v", err)
 		return
 	}
-	// Phase A.2 — extra assets the publisher writes alongside
-	// introspect.json. findings.json is the unfiltered list; the
-	// parent's aggregator reads it for /api/v1/federation/findings*
-	// requests against this peer.
+	// Phase A.2/A.3 — extra assets the publisher writes alongside
+	// introspect.json. Each maps 1:1 with what the matching
+	// /api/v1/federation/* endpoint emits over HTTPS, so the
+	// aggregator's cached read returns the same wire shape.
 	assets := []s3publisher.Asset{
-		{
-			Path:   "findings.json",
-			Render: s.renderFederationFindingsJSON,
-		},
+		{Path: "findings.json", Render: s.renderFederationFindingsJSON},
+		{Path: "daimons.json", Render: s.renderFederationDaimonsJSON},
+		{Path: "nodes.json", Render: s.renderFederationNodesJSON},
+		{Path: "orchestrations.json", Render: s.renderFederationOrchestrationsJSON},
 	}
 	pub, err := s3publisher.New(ctx, *cfg, s.renderIntrospectJSON, assets...)
 	if err != nil {
@@ -1007,6 +1007,25 @@ func (s *Server) renderIntrospectJSON(ctx context.Context) ([]byte, error) {
 func (s *Server) renderFederationFindingsJSON(ctx context.Context) ([]byte, error) {
 	_ = ctx
 	return api.RenderFederationFindings(s.store, 1000)
+}
+
+// renderFederationDaimonsJSON / renderFederationNodesJSON /
+// renderFederationOrchestrationsJSON — Phase A.3 siblings to the
+// findings renderer. Same mechanic: produce the body the matching
+// federation endpoint would emit at default filters.
+func (s *Server) renderFederationDaimonsJSON(ctx context.Context) ([]byte, error) {
+	_ = ctx
+	return api.RenderFederationDaimons(s.store, 1000)
+}
+
+func (s *Server) renderFederationNodesJSON(ctx context.Context) ([]byte, error) {
+	_ = ctx
+	return api.RenderFederationNodes(s.store, 1000)
+}
+
+func (s *Server) renderFederationOrchestrationsJSON(ctx context.Context) ([]byte, error) {
+	_ = ctx
+	return api.RenderFederationOrchestrations(s.store)
 }
 
 // hooks so the rest of the CP doesn't need to know which transport
