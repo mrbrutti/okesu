@@ -1383,6 +1383,40 @@ func (c *OrchestrationCoordinator) SpawnRun(orchID int64, triggerKind, triggerPa
 	return runID, nil
 }
 
+// OnEnrichment probes every enabled `ioc_enriched` trigger and
+// fires matching runs. Called once per fresh cache write by the
+// enrichment service's hook. Cache hits don't fire the hook, so
+// this path doesn't see the same IOC twice within a TTL window.
+//
+// Loop guard: a run triggered by enrichment that itself calls the
+// `enrich_ioc` action on the SAME IOC would short-circuit at the
+// cache (no fresh write → no re-fire), so an explicit visited-set
+// here is unnecessary. Cross-IOC enrichment chains are still
+// possible but require the operator to author them deliberately.
+func (c *OrchestrationCoordinator) OnEnrichment(payload orchestrator.EnrichmentPayload) {
+	rows, err := c.store.ListOrchestrations()
+	if err != nil {
+		return
+	}
+	for _, o := range rows {
+		if !o.Enabled || o.TriggerKind != "ioc_enriched" {
+			continue
+		}
+		filter := o.TriggerFilter.String
+		ok, ferr := orchestrator.EvaluateEnrichmentFilter(filter, payload)
+		if ferr != nil || !ok {
+			continue
+		}
+		_, _ = c.SpawnRun(
+			o.ID,
+			"ioc_enriched",
+			orchestrator.EnrichmentTriggerPayload(payload),
+			0, // system actor
+		)
+		_ = c.store.UpdateOrchestrationLastFired(o.ID, fmt.Sprintf("ioc_enriched:%d:%s", payload.IOCID, payload.Adapter))
+	}
+}
+
 // OnFinding probes every enabled finding-trigger orchestration and
 // fires runs that match. Called by the eventpipeline once a finding
 // has been projected. Errors per-orchestration are logged and don't

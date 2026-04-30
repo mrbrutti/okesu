@@ -90,6 +90,68 @@ func FindingTriggerPayload(p FindingPayload) string {
 	return string(b)
 }
 
+// EnrichmentPayload is the snapshot of a single vendor's enrichment
+// result that triggered the orchestration. Same dotted-path access
+// as findings: filter expressions read `enrichment.<field>`.
+//
+// Common filter shapes:
+//
+//	enrichment.verdict == 'malicious'
+//	enrichment.adapter == 'virustotal' && enrichment.score > 80
+//	enrichment.kind == 'sha256' && enrichment.verdict in ['malicious','suspicious']
+type EnrichmentPayload struct {
+	IOCID           int64  `json:"ioc_id"`
+	IOCKind         string `json:"kind"`
+	NormalizedValue string `json:"normalized_value"`
+	Adapter         string `json:"adapter"`
+	Verdict         string `json:"verdict"`
+	Score           int64  `json:"score"`
+}
+
+// EvaluateEnrichmentFilter runs an orchestration's `trigger.filter`
+// against an enrichment write. Returns true if the orchestration
+// should fire. Empty filter returns true — unlike findings (where
+// the firehose demands an opt-in), enrichment writes are rare
+// enough that a no-filter trigger ("fire on any enrichment") is a
+// reasonable default. Operators wanting tighter scope add a filter.
+func EvaluateEnrichmentFilter(filter string, payload EnrichmentPayload) (bool, error) {
+	if strings.TrimSpace(filter) == "" {
+		return true, nil
+	}
+	env := Env{"enrichment": enrichmentMap(payload)}
+	return EvalBool(filter, env)
+}
+
+func enrichmentMap(p EnrichmentPayload) map[string]any {
+	return map[string]any{
+		"ioc_id":           p.IOCID,
+		"kind":             p.IOCKind,
+		"normalized_value": p.NormalizedValue,
+		"adapter":          p.Adapter,
+		"verdict":          p.Verdict,
+		"score":            p.Score,
+	}
+}
+
+// EnrichmentTriggerPayload is the JSON the engine's run record
+// stores on an enrichment-triggered run. Step prompts then see
+// `{{trigger.<field>}}` for each field above plus `kind` (the
+// trigger kind, "ioc_enriched") and `ioc_id` re-named so it doesn't
+// collide with `kind` (the IOC kind).
+func EnrichmentTriggerPayload(p EnrichmentPayload) string {
+	out := map[string]any{
+		"kind":             "ioc_enriched",
+		"ioc_id":           p.IOCID,
+		"ioc_kind":         p.IOCKind,
+		"normalized_value": p.NormalizedValue,
+		"adapter":          p.Adapter,
+		"verdict":          p.Verdict,
+		"score":            p.Score,
+	}
+	b, _ := json.Marshal(out)
+	return string(b)
+}
+
 // CronTriggerPayload is the JSON for cron-triggered runs. `tick` is
 // the unix-ms timestamp the scheduler decided to fire — useful for
 // templates that want to scope queries to a window.

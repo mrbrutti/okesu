@@ -270,12 +270,17 @@ func (s *Spec) Validate() error {
 		if s.Trigger.Filter == "" {
 			return errors.New("trigger.on=finding requires trigger.filter")
 		}
+	case "ioc_enriched":
+		// filter is OPTIONAL — enrichment writes are rare enough
+		// (gated by adapter rate limits + cache TTL) that a "fire
+		// on any enrichment" default doesn't risk run storms the
+		// way the finding firehose does.
 	case "cron":
 		if s.Trigger.Cron == "" {
 			return errors.New("trigger.on=cron requires trigger.cron")
 		}
 	default:
-		return fmt.Errorf("trigger.on must be manual|finding|cron, got %q", s.Trigger.On)
+		return fmt.Errorf("trigger.on must be manual|finding|ioc_enriched|cron, got %q", s.Trigger.On)
 	}
 
 	// Inputs validation.

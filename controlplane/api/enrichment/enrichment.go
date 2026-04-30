@@ -38,6 +38,23 @@ type Store interface {
 	Upsert(iocID int64, adapter string, r *Result) error
 }
 
+// EnrichedEvent is what the post-write hook fires with. The trigger
+// path uses these to spawn `on: ioc_enriched` orchestrations.
+//
+// Only fires after a CACHE MISS that resulted in a real adapter
+// call AND a successful Upsert — cache hits don't fire the hook
+// because no new information was learned. Otherwise every step
+// that calls `enrich_ioc` would re-fire any matching trigger
+// orchestration, leading to runaway loops.
+type EnrichedEvent struct {
+	IOCID           int64
+	IOCKind         string
+	NormalizedValue string
+	Adapter         string
+	Verdict         string
+	Score           int64
+}
+
 // Service orchestrates the cache→adapter→cache flow per IOC.
 type Service struct {
 	adapters   []Enricher
@@ -46,6 +63,9 @@ type Service struct {
 	rateLimit  float64
 	mu         sync.Mutex
 	limiters   map[string]*rateLimiter
+	// onEnriched is called once per fresh cache write. nil = no hook
+	// installed, in which case enrichment is purely cache-and-return.
+	onEnriched func(EnrichedEvent)
 }
 
 func New(adapters []Enricher, store Store, defaultTTL time.Duration, rateRPS float64) *Service {
@@ -56,6 +76,14 @@ func New(adapters []Enricher, store Store, defaultTTL time.Duration, rateRPS flo
 		rateLimit:  rateRPS,
 		limiters:   make(map[string]*rateLimiter),
 	}
+}
+
+// SetEnrichedHook installs the post-write hook fired once per fresh
+// cache miss + successful Upsert. Cache hits do NOT fire the hook
+// (already-known data shouldn't re-trigger orchestrations). Called
+// at server boot to wire the enrichment-trigger dispatch path.
+func (s *Service) SetEnrichedHook(fn func(EnrichedEvent)) {
+	s.onEnriched = fn
 }
 
 // Enrich runs every adapter that supports the kind. Adapters fail
@@ -75,7 +103,28 @@ func (s *Service) Enrich(ctx context.Context, iocID int64, kind, normalizedValue
 		if err != nil || r == nil {
 			continue
 		}
-		_ = s.store.Upsert(iocID, a.Name(), r)
+		if upErr := s.store.Upsert(iocID, a.Name(), r); upErr == nil && s.onEnriched != nil {
+			// Best-effort hook fire. Run synchronously so the
+			// trigger dispatch happens on the same goroutine that
+			// just enriched — keeps the test ergonomics simple
+			// (no fan-in race) and the trigger layer's downstream
+			// already kicks runs asynchronously via the engine.
+			func() {
+				defer func() {
+					// A panicking hook must not corrupt the
+					// enrichment loop.
+					_ = recover()
+				}()
+				s.onEnriched(EnrichedEvent{
+					IOCID:           iocID,
+					IOCKind:         kind,
+					NormalizedValue: normalizedValue,
+					Adapter:         a.Name(),
+					Verdict:         r.Verdict,
+					Score:           r.Score,
+				})
+			}()
+		}
 		out = append(out, *r)
 	}
 	return out, nil
