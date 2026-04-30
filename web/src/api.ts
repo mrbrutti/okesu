@@ -311,6 +311,43 @@ export interface IOCRecord {
   LastSeen: string;         // RFC3339
 }
 
+// Investigation mirrors controlplane/db.Investigation. The Go struct
+// has no `json:"…"` tags, so the encoder uses Go's default capitalized
+// field names — keep the casing here in lockstep with the server type.
+// time.Time fields encode to RFC3339 strings; ClosedAt is the Go zero
+// value ("0001-01-01T00:00:00Z") when the case is still active.
+export interface Investigation {
+  ID: number;
+  Title: string;
+  Status: 'active' | 'closed' | 'archived';
+  Resolution: '' | 'resolved' | 'false_positive' | 'duplicate' | 'wont_fix';
+  Summary: string;
+  CreatedBy: string;
+  CreatedAt: string; // RFC3339
+  ClosedAt: string;  // RFC3339, "0001-01-01T00:00:00Z" when not closed
+  UpdatedAt: string;
+}
+
+// InvestigationNote mirrors controlplane/db.InvestigationNote — same
+// Go-default capitalization rule as Investigation above.
+export interface InvestigationNote {
+  ID: number;
+  InvestigationID: number;
+  Author: string;
+  Body: string;
+  CreatedAt: string;
+}
+
+// InvestigationDetail is the shape of GET /api/investigations/{id}.
+// The handler builds a `map[string]any` with these four lowercase keys
+// — see controlplane/api/investigations.go GetInvestigationHandler.
+export interface InvestigationDetail {
+  investigation: Investigation;
+  findings: number[];
+  runs: number[];
+  notes: InvestigationNote[];
+}
+
 export interface AuthConfig {
   oidc_enabled: boolean;
   oidc_label?: string;
@@ -660,6 +697,37 @@ export const api = {
       method: 'DELETE',
       body: JSON.stringify({ fingerprint }),
     }),
+
+  // Phase 22.3 — investigations (T2 case workspace). Operators open
+  // a case from a finding, link more findings/runs as the case
+  // develops, capture analyst notes, and close with a resolution.
+  investigations: {
+    list: (status?: string) =>
+      request<Investigation[]>(
+        `/api/investigations${status ? `?status=${encodeURIComponent(status)}` : ''}`,
+      ),
+    get: (id: number) =>
+      request<InvestigationDetail>(`/api/investigations/${id}`),
+    create: (req: { title: string; summary?: string; from_finding_id?: number; created_by?: string }) =>
+      request<Investigation>('/api/investigations', {
+        method: 'POST',
+        body: JSON.stringify(req),
+      }),
+    update: (id: number, patch: Partial<{ title: string; status: string; resolution: string; summary: string }>) =>
+      request<Investigation>(`/api/investigations/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify(patch),
+      }),
+    addNote: (id: number, author: string, body: string) =>
+      request<{ id: number }>(`/api/investigations/${id}/notes`, {
+        method: 'POST',
+        body: JSON.stringify({ author, body }),
+      }),
+    linkFinding: (invID: number, findingID: number) =>
+      request<void>(`/api/investigations/${invID}/findings/${findingID}`, {
+        method: 'PUT',
+      }),
+  },
 
   // Phase 5 — nodes & deploy.
   nodes: (limit?: number, offset?: number) => {

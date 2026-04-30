@@ -9,6 +9,8 @@ import AgentsPage from './pages/Agents';
 import OrchestrationsPage from './pages/Orchestrations';
 import DashboardPage from './pages/Dashboard';
 import FindingsPage from './pages/Findings';
+import InvestigationsPage from './pages/Investigations';
+import InvestigationDetailPage from './pages/InvestigationDetail';
 import NodesPage from './pages/Nodes';
 import NodeDetailPage from './pages/NodeDetail';
 import SettingsPage from './pages/Settings';
@@ -51,6 +53,8 @@ export default function App() {
         <Route index element={<DashboardPage />} />
         <Route path="/dashboard" element={<DashboardPage />} />
         <Route path="/findings" element={<FindingsPage />} />
+        <Route path="/investigations" element={<InvestigationsPage />} />
+        <Route path="/investigations/:id" element={<InvestigationDetailPage />} />
         <Route path="/events" element={<EventsPage />} />
         <Route path="/daimons" element={<DaimonsPage />} />
         <Route path="/daimons/:name" element={<DaimonDetailPage />} />
