@@ -705,6 +705,12 @@ func (s *Server) routes() http.Handler {
 			))
 			r.Get("/api/federation/cp-provisions", api.CPProvisionsListHandler(s.store))
 			r.Get("/api/federation/cp-provisions/{id}", api.CPProvisionGetHandler(s.store))
+			// Delete the row. Optional `?destroy=true` also tries to
+			// terminate the cloud-side instance via Provisioner.Destroy.
+			// Without that flag the cloud resource is left alone, which
+			// is the safe default for the common "clean up failed rows"
+			// case where there's no live instance to kill.
+			r.Delete("/api/federation/cp-provisions/{id}", api.CPProvisionDeleteHandler(s.store, s.cpProvisioners))
 			// Phase 21.5 — read-only cost preview the +Add CP modal
 			// hits on every form change. Same body shape as the
 			// create endpoint; never mints tokens or inserts rows.

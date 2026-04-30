@@ -989,6 +989,16 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(req),
     }),
+  /** Delete a provision row. When `destroy=true` AND the row has a
+   *  cloud_resource_id, the parent first calls Provisioner.Destroy to
+   *  terminate the cloud-side instance. Without that flag the cloud
+   *  resource is left alone — the safe default for "clean up failed
+   *  rows" where there's no live VM to kill. */
+  cpProvisionDelete: (id: number, destroy = false) =>
+    request<void | { deleted: boolean; destroy_error?: string; cloud_resource?: string }>(
+      `/api/federation/cp-provisions/${id}${destroy ? '?destroy=true' : ''}`,
+      { method: 'DELETE' },
+    ),
   // Phase 21.5 — read-only cost preview for the +Add CP modal.
   cpProvisionEstimate: (req: CPProvisionEstimateRequest) =>
     request<CPProvisionEstimate>('/api/federation/cp-provision/estimate', {
