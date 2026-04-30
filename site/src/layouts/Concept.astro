@@ -15,7 +15,9 @@ interface Props {
   diagram?: string;        // optional component name reference, used in MDX directly
 }
 
-const { title, subtitle, glyph, description, toc } = Astro.props;
+// MDX pages pass frontmatter as Astro.props.frontmatter; .astro pages pass directly.
+const fp = Astro.props.frontmatter ?? Astro.props;
+const { title, subtitle, glyph, description, toc } = fp;
 ---
 
 <Base title={title} description={description}>
