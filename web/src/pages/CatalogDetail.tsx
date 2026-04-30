@@ -1,36 +1,36 @@
 import { useEffect, useState } from 'react';
-import { Link, useParams, useNavigate, type NavigateFunction } from 'react-router-dom';
+import { useParams, Link, useNavigate } from 'react-router-dom';
 import { ArrowLeft, FileText, Eye, Network, Library, Loader2 } from 'lucide-react';
 
-import { api, type IOCRecord, type IOCObservation, type IOCRelationship } from '../api';
+import { api, type FederatedIOCRecord, type FederatedIOCObservation, type FederatedIOCRelationship } from '../api';
 import { cn } from '../lib/cn';
 
 type Tab = 'overview' | 'observations' | 'relationships';
 
 export default function CatalogDetailPage() {
-  const { id } = useParams();
+  const { kind, value } = useParams();
   const navigate = useNavigate();
-  const iocID = Number(id);
-  const [ioc, setIOC] = useState<IOCRecord | null>(null);
+  const decodedValue = value ? decodeURIComponent(value) : '';
+  const [ioc, setIOC] = useState<FederatedIOCRecord | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>('overview');
-  const [observations, setObservations] = useState<IOCObservation[] | null>(null);
-  const [relationships, setRelationships] = useState<IOCRelationship[] | null>(null);
+  const [observations, setObservations] = useState<FederatedIOCObservation[] | null>(null);
+  const [relationships, setRelationships] = useState<FederatedIOCRelationship[] | null>(null);
 
   useEffect(() => {
-    if (!iocID) { setError('bad id'); return; }
-    api.ioc(iocID).then(setIOC).catch(e => setError(String(e)));
-  }, [iocID]);
+    if (!kind || !decodedValue) { setError('bad kv'); return; }
+    api.iocByKV(kind, decodedValue).then(setIOC).catch(e => setError(String(e)));
+  }, [kind, decodedValue]);
 
   useEffect(() => {
-    if (!iocID || tab !== 'observations' || observations !== null) return;
-    api.iocObservations(iocID).then(r => setObservations(r ?? [])).catch(() => setObservations([]));
-  }, [iocID, tab, observations]);
+    if (!kind || !decodedValue || tab !== 'observations' || observations !== null) return;
+    api.iocObservationsByKV(kind, decodedValue).then(r => setObservations(r ?? [])).catch(() => setObservations([]));
+  }, [kind, decodedValue, tab, observations]);
 
   useEffect(() => {
-    if (!iocID || tab !== 'relationships' || relationships !== null) return;
-    api.iocRelationships(iocID).then(r => setRelationships(r ?? [])).catch(() => setRelationships([]));
-  }, [iocID, tab, relationships]);
+    if (!kind || !decodedValue || tab !== 'relationships' || relationships !== null) return;
+    api.iocRelationshipsByKV(kind, decodedValue).then(r => setRelationships(r ?? [])).catch(() => setRelationships([]));
+  }, [kind, decodedValue, tab, relationships]);
 
   if (error) {
     return (
@@ -68,6 +68,20 @@ export default function CatalogDetailPage() {
           <span className="break-all">{ioc.Name || ioc.Value}</span>
         </h1>
         {ioc.Name && <div className="text-ink-mute font-mono text-[11px] break-all mt-1 ml-9">{ioc.Value}</div>}
+        {ioc.cp_sources && ioc.cp_sources.length > 0 && (
+          <div className="flex flex-wrap gap-1 mt-2 ml-9">
+            <span className="text-[10px] uppercase tracking-wider text-ink-mute mr-1">Seen on</span>
+            {ioc.cp_sources.map(s => (
+              <span
+                key={s.instance_id}
+                className="px-1.5 py-0.5 text-[10px] rounded bg-brand-50 text-brand-700 ring-1 ring-brand-100"
+                title={s.region || s.display_name || s.instance_id}
+              >
+                {s.display_name || s.instance_id}
+              </span>
+            ))}
+          </div>
+        )}
       </header>
 
       <div className="px-6 border-b border-border bg-panel flex items-center gap-1">
@@ -79,7 +93,7 @@ export default function CatalogDetailPage() {
       <div className="flex-1 overflow-auto p-6 space-y-4">
         {tab === 'overview' && <OverviewTab ioc={ioc} />}
         {tab === 'observations' && <ObservationsTab rows={observations} />}
-        {tab === 'relationships' && <RelationshipsTab rows={relationships} currentID={iocID} navigate={navigate} />}
+        {tab === 'relationships' && <RelationshipsTab rows={relationships} kind={kind} decodedValue={decodedValue} navigate={navigate} />}
       </div>
     </div>
   );
@@ -108,7 +122,7 @@ function TabButton({ current, value, onClick, icon: Icon, label, count }: {
   );
 }
 
-function OverviewTab({ ioc }: { ioc: IOCRecord }) {
+function OverviewTab({ ioc }: { ioc: FederatedIOCRecord }) {
   const isRule = ioc.Kind === 'yara_rule' || ioc.Kind === 'sigma_rule';
   return (
     <div className="space-y-4 max-w-4xl">
@@ -150,7 +164,7 @@ function OverviewTab({ ioc }: { ioc: IOCRecord }) {
   );
 }
 
-function ObservationsTab({ rows }: { rows: IOCObservation[] | null }) {
+function ObservationsTab({ rows }: { rows: FederatedIOCObservation[] | null }) {
   if (rows === null) return <div className="flex items-center gap-2 text-ink-dim text-xs"><Loader2 size={14} className="animate-spin" /> Loading observations…</div>;
   if (rows.length === 0) return <div className="text-sm text-ink-mute border border-border rounded-md p-6 text-center bg-slate-50/50">No observations recorded.</div>;
   return (
@@ -161,6 +175,7 @@ function ObservationsTab({ rows }: { rows: IOCObservation[] | null }) {
             <th className="px-3 py-2 font-medium w-24">Finding</th>
             <th className="px-3 py-2 font-medium w-24">Run</th>
             <th className="px-3 py-2 font-medium">Host</th>
+            <th className="px-3 py-2 font-medium w-32">CP</th>
             <th className="px-3 py-2 font-medium w-44">Observed at</th>
           </tr>
         </thead>
@@ -178,6 +193,9 @@ function ObservationsTab({ rows }: { rows: IOCObservation[] | null }) {
                   : <span className="text-ink-mute">—</span>}
               </td>
               <td className="px-3 py-2 text-ink font-mono text-xs">{o.Host || '—'}</td>
+              <td className="px-3 py-2 text-ink-dim text-xs">
+                {o.cp_source?.display_name || o.cp_source?.instance_id || '—'}
+              </td>
               <td className="px-3 py-2 text-ink-dim text-xs font-mono">{fmtDate(o.ObservedAt)}</td>
             </tr>
           ))}
@@ -187,7 +205,7 @@ function ObservationsTab({ rows }: { rows: IOCObservation[] | null }) {
   );
 }
 
-function RelationshipsTab({ rows, currentID, navigate }: { rows: IOCRelationship[] | null; currentID: number; navigate: NavigateFunction }) {
+function RelationshipsTab({ rows, kind, decodedValue, navigate }: { rows: FederatedIOCRelationship[] | null; kind: string | undefined; decodedValue: string; navigate: ReturnType<typeof useNavigate> }) {
   if (rows === null) return <div className="flex items-center gap-2 text-ink-dim text-xs"><Loader2 size={14} className="animate-spin" /> Loading relationships…</div>;
   if (rows.length === 0) return <div className="text-sm text-ink-mute border border-border rounded-md p-6 text-center bg-slate-50/50">No relationships recorded.</div>;
   return (
@@ -199,20 +217,33 @@ function RelationshipsTab({ rows, currentID, navigate }: { rows: IOCRelationship
             <th className="px-3 py-2 font-medium">Subject</th>
             <th className="px-3 py-2 font-medium w-32">Predicate</th>
             <th className="px-3 py-2 font-medium">Object</th>
-            <th className="px-3 py-2 font-medium w-20">Source</th>
+            <th className="px-3 py-2 font-medium w-32">CPs</th>
           </tr>
         </thead>
         <tbody>
-          {rows.map(rel => {
-            const outgoing = rel.SubjectID === currentID;
-            const otherID = outgoing ? rel.ObjectID : rel.SubjectID;
+          {rows.map((rel, i) => {
+            const subjectIsThis = rel.SubjectKind === kind && rel.SubjectValue === decodedValue;
+            const otherKind = subjectIsThis ? rel.ObjectKind : rel.SubjectKind;
+            const otherValue = subjectIsThis ? rel.ObjectValue : rel.SubjectValue;
             return (
-              <tr key={rel.ID} className="border-b border-border last:border-b-0 hover:bg-slate-50/60 cursor-pointer" onClick={() => navigate(`/catalog/${otherID}`)}>
-                <td className="px-3 py-2 text-ink-mute text-xs">{outgoing ? '→ out' : '← in'}</td>
-                <td className="px-3 py-2 text-ink">#{rel.SubjectID}{rel.SubjectID === currentID && <span className="text-ink-mute"> (this)</span>}</td>
+              <tr
+                key={i}
+                className="border-b border-border last:border-b-0 hover:bg-slate-50/60 cursor-pointer"
+                onClick={() => navigate(`/catalog/${otherKind}/${encodeURIComponent(otherValue)}`)}
+              >
+                <td className="px-3 py-2 text-ink-mute text-xs">{subjectIsThis ? '→ out' : '← in'}</td>
+                <td className="px-3 py-2 text-ink font-mono text-[11px]">
+                  <span className="text-ink-dim">{rel.SubjectKind}</span> {rel.SubjectValue}
+                  {subjectIsThis && <span className="text-ink-mute"> (this)</span>}
+                </td>
                 <td className="px-3 py-2 font-mono text-[11px] text-ink">{rel.Predicate}</td>
-                <td className="px-3 py-2 text-ink">#{rel.ObjectID}{rel.ObjectID === currentID && <span className="text-ink-mute"> (this)</span>}</td>
-                <td className="px-3 py-2 text-ink-dim text-xs">{rel.Source}</td>
+                <td className="px-3 py-2 text-ink font-mono text-[11px]">
+                  <span className="text-ink-dim">{rel.ObjectKind}</span> {rel.ObjectValue}
+                  {!subjectIsThis && <span className="text-ink-mute"> (this)</span>}
+                </td>
+                <td className="px-3 py-2 text-ink-dim text-xs">
+                  {rel.cp_sources?.map(s => s.display_name || s.instance_id).join(', ') || '—'}
+                </td>
               </tr>
             );
           })}
