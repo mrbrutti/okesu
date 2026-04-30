@@ -636,10 +636,14 @@ func (s *Server) routes() http.Handler {
 		// register before any future /api/iocs/{id} catch-all so chi
 		// doesn't try to ParseInt "cross-cp-patterns".
 		r.Get("/api/iocs/cross-cp-patterns", api.ListCrossCPPatternsHandler(s.store))
+		// Phase 22.B — single IOC record fetch (drawer / deep-link).
+		r.Get("/api/iocs/{id}", api.GetIOCHandler(s.store))
 		// Phase 22.4 — typed relationship edges for a single IOC (both
 		// directions). Sub-path must register before any /api/iocs/{id}
 		// catch-all so chi routes it correctly.
 		r.Get("/api/iocs/{id}/relationships", api.ListIOCRelationshipsHandler(s.store))
+		// Phase 22.C — observation history for a single IOC (Catalog detail Observations tab).
+		r.Get("/api/iocs/{id}/observations", api.ListIOCObservationsHandler(s.store))
 		// Phase 22.4 — STIX 2.1 bundle export. Supports ?kind= and ?since= filters.
 		r.Get("/api/stix2/iocs", api.STIX2ExportHandler(s.store))
 		// Phase 22.5 — YARA rule bundle export. Concatenates all yara_rule

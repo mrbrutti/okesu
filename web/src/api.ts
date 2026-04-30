@@ -311,9 +311,34 @@ export interface IOCRecord {
   SeverityFloor: string;    // CRITICAL|HIGH|MEDIUM|LOW|INFO
   Classification: string;
   Notes: string;
+  Name: string;             // Phase 22.5 — operator-friendly name (catalog: from rule header; observed: empty)
+  Tags: string;             // Phase 22.5 — comma-separated tag list
   ObservationCount: number;
   FirstSeen: string;        // RFC3339
   LastSeen: string;         // RFC3339
+}
+
+// IOCObservation mirrors controlplane/db.IOCObservation. No json tags
+// on the Go struct — capital-case field names. ObservedAt is a
+// time.Time on the server, encoded to RFC3339Nano in JSON.
+export interface IOCObservation {
+  IOCID: number;
+  FindingID: number;            // 0 if not linked to a finding
+  OrchestrationRunID: number;   // 0 if not linked to a run
+  Host: string;
+  ObservedAt: string;           // RFC3339
+}
+
+// IOCRelationship mirrors controlplane/db.IOCRelationship. The fixed
+// v1 predicate vocabulary lives server-side; we treat Predicate as a
+// free-form string on the client.
+export interface IOCRelationship {
+  ID: number;
+  SubjectID: number;
+  Predicate: string;
+  ObjectID: number;
+  Source: string;
+  Confidence: string;
 }
 
 // Investigation mirrors controlplane/db.Investigation. The Go struct
@@ -671,17 +696,26 @@ export const api = {
         : `/api/findings/${id}/runs`,
     ),
 
-  // IOCs (Phase 22.1+). Without filters returns the most recent 100
-  // by last_seen; with finding_id returns only those observed against
-  // that finding (joined via ioc_observations); with kind filters by
-  // indicator type. Sources can mix catalog + observed rows.
-  iocs: (filter: { findingID?: number; kind?: string } = {}) => {
+  // IOCs (Phase 22.1+; Catalog UI extends with source/q + per-id endpoints).
+  // Without filters returns the most recent 100 by last_seen.
+  iocs: (filter: { findingID?: number; kind?: string; source?: string; q?: string } = {}) => {
     const p = new URLSearchParams();
     if (filter.findingID) p.set('finding_id', String(filter.findingID));
     if (filter.kind)      p.set('kind', filter.kind);
+    if (filter.source)    p.set('source', filter.source);
+    if (filter.q)         p.set('q', filter.q);
     const qs = p.toString();
     return request<IOCRecord[]>(`/api/iocs${qs ? '?' + qs : ''}`);
   },
+
+  ioc: (id: number) =>
+    request<IOCRecord>(`/api/iocs/${id}`),
+
+  iocObservations: (id: number) =>
+    request<IOCObservation[]>(`/api/iocs/${id}/observations`),
+
+  iocRelationships: (id: number) =>
+    request<IOCRelationship[]>(`/api/iocs/${id}/relationships`),
 
   findings: (filter: FindingsFilter = {}) => {
     const p = new URLSearchParams();

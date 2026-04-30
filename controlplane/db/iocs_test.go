@@ -182,6 +182,70 @@ func TestUpsertIOC_CatalogReloadUpdatesNameAndTags(t *testing.T) {
 	}
 }
 
+func TestListIOCs_FilterBySource(t *testing.T) {
+	s := openTempStore(t)
+	s.UpsertIOC(&IOCUpsert{Kind: "sha256", Value: "a", NormalizedValue: "a", Source: "catalog"})
+	s.UpsertIOC(&IOCUpsert{Kind: "sha256", Value: "b", NormalizedValue: "b", Source: "observed"})
+
+	rows, err := s.ListIOCs(IOCListFilter{Source: "catalog"})
+	if err != nil {
+		t.Fatalf("ListIOCs: %v", err)
+	}
+	if len(rows) != 1 || rows[0].NormalizedValue != "a" {
+		t.Errorf("expected only catalog row 'a'; got %+v", rows)
+	}
+}
+
+func TestListIOCs_FilterByQuery(t *testing.T) {
+	s := openTempStore(t)
+	s.UpsertIOC(&IOCUpsert{Kind: "sha256", Value: "AbCdEf", NormalizedValue: "abcdef", Source: "catalog", Name: "WannaCry sample"})
+	s.UpsertIOC(&IOCUpsert{Kind: "sha256", Value: "abc999", NormalizedValue: "abc999", Source: "catalog", Tags: "ransomware,emotet"})
+	s.UpsertIOC(&IOCUpsert{Kind: "ipv4", Value: "1.2.3.4", NormalizedValue: "1.2.3.4", Source: "observed"})
+
+	// Match by value (case-insensitive)
+	rows, err := s.ListIOCs(IOCListFilter{Query: "ABCD"})
+	if err != nil {
+		t.Fatalf("ListIOCs query=ABCD: %v", err)
+	}
+	if len(rows) != 1 || rows[0].NormalizedValue != "abcdef" {
+		t.Errorf("query=ABCD expected one match (abcdef); got %+v", rows)
+	}
+	// Match by name
+	rows, err = s.ListIOCs(IOCListFilter{Query: "wannacry"})
+	if err != nil {
+		t.Fatalf("ListIOCs query=wannacry: %v", err)
+	}
+	if len(rows) != 1 || rows[0].Name != "WannaCry sample" {
+		t.Errorf("query=wannacry expected one match by name; got %+v", rows)
+	}
+	// Match by tag
+	rows, err = s.ListIOCs(IOCListFilter{Query: "emotet"})
+	if err != nil {
+		t.Fatalf("ListIOCs query=emotet: %v", err)
+	}
+	if len(rows) != 1 || rows[0].NormalizedValue != "abc999" {
+		t.Errorf("query=emotet expected one match by tag; got %+v", rows)
+	}
+}
+
+// Source + Query combine via AND in the SQL builder. Locks in that
+// adding a second filter narrows rather than widens — guards against
+// future builder rewrites that might confuse OR with AND.
+func TestListIOCs_FilterBySourceAndQuery(t *testing.T) {
+	s := openTempStore(t)
+	// Both rows match Tags=ransomware, but only one is source=catalog.
+	s.UpsertIOC(&IOCUpsert{Kind: "sha256", Value: "a", NormalizedValue: "a", Source: "catalog", Tags: "ransomware"})
+	s.UpsertIOC(&IOCUpsert{Kind: "sha256", Value: "b", NormalizedValue: "b", Source: "observed", Tags: "ransomware"})
+
+	rows, err := s.ListIOCs(IOCListFilter{Source: "catalog", Query: "ransomware"})
+	if err != nil {
+		t.Fatalf("ListIOCs: %v", err)
+	}
+	if len(rows) != 1 || rows[0].NormalizedValue != "a" {
+		t.Errorf("source=catalog AND query=ransomware expected one row 'a'; got %+v", rows)
+	}
+}
+
 func TestUpsertIOC_ObservedDoesNotOverwriteCatalog(t *testing.T) {
 	s := openTempStore(t)
 	// Seed a catalog row with curated metadata.

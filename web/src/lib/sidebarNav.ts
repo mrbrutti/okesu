@@ -1,7 +1,7 @@
 import type { LucideIcon } from 'lucide-react';
 import {
   Activity, AlertTriangle, BookOpen, ClipboardList,
-  LayoutDashboard, Network, Server, Layers, Settings,
+  LayoutDashboard, Library, Network, Server, Layers, Settings,
   Sparkles, Workflow,
 } from 'lucide-react';
 
@@ -51,6 +51,7 @@ export const sidebarNav: NavSection[] = [
       { to: '/findings',       label: 'Findings',       icon: AlertTriangle, enabled: true },
       { to: '/investigations', label: 'Investigations', icon: ClipboardList, enabled: true },
       { to: '/events',         label: 'Live Events',    icon: Activity,      enabled: true },
+      { to: '/catalog',        label: 'Catalog',        icon: Library,       enabled: true },
     ],
   }},
   { kind: 'group', group: {

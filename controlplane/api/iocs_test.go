@@ -109,3 +109,43 @@ func TestListIOCs_BadFindingIDReturns400(t *testing.T) {
 		t.Errorf("bad finding_id: got %d, want 400", rec.Code)
 	}
 }
+
+func TestListIOCs_SourceQueryParam(t *testing.T) {
+	st := newTestStore(t)
+	st.UpsertIOC(&db.IOCUpsert{Kind: "sha256", Value: "a", NormalizedValue: "a", Source: "catalog"})
+	st.UpsertIOC(&db.IOCUpsert{Kind: "sha256", Value: "b", NormalizedValue: "b", Source: "observed"})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/api/iocs?source=catalog", nil)
+	ListIOCs(st)(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	var rows []db.IOCRecord
+	if err := json.NewDecoder(rec.Body).Decode(&rows); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(rows) != 1 || rows[0].NormalizedValue != "a" {
+		t.Errorf("?source=catalog expected one match; got %+v", rows)
+	}
+}
+
+func TestListIOCs_QueryParam(t *testing.T) {
+	st := newTestStore(t)
+	st.UpsertIOC(&db.IOCUpsert{Kind: "sha256", Value: "abc", NormalizedValue: "abc", Source: "catalog", Tags: "ransomware"})
+	st.UpsertIOC(&db.IOCUpsert{Kind: "sha256", Value: "xyz", NormalizedValue: "xyz", Source: "catalog"})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/api/iocs?q=RANSOM", nil)
+	ListIOCs(st)(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	var rows []db.IOCRecord
+	if err := json.NewDecoder(rec.Body).Decode(&rows); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(rows) != 1 || rows[0].NormalizedValue != "abc" {
+		t.Errorf("?q=RANSOM expected one match by tag; got %+v", rows)
+	}
+}

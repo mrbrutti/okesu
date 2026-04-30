@@ -2005,6 +2005,26 @@ where tag-filtering is the operator UX.
 
 ---
 
+## Catalog UI
+
+Operator-facing read-only browse over the `iocs` table. Single page at
+`/catalog` with a sortable list (kind/source/search filters), a side
+drawer for quick scan, and a `/catalog/:id` detail page with three
+tabs (Overview, Observations, Relationships). Rule bodies for
+`yara_rule` and `sigma_rule` kinds render in `<pre><code>` on the
+Overview tab — no syntax highlighting library in v1.
+
+Backend additions: `GET /api/iocs/{id}` (single record),
+`GET /api/iocs/{id}/observations` (observation history), and
+`source` + `q` filters on the existing `GET /api/iocs`. All under
+the cookie-auth viewer+ group.
+
+Frontend: `web/src/pages/Catalog.tsx`,
+`web/src/pages/CatalogDetail.tsx`, `web/src/components/CatalogDrawer.tsx`.
+Sidebar entry under the `Triage` group.
+
+---
+
 ## Federation: parent ↔ child CPs
 
 A single tenant typically runs one **global** CP plus one or more

@@ -1,6 +1,7 @@
 package db
 
 import (
+	"database/sql"
 	"fmt"
 	"strings"
 	"time"
@@ -49,6 +50,7 @@ type IOCObservation struct {
 	FindingID          int64 // 0 if not linked to a finding
 	OrchestrationRunID int64 // 0 if not linked to a run
 	Host               string
+	ObservedAt         time.Time
 }
 
 // UpsertIOC inserts or updates a row in `iocs`. Returns the row id and
@@ -178,7 +180,7 @@ func (s *Store) RecordIOCObservation(iocID int64, obs *IOCObservation) error {
 
 func (s *Store) ListIOCObservations(iocID int64) ([]IOCObservation, error) {
 	rows, err := s.Query(`
-		SELECT ioc_id, COALESCE(finding_id,0), COALESCE(orchestration_run_id,0), COALESCE(host,'')
+		SELECT ioc_id, COALESCE(finding_id,0), COALESCE(orchestration_run_id,0), COALESCE(host,''), observed_at
 		FROM ioc_observations WHERE ioc_id = ? ORDER BY observed_at DESC`, iocID)
 	if err != nil {
 		return nil, err
@@ -187,9 +189,11 @@ func (s *Store) ListIOCObservations(iocID int64) ([]IOCObservation, error) {
 	var out []IOCObservation
 	for rows.Next() {
 		var o IOCObservation
-		if err := rows.Scan(&o.IOCID, &o.FindingID, &o.OrchestrationRunID, &o.Host); err != nil {
+		var observedAtRaw sql.NullString
+		if err := rows.Scan(&o.IOCID, &o.FindingID, &o.OrchestrationRunID, &o.Host, &observedAtRaw); err != nil {
 			return nil, err
 		}
+		o.ObservedAt = ParseTimestamp(observedAtRaw.String)
 		out = append(out, o)
 	}
 	return out, rows.Err()
@@ -257,6 +261,8 @@ func (s *Store) LookupIOC(kind, normalizedValue string) (*IOCRecord, error) {
 type IOCListFilter struct {
 	Kind      string
 	FindingID int64
+	Source    string // "catalog" | "observed" | "" (any)
+	Query     string // matches value, name, or tags via LIKE %q% (case-insensitive)
 	Limit     int
 }
 
@@ -281,6 +287,17 @@ func (s *Store) ListIOCs(f IOCListFilter) ([]*IOCRecord, error) {
 		joinObs = true
 		clauses = append(clauses, "ioc_observations.finding_id = ?")
 		args = append(args, f.FindingID)
+	}
+	if f.Source != "" {
+		clauses = append(clauses, "iocs.source = ?")
+		args = append(args, f.Source)
+	}
+	if f.Query != "" {
+		// Case-insensitive LIKE %q% across value, name, tags. SQLite's
+		// LOWER on both sides is portable to postgres without rewrites.
+		clauses = append(clauses, "(LOWER(iocs.value) LIKE ? OR LOWER(COALESCE(iocs.name,'')) LIKE ? OR LOWER(COALESCE(iocs.tags,'')) LIKE ?)")
+		needle := "%" + strings.ToLower(f.Query) + "%"
+		args = append(args, needle, needle, needle)
 	}
 	where := ""
 	if len(clauses) > 0 {
