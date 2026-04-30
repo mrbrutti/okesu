@@ -114,6 +114,7 @@ export default function CloudSection() {
                           {r.region && <>region <code>{r.region}</code> · </>}
                           added {new Date(r.created_at).toLocaleString()}
                           {r.created_by_email && <> · by {r.created_by_email}</>}
+                          <BudgetLine credential={r} />
                         </div>
                         {r.last_test_at && (
                           <div className={cn(
@@ -124,7 +125,6 @@ export default function CloudSection() {
                             {!r.last_test_ok && r.last_test_error && <> · {r.last_test_error}</>}
                           </div>
                         )}
-                        <BudgetRow credential={r} onChange={load} />
                       </div>
                       <div className="flex items-center gap-1.5">
                         <button
@@ -178,94 +178,18 @@ export default function CloudSection() {
   );
 }
 
-// BudgetRow renders the per-credential monthly USD cap as an inline
-// editable line. "—" when unset; click to edit; clear with the trash
-// icon. Phase 21.5 — the cap is enforced on cp_provision.create at
-// submit time, not on this read-only listing.
-function BudgetRow({ credential, onChange }: { credential: CloudCredential; onChange: () => void }) {
-  const [editing, setEditing] = useState(false);
-  const [value, setValue] = useState<string>(
-    credential.monthly_budget_usd != null ? String(credential.monthly_budget_usd) : '',
-  );
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  async function save(next: number | null) {
-    setBusy(true); setError(null);
-    try {
-      await api.cloudCredentialBudget(credential.id, next);
-      setEditing(false);
-      onChange();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  if (!editing) {
-    const display = credential.monthly_budget_usd != null
-      ? `$${credential.monthly_budget_usd.toLocaleString('en-US', { maximumFractionDigits: 2 })}/mo`
-      : 'no cap';
-    return (
-      <div className="text-[11px] mt-0.5 text-ink-mute flex items-center gap-2">
-        <span>budget: <span className={credential.monthly_budget_usd != null ? 'text-ink' : ''}>{display}</span></span>
-        <button
-          onClick={() => { setValue(credential.monthly_budget_usd != null ? String(credential.monthly_budget_usd) : ''); setEditing(true); }}
-          className="text-brand-600 hover:text-brand-700 underline"
-        >
-          edit
-        </button>
-        {credential.monthly_budget_usd != null && (
-          <button
-            onClick={() => save(null)}
-            disabled={busy}
-            className="text-ink-mute hover:text-red-700 underline"
-            title="Remove cap"
-          >
-            clear
-          </button>
-        )}
-      </div>
-    );
-  }
-
+// BudgetLine is a read-only display of the per-credential monthly
+// USD cap, shown alongside region/created-at on each credential row.
+// Editing happens in the AddCredentialDialog (Edit button) — keeping
+// inline + dialog editors in sync was UX clutter for one number.
+function BudgetLine({ credential }: { credential: CloudCredential }) {
+  const display = credential.monthly_budget_usd != null
+    ? `$${credential.monthly_budget_usd.toLocaleString('en-US', { maximumFractionDigits: 2 })}/mo`
+    : 'no cap';
   return (
-    <div className="text-[11px] mt-0.5 flex items-center gap-2">
-      <span className="text-ink-mute">budget: $</span>
-      <input
-        type="number"
-        min={0}
-        step={1}
-        value={value}
-        autoFocus
-        onChange={(e) => setValue(e.target.value)}
-        className="w-24 px-2 py-0.5 text-xs border border-border rounded"
-      />
-      <span className="text-ink-mute">/mo</span>
-      <button
-        onClick={() => {
-          const n = parseFloat(value);
-          if (Number.isNaN(n) || n < 0) {
-            setError('budget must be a non-negative number');
-            return;
-          }
-          save(n);
-        }}
-        disabled={busy}
-        className="text-xs px-2 py-0.5 bg-brand-500 hover:bg-brand-600 disabled:opacity-50 text-white rounded"
-      >
-        {busy ? '...' : 'save'}
-      </button>
-      <button
-        onClick={() => setEditing(false)}
-        disabled={busy}
-        className="text-xs px-2 py-0.5 border border-border rounded"
-      >
-        cancel
-      </button>
-      {error && <span className="text-red-700">{error}</span>}
-    </div>
+    <span>
+      {' · '}budget: <span className={credential.monthly_budget_usd != null ? 'text-ink' : ''}>{display}</span>
+    </span>
   );
 }
 
@@ -284,6 +208,12 @@ function AddCredentialDialog({
   const [name, setName] = useState(editing?.name ?? '');
   const [region, setRegion] = useState(editing?.region ?? '');
   const [payload, setPayload] = useState<Record<string, string>>({});
+  // Budget input — empty string means "no cap" semantically; the
+  // dialog converts to null/number on submit. Stored as string so the
+  // operator can clear an existing cap by deleting the digits.
+  const [budgetStr, setBudgetStr] = useState<string>(
+    editing?.monthly_budget_usd != null ? String(editing.monthly_budget_usd) : '',
+  );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -293,9 +223,24 @@ function AddCredentialDialog({
   // catch it before the round-trip.
   const fields = fieldsForCloud(cloud);
 
+  // Parse the budget input. null = "no cap"; number = cap. NaN/negative
+  // is rejected up-front so we don't fire a doomed PUT.
+  function parseBudget(): { ok: true; value: number | null } | { ok: false; error: string } {
+    const trimmed = budgetStr.trim();
+    if (trimmed === '') return { ok: true, value: null };
+    const n = Number(trimmed);
+    if (!Number.isFinite(n) || n < 0) {
+      return { ok: false, error: 'budget must be a non-negative number, or blank for no cap' };
+    }
+    return { ok: true, value: n };
+  }
+
   async function submit() {
+    const budget = parseBudget();
+    if (!budget.ok) { setError(budget.error); return; }
     setBusy(true); setError(null);
     try {
+      let resultId: number;
       if (isEdit) {
         // Build a sparse update — name/region always sent (cheap +
         // server treats null/missing as "leave alone"); payload only
@@ -309,12 +254,11 @@ function AddCredentialDialog({
           region: region !== (editing!.region ?? '') ? region : undefined,
           payload: Object.keys(sparsePayload).length > 0 ? sparsePayload : undefined,
         };
-        if (req.name === undefined && req.region === undefined && req.payload === undefined) {
-          // No changes — skip the round-trip and close.
-          onAdded();
-          return;
+        const credChanged = req.name !== undefined || req.region !== undefined || req.payload !== undefined;
+        if (credChanged) {
+          await api.cloudCredentialUpdate(editing!.id, req);
         }
-        await api.cloudCredentialUpdate(editing!.id, req);
+        resultId = editing!.id;
       } else {
         const req: CloudCredentialCreateRequest = {
           cloud,
@@ -322,7 +266,15 @@ function AddCredentialDialog({
           region: region || undefined,
           payload,
         };
-        await api.cloudCredentialCreate(req);
+        const created = await api.cloudCredentialCreate(req);
+        resultId = created.id;
+      }
+      // Sync the budget if it differs from what's stored. Always
+      // fires on create when the operator typed a value; on edit
+      // only when changed (avoids a no-op PUT on rename-only edits).
+      const currentBudget = editing?.monthly_budget_usd ?? null;
+      if (budget.value !== currentBudget) {
+        await api.cloudCredentialBudget(resultId, budget.value);
       }
       onAdded();
     } catch (e) {
@@ -361,6 +313,22 @@ function AddCredentialDialog({
               placeholder={defaultRegionFor(cloud)}
               className="w-full px-3 py-1.5 text-sm border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500/30"
             />
+          </Field>
+          <Field
+            label="Monthly budget (USD, optional)"
+            hint="Caps managed-deploy provisioning against this credential. Leave blank for no cap. Enforced by the cost catalog at submit time."
+          >
+            <div className="flex items-center gap-2">
+              <span className="text-ink-mute text-sm">$</span>
+              <input
+                type="number" min={0} step={1}
+                value={budgetStr}
+                onChange={(e) => setBudgetStr(e.target.value)}
+                placeholder="no cap"
+                className="w-32 px-3 py-1.5 text-sm border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500/30"
+              />
+              <span className="text-ink-mute text-sm">/mo</span>
+            </div>
           </Field>
           <hr className="border-border/60 my-2" />
           {isEdit && (
