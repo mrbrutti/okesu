@@ -3,7 +3,7 @@ import Base from '../layouts/Base.astro';
 import Hero from '../components/Hero.astro';
 import ConceptCard from '../components/ConceptCard.astro';
 import FeatureGrid from '../components/FeatureGrid.astro';
-import SystemMap from '../components/diagrams/SystemMap.astro';
+import OrchestrationLoopDemo from '../components/diagrams/OrchestrationLoopDemo.astro';
 ---
 
 <Base
@@ -13,8 +13,11 @@ import SystemMap from '../components/diagrams/SystemMap.astro';
   <Hero />
 
   <section class="max-w-page mx-auto px-6 mb-16">
+    <div class="text-center mb-4">
+      <span class="text-[10px] uppercase tracking-wide text-ink-mute font-bold">Live playbook · auto-replays</span>
+    </div>
     <div class="bg-panel border border-border rounded-xl shadow-card p-6 md:p-8">
-      <SystemMap />
+      <OrchestrationLoopDemo />
     </div>
   </section>
 
