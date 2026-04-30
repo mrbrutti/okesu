@@ -169,6 +169,8 @@ func serveCmd() *cobra.Command {
 	cmd.Flags().StringVar(&cfg.FederationToken, "federation-token", cfg.FederationToken, "Shared secret a parent CP presents on /api/v1/cp/introspect (X-Okesu-Federation-Token). Empty disables federation auth.")
 	cmd.Flags().StringVar(&cfg.CPBootstrapBinaryPath, "cp-bootstrap-binary", cfg.CPBootstrapBinaryPath, "Linux build of okesu-cp embedded in dockerfile-format CP bootstrap bundles. Empty disables that format.")
 	cmd.Flags().StringVar(&cfg.CPBootstrapImageTarPath, "cp-bootstrap-image-tar", cfg.CPBootstrapImageTarPath, "`docker save`-format tarball of the okesu-cp image embedded in compose-format CP bootstrap bundles. Empty disables that format.")
+	cmd.Flags().StringVar(&cfg.FederationS3PublishPrefix, "federation-s3-publish-prefix", cfg.FederationS3PublishPrefix, "Bucket prefix this child CP writes its introspect manifest to, e.g. 'cp/<self>/outbound/<parent>/'. Empty disables S3-dead-drop publishing.")
+	cmd.Flags().Int64Var(&cfg.FederationS3PublishConfigID, "federation-s3-publish-config-id", cfg.FederationS3PublishConfigID, "transport_configs.id whose bucket coords the publisher uses. 0 disables.")
 
 	return cmd
 }

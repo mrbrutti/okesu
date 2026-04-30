@@ -112,67 +112,82 @@ func CPIntrospect(deps CPIntrospectDepsValue) http.HandlerFunc {
 			return
 		}
 
-		// Tally aggregates. ListAgents/ListNodes return up to (limit,offset)
-		// — pass a large limit; the federation contract caps each CP at
-		// a reasonable size where we'd prefer a full count anyway.
-		agents, _ := deps.Store.ListAgents(10_000, 0)
-		var healthy int
-		for _, a := range agents {
-			if a.LastHeartbeatAt.Valid {
-				healthy++
-			}
-		}
-		nodes, _ := deps.Store.ListNodes(10_000, 0)
-		var openFindings int64
-		if fs, ferr := deps.Store.FindingsSummary(); ferr == nil {
-			openFindings = fs.Open
-		}
-
-		// Per-OS counts using the same classifier the local dashboard
-		// uses — gives a parent CP an immediately-mergeable breakdown.
-		osCounts := map[string]int{}
-		for _, n := range nodes {
-			os := classifyOS(n.OSRelease.String, n.Name)
-			osCounts[os]++
-		}
-		osDist := make([]osBucket, 0, len(osCounts))
-		for os, n := range osCounts {
-			osDist = append(osDist, osBucket{OS: os, Count: n})
-		}
-		sort.SliceStable(osDist, func(i, j int) bool {
-			if osDist[i].Count != osDist[j].Count {
-				return osDist[i].Count > osDist[j].Count
-			}
-			return osDist[i].OS < osDist[j].OS
-		})
-
-		dv := ""
-		if deps.DaemonVersionFn != nil {
-			dv = deps.DaemonVersionFn()
-		}
-
-		out := IntrospectResponse{
-			InstanceID:       meta.InstanceID,
-			Region:           meta.Region,
-			DisplayName:      meta.DisplayName,
-			Role:             meta.Role,
-			Version:          deps.Version,
-			DaemonVersion:    dv,
-			GoVersion:        runtime.Version(),
-			OS:               runtime.GOOS,
-			Arch:             runtime.GOARCH,
-			Features:         deps.Features,
-			Counts: IntrospectCounts{
-				Daimons:        len(agents),
-				DaimonsHealthy: healthy,
-				Nodes:          len(nodes),
-				OpenFindings:   openFindings,
-			},
-			OSDistribution:   osDist,
-			WebhookPublicURL: deps.WebhookURL,
-			MgmtPublicURL:    deps.MgmtURL,
-		}
+		out := BuildIntrospectResponse(deps)
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(out)
+	}
+}
+
+// BuildIntrospectResponse computes the same shape CPIntrospect emits
+// over HTTP, factored out so the federation S3 publisher can use it
+// to write the bucket-side manifest. The auth/token check stays in
+// CPIntrospect — the publisher's auth is "operator-issued bucket
+// credentials," same as the existing s3 dead-drop transport.
+func BuildIntrospectResponse(deps CPIntrospectDepsValue) IntrospectResponse {
+	meta, err := deps.Store.CPMeta()
+	if err != nil {
+		// Returning a partial response is better than nothing — the
+		// publisher's caller logs and retries on next tick.
+		return IntrospectResponse{}
+	}
+
+	// Tally aggregates. ListAgents/ListNodes return up to (limit,offset)
+	// — pass a large limit; the federation contract caps each CP at
+	// a reasonable size where we'd prefer a full count anyway.
+	agents, _ := deps.Store.ListAgents(10_000, 0)
+	var healthy int
+	for _, a := range agents {
+		if a.LastHeartbeatAt.Valid {
+			healthy++
+		}
+	}
+	nodes, _ := deps.Store.ListNodes(10_000, 0)
+	var openFindings int64
+	if fs, ferr := deps.Store.FindingsSummary(); ferr == nil {
+		openFindings = fs.Open
+	}
+
+	// Per-OS counts using the same classifier the local dashboard uses.
+	osCounts := map[string]int{}
+	for _, n := range nodes {
+		os := classifyOS(n.OSRelease.String, n.Name)
+		osCounts[os]++
+	}
+	osDist := make([]osBucket, 0, len(osCounts))
+	for os, n := range osCounts {
+		osDist = append(osDist, osBucket{OS: os, Count: n})
+	}
+	sort.SliceStable(osDist, func(i, j int) bool {
+		if osDist[i].Count != osDist[j].Count {
+			return osDist[i].Count > osDist[j].Count
+		}
+		return osDist[i].OS < osDist[j].OS
+	})
+
+	dv := ""
+	if deps.DaemonVersionFn != nil {
+		dv = deps.DaemonVersionFn()
+	}
+
+	return IntrospectResponse{
+		InstanceID:    meta.InstanceID,
+		Region:        meta.Region,
+		DisplayName:   meta.DisplayName,
+		Role:          meta.Role,
+		Version:       deps.Version,
+		DaemonVersion: dv,
+		GoVersion:     runtime.Version(),
+		OS:            runtime.GOOS,
+		Arch:          runtime.GOARCH,
+		Features:      deps.Features,
+		Counts: IntrospectCounts{
+			Daimons:        len(agents),
+			DaimonsHealthy: healthy,
+			Nodes:          len(nodes),
+			OpenFindings:   openFindings,
+		},
+		OSDistribution:   osDist,
+		WebhookPublicURL: deps.WebhookURL,
+		MgmtPublicURL:    deps.MgmtURL,
 	}
 }

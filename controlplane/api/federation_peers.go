@@ -19,16 +19,22 @@ import (
 // We deliberately do NOT include the plaintext token — it's a secret
 // and the UI never needs it once the peer has been added.
 type federationPeerJSON struct {
-	ID             int64                  `json:"id"`
-	URL            string                 `json:"url"`
-	DisplayName    string                 `json:"display_name"`
-	AddedAt        string                 `json:"added_at"`
-	LastPolledAt   string                 `json:"last_polled_at,omitempty"`
-	LastSeenAt     string                 `json:"last_seen_at,omitempty"`
-	LastError      string                 `json:"last_error,omitempty"`
-	HeartbeatAgeS  int64                  `json:"heartbeat_age_sec,omitempty"`
-	Healthy        bool                   `json:"healthy"`
-	Introspect     map[string]any         `json:"introspect,omitempty"`
+	ID                int64          `json:"id"`
+	URL               string         `json:"url"`
+	DisplayName       string         `json:"display_name"`
+	AddedAt           string         `json:"added_at"`
+	LastPolledAt      string         `json:"last_polled_at,omitempty"`
+	LastSeenAt        string         `json:"last_seen_at,omitempty"`
+	LastError         string         `json:"last_error,omitempty"`
+	HeartbeatAgeS     int64          `json:"heartbeat_age_sec,omitempty"`
+	Healthy           bool           `json:"healthy"`
+	Introspect        map[string]any `json:"introspect,omitempty"`
+	// Phase A — transport metadata. The UI uses Transport to render a
+	// badge ("HTTPS" vs "S3") and to show BucketPrefix instead of URL
+	// for s3_dead_drop peers.
+	Transport         string         `json:"transport"`
+	BucketPrefix      string         `json:"bucket_prefix,omitempty"`
+	TransportConfigID int64          `json:"transport_config_id,omitempty"`
 }
 
 // peerHealthThreshold defines "fresh enough." Two missed polls (60s)
@@ -53,14 +59,26 @@ func FederationListPeers(store *db.Store) http.HandlerFunc {
 	}
 }
 
-// federationAddRequest is the POST body. URL is required and must
-// include a scheme; token is required and is sent on every poll.
-// DisplayName is optional — empty falls back to the remote's
-// display_name once the first poll lands.
+// federationAddRequest is the POST body for HTTPS-pull peers. URL is
+// required and must include a scheme; token is required and is sent
+// on every poll. DisplayName is optional — empty falls back to the
+// remote's display_name once the first poll lands.
 type federationAddRequest struct {
 	URL         string `json:"url"`
 	Token       string `json:"token"`
 	DisplayName string `json:"display_name"`
+}
+
+// federationAddS3Request is the POST body for S3-dead-drop peers
+// (Phase A). The parent reads the child's published introspect
+// snapshot from {bucket_prefix}/introspect.json. transport_config_id
+// points at the bucket creds the parent will use; operators reuse
+// the same transport_configs they already manage for nodes.
+type federationAddS3Request struct {
+	DisplayName       string `json:"display_name"`
+	BucketPrefix      string `json:"bucket_prefix"`        // 'cp/<child-id>/outbound/<this-cp-id>/'
+	TransportConfigID int64  `json:"transport_config_id"`
+	Token             string `json:"token,omitempty"`      // optional — kept on the row for symmetry; not currently sent over S3
 }
 
 // FederationAddPeer handles POST /api/federation/peers. Verifies the
@@ -120,6 +138,47 @@ func FederationAddPeer(store *db.Store, poller *federation.Poller) http.HandlerF
 	}
 }
 
+// FederationAddS3Peer handles POST /api/federation/peers/s3.
+// Registers an S3-dead-drop peer — the parent's s3reader will start
+// reading {bucket_prefix}/introspect.json on its next tick (default
+// 30s) and surface the peer in HealthyPeers once the child writes a
+// fresh manifest. There's no synchronous probe like the HTTPS path
+// because the bucket may legitimately be empty until the child boots
+// — operators see the peer in 'unverified' state until the first
+// successful read.
+func FederationAddS3Peer(store *db.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req federationAddS3Request
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "bad json", http.StatusBadRequest)
+			return
+		}
+		if strings.TrimSpace(req.BucketPrefix) == "" || req.TransportConfigID == 0 {
+			http.Error(w, "bucket_prefix and transport_config_id are required", http.StatusBadRequest)
+			return
+		}
+		// Validate the transport_config exists + belongs to this CP
+		// (no point pointing at a non-existent bucket; we'd just log
+		// a 404 every 30s).
+		if _, err := store.GetTransportConfig(req.TransportConfigID); err != nil {
+			http.Error(w, "transport_config_id not found", http.StatusBadRequest)
+			return
+		}
+		peer, err := store.AddS3FederationPeer(req.DisplayName, req.BucketPrefix, req.TransportConfigID, req.Token)
+		if err != nil {
+			if errors.Is(err, db.ErrDuplicatePeer) {
+				http.Error(w, "peer already registered for this prefix", http.StatusConflict)
+				return
+			}
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(toPeerJSON(*peer))
+	}
+}
+
 // FederationDeletePeer handles DELETE /api/federation/peers/{id}.
 func FederationDeletePeer(store *db.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -170,6 +229,16 @@ func toPeerJSON(p db.FederationPeer) federationPeerJSON {
 		DisplayName: p.DisplayName,
 		AddedAt:     p.AddedAt.UTC().Format(time.RFC3339),
 		LastError:   p.LastError,
+		Transport:   p.Transport,
+	}
+	if out.Transport == "" {
+		out.Transport = "https_pull"
+	}
+	if p.BucketPrefix.Valid {
+		out.BucketPrefix = p.BucketPrefix.String
+	}
+	if p.TransportConfigID.Valid {
+		out.TransportConfigID = p.TransportConfigID.Int64
 	}
 	if p.LastPolledAt.Valid {
 		out.LastPolledAt = p.LastPolledAt.Time.UTC().Format(time.RFC3339)
