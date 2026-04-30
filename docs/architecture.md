@@ -1976,3 +1976,29 @@ Four pieces work together:
 4. **STIX 2.1 export** — `GET /api/stix2/iocs` returns indicators +
    relationships as a STIX 2.1 bundle for ingestion into MISP /
    OpenCTI / other TIPs. Query params `?since=<RFC3339>&kind=<kind>`.
+
+## Catalog rule extensions (Phase 22.5)
+
+Two new IOC kinds expand the catalog beyond plain indicators:
+
+1. **`yara_rule`** — body stored verbatim in `iocs.value`. Header
+   metadata (rule name, tag list, `meta.severity`) is parsed at
+   catalog-load time and lifted into the new `name` / `tags` /
+   `severity_floor` columns. Explicit YAML wrapper values always win
+   over parsed values, so curators can override.
+
+2. **`sigma_rule`** — body stored verbatim. `title` / `tags` / `level`
+   are extracted from the YAML header. Storage only in v1; per-host
+   log-adapter execution is deferred.
+
+The `binary-analyzer` agent runs YARA matches against the catalog by
+fetching `GET /api/catalog/yara-rules.yar?tag=<tag>` (concatenated
+rule bundle), saving it to a temp file, and invoking the system `yara`
+CLI. No Go-side YARA library — the agent has shell-tool access, and
+the catalog bundle is the single source of truth. Build matrix stays
+`CGO_ENABLED=0`.
+
+Migration 039 adds `name TEXT, tags TEXT` to `iocs`. The columns are
+useful for any kind (sha256 IOCs can carry a human-readable name and
+tag list too) but are load-bearing for `yara_rule` / `sigma_rule`
+where tag-filtering is the operator UX.
