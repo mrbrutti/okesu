@@ -184,6 +184,96 @@ func (s *Store) DecryptCloudCredential(id int64, masterKey []byte) ([]byte, erro
 	return pt, nil
 }
 
+// CloudCredentialUpdate carries the partial fields an edit submits.
+// All pointers are optional — nil means "leave this column alone."
+// PayloadPatch is a sparse map: only the keys the operator actually
+// re-typed in the form. The Store decrypts the existing payload,
+// merges the patch in, and re-encrypts. Secrets the operator didn't
+// re-type stay intact, so the dialog doesn't have to roundtrip
+// private keys / access secrets through the browser.
+type CloudCredentialUpdate struct {
+	Name             *string
+	Region           *string
+	MonthlyBudgetUSD *float64       // pass via SetCloudCredentialBudget instead; here for symmetry
+	PayloadPatch     map[string]any // sparse — empty/missing keys preserved
+}
+
+// UpdateCloudCredential applies a partial update. masterKey is the
+// same seal key as InsertCloudCredential. Returns the refreshed
+// metadata row.
+func (s *Store) UpdateCloudCredential(id int64, in CloudCredentialUpdate, masterKey []byte) (*CloudCredential, error) {
+	cur, err := s.GetCloudCredential(id)
+	if err != nil {
+		return nil, err
+	}
+
+	// Re-seal payload only when the patch carries any keys. Otherwise
+	// we touch only the metadata columns and skip the decrypt round-trip
+	// — much cheaper for the common "rename" / "change region" edit.
+	if len(in.PayloadPatch) > 0 {
+		raw, err := s.DecryptCloudCredential(id, masterKey)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt for merge: %w", err)
+		}
+		var current map[string]any
+		if err := json.Unmarshal(raw, &current); err != nil {
+			return nil, fmt.Errorf("existing payload not json: %w", err)
+		}
+		if current == nil {
+			current = map[string]any{}
+		}
+		// Only overwrite keys whose patch value is non-empty. An
+		// explicit empty string means "operator typed blank" — we
+		// still preserve the existing value because the UI uses blank
+		// = "keep current" for secret fields.
+		for k, v := range in.PayloadPatch {
+			if s, ok := v.(string); ok && strings.TrimSpace(s) == "" {
+				continue
+			}
+			current[k] = v
+		}
+		newPayload, err := json.Marshal(current)
+		if err != nil {
+			return nil, fmt.Errorf("re-marshal payload: %w", err)
+		}
+		ct, nonce, err := sealCloudPayload(masterKey, newPayload)
+		if err != nil {
+			return nil, fmt.Errorf("seal: %w", err)
+		}
+		if _, err := s.Exec(`
+			UPDATE cloud_credentials
+			   SET encrypted_payload = ?, payload_nonce = ?
+			 WHERE id = ?
+		`, ct, nonce, id); err != nil {
+			return nil, fmt.Errorf("update payload: %w", err)
+		}
+	}
+
+	// Metadata-only updates run as separate UPDATEs — keeps the SQL
+	// readable + works whether or not a payload patch landed above.
+	if in.Name != nil {
+		newName := strings.TrimSpace(*in.Name)
+		if newName == "" {
+			return nil, errors.New("name cannot be blank")
+		}
+		if _, err := s.Exec(`UPDATE cloud_credentials SET name = ? WHERE id = ?`, newName, id); err != nil {
+			return nil, fmt.Errorf("update name: %w", err)
+		}
+	}
+	if in.Region != nil {
+		newRegion := strings.TrimSpace(*in.Region)
+		var arg sql.NullString
+		if newRegion != "" {
+			arg = sql.NullString{String: newRegion, Valid: true}
+		}
+		if _, err := s.Exec(`UPDATE cloud_credentials SET region = ? WHERE id = ?`, arg, id); err != nil {
+			return nil, fmt.Errorf("update region: %w", err)
+		}
+	}
+	_ = cur // existing row referenced for sanity; no-op
+	return s.GetCloudCredential(id)
+}
+
 // DeleteCloudCredential removes a row by id. Idempotent.
 func (s *Store) DeleteCloudCredential(id int64) error {
 	_, err := s.Exec(`DELETE FROM cloud_credentials WHERE id = ?`, id)

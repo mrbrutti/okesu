@@ -218,6 +218,95 @@ func isNaNOrInf(f float64) bool {
 	return f != f || f > 1e308 || f < -1e308
 }
 
+// cloudCredentialUpdateReq is the body for PUT /api/cloud-credentials/{id}.
+// Every field is optional — nil/missing means "leave this column
+// alone." The payload is sparse: keys the operator typed re-type
+// flow into the encrypted blob; keys they left blank stay at their
+// current values. That's why secret fields (private_key, secret_access_key,
+// service_account_json, ...) never need to roundtrip through the browser.
+type cloudCredentialUpdateReq struct {
+	Name    *string        `json:"name,omitempty"`
+	Region  *string        `json:"region,omitempty"`
+	Payload map[string]any `json:"payload,omitempty"`
+}
+
+// CloudCredentialUpdate — PUT /api/cloud-credentials/{id}.
+// Admin-only. Partial; see cloudCredentialUpdateReq comment.
+func CloudCredentialUpdate(store *db.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+		if err != nil {
+			http.Error(w, "bad id", http.StatusBadRequest)
+			return
+		}
+		var req cloudCredentialUpdateReq
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "bad json", http.StatusBadRequest)
+			return
+		}
+		// If the operator changed payload fields we need the master
+		// key for re-seal. Skip otherwise to avoid unnecessary work.
+		var masterKey []byte
+		if len(req.Payload) > 0 {
+			mk, err := store.MasterKeyFromMeta()
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			masterKey = mk
+
+			// Validate the post-merge payload still satisfies per-cloud
+			// requireKeys. We can't do that without seeing the merged
+			// shape, so we decrypt + merge here just for validation,
+			// then let the Store do the same merge + persist.
+			cur, err := store.GetCloudCredential(id)
+			if err != nil {
+				http.Error(w, "not found", http.StatusNotFound)
+				return
+			}
+			rawCur, err := store.DecryptCloudCredential(id, masterKey)
+			if err != nil {
+				http.Error(w, "decrypt: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+			merged := map[string]any{}
+			if err := json.Unmarshal(rawCur, &merged); err != nil {
+				http.Error(w, "stored payload corrupt: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+			for k, v := range req.Payload {
+				if s, ok := v.(string); ok && strings.TrimSpace(s) == "" {
+					continue
+				}
+				merged[k] = v
+			}
+			if err := validateCloudCredentialPayload(cur.Cloud, merged); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+		}
+		updated, err := store.UpdateCloudCredential(id, db.CloudCredentialUpdate{
+			Name:         req.Name,
+			Region:       req.Region,
+			PayloadPatch: req.Payload,
+		}, masterKey)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		audit.Emit(r, store, db.AuditEntry{
+			Action: "cloud_credential.update",
+			Target: fmt.Sprintf("cloud_credential:%d", id),
+			Metadata: map[string]any{
+				"changed_name":    req.Name != nil,
+				"changed_region":  req.Region != nil,
+				"changed_payload": len(req.Payload) > 0,
+			},
+		})
+		writeJSON(w, http.StatusOK, toCloudCredentialJSON(updated))
+	}
+}
+
 // CloudCredentialDelete — DELETE /api/cloud-credentials/{id}
 func CloudCredentialDelete(store *db.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {

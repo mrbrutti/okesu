@@ -12,8 +12,8 @@
 // cloud and surfaces errors as-is.
 
 import { useEffect, useState } from 'react';
-import { Cloud, Loader2, Plus, RefreshCw, Trash2, X } from 'lucide-react';
-import { api, type CloudCredential, type CloudCredentialCreateRequest, type CloudKind } from '../../api';
+import { Cloud, Loader2, Pencil, Plus, RefreshCw, Trash2, X } from 'lucide-react';
+import { api, type CloudCredential, type CloudCredentialCreateRequest, type CloudCredentialUpdateRequest, type CloudKind } from '../../api';
 import { cn } from '../../lib/cn';
 
 const CLOUDS: Array<{ kind: CloudKind; label: string; provisioned: boolean }> = [
@@ -28,6 +28,7 @@ export default function CloudSection() {
   const [items, setItems] = useState<CloudCredential[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showAdd, setShowAdd] = useState<CloudKind | null>(null);
+  const [editing, setEditing] = useState<CloudCredential | null>(null);
   const [busyTest, setBusyTest] = useState<number | null>(null);
 
   async function load() {
@@ -135,6 +136,13 @@ export default function CloudSection() {
                           {busyTest === r.id ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />} Test
                         </button>
                         <button
+                          onClick={() => setEditing(r)}
+                          title="Edit this credential"
+                          className="text-xs px-2 py-1 border border-border hover:bg-slate-50 rounded inline-flex items-center gap-1"
+                        >
+                          <Pencil size={12} /> Edit
+                        </button>
+                        <button
                           onClick={() => handleDelete(r.id)}
                           title="Delete"
                           className="text-xs px-2 py-1 border border-border hover:bg-red-50 hover:text-red-700 rounded"
@@ -156,6 +164,14 @@ export default function CloudSection() {
           cloud={showAdd}
           onClose={() => setShowAdd(null)}
           onAdded={() => { setShowAdd(null); load(); }}
+        />
+      )}
+      {editing && (
+        <AddCredentialDialog
+          cloud={editing.cloud}
+          editing={editing}
+          onClose={() => setEditing(null)}
+          onAdded={() => { setEditing(null); load(); }}
         />
       )}
     </div>
@@ -254,14 +270,19 @@ function BudgetRow({ credential, onChange }: { credential: CloudCredential; onCh
 }
 
 function AddCredentialDialog({
-  cloud, onClose, onAdded,
+  cloud, editing, onClose, onAdded,
 }: {
   cloud: CloudKind;
+  /** When set, the dialog is in edit mode: name/region pre-filled from
+   *  the existing row, secret payload fields show "(unchanged)" and
+   *  only get sent if the operator types something new. */
+  editing?: CloudCredential;
   onClose: () => void;
   onAdded: () => void;
 }) {
-  const [name, setName] = useState('');
-  const [region, setRegion] = useState('');
+  const isEdit = editing != null;
+  const [name, setName] = useState(editing?.name ?? '');
+  const [region, setRegion] = useState(editing?.region ?? '');
   const [payload, setPayload] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -275,13 +296,34 @@ function AddCredentialDialog({
   async function submit() {
     setBusy(true); setError(null);
     try {
-      const req: CloudCredentialCreateRequest = {
-        cloud,
-        name,
-        region: region || undefined,
-        payload,
-      };
-      await api.cloudCredentialCreate(req);
+      if (isEdit) {
+        // Build a sparse update — name/region always sent (cheap +
+        // server treats null/missing as "leave alone"); payload only
+        // includes keys the operator actually re-typed (non-empty).
+        const sparsePayload: Record<string, string> = {};
+        for (const [k, v] of Object.entries(payload)) {
+          if (v.trim() !== '') sparsePayload[k] = v;
+        }
+        const req: CloudCredentialUpdateRequest = {
+          name: name !== editing!.name ? name : undefined,
+          region: region !== (editing!.region ?? '') ? region : undefined,
+          payload: Object.keys(sparsePayload).length > 0 ? sparsePayload : undefined,
+        };
+        if (req.name === undefined && req.region === undefined && req.payload === undefined) {
+          // No changes — skip the round-trip and close.
+          onAdded();
+          return;
+        }
+        await api.cloudCredentialUpdate(editing!.id, req);
+      } else {
+        const req: CloudCredentialCreateRequest = {
+          cloud,
+          name,
+          region: region || undefined,
+          payload,
+        };
+        await api.cloudCredentialCreate(req);
+      }
       onAdded();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -295,7 +337,7 @@ function AddCredentialDialog({
       <div className="bg-panel border border-border rounded-xl shadow-card w-full max-w-lg">
         <header className="px-5 py-3 border-b border-border flex items-center justify-between">
           <h3 className="text-sm font-semibold flex items-center gap-2">
-            <Cloud size={14} className="text-brand-500" /> Add {labelFor(cloud)} credential
+            <Cloud size={14} className="text-brand-500" /> {isEdit ? `Edit ${editing!.name}` : `Add ${labelFor(cloud)} credential`}
           </h3>
           <button onClick={onClose} className="p-1 text-ink-dim hover:text-ink rounded-md">
             <X size={16} />
@@ -321,27 +363,37 @@ function AddCredentialDialog({
             />
           </Field>
           <hr className="border-border/60 my-2" />
-          {fields.map((f) => (
-            <Field key={f.key} label={f.label} hint={f.hint}>
-              {f.multiline ? (
-                <textarea
-                  value={payload[f.key] ?? ''}
-                  onChange={(e) => setPayload((p) => ({ ...p, [f.key]: e.target.value }))}
-                  rows={f.rows ?? 5}
-                  className="w-full px-3 py-1.5 text-xs font-mono border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500/30"
-                  placeholder={f.placeholder}
-                />
-              ) : (
-                <input
-                  type={f.secret ? 'password' : 'text'}
-                  value={payload[f.key] ?? ''}
-                  onChange={(e) => setPayload((p) => ({ ...p, [f.key]: e.target.value }))}
-                  placeholder={f.placeholder}
-                  className="w-full px-3 py-1.5 text-sm border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500/30"
-                />
-              )}
-            </Field>
-          ))}
+          {isEdit && (
+            <p className="text-[11px] text-ink-mute -mt-1">
+              Leave a field blank to keep its current value. Secret fields (private keys, access secrets, …) stay encrypted-at-rest unless you re-type them.
+            </p>
+          )}
+          {fields.map((f) => {
+            const editPlaceholder = isEdit
+              ? (f.secret ? '(blank to keep current)' : f.placeholder)
+              : f.placeholder;
+            return (
+              <Field key={f.key} label={f.label} hint={f.hint}>
+                {f.multiline ? (
+                  <textarea
+                    value={payload[f.key] ?? ''}
+                    onChange={(e) => setPayload((p) => ({ ...p, [f.key]: e.target.value }))}
+                    rows={f.rows ?? 5}
+                    className="w-full px-3 py-1.5 text-xs font-mono border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500/30"
+                    placeholder={editPlaceholder}
+                  />
+                ) : (
+                  <input
+                    type={f.secret ? 'password' : 'text'}
+                    value={payload[f.key] ?? ''}
+                    onChange={(e) => setPayload((p) => ({ ...p, [f.key]: e.target.value }))}
+                    placeholder={editPlaceholder}
+                    className="w-full px-3 py-1.5 text-sm border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500/30"
+                  />
+                )}
+              </Field>
+            );
+          })}
           {error && (
             <div className="text-xs text-red-700 bg-red-50 border border-red-200 px-3 py-2 rounded-md">{error}</div>
           )}
@@ -350,7 +402,12 @@ function AddCredentialDialog({
           <button onClick={onClose} className="text-xs px-3 py-1.5 border border-border rounded-md">Cancel</button>
           <button
             onClick={submit}
-            disabled={busy || !name || fields.some((f) => f.required && !(payload[f.key] ?? '').trim())}
+            disabled={
+              busy || !name ||
+              // In edit mode, a required field can stay blank (its
+              // current value is preserved). Only block create-mode.
+              (!isEdit && fields.some((f) => f.required && !(payload[f.key] ?? '').trim()))
+            }
             className="text-xs px-3 py-1.5 bg-brand-500 hover:bg-brand-600 disabled:opacity-50 text-white rounded-md font-medium inline-flex items-center gap-1.5"
           >
             {busy && <Loader2 size={12} className="animate-spin" />}
