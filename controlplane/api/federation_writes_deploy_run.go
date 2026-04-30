@@ -35,7 +35,7 @@ func ForwardingNodeDeploy(store *db.Store, reg *jobs.Registry, deployer NodeDepl
 		// Translate the parent's local URL to the federation form.
 		// /api/nodes/42/deploy → /api/v1/federation/nodes/42/deploy
 		fedPath := strings.Replace(r.URL.Path, "/api/nodes/", "/api/v1/federation/nodes/", 1)
-		if handled, _ := proxyIfTargetCP(w, r, agg, fedPath); handled {
+		if handled, _ := proxyIfTargetCP(w, r, agg, fedPath, ""); handled {
 			return
 		}
 		NodeDeploy(store, reg, deployer, cfg).ServeHTTP(w, r)
@@ -61,7 +61,7 @@ func FederationNodeDeploy(store *db.Store, reg *jobs.Registry, deployer NodeDepl
 // federated rows, which is enough for the operator to follow along.
 func ForwardingCreateRun(reg *RunRegistry, tunReg *tunnel.Registry, store *db.Store, agentDirs []string, agg *federation.Aggregator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if handled, _ := proxyIfTargetCP(w, r, agg, "/api/v1/federation/runs"); handled {
+		if handled, _ := proxyIfTargetCP(w, r, agg, "/api/v1/federation/runs", ""); handled {
 			return
 		}
 		CreateRun(reg, tunReg, store, agentDirs).ServeHTTP(w, r)

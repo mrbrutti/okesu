@@ -41,6 +41,7 @@ import (
 	"github.com/section9labs/okesu/controlplane/federation"
 	"github.com/section9labs/okesu/controlplane/federation/s3publisher"
 	"github.com/section9labs/okesu/controlplane/federation/s3reader"
+	"github.com/section9labs/okesu/controlplane/federation/s3rpc"
 	"github.com/section9labs/okesu/controlplane/ioc/catalog"
 	"github.com/section9labs/okesu/controlplane/jobs"
 	"github.com/section9labs/okesu/controlplane/notify"
@@ -929,6 +930,56 @@ func (s *Server) startFederationS3Publisher(ctx context.Context) {
 		cfg.Bucket, cfg.BucketPrefix, len(assets))
 }
 
+// startFederationS3Dispatcher starts the child-side write-pipe server
+// (Phase B). Polls cp/*/outbound/<self>/req/*.json for directives the
+// parent CP submitted, dispatches into the local HTTP handlers via the
+// s3rpc bridge, and writes the response back to
+// cp/<self>/outbound/<parent>/resp/<id>.json.
+//
+// Same enable gate as the publisher — if the bucket isn't configured,
+// the dispatcher silently skips (an offline bucket should never crash
+// the CP). The s3transport.Client used here is freshly built rather
+// than shared with the publisher because the publisher's client is
+// internal to that goroutine; the costs of one extra connect at boot
+// are negligible.
+func (s *Server) startFederationS3Dispatcher(ctx context.Context) {
+	cfg, err := s.federationPublisherConfig(ctx)
+	if err != nil {
+		log.Printf("federation s3 dispatcher: %v", err)
+		return
+	}
+	cli, err := s3transport.NewClient(ctx, s3transport.ClientConfig{
+		Bucket:    cfg.Bucket,
+		Endpoint:  cfg.Endpoint,
+		Region:    cfg.Region,
+		UseSSL:    cfg.UseSSL,
+		AccessKey: cfg.AccessKey,
+		SecretKey: cfg.SecretKey,
+	})
+	if err != nil {
+		log.Printf("federation s3 dispatcher: connect: %v", err)
+		return
+	}
+	meta, err := s.store.CPMeta()
+	if err != nil {
+		log.Printf("federation s3 dispatcher: cp_meta: %v", err)
+		return
+	}
+	if meta.InstanceID == "" {
+		log.Printf("federation s3 dispatcher: cp_meta has no instance_id (run --cp-instance-id on first boot)")
+		return
+	}
+	srv, err := s3rpc.New(cli, meta.InstanceID)
+	if err != nil {
+		log.Printf("federation s3 dispatcher: %v", err)
+		return
+	}
+	srv.Register(s3rpc.KindCreateNode, api.NewS3CreateNodeHandler(s.store))
+	go srv.Run(ctx)
+	log.Printf("federation s3 dispatcher: polling cp/*/outbound/%s/req/ every %s",
+		meta.InstanceID, s3rpc.DefaultServerPollInterval)
+}
+
 // federationPublisherConfig assembles the s3publisher.Config from
 // either inline flags (preferred when set) or a transport_config row.
 // Returns an error if neither path has all required fields.
@@ -1159,6 +1210,7 @@ func (s *Server) Run(ctx context.Context) error {
 	if s.cfg.FederationS3PublishPrefix != "" &&
 		(s.cfg.FederationS3PublishConfigID > 0 || s.cfg.FederationS3PublishBucket != "") {
 		s.startFederationS3Publisher(ctx)
+		s.startFederationS3Dispatcher(ctx)
 	}
 
 	// Phase 22: SIGHUP triggers a re-scan of every IOC catalog
