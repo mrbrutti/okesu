@@ -1,0 +1,58 @@
+---
+// Renders a real-platform screenshot in a styled frame with a caption.
+// Used to anchor concept pages and the home in the actual operator's
+// console. The frame mimics a browser chrome strip (three traffic-light
+// dots + a faint URL bar) so the image reads as "this is the live
+// product" rather than a marketing render.
+
+interface Props {
+  src: string;          // path under /screenshots, e.g. "dashboard"
+  alt: string;          // for the screen reader and lazy-load fallback
+  url?: string;         // displayed in the fake address bar (e.g. "okesu / Dashboard")
+  caption?: string;     // small italic line below the frame
+  width?: number;       // intrinsic width hint; defaults to 1440 (capture size)
+  height?: number;      // intrinsic height hint; defaults to 900
+}
+
+const {
+  src,
+  alt,
+  url = '',
+  caption,
+  width = 1440,
+  height = 900,
+} = Astro.props;
+---
+
+<figure class="operator-view bg-panel border border-border rounded-xl shadow-card overflow-hidden">
+  {/* Browser chrome strip */}
+  <div class="flex items-center gap-2 px-3 py-2 border-b border-border bg-bg/80">
+    <div class="flex gap-1.5">
+      <span class="w-2.5 h-2.5 rounded-full bg-red-300/70"></span>
+      <span class="w-2.5 h-2.5 rounded-full bg-yellow-300/70"></span>
+      <span class="w-2.5 h-2.5 rounded-full bg-green-300/70"></span>
+    </div>
+    {url && (
+      <div class="ml-2 text-[10px] text-ink-mute font-mono truncate flex-1">
+        {url}
+      </div>
+    )}
+  </div>
+
+  {/* The screenshot */}
+  <img
+    src={`/screenshots/${src}.webp`}
+    alt={alt}
+    width={width}
+    height={height}
+    loading="lazy"
+    decoding="async"
+    class="block w-full h-auto"
+  />
+</figure>
+
+{caption && (
+  <p class="text-[11px] text-ink-mute italic text-center mt-2">
+    {caption}
+  </p>
+)}

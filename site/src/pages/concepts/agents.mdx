@@ -10,12 +10,14 @@ toc:
   - { id: authoring,    label: "Authoring an agent" }
   - { id: tools,        label: "Tools an agent can call" }
   - { id: builtins,     label: "Built-in agents" }
+  - { id: in-platform,  label: "In the platform" }
   - { id: next,         label: "Where to next" }
 ---
 
 import AgentJSONLDemo from '../../components/diagrams/AgentJSONLDemo.astro';
 import AgentSpecDemo from '../../components/diagrams/AgentSpecDemo.astro';
 import ToolsGridDemo from '../../components/diagrams/ToolsGridDemo.astro';
+import OperatorView from '../../components/OperatorView.astro';
 
 <div class="bg-bg border border-border rounded-xl p-6 md:p-8 my-8">
   <AgentJSONLDemo />
@@ -96,6 +98,19 @@ indicator, emit a finding event with the appropriate severity.
 </ul>
 
 <p>The full catalog is in the platform's Agents tab; each spec is a complete worked example you can copy and adapt.</p>
+
+<h2 id="in-platform">In the platform</h2>
+
+<p>The <strong>Agents</strong> tab in the Control Plane is the agent catalog. Markdown-frontmatter specs are sourced from <code>~/.claude/agents</code> and the project's own <code>agents/</code> directory; provider badges show whether each agent is wired to Claude or Codex.</p>
+
+<div class="my-6">
+  <OperatorView
+    src="agents-library"
+    alt="Agents page in the Okesu Control Plane — list of authored agents with provider badges, descriptions, and source paths."
+    url="okesu / Agents"
+    caption="The agent catalog — markdown specs surfaced as a browseable library."
+  />
+</div>
 
 <h2 id="next">Where to next</h2>
 
