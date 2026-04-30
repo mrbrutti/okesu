@@ -257,6 +257,20 @@ type Config struct {
 	// registry roundtrip. Empty disables the compose bundle.
 	CPBootstrapImageTarPath string
 
+	// FederationS3PublishPrefix tells a child CP where to write its
+	// introspect manifest under the configured transport_config's
+	// bucket. Format: 'cp/<self-cp-id>/outbound/<parent-cp-id>/'.
+	// Empty disables publishing — only needed on CPs that federate
+	// up to a parent via S3 dead-drop.
+	FederationS3PublishPrefix string
+
+	// FederationS3PublishConfigID names the transport_config row whose
+	// bucket coords the publisher uses. Reuses the same table that
+	// powers the S3 dead-drop transport for nodes — operators don't
+	// configure two different bucket setups for the two purposes.
+	// 0 disables publishing.
+	FederationS3PublishConfigID int64
+
 	// FederationToken is a shared secret a parent CP presents on the
 	// introspect endpoint via the X-Okesu-Federation-Token header. The
 	// CP stores its bcrypt hash in cp_meta.federation_token_hash on
@@ -330,6 +344,9 @@ func FromEnv() Config {
 		FleetAnthropicAPIKey: envOr("OKESU_CP_FLEET_ANTHROPIC_API_KEY", os.Getenv("ANTHROPIC_API_KEY")),
 		FleetOpenAIAPIKey:    envOr("OKESU_CP_FLEET_OPENAI_API_KEY", os.Getenv("OPENAI_API_KEY")),
 
+		FederationS3PublishPrefix:   os.Getenv("OKESU_CP_FEDERATION_S3_PUBLISH_PREFIX"),
+		FederationS3PublishConfigID: envInt64("OKESU_CP_FEDERATION_S3_PUBLISH_CONFIG_ID", 0),
+
 		EventTTLDays: envInt("OKESU_CP_EVENT_TTL_DAYS", 0),
 		PubSubURL:    os.Getenv("OKESU_CP_PUBSUB_URL"),
 
@@ -380,6 +397,21 @@ func envInt(key string, def int) int {
 		return def
 	}
 	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 {
+		return def
+	}
+	return n
+}
+
+// envInt64 — same as envInt for int64. Federation S3 transport-config
+// IDs come through this so an op can set OKESU_CP_FEDERATION_S3_PUBLISH_CONFIG_ID
+// without recompiling.
+func envInt64(key string, def int64) int64 {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
 	if err != nil || n < 0 {
 		return def
 	}

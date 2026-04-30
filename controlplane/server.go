@@ -39,6 +39,8 @@ import (
 	"github.com/section9labs/okesu/controlplane/db"
 	"github.com/section9labs/okesu/controlplane/eventpipeline"
 	"github.com/section9labs/okesu/controlplane/federation"
+	"github.com/section9labs/okesu/controlplane/federation/s3publisher"
+	"github.com/section9labs/okesu/controlplane/federation/s3reader"
 	"github.com/section9labs/okesu/controlplane/ioc/catalog"
 	"github.com/section9labs/okesu/controlplane/jobs"
 	"github.com/section9labs/okesu/controlplane/notify"
@@ -682,6 +684,12 @@ func (s *Server) routes() http.Handler {
 			// peer means storing a credential for an outbound CP.
 			r.Get("/api/federation/peers", api.FederationListPeers(s.store))
 			r.Post("/api/federation/peers", api.FederationAddPeer(s.store, s.fedPoller))
+			// Phase A — register an S3-dead-drop child CP. Operator
+			// supplies a transport_config (the bucket coords + creds
+			// the parent will read with) + the bucket prefix the
+			// child publishes to. No synchronous probe — the bucket
+			// may legitimately be empty until the child's first tick.
+			r.Post("/api/federation/peers/s3", api.FederationAddS3Peer(s.store))
 			r.Delete("/api/federation/peers/{id}", api.FederationDeletePeer(s.store))
 			r.Post("/api/federation/peers/{id}/refresh", api.FederationRefreshPeer(s.store, s.fedPoller))
 			// Phase 21.1 — generate a bootstrap bundle for a new
@@ -869,6 +877,57 @@ func resolvePackageBinary(s *Server, target string) ([]byte, error) {
 
 // startS3Scanner spins up one s3scanner.Scanner against a transport
 // config. Forwards events into the existing eventpipeline + findings
+// startFederationS3Publisher starts the child-side S3 publisher
+// (Phase A) — writes this CP's introspect snapshot to the configured
+// bucket prefix every 30s. The parent's s3reader picks it up.
+//
+// Lookup of the transport_config + introspect-rendering closure are
+// deferred to start time so a missing config or unreachable bucket
+// is logged but doesn't crash the CP.
+func (s *Server) startFederationS3Publisher(ctx context.Context) {
+	cfg, err := s.store.GetTransportConfig(s.cfg.FederationS3PublishConfigID)
+	if err != nil {
+		log.Printf("federation s3 publisher: transport_config %d: %v", s.cfg.FederationS3PublishConfigID, err)
+		return
+	}
+	pub, err := s3publisher.New(ctx, s3publisher.Config{
+		Bucket:       cfg.Bucket,
+		Endpoint:     cfg.Endpoint, // public endpoint (the child writes from outside the VPC)
+		Region:       cfg.Region.String,
+		UseSSL:       cfg.UseSSL,
+		AccessKey:    cfg.AccessKey.String,
+		SecretKey:    cfg.SecretKey.String,
+		BucketPrefix: s.cfg.FederationS3PublishPrefix,
+	}, s.renderIntrospectJSON)
+	if err != nil {
+		log.Printf("federation s3 publisher: connect: %v", err)
+		return
+	}
+	go pub.Run(ctx)
+	log.Printf("federation s3 publisher: writing to %s%s every 30s",
+		cfg.Bucket+"/", s.cfg.FederationS3PublishPrefix)
+}
+
+// renderIntrospectJSON returns the same JSON the local
+// /api/v1/cp/introspect handler emits, marshaled to bytes. Used by
+// the federation S3 publisher.
+func (s *Server) renderIntrospectJSON(ctx context.Context) ([]byte, error) {
+	_ = ctx
+	resp := api.BuildIntrospectResponse(api.CPIntrospectDepsValue{
+		Store:           s.store,
+		Version:         Version(),
+		DaemonVersionFn: s.daemonBinaryVersion,
+		Features: api.AboutFeatures{
+			OIDC:          s.oidc != nil,
+			MgmtPlane:     s.cfg.MgmtListen != "",
+			Tunnel:        s.tunReg != nil,
+			WebhookIngest: s.cfg.Listen != "",
+			Deploy:        s.cfg.DaemonBinaryPath != "" || s.cfg.DaemonBinariesDir != "",
+		},
+	})
+	return json.Marshal(resp)
+}
+
 // hooks so the rest of the CP doesn't need to know which transport
 // the data arrived through.
 func (s *Server) startS3Scanner(ctx context.Context, c db.TransportConfig) {
@@ -978,6 +1037,20 @@ func (s *Server) Run(ctx context.Context) error {
 	go s.sessionGC(ctx)
 	go s.notify.Run(ctx)
 	s.fedPoller.Start(ctx)
+	// Phase A — S3 dead-drop federation: parent-side reader for
+	// any federation_peers row with transport='s3_dead_drop'. No-op
+	// when no S3 peers are registered, so it's safe to start
+	// unconditionally; HTTPS-only operators pay nothing.
+	go s3reader.New(s.store, 0).Run(ctx)
+
+	// Phase A — S3 dead-drop federation: child-side publisher.
+	// When --federation-s3-publish-prefix + --federation-s3-publish-config-id
+	// are set, a goroutine writes this CP's introspect snapshot to the
+	// chosen bucket prefix every 30s so a parent CP can ingest it
+	// without inbound HTTPS connectivity.
+	if s.cfg.FederationS3PublishPrefix != "" && s.cfg.FederationS3PublishConfigID > 0 {
+		s.startFederationS3Publisher(ctx)
+	}
 
 	// Phase 22: SIGHUP triggers a re-scan of every IOC catalog
 	// directory. Same code path as the boot-time load — operators
