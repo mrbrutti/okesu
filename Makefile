@@ -212,3 +212,18 @@ _oci-render-cli: $(OCI_RENDER)
 $(OCI_RENDER): cmd/oci-render/main.go deploy/oci/render/render.go deploy/oci/render/templates/cp.yaml.tmpl deploy/oci/render/templates/okesu-cp.env.tmpl
 	@mkdir -p $(@D)
 	go build -o $@ ./cmd/oci-render
+
+# ── oci-build: cross-compile cp + UI bundle (alias for ui + cp-all).
+oci-build: ui cp-all $(OCI_RENDER)
+	@echo "▶ oci-build done — binaries in $(CP_DIR)/, render in $(OCI_RENDER)"
+
+# ── oci-plan: terraform plan in $(OCI_DIR) with the right tfvars.
+oci-plan: _oci-preflight
+	cd $(OCI_DIR) && terraform init -input=false
+	cd $(OCI_DIR) && terraform plan -var-file=$(abspath $(OCI_TFVARS))
+
+# ── oci-apply: terraform apply.
+oci-apply: _oci-preflight
+	cd $(OCI_DIR) && terraform init -input=false
+	cd $(OCI_DIR) && terraform apply -auto-approve -var-file=$(abspath $(OCI_TFVARS))
+	@echo "▶ terraform apply done"
