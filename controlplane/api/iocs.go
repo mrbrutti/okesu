@@ -8,16 +8,22 @@ import (
 	"github.com/section9labs/okesu/controlplane/db"
 )
 
-// ListIOCs returns IOCs filtered by finding_id (optional) or kind
-// (optional). With no filter, returns the most recent 100 by last_seen.
+// ListIOCs returns IOCs filtered by:
+//   - kind         (sha256|ipv4|domain|yara_rule|sigma_rule|...)
+//   - source       (catalog|observed)
+//   - q            (LIKE %q% against value, name, or tags; case-insensitive)
+//   - finding_id   (joins ioc_observations to filter to a single finding)
 //
-// Used by the UI's IOC drawer (drilling into a finding shows the
-// indicators it referenced) and by tests / smoke checks that want to
-// verify finding-ingest extraction landed.
+// With no filter, returns the most recent 100 by last_seen.
 func ListIOCs(store *db.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
-		filter := db.IOCListFilter{Kind: q.Get("kind"), Limit: 100}
+		filter := db.IOCListFilter{
+			Kind:   q.Get("kind"),
+			Source: q.Get("source"),
+			Query:  q.Get("q"),
+			Limit:  100,
+		}
 		if v := q.Get("finding_id"); v != "" {
 			id, err := strconv.ParseInt(v, 10, 64)
 			if err != nil {
