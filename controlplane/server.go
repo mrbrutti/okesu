@@ -671,6 +671,12 @@ func (s *Server) routes() http.Handler {
 		r.Post("/api/users/me/password", api.MyPasswordChange(s.store))
 		r.Get("/api/users/me/sessions", api.MySessions(s.store, s.mgr))
 		r.Delete("/api/users/me/sessions", api.MyRevokeOtherSessions(s.store, s.mgr))
+		// Saved searches — per-user named filter sets. Findings is the
+		// only consumer in v1 but the API is generic on `scope`.
+		r.Get("/api/saved-searches", api.ListSavedSearchesHandler(s.store))
+		r.Post("/api/saved-searches", api.CreateSavedSearchHandler(s.store))
+		r.Patch("/api/saved-searches/{id}", api.UpdateSavedSearchHandler(s.store))
+		r.Delete("/api/saved-searches/{id}", api.DeleteSavedSearchHandler(s.store))
 		r.Get("/api/dashboard", api.Dashboard(s.store, s.eventStore, s.tunReg, s.cfg.DaimonFilesDir, s.daemonBinaryVersion))
 		r.Get("/api/insights/findings", api.FederatedInsightsFindings(s.store, s.fedAgg))
 		r.Get("/api/insights/events", api.FederatedInsightsEvents(api.InsightsEvents(s.eventStore), s.fedAgg))
