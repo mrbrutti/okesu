@@ -343,14 +343,83 @@ export interface InvestigationNote {
   CreatedAt: string;
 }
 
+// InvestigationFindingItem — narrow projection of `findings` joined
+// to investigation_findings. Server enriches at query time so the
+// workspace can render the Findings tab without N+1 fetches.
+export interface InvestigationFindingItem {
+  ID: number;
+  Ts: number;
+  Agent: { String: string; Valid: boolean };
+  Host: { String: string; Valid: boolean };
+  Severity: { String: string; Valid: boolean };
+  Title: { String: string; Valid: boolean };
+  Status: { String: string; Valid: boolean };
+  Tags: { String: string; Valid: boolean };
+  Subtype: { String: string; Valid: boolean };
+  LinkedAt: string;
+}
+
+// InvestigationRunItem — narrow projection of orchestration_runs.
+// Note: this is the orchestration-managed run table, not the ad-hoc
+// runs table; investigation_runs only links to orchestration_runs.
+export interface InvestigationRunItem {
+  ID: number;
+  OrchestrationID: number;
+  OrchestrationName: { String: string; Valid: boolean };
+  Status: string;
+  TriggerKind: string;
+  StartedAt: string;
+  EndedAt: { String: string; Valid: boolean };
+  CurrentStepID: { String: string; Valid: boolean };
+  Error: { String: string; Valid: boolean };
+  LinkedAt: string;
+}
+
+// InvestigationIOCItem — IOCs derived from observations on the
+// case's linked findings. Aggregations are scoped to the case (not
+// the IOC's lifetime totals).
+export interface InvestigationIOCItem {
+  ID: number;
+  Kind: string;
+  Value: string;
+  Severity: { String: string; Valid: boolean };
+  ObservationCount: number;
+  HostCount: number;
+  FirstSeen: string;
+  LastSeen: string;
+}
+
+// InvestigationDaimonItem — distinct daimons (= emitting agents)
+// that fired the case's findings. Deep-link to daimon detail.
+export interface InvestigationDaimonItem {
+  Agent: string;
+  FindingCount: number;
+  LastSeenTs: number;
+}
+
+// InvestigationOrchestrationItem — orchestrations that own the
+// case's linked runs, grouped with run count + most-recent start.
+export interface InvestigationOrchestrationItem {
+  OrchestrationID: { Int64: number; Valid: boolean };
+  OrchestrationName: string;
+  RunCount: number;
+  LastStartedAt: string;
+}
+
 // InvestigationDetail is the shape of GET /api/investigations/{id}.
-// The handler builds a `map[string]any` with these four lowercase keys
-// — see controlplane/api/investigations.go GetInvestigationHandler.
+// The handler returns enriched lists for every workspace tab; see
+// controlplane/api/investigations.go GetInvestigationHandler.
 export interface InvestigationDetail {
   investigation: Investigation;
-  findings: number[];
-  runs: number[];
+  findings: InvestigationFindingItem[];
+  runs: InvestigationRunItem[];
+  iocs: InvestigationIOCItem[];
+  daimons: InvestigationDaimonItem[];
+  orchestrations: InvestigationOrchestrationItem[];
   notes: InvestigationNote[];
+  /** True iff any linked finding carries the `war-bridge` tag.
+   *  UI flips into red-banner war-room mode + faster auto-refresh. */
+  war_room: boolean;
 }
 
 export interface AuthConfig {
@@ -746,6 +815,18 @@ export const api = {
     linkFinding: (invID: number, findingID: number) =>
       request<void>(`/api/investigations/${invID}/findings/${findingID}`, {
         method: 'PUT',
+      }),
+    unlinkFinding: (invID: number, findingID: number) =>
+      request<void>(`/api/investigations/${invID}/findings/${findingID}`, {
+        method: 'DELETE',
+      }),
+    linkRun: (invID: number, runID: number) =>
+      request<void>(`/api/investigations/${invID}/runs/${runID}`, {
+        method: 'PUT',
+      }),
+    unlinkRun: (invID: number, runID: number) =>
+      request<void>(`/api/investigations/${invID}/runs/${runID}`, {
+        method: 'DELETE',
       }),
   },
 

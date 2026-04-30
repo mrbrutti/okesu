@@ -1,23 +1,35 @@
-// Investigation detail — bundle view for a single T2 case.
+// Investigation workspace — the operator's home for a T2 case.
 //
-// Renders the case header (title, status, summary, lifecycle controls)
-// plus three section panels: linked findings, linked orchestration runs,
-// and analyst notes. Operators close a case here with one of the four
-// resolution kinds; the close dialog is inline.
+// Tabs surface every linked entity:
+//   • Overview  — summary + identity + the live note composer
+//   • Findings  — enriched table; click → finding detail; unlink
+//   • Runs      — orchestration runs; click → run detail; unlink
+//   • IOCs      — IOCs observed via linked findings; deep-link to
+//                 catalog (separate session is building it)
+//   • Daimons   — distinct emitting daimons with last-seen + count
+//   • Orchs     — orchestrations with run count; "Run again" button
+//   • Notes     — the analyst-note timeline
 //
-// The handler returns:
-//   { investigation, findings: number[], runs: number[], notes: [] }
-// — see controlplane/api/investigations.go GetInvestigationHandler.
+// War-room mode: when any linked finding has the `war-bridge` tag,
+// a red banner is rendered at top + the bundle auto-refreshes every
+// 5s instead of the default 30s. Mirror of the dashboard's red
+// banner so an operator deep-linked from there sees the same level
+// of urgency in the case view.
 
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
+  Activity,
+  AlertTriangle,
   ArrowLeft,
   Archive,
+  Bot,
   Check,
   CheckCircle2,
-  Clock,
   ClipboardList,
+  Clock,
+  Eye,
+  FileText,
   Hash,
   Loader2,
   Lock,
@@ -25,6 +37,8 @@ import {
   Pencil,
   Save,
   Sparkles,
+  Trash2,
+  Wifi,
   X,
   XCircle,
 } from 'lucide-react';
@@ -32,12 +46,18 @@ import {
   api,
   ApiError,
   type Investigation,
+  type InvestigationDaimonItem,
   type InvestigationDetail,
+  type InvestigationFindingItem,
+  type InvestigationIOCItem,
   type InvestigationNote,
+  type InvestigationOrchestrationItem,
+  type InvestigationRunItem,
 } from '../api';
 import { cn } from '../lib/cn';
 
 type Resolution = 'resolved' | 'false_positive' | 'duplicate' | 'wont_fix';
+type Tab = 'overview' | 'findings' | 'runs' | 'iocs' | 'daimons' | 'orchestrations' | 'notes';
 
 const RESOLUTION_OPTIONS: { value: Resolution; label: string; icon: typeof Check; tone: string }[] = [
   { value: 'resolved',       label: 'Resolved',        icon: CheckCircle2, tone: 'text-green-700' },
@@ -58,9 +78,7 @@ export default function InvestigationDetailPage() {
   const [draftTitle, setDraftTitle] = useState('');
   const [draftSummary, setDraftSummary] = useState('');
   const [closeOpen, setCloseOpen] = useState(false);
-  const [noteAuthor, setNoteAuthor] = useState('');
-  const [noteBody, setNoteBody] = useState('');
-  const [noteBusy, setNoteBusy] = useState(false);
+  const [tab, setTab] = useState<Tab>('overview');
 
   const reload = () => {
     setError(null);
@@ -82,6 +100,19 @@ export default function InvestigationDetailPage() {
     reload();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [invID]);
+
+  // War-room polling: 5s when active, 30s otherwise. The faster
+  // cadence kicks in only for the case in front of the operator;
+  // background tabs pause via the visibility API.
+  useEffect(() => {
+    if (!bundle) return;
+    const interval = bundle.war_room ? 5_000 : 30_000;
+    const t = setInterval(() => {
+      if (document.visibilityState === 'visible') reload();
+    }, interval);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bundle?.war_room, invID]);
 
   async function saveEdits() {
     if (!bundle) return;
@@ -116,29 +147,12 @@ export default function InvestigationDetailPage() {
   async function reopen() {
     setBusy(true); setError(null);
     try {
-      // PATCH treats empty string as "don't touch" for resolution; the
-      // server allows status=active even when a resolution was set
-      // previously (closed_at gets cleared on the SQL side).
       await api.investigations.update(invID, { status: 'active' });
       reload();
     } catch (e) {
       setError(e instanceof ApiError ? e.message : String(e));
     } finally {
       setBusy(false);
-    }
-  }
-
-  async function addNote() {
-    if (!noteBody.trim()) return;
-    setNoteBusy(true); setError(null);
-    try {
-      await api.investigations.addNote(invID, noteAuthor.trim() || 'operator', noteBody.trim());
-      setNoteBody('');
-      reload();
-    } catch (e) {
-      setError(e instanceof ApiError ? e.message : String(e));
-    } finally {
-      setNoteBusy(false);
     }
   }
 
@@ -171,6 +185,18 @@ export default function InvestigationDetailPage() {
 
   return (
     <div className="h-full flex flex-col">
+      {bundle.war_room && (
+        <div className="px-6 py-2 bg-red-600 text-white text-xs flex items-center gap-2 shadow-sm">
+          <AlertTriangle size={14} className="animate-pulse" />
+          <span className="font-semibold uppercase tracking-wide">War room</span>
+          <span className="opacity-90">
+            — at least one linked finding has the <code className="bg-red-700/40 px-1 rounded">war-bridge</code> tag.
+            Auto-refresh every 5s.
+          </span>
+          <Wifi size={12} className="ml-auto opacity-70" />
+        </div>
+      )}
+
       <header className="px-6 py-4 border-b border-border bg-gradient-to-r from-brand-50/60 via-panel to-panel">
         <div className="flex items-center gap-2 text-xs text-ink-dim mb-2">
           <Link to="/investigations" className="hover:text-ink inline-flex items-center gap-1">
@@ -245,6 +271,17 @@ export default function InvestigationDetailPage() {
         </div>
       </header>
 
+      {/* Tab strip */}
+      <nav className="px-6 border-b border-border flex items-center gap-1 bg-panel">
+        <TabButton current={tab} value="overview"      onClick={setTab} icon={FileText}     label="Overview" />
+        <TabButton current={tab} value="findings"      onClick={setTab} icon={Hash}         label="Findings"        count={bundle.findings.length} />
+        <TabButton current={tab} value="runs"          onClick={setTab} icon={Sparkles}     label="Runs"            count={bundle.runs.length} />
+        <TabButton current={tab} value="iocs"          onClick={setTab} icon={Eye}          label="IOCs"            count={bundle.iocs.length} />
+        <TabButton current={tab} value="daimons"       onClick={setTab} icon={Bot}          label="Daimons"         count={bundle.daimons.length} />
+        <TabButton current={tab} value="orchestrations" onClick={setTab} icon={Activity}    label="Orchestrations" count={bundle.orchestrations.length} />
+        <TabButton current={tab} value="notes"         onClick={setTab} icon={MessageSquarePlus} label="Notes"     count={bundle.notes.length} />
+      </nav>
+
       <div className="flex-1 overflow-auto p-6 space-y-5">
         {error && (
           <div className="text-xs text-red-700 bg-red-50 border border-red-200 px-3 py-2 rounded-md">
@@ -252,139 +289,33 @@ export default function InvestigationDetailPage() {
           </div>
         )}
 
-        {/* Summary + identity */}
-        <section className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-          <div className="lg:col-span-2 border border-border rounded-md bg-white p-4">
-            <h4 className="text-[11px] uppercase tracking-wide font-semibold text-ink-mute mb-2">
-              Summary
-            </h4>
-            {editing ? (
-              <textarea
-                value={draftSummary}
-                onChange={(e) => setDraftSummary(e.target.value)}
-                rows={6}
-                className="w-full px-2.5 py-1.5 rounded-md border border-border bg-white text-sm"
-                placeholder="Hypothesis, scope, working theory…"
-              />
-            ) : inv.Summary ? (
-              <div className="text-sm whitespace-pre-wrap text-ink">{inv.Summary}</div>
-            ) : (
-              <div className="text-sm text-ink-mute italic">No summary yet.</div>
-            )}
-          </div>
+        {tab === 'overview' && (
+          <OverviewPanel
+            inv={inv}
+            editing={editing}
+            draftSummary={draftSummary}
+            setDraftSummary={setDraftSummary}
+            bundle={bundle}
+          />
+        )}
 
-          <div className="border border-border rounded-md bg-white p-4 text-xs space-y-1.5">
-            <h4 className="text-[11px] uppercase tracking-wide font-semibold text-ink-mute mb-2">
-              Identity
-            </h4>
-            <KV label="ID"><code className="font-mono">#{inv.ID}</code></KV>
-            <KV label="Created">
-              <span className="font-mono text-ink-dim">{fmtDate(inv.CreatedAt)}</span>
-            </KV>
-            <KV label="Updated">
-              <span className="font-mono text-ink-dim">{fmtDate(inv.UpdatedAt)}</span>
-            </KV>
-            {inv.CreatedBy && (
-              <KV label="Created by"><code className="font-mono">{inv.CreatedBy}</code></KV>
-            )}
-            {!isZeroTime(inv.ClosedAt) && (
-              <KV label="Closed">
-                <span className="font-mono text-ink-dim">{fmtDate(inv.ClosedAt)}</span>
-              </KV>
-            )}
-          </div>
-        </section>
+        {tab === 'findings' && (
+          <FindingsPanel invID={invID} findings={bundle.findings} onChange={reload} />
+        )}
 
-        {/* Linked findings */}
-        <section className="border border-border rounded-md bg-white p-4">
-          <h4 className="text-[11px] uppercase tracking-wide font-semibold text-ink-mute mb-2 flex items-center gap-1.5">
-            <Hash size={11} /> Linked findings
-            <span className="text-ink-mute font-normal">({bundle.findings.length})</span>
-          </h4>
-          {bundle.findings.length === 0 ? (
-            <div className="text-xs text-ink-mute italic">No findings linked yet.</div>
-          ) : (
-            <ul className="flex flex-wrap gap-2">
-              {bundle.findings.map((fid) => (
-                <li key={fid}>
-                  <Link
-                    to={`/findings?id=${fid}`}
-                    className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-md bg-slate-50 ring-1 ring-border hover:bg-slate-100"
-                  >
-                    <Hash size={10} className="text-ink-mute" />
-                    <code className="font-mono">#{fid}</code>
-                  </Link>
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
+        {tab === 'runs' && (
+          <RunsPanel invID={invID} runs={bundle.runs} onChange={reload} />
+        )}
 
-        {/* Linked runs */}
-        <section className="border border-border rounded-md bg-white p-4">
-          <h4 className="text-[11px] uppercase tracking-wide font-semibold text-ink-mute mb-2 flex items-center gap-1.5">
-            <Sparkles size={11} /> Linked orchestration runs
-            <span className="text-ink-mute font-normal">({bundle.runs.length})</span>
-          </h4>
-          {bundle.runs.length === 0 ? (
-            <div className="text-xs text-ink-mute italic">No runs linked yet.</div>
-          ) : (
-            <ul className="flex flex-wrap gap-2">
-              {bundle.runs.map((rid) => (
-                <li key={rid}>
-                  <Link
-                    to={`/orchestrations?run=${rid}`}
-                    className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-md bg-slate-50 ring-1 ring-border hover:bg-slate-100"
-                  >
-                    <Sparkles size={10} className="text-ink-mute" />
-                    <code className="font-mono">#{rid}</code>
-                  </Link>
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
+        {tab === 'iocs' && <IOCsPanel iocs={bundle.iocs} />}
 
-        {/* Notes */}
-        <section className="border border-border rounded-md bg-white p-4">
-          <h4 className="text-[11px] uppercase tracking-wide font-semibold text-ink-mute mb-2 flex items-center gap-1.5">
-            <MessageSquarePlus size={11} /> Notes
-            <span className="text-ink-mute font-normal">({bundle.notes.length})</span>
-          </h4>
+        {tab === 'daimons' && <DaimonsPanel daimons={bundle.daimons} />}
 
-          {/* Note composer — kept above the timeline for easy access. */}
-          <div className="mb-4 space-y-2">
-            <input
-              type="text"
-              value={noteAuthor}
-              onChange={(e) => setNoteAuthor(e.target.value)}
-              className="w-full px-2.5 py-1 rounded-md border border-border text-xs"
-              placeholder="Author (defaults to 'operator')"
-            />
-            <textarea
-              value={noteBody}
-              onChange={(e) => setNoteBody(e.target.value)}
-              rows={3}
-              className="w-full px-2.5 py-1.5 rounded-md border border-border text-sm"
-              placeholder="Add a note — observations, hypotheses, next steps…"
-            />
-            <div className="flex justify-end">
-              <button
-                onClick={addNote}
-                disabled={noteBusy || !noteBody.trim()}
-                className="inline-flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-md bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                <MessageSquarePlus size={12} /> Add note
-              </button>
-            </div>
-          </div>
+        {tab === 'orchestrations' && <OrchestrationsPanel orchs={bundle.orchestrations} />}
 
-          {bundle.notes.length === 0 ? (
-            <div className="text-xs text-ink-mute italic">No notes yet — add the first one above.</div>
-          ) : (
-            <NotesList notes={bundle.notes} />
-          )}
-        </section>
+        {tab === 'notes' && (
+          <NotesPanel invID={invID} notes={bundle.notes} onChange={reload} />
+        )}
       </div>
 
       {closeOpen && (
@@ -398,34 +329,455 @@ export default function InvestigationDetailPage() {
   );
 }
 
-function NotesList({ notes }: { notes: InvestigationNote[] }) {
-  // Newest-first reads more like a case log; the API returns oldest-first.
+// ── Tab button ──────────────────────────────────────────────────────
+
+function TabButton<T extends string>({
+  current, value, onClick, icon: Icon, label, count,
+}: {
+  current: T;
+  value: T;
+  onClick: (v: T) => void;
+  icon: typeof Hash;
+  label: string;
+  count?: number;
+}) {
+  const active = current === value;
+  return (
+    <button
+      onClick={() => onClick(value)}
+      className={cn(
+        'inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium border-b-2 -mb-px transition',
+        active
+          ? 'border-brand-500 text-brand-700'
+          : 'border-transparent text-ink-dim hover:text-ink hover:bg-slate-50',
+      )}
+    >
+      <Icon size={12} />
+      {label}
+      {typeof count === 'number' && (
+        <span className={cn(
+          'text-[10px] px-1.5 py-0.5 rounded-full',
+          active ? 'bg-brand-100 text-brand-700' : 'bg-slate-100 text-ink-mute',
+        )}>
+          {count}
+        </span>
+      )}
+    </button>
+  );
+}
+
+// ── Overview panel ──────────────────────────────────────────────────
+
+function OverviewPanel({
+  inv, editing, draftSummary, setDraftSummary, bundle,
+}: {
+  inv: Investigation;
+  editing: boolean;
+  draftSummary: string;
+  setDraftSummary: (s: string) => void;
+  bundle: InvestigationDetail;
+}) {
+  return (
+    <section className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+      <div className="lg:col-span-2 border border-border rounded-md bg-white p-4">
+        <h4 className="text-[11px] uppercase tracking-wide font-semibold text-ink-mute mb-2">
+          Summary
+        </h4>
+        {editing ? (
+          <textarea
+            value={draftSummary}
+            onChange={(e) => setDraftSummary(e.target.value)}
+            rows={6}
+            className="w-full px-2.5 py-1.5 rounded-md border border-border bg-white text-sm"
+            placeholder="Hypothesis, scope, working theory…"
+          />
+        ) : inv.Summary ? (
+          <div className="text-sm whitespace-pre-wrap text-ink">{inv.Summary}</div>
+        ) : (
+          <div className="text-sm text-ink-mute italic">No summary yet.</div>
+        )}
+      </div>
+
+      <div className="space-y-3">
+        <div className="border border-border rounded-md bg-white p-4 text-xs space-y-1.5">
+          <h4 className="text-[11px] uppercase tracking-wide font-semibold text-ink-mute mb-2">
+            Identity
+          </h4>
+          <KV label="ID"><code className="font-mono">#{inv.ID}</code></KV>
+          <KV label="Created"><span className="font-mono text-ink-dim">{fmtDate(inv.CreatedAt)}</span></KV>
+          <KV label="Updated"><span className="font-mono text-ink-dim">{fmtDate(inv.UpdatedAt)}</span></KV>
+          {inv.CreatedBy && <KV label="Created by"><code className="font-mono">{inv.CreatedBy}</code></KV>}
+          {!isZeroTime(inv.ClosedAt) && <KV label="Closed"><span className="font-mono text-ink-dim">{fmtDate(inv.ClosedAt)}</span></KV>}
+        </div>
+
+        <div className="border border-border rounded-md bg-white p-4 text-xs space-y-1.5">
+          <h4 className="text-[11px] uppercase tracking-wide font-semibold text-ink-mute mb-2">
+            Linked entities
+          </h4>
+          <KV label="Findings"><span className="font-mono">{bundle.findings.length}</span></KV>
+          <KV label="Runs"><span className="font-mono">{bundle.runs.length}</span></KV>
+          <KV label="IOCs"><span className="font-mono">{bundle.iocs.length}</span></KV>
+          <KV label="Daimons"><span className="font-mono">{bundle.daimons.length}</span></KV>
+          <KV label="Orchestrations"><span className="font-mono">{bundle.orchestrations.length}</span></KV>
+          <KV label="Notes"><span className="font-mono">{bundle.notes.length}</span></KV>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// ── Findings panel ──────────────────────────────────────────────────
+
+function FindingsPanel({ invID, findings, onChange }: {
+  invID: number;
+  findings: InvestigationFindingItem[];
+  onChange: () => void;
+}) {
+  if (findings.length === 0) {
+    return <EmptyTabState icon={Hash} label="No findings linked yet." hint="Open a finding and click 'Add to investigation' to link it here." />;
+  }
+  return (
+    <div className="border border-border rounded-md bg-white overflow-hidden">
+      <table className="w-full text-sm">
+        <thead className="bg-slate-50 border-b border-border text-[11px] uppercase tracking-wide text-ink-mute">
+          <tr>
+            <th className="px-3 py-2 text-left w-16">ID</th>
+            <th className="px-3 py-2 text-left w-24">Severity</th>
+            <th className="px-3 py-2 text-left">Title</th>
+            <th className="px-3 py-2 text-left w-32">Daimon</th>
+            <th className="px-3 py-2 text-left w-28">Host</th>
+            <th className="px-3 py-2 text-left w-28">Status</th>
+            <th className="px-3 py-2 text-right w-12"></th>
+          </tr>
+        </thead>
+        <tbody>
+          {findings.map((f) => (
+            <tr key={f.ID} className="border-b border-border/60 last:border-0 hover:bg-slate-50/40">
+              <td className="px-3 py-2"><Link to={`/findings?id=${f.ID}`} className="text-brand-700 hover:underline font-mono text-xs">#{f.ID}</Link></td>
+              <td className="px-3 py-2"><SeverityChip sev={nullStr(f.Severity)} /></td>
+              <td className="px-3 py-2 truncate max-w-md">{nullStr(f.Title) || <span className="text-ink-mute italic">(no title)</span>}</td>
+              <td className="px-3 py-2 text-xs text-ink-dim">{nullStr(f.Agent) || '—'}</td>
+              <td className="px-3 py-2 text-xs text-ink-dim">{nullStr(f.Host) || '—'}</td>
+              <td className="px-3 py-2"><StatusPill v={nullStr(f.Status)} /></td>
+              <td className="px-3 py-2 text-right">
+                <UnlinkButton onClick={async () => {
+                  if (!confirm(`Unlink finding #${f.ID} from this investigation?`)) return;
+                  await api.investigations.unlinkFinding(invID, f.ID);
+                  onChange();
+                }} />
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ── Runs panel ──────────────────────────────────────────────────────
+
+function RunsPanel({ invID, runs, onChange }: {
+  invID: number;
+  runs: InvestigationRunItem[];
+  onChange: () => void;
+}) {
+  if (runs.length === 0) {
+    return <EmptyTabState icon={Sparkles} label="No orchestration runs linked yet." hint="An orchestration step's `link_run_to_finding` action automatically links the run when the finding is on a case." />;
+  }
+  return (
+    <div className="border border-border rounded-md bg-white overflow-hidden">
+      <table className="w-full text-sm">
+        <thead className="bg-slate-50 border-b border-border text-[11px] uppercase tracking-wide text-ink-mute">
+          <tr>
+            <th className="px-3 py-2 text-left w-16">ID</th>
+            <th className="px-3 py-2 text-left w-32">Status</th>
+            <th className="px-3 py-2 text-left">Orchestration</th>
+            <th className="px-3 py-2 text-left w-28">Trigger</th>
+            <th className="px-3 py-2 text-left w-36">Started</th>
+            <th className="px-3 py-2 text-right w-12"></th>
+          </tr>
+        </thead>
+        <tbody>
+          {runs.map((r) => (
+            <tr key={r.ID} className="border-b border-border/60 last:border-0 hover:bg-slate-50/40">
+              <td className="px-3 py-2"><Link to={`/orchestration-runs/${r.ID}`} className="text-brand-700 hover:underline font-mono text-xs">#{r.ID}</Link></td>
+              <td className="px-3 py-2"><RunStatusChip s={r.Status} /></td>
+              <td className="px-3 py-2 truncate">
+                {nullStr(r.OrchestrationName) || <span className="text-ink-mute italic">(deleted)</span>}
+              </td>
+              <td className="px-3 py-2 text-xs text-ink-dim">{r.TriggerKind || '—'}</td>
+              <td className="px-3 py-2 text-xs text-ink-dim font-mono">{fmtDate(r.StartedAt)}</td>
+              <td className="px-3 py-2 text-right">
+                <UnlinkButton onClick={async () => {
+                  if (!confirm(`Unlink run #${r.ID} from this investigation?`)) return;
+                  await api.investigations.unlinkRun(invID, r.ID);
+                  onChange();
+                }} />
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ── IOCs panel ──────────────────────────────────────────────────────
+
+function IOCsPanel({ iocs }: { iocs: InvestigationIOCItem[] }) {
+  if (iocs.length === 0) {
+    return <EmptyTabState icon={Eye} label="No IOCs observed via this case's findings." hint="IOCs are derived from ioc_observations on the case's linked findings — they appear here automatically." />;
+  }
+  return (
+    <div className="border border-border rounded-md bg-white overflow-hidden">
+      <table className="w-full text-sm">
+        <thead className="bg-slate-50 border-b border-border text-[11px] uppercase tracking-wide text-ink-mute">
+          <tr>
+            <th className="px-3 py-2 text-left w-20">Kind</th>
+            <th className="px-3 py-2 text-left">Value</th>
+            <th className="px-3 py-2 text-left w-24">Severity</th>
+            <th className="px-3 py-2 text-right w-16">Obs</th>
+            <th className="px-3 py-2 text-right w-16">Hosts</th>
+            <th className="px-3 py-2 text-left w-36">Last seen</th>
+          </tr>
+        </thead>
+        <tbody>
+          {iocs.map((i) => (
+            <tr key={i.ID} className="border-b border-border/60 last:border-0 hover:bg-slate-50/40">
+              <td className="px-3 py-2 font-mono text-xs uppercase">{i.Kind}</td>
+              <td className="px-3 py-2 truncate max-w-md">
+                <Link to={`/iocs/${i.ID}`} className="text-brand-700 hover:underline font-mono text-xs">
+                  {i.Value}
+                </Link>
+              </td>
+              <td className="px-3 py-2"><SeverityChip sev={nullStr(i.Severity)} /></td>
+              <td className="px-3 py-2 text-right text-xs font-mono text-ink-dim">{i.ObservationCount}</td>
+              <td className="px-3 py-2 text-right text-xs font-mono text-ink-dim">{i.HostCount}</td>
+              <td className="px-3 py-2 text-xs text-ink-dim font-mono">{fmtDate(i.LastSeen)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ── Daimons panel ───────────────────────────────────────────────────
+
+function DaimonsPanel({ daimons }: { daimons: InvestigationDaimonItem[] }) {
+  if (daimons.length === 0) {
+    return <EmptyTabState icon={Bot} label="No daimon emissions linked." hint="The case's findings haven't been emitted by any agent yet — add some findings on the Findings tab." />;
+  }
+  return (
+    <div className="border border-border rounded-md bg-white overflow-hidden">
+      <table className="w-full text-sm">
+        <thead className="bg-slate-50 border-b border-border text-[11px] uppercase tracking-wide text-ink-mute">
+          <tr>
+            <th className="px-3 py-2 text-left">Daimon</th>
+            <th className="px-3 py-2 text-right w-32">Findings</th>
+            <th className="px-3 py-2 text-left w-40">Last seen</th>
+          </tr>
+        </thead>
+        <tbody>
+          {daimons.map((d) => (
+            <tr key={d.Agent} className="border-b border-border/60 last:border-0 hover:bg-slate-50/40">
+              <td className="px-3 py-2">
+                <Link to={`/agents/${encodeURIComponent(d.Agent)}`} className="text-brand-700 hover:underline">
+                  {d.Agent}
+                </Link>
+              </td>
+              <td className="px-3 py-2 text-right text-xs font-mono text-ink-dim">{d.FindingCount}</td>
+              <td className="px-3 py-2 text-xs text-ink-dim font-mono">
+                {d.LastSeenTs ? new Date(d.LastSeenTs).toLocaleString() : '—'}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ── Orchestrations panel ───────────────────────────────────────────
+
+function OrchestrationsPanel({ orchs }: { orchs: InvestigationOrchestrationItem[] }) {
+  if (orchs.length === 0) {
+    return <EmptyTabState icon={Activity} label="No orchestrations have run on this case." hint="Trigger an orchestration on a linked finding (or directly), and the resulting runs will surface here." />;
+  }
+  return (
+    <div className="border border-border rounded-md bg-white overflow-hidden">
+      <table className="w-full text-sm">
+        <thead className="bg-slate-50 border-b border-border text-[11px] uppercase tracking-wide text-ink-mute">
+          <tr>
+            <th className="px-3 py-2 text-left">Orchestration</th>
+            <th className="px-3 py-2 text-right w-24">Runs</th>
+            <th className="px-3 py-2 text-left w-40">Last started</th>
+          </tr>
+        </thead>
+        <tbody>
+          {orchs.map((o) => (
+            <tr key={`${o.OrchestrationID.Int64}:${o.OrchestrationName}`} className="border-b border-border/60 last:border-0 hover:bg-slate-50/40">
+              <td className="px-3 py-2">
+                {o.OrchestrationID.Valid ? (
+                  <Link to={`/orchestrations/${o.OrchestrationID.Int64}`} className="text-brand-700 hover:underline">
+                    {o.OrchestrationName}
+                  </Link>
+                ) : (
+                  <span className="text-ink-mute italic">{o.OrchestrationName}</span>
+                )}
+              </td>
+              <td className="px-3 py-2 text-right text-xs font-mono text-ink-dim">{o.RunCount}</td>
+              <td className="px-3 py-2 text-xs text-ink-dim font-mono">{fmtDate(o.LastStartedAt)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ── Notes panel ─────────────────────────────────────────────────────
+
+function NotesPanel({ invID, notes, onChange }: {
+  invID: number;
+  notes: InvestigationNote[];
+  onChange: () => void;
+}) {
+  const [author, setAuthor] = useState('');
+  const [body, setBody] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  async function add() {
+    if (!body.trim()) return;
+    setBusy(true);
+    try {
+      await api.investigations.addNote(invID, author.trim() || 'operator', body.trim());
+      setBody('');
+      onChange();
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const ordered = useMemo(
     () => [...notes].sort((a, b) => (a.CreatedAt < b.CreatedAt ? 1 : -1)),
     [notes],
   );
+
   return (
-    <ul className="space-y-3">
-      {ordered.map((n) => (
-        <li key={n.ID} className="border border-border rounded-md bg-slate-50/50 p-3">
-          <div className="flex items-center gap-2 text-[11px] text-ink-mute mb-1.5">
-            <code className="font-mono text-ink-dim">{n.Author || 'operator'}</code>
-            <span>·</span>
-            <Clock size={10} />
-            <span className="font-mono">{fmtDate(n.CreatedAt)}</span>
-          </div>
-          <div className="text-sm whitespace-pre-wrap text-ink">{n.Body}</div>
-        </li>
-      ))}
-    </ul>
+    <div className="border border-border rounded-md bg-white p-4">
+      <div className="mb-4 space-y-2">
+        <input
+          type="text"
+          value={author}
+          onChange={(e) => setAuthor(e.target.value)}
+          className="w-full px-2.5 py-1 rounded-md border border-border text-xs"
+          placeholder="Author (defaults to 'operator')"
+        />
+        <textarea
+          value={body}
+          onChange={(e) => setBody(e.target.value)}
+          rows={3}
+          className="w-full px-2.5 py-1.5 rounded-md border border-border text-sm"
+          placeholder="Add a note — observations, hypotheses, next steps…"
+        />
+        <div className="flex justify-end">
+          <button
+            onClick={add}
+            disabled={busy || !body.trim()}
+            className="inline-flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-md bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <MessageSquarePlus size={12} /> Add note
+          </button>
+        </div>
+      </div>
+
+      {ordered.length === 0 ? (
+        <div className="text-xs text-ink-mute italic">No notes yet — add the first one above.</div>
+      ) : (
+        <ul className="space-y-3">
+          {ordered.map((n) => (
+            <li key={n.ID} className="border border-border rounded-md bg-slate-50/50 p-3">
+              <div className="flex items-center gap-2 text-[11px] text-ink-mute mb-1.5">
+                <code className="font-mono text-ink-dim">{n.Author || 'operator'}</code>
+                <span>·</span>
+                <Clock size={10} />
+                <span className="font-mono">{fmtDate(n.CreatedAt)}</span>
+              </div>
+              <div className="text-sm whitespace-pre-wrap text-ink">{n.Body}</div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }
 
-function CloseDialog({
-  onClose,
-  onPick,
-  busy,
-}: {
+// ── Reusable bits ───────────────────────────────────────────────────
+
+function EmptyTabState({ icon: Icon, label, hint }: { icon: typeof Hash; label: string; hint?: string }) {
+  return (
+    <div className="border border-border rounded-md bg-white p-8 text-center">
+      <Icon size={28} className="mx-auto opacity-30 mb-2" />
+      <div className="text-sm text-ink-dim mb-1">{label}</div>
+      {hint && <div className="text-xs text-ink-mute max-w-md mx-auto">{hint}</div>}
+    </div>
+  );
+}
+
+function UnlinkButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      title="Unlink from this investigation"
+      className="text-ink-mute hover:text-red-700 p-1 rounded hover:bg-red-50"
+    >
+      <Trash2 size={12} />
+    </button>
+  );
+}
+
+function SeverityChip({ sev }: { sev: string }) {
+  const tone =
+    sev === 'CRITICAL' ? 'text-red-700 bg-red-50 ring-red-200' :
+    sev === 'HIGH'     ? 'text-orange-700 bg-orange-50 ring-orange-200' :
+    sev === 'MEDIUM'   ? 'text-amber-700 bg-amber-50 ring-amber-200' :
+    sev === 'LOW'      ? 'text-blue-700 bg-blue-50 ring-blue-200' :
+                         'text-slate-600 bg-slate-50 ring-slate-200';
+  return (
+    <span className={cn('text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded ring-1', tone)}>
+      {sev || '—'}
+    </span>
+  );
+}
+
+function StatusPill({ v }: { v: string }) {
+  if (!v) return <span className="text-[10px] text-ink-mute">—</span>;
+  const tone =
+    v === 'open'           ? 'text-brand-700 bg-brand-50 ring-brand-200' :
+    v === 'resolved'       ? 'text-green-700 bg-green-50 ring-green-200' :
+    v === 'false_positive' ? 'text-slate-600 bg-slate-50 ring-slate-200' :
+    v === 'wontfix'        ? 'text-orange-700 bg-orange-50 ring-orange-200' :
+                             'text-ink-dim bg-slate-50 ring-slate-200';
+  return <span className={cn('text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded ring-1', tone)}>{v.replace('_', ' ')}</span>;
+}
+
+function RunStatusChip({ s }: { s: string }) {
+  const tone =
+    s === 'completed'        ? 'text-green-700 bg-green-50 ring-green-200' :
+    s === 'running'          ? 'text-brand-700 bg-brand-50 ring-brand-200' :
+    s === 'failed'           ? 'text-red-700 bg-red-50 ring-red-200' :
+    s === 'cancelled'        ? 'text-slate-600 bg-slate-50 ring-slate-200' :
+    s === 'approval_required'? 'text-amber-700 bg-amber-50 ring-amber-200' :
+                               'text-ink-dim bg-slate-50 ring-slate-200';
+  return <span className={cn('text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded ring-1', tone)}>{s}</span>;
+}
+
+function nullStr(v: { String: string; Valid: boolean }): string {
+  return v && v.Valid ? v.String : '';
+}
+
+function CloseDialog({ onClose, onPick, busy }: {
   onClose: () => void;
   onPick: (r: Resolution) => void;
   busy: boolean;
@@ -498,7 +850,7 @@ function ResolutionChip({ res }: { res: Investigation['Resolution'] }) {
 
 function KV({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="grid grid-cols-[100px_1fr] gap-2">
+    <div className="grid grid-cols-[110px_1fr] gap-2">
       <dt className="text-ink-mute">{label}</dt>
       <dd className="text-ink truncate">{children}</dd>
     </div>
@@ -515,8 +867,6 @@ function fmtDate(iso: string): string {
   });
 }
 
-// Go's zero-value time encodes to this RFC3339 literal — used by the
-// server when a case is still active (no closed_at). Treat as "unset".
 function isZeroTime(iso: string): boolean {
   return iso === '' || iso === '0001-01-01T00:00:00Z';
 }

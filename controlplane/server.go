@@ -656,6 +656,9 @@ func (s *Server) routes() http.Handler {
 		r.Patch("/api/investigations/{id}", api.UpdateInvestigationHandler(s.store))
 		r.Post("/api/investigations/{id}/notes", api.AddInvestigationNoteHandler(s.store))
 		r.Put("/api/investigations/{id}/findings/{finding_id}", api.LinkFindingToInvestigationHandler(s.store))
+		r.Delete("/api/investigations/{id}/findings/{finding_id}", api.UnlinkFindingFromInvestigationHandler(s.store))
+		r.Put("/api/investigations/{id}/runs/{run_id}", api.LinkRunToInvestigationHandler(s.store))
+		r.Delete("/api/investigations/{id}/runs/{run_id}", api.UnlinkRunFromInvestigationHandler(s.store))
 
 		// Read endpoints (continued)
 		r.Get("/api/nodes", api.FederatedNodesList(s.store, s.fedAgg))

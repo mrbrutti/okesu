@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -143,6 +144,21 @@ func ListInvestigationsHandler(store *db.Store) http.HandlerFunc {
 
 // GetInvestigationHandler returns an investigation with its linked
 // findings, runs, and notes.
+// GetInvestigationHandler returns the case bundle: the investigation
+// row plus enriched lists for the workspace tabs (findings, runs,
+// IOCs, daimons, orchestrations, notes) and a war_room flag derived
+// from the linked findings' tags.
+//
+// Wire shape:
+//
+//	{ investigation, findings: [...], runs: [...],
+//	  iocs: [...], daimons: [...], orchestrations: [...],
+//	  notes: [...], war_room: bool }
+//
+// Each list contains *objects*, not just IDs, so the UI can render
+// every tab without N+1 fetches. Truncations are applied at the DB
+// layer (e.g. run prompts capped at 240 chars) to keep the payload
+// small for cases that link hundreds of rows.
 func GetInvestigationHandler(store *db.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, err := investigationIDFromPath(r.URL.Path, "/api/investigations/")
@@ -155,28 +171,120 @@ func GetInvestigationHandler(store *db.Store) http.HandlerFunc {
 			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
-		findings, _ := store.ListFindingsForInvestigation(id)
-		runs, _ := store.ListRunsForInvestigation(id)
+		findings, _ := store.ListFindingsForInvestigationEnriched(id)
+		runs, _ := store.ListRunsForInvestigationEnriched(id)
+		iocs, _ := store.ListIOCsForInvestigation(id)
+		daimons, _ := store.ListDaimonsForInvestigation(id)
+		orchs, _ := store.ListOrchestrationsForInvestigation(id)
 		notes, _ := store.ListInvestigationNotes(id)
-		// Empty slices instead of nil so JSON output is consistent.
+		warRoom, _ := store.IsInvestigationWarRoom(id)
+
+		// Defensive nil → empty so JSON consumers see [], not null.
 		if findings == nil {
-			findings = []int64{}
+			findings = []db.InvestigationFindingItem{}
 		}
 		if runs == nil {
-			runs = []int64{}
+			runs = []db.InvestigationRunItem{}
+		}
+		if iocs == nil {
+			iocs = []db.InvestigationIOCItem{}
+		}
+		if daimons == nil {
+			daimons = []db.InvestigationDaimonItem{}
+		}
+		if orchs == nil {
+			orchs = []db.InvestigationOrchestrationItem{}
 		}
 		if notes == nil {
 			notes = []db.InvestigationNote{}
 		}
+
 		resp := map[string]any{
-			"investigation": inv,
-			"findings":      findings,
-			"runs":          runs,
-			"notes":         notes,
+			"investigation":   inv,
+			"findings":        findings,
+			"runs":            runs,
+			"iocs":            iocs,
+			"daimons":         daimons,
+			"orchestrations":  orchs,
+			"notes":           notes,
+			"war_room":        warRoom,
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(resp)
 	}
+}
+
+// LinkRunToInvestigationHandler adds an orchestration_run to the
+// case. PUT /api/investigations/{id}/runs/{run_id}.
+func LinkRunToInvestigationHandler(store *db.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		invID, runID, err := invAndChildID(r.URL.Path, "/api/investigations/", "runs")
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := store.LinkRunToInvestigation(invID, runID); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+// UnlinkFindingFromInvestigationHandler removes a finding ↔ case
+// link. DELETE /api/investigations/{id}/findings/{finding_id}.
+// Idempotent — 204 even when the row didn't exist.
+func UnlinkFindingFromInvestigationHandler(store *db.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		invID, fid, err := invAndChildID(r.URL.Path, "/api/investigations/", "findings")
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := store.UnlinkFindingFromInvestigation(invID, fid); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+// UnlinkRunFromInvestigationHandler removes a run ↔ case link.
+// DELETE /api/investigations/{id}/runs/{run_id}. Idempotent.
+func UnlinkRunFromInvestigationHandler(store *db.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		invID, runID, err := invAndChildID(r.URL.Path, "/api/investigations/", "runs")
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := store.UnlinkRunFromInvestigation(invID, runID); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+// invAndChildID parses /api/investigations/{id}/{kind}/{child} into
+// (invID, childID). Returns an error on shape mismatch or
+// non-integer ids. Tolerant of the kind keyword being either
+// "findings" or "runs".
+func invAndChildID(path, prefix, kind string) (int64, int64, error) {
+	rest := strings.TrimPrefix(path, prefix)
+	segs := strings.Split(rest, "/")
+	if len(segs) < 3 || segs[1] != kind {
+		return 0, 0, fmt.Errorf("path must match /api/investigations/{id}/%s/{child_id}", kind)
+	}
+	invID, err := strconv.ParseInt(segs[0], 10, 64)
+	if err != nil {
+		return 0, 0, fmt.Errorf("bad investigation id: %w", err)
+	}
+	childID, err := strconv.ParseInt(segs[2], 10, 64)
+	if err != nil {
+		return 0, 0, fmt.Errorf("bad %s id: %w", kind, err)
+	}
+	return invID, childID, nil
 }
 
 // LinkFindingToInvestigationHandler adds a finding to an investigation.
