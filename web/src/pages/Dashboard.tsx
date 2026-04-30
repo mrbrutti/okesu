@@ -17,6 +17,7 @@ import {
   Activity,
   AlertTriangle,
   CheckCircle2,
+  ClipboardList,
   Cpu,
   Loader2,
   Lock,
@@ -239,7 +240,7 @@ export default function DashboardPage() {
         )}
 
         {/* Row 1: stat tiles */}
-        <section className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+        <section className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-7 gap-4">
           <StatTile
             label="Daimons"
             icon={Cpu}
@@ -330,6 +331,28 @@ export default function DashboardPage() {
               { value: orchCounts.failed ?? 0,     color: 'bg-red-500',    title: `${orchCounts.failed ?? 0} failed` },
               { value: orchCounts.running ?? 0,    color: 'bg-cyan-500',   title: `${orchCounts.running ?? 0} running` },
             ] : undefined}
+          />
+          {/* Active cases — surfaces investigation pressure on the
+              landing page. Sub-line shows the last-24h throughput
+              (closed) + engine activity (autolinked findings) so the
+              operator gets both the queue depth and a sense of
+              motion. Click drills into the cases list. */}
+          <StatTile
+            label="Active cases"
+            icon={ClipboardList}
+            to="/investigations"
+            loading={!data}
+            primary={data && data.investigations ? `${data.investigations.active}` : '—'}
+            accent={
+              !data || !data.investigations ? 'info'
+                : data.investigations.active === 0 ? 'good'
+                : data.investigations.active >= 5 ? 'warn'
+                : 'info'
+            }
+            sub={data && data.investigations
+              ? `${data.investigations.closed_24h} closed · ${data.investigations.autolinked_findings_24h} autolinked · 24h`
+              : ''
+            }
           />
         </section>
 
@@ -426,6 +449,31 @@ export default function DashboardPage() {
             {!data ? <ChartSkeleton /> : <FleetStatusKeypoints data={data.fleet_status} />}
           </Card>
         </section>
+
+        {/* Row 5: recent investigations. Surfaces case-level pressure
+            on the landing page so operators don't have to context-
+            switch to /investigations to know what's open. Self-hides
+            when the rollup hasn't landed (rare; the dashboard
+            response soft-fails to an empty rollup, not nil). */}
+        {data && data.investigations && (
+          <section>
+            <Card
+              title="Recent investigations"
+              subtitle={
+                data.investigations.active === 0
+                  ? 'No active cases'
+                  : `${data.investigations.active} active · most-recently-updated first`
+              }
+              right={
+                <Link to="/investigations" className="text-[11px] text-brand-700 hover:underline">
+                  View all →
+                </Link>
+              }
+            >
+              <RecentInvestigations rows={data.investigations.recent_active} />
+            </Card>
+          </section>
+        )}
 
         {/* Row 6: orchestration leaderboard + pending approvals.
             Top orchestrations is range-scoped (page-level); pending
@@ -649,6 +697,66 @@ function runDetailLink(r: OrchestrationRunView): string {
 }
 
 // PendingApprovals — every run currently in `approval_required`,
+// RecentInvestigations renders the most-recently-updated active cases.
+// One-line per row: title + finding-count badge + relative updated-at.
+// Empty state shows the green "no active cases" affordance —
+// dashboards should encourage zero-queue when it happens.
+function RecentInvestigations({
+  rows,
+}: {
+  rows: Array<{ id: number; title: string; finding_count: number; updated_at: string }>;
+}) {
+  if (rows.length === 0) {
+    return (
+      <div className="p-6 text-center text-xs text-ink-mute">
+        <div className="inline-flex items-center gap-1.5 text-green-700">
+          <CheckCircle2 size={14} />
+          No active cases — fleet's quiet.
+        </div>
+      </div>
+    );
+  }
+  return (
+    <ul className="divide-y divide-border">
+      {rows.map((it) => (
+        <li key={it.id}>
+          <Link
+            to={`/investigations/${it.id}`}
+            className="flex items-center gap-3 px-4 py-2 hover:bg-slate-50"
+          >
+            <span className="inline-flex items-center justify-center w-6 h-6 rounded-md bg-brand-100 text-brand-700 shrink-0">
+              <ClipboardList size={11} />
+            </span>
+            <span className="font-medium text-sm truncate flex-1">{it.title || `Case #${it.id}`}</span>
+            <span className="text-[11px] text-ink-mute font-mono shrink-0">
+              {it.finding_count} finding{it.finding_count === 1 ? '' : 's'}
+            </span>
+            <span className="text-[11px] text-ink-mute font-mono shrink-0 w-20 text-right">
+              {fmtRelative(it.updated_at)}
+            </span>
+          </Link>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+// fmtRelative renders a SQL-style "YYYY-MM-DD HH:MM:SS" UTC timestamp
+// as "5m / 2h / 3d ago". The Dashboard polls every 15s so the rough
+// granularity is fine. Empty/unparseable strings show "—".
+function fmtRelative(ts: string): string {
+  if (!ts) return '—';
+  const norm = ts.includes('T') ? ts : ts.replace(' ', 'T') + 'Z';
+  const t = new Date(norm).getTime();
+  if (Number.isNaN(t)) return '—';
+  const ageMin = Math.floor((Date.now() - t) / 60_000);
+  if (ageMin < 1) return 'just now';
+  if (ageMin < 60) return `${ageMin}m ago`;
+  const ageHr = Math.floor(ageMin / 60);
+  if (ageHr < 24) return `${ageHr}h ago`;
+  return `${Math.floor(ageHr / 24)}d ago`;
+}
+
 // sorted by oldest first so the operator handles the longest-waiting
 // gate first. Each row is a one-click deep link into the run detail
 // where the Approve button lives.

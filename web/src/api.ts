@@ -2062,6 +2062,22 @@ export interface DashboardResponse {
       open_findings: number;
     };
   };
+
+  // Phase 22.7 — investigations rollup. Active count, last-24h
+  // throughput, autolink activity, and a top-5 most-recently-
+  // updated active list for the "Recent investigations" card.
+  // Local-only in v1 (federated rollup is a future follow-up).
+  investigations: {
+    active: number;
+    closed_24h: number;
+    autolinked_findings_24h: number;
+    recent_active: Array<{
+      id: number;
+      title: string;
+      finding_count: number;
+      updated_at: string;
+    }>;
+  } | null;
 }
 
 export interface InsightsFindingsResponse {
