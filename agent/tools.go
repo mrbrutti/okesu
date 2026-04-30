@@ -358,8 +358,10 @@ type AgentDef struct {
 	Effort      string   `yaml:"effort"`
 
 	// Daemon mode fields
-	Mode       string         `yaml:"mode"`       // "task" (default) | "daemon"
-	Interval   string         `yaml:"interval"`   // e.g. "30s", "5m", "1h"
+	Mode        string `yaml:"mode"`         // "task" (default) | "daemon"
+	Interval    string `yaml:"interval"`     // e.g. "30s", "5m", "1h"
+	IntervalMin string `yaml:"interval_min"` // adaptive-schedule floor (defaults to interval)
+	IntervalMax string `yaml:"interval_max"` // adaptive-schedule ceiling (defaults to IntervalMin)
 	Cron       string         `yaml:"cron"`       // cron expression, e.g. "*/5 * * * *"
 	Overlap    string         `yaml:"overlap"`    // "skip" (default) | "queue"
 	StateDir   string         `yaml:"stateDir"`   // path for state files and findings
