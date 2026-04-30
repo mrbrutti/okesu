@@ -294,15 +294,17 @@ function SumTile({ label, value, sub, accent }: { label: string; value: string; 
 }
 
 function AddPeerDialog({ onClose, onAdded }: { onClose: () => void; onAdded: (p: FederationPeer) => void }) {
-  // Three flows live under the same dialog because they share the same
+  // Four flows under the same dialog because they share the same
   // mental model ("get a child CP into this federation"):
   //   • "Managed deploy" — parent provisions the VM via cloud APIs +
   //     the new CP auto-registers (Phase 21.3+).
+  //   • "S3 dead-drop" — bucket-pipe transport, no inbound HTTPS to
+  //     the child needed. Mirrors Nodes' Add → S3 dead-drop tab.
   //   • "Generate bundle" — parent emits a tar.gz the operator drops
-  //     on a host they manage (Phase 21.1).
+  //     on a host they manage (Phase 21.1) — HTTPS bootstrap formats.
   //   • "Connect existing" — the child is already running with a
   //     federation token; we just probe + add the peer row.
-  const [mode, setMode] = useState<'managed' | 'generate' | 'connect'>('managed');
+  const [mode, setMode] = useState<'managed' | 's3' | 'generate' | 'connect'>('managed');
 
   return (
     <div className="fixed inset-0 bg-black/30 flex items-center justify-center p-4 z-50">
@@ -316,13 +318,15 @@ function AddPeerDialog({ onClose, onAdded }: { onClose: () => void; onAdded: (p:
           </button>
         </header>
 
-        <div className="px-5 pt-3 flex items-center gap-1 border-b border-border/60">
+        <div className="px-5 pt-3 flex items-center gap-1 border-b border-border/60 flex-wrap">
           <ModeTab active={mode === 'managed'}  onClick={() => setMode('managed')}  label="Managed deploy" />
+          <ModeTab active={mode === 's3'}       onClick={() => setMode('s3')}       label="S3 dead-drop" />
           <ModeTab active={mode === 'generate'} onClick={() => setMode('generate')} label="Generate bundle" />
           <ModeTab active={mode === 'connect'}  onClick={() => setMode('connect')}  label="Connect existing" />
         </div>
 
         {mode === 'managed'  && <ManagedDeployPanel onClose={onClose} />}
+        {mode === 's3'       && <S3DeadDropPanel    onClose={onClose} />}
         {mode === 'generate' && <GenerateBundlePanel onClose={onClose} />}
         {mode === 'connect'  && <ConnectExistingPanel onClose={onClose} onAdded={onAdded} />}
       </div>
@@ -749,36 +753,14 @@ function ConnectExistingPanel({ onClose, onAdded }: { onClose: () => void; onAdd
 function GenerateBundlePanel({ onClose }: { onClose: () => void }) {
   const [displayName, setDisplayName] = useState('');
   const [region, setRegion] = useState('');
-  const [format, setFormat] = useState<'dockerfile-tarball' | 'compose-tarball' | 'terraform' | 's3-dead-drop'>('dockerfile-tarball');
+  const [format, setFormat] = useState<'dockerfile-tarball' | 'compose-tarball' | 'terraform'>('dockerfile-tarball');
   const [cloud, setCloud] = useState<'oci' | 'aws'>('oci');
   const [parentURL, setParentURL] = useState('');
-  const [transportConfigID, setTransportConfigID] = useState<number | null>(null);
-  const [transportConfigs, setTransportConfigs] = useState<TransportConfigSummary[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
 
-  // Pull transport_configs lazily once — only needed when the
-  // operator picks s3-dead-drop. The list is small.
-  useEffect(() => {
-    if (format === 's3-dead-drop' && transportConfigs === null) {
-      api.transportConfigs()
-        .then((rows) => {
-          setTransportConfigs(rows);
-          if (rows.length > 0 && transportConfigID === null) {
-            setTransportConfigID(rows[0].id);
-          }
-        })
-        .catch((e) => setError('load transport configs: ' + String(e)));
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [format]);
-
   async function submit() {
-    if (format === 's3-dead-drop' && !transportConfigID) {
-      setError('pick a transport_config (which bucket the child publishes to)');
-      return;
-    }
     setBusy(true); setError(null); setDone(null);
     try {
       const { blob, filename } = await api.cpBundle({
@@ -787,9 +769,7 @@ function GenerateBundlePanel({ onClose }: { onClose: () => void }) {
         format,
         cloud: format === 'terraform' ? cloud : undefined,
         parent_url: parentURL || undefined,
-        transport_config_id: format === 's3-dead-drop' ? (transportConfigID ?? undefined) : undefined,
       });
-      // Trigger the browser's save-as flow.
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url; a.download = filename;
@@ -808,7 +788,9 @@ function GenerateBundlePanel({ onClose }: { onClose: () => void }) {
       <div className="p-5 space-y-3 text-sm">
         <p className="text-xs text-ink-dim">
           Mints a one-time-use bootstrap token + drops it in a downloadable bundle. The new CP
-          auto-registers with this parent on first boot — no manual peer add required.
+          auto-registers with this parent on first boot via inbound HTTPS — no manual peer add
+          required. For air-gapped / NAT'd children, use the <strong>S3 dead-drop</strong> tab
+          instead.
         </p>
         <Field label="Display name">
           <input
@@ -851,13 +833,6 @@ function GenerateBundlePanel({ onClose }: { onClose: () => void }) {
                 <div className="text-ink-mute">IaC export — operator runs <code>terraform apply</code> with their own cloud creds.</div>
               </div>
             </label>
-            <label className="flex items-start gap-2 cursor-pointer">
-              <input type="radio" checked={format === 's3-dead-drop'} onChange={() => setFormat('s3-dead-drop')} className="mt-0.5" />
-              <div className="text-xs">
-                <div className="font-medium text-ink">S3 dead-drop</div>
-                <div className="text-ink-mute">Child writes its state to a bucket; parent reads it back. Use when the parent has no public IP — outbound HTTPS to the bucket is the only network requirement on either side.</div>
-              </div>
-            </label>
           </div>
         </Field>
         {format === 'terraform' && (
@@ -870,29 +845,6 @@ function GenerateBundlePanel({ onClose }: { onClose: () => void }) {
               <option value="oci">OCI (oracle/oci)</option>
               <option value="aws">AWS (hashicorp/aws)</option>
             </select>
-          </Field>
-        )}
-        {format === 's3-dead-drop' && (
-          <Field label="Bucket (transport_config)" hint="Which bucket the child publishes to + the parent reads from. Pick an existing transport_config that both ends can reach.">
-            {transportConfigs === null ? (
-              <div className="text-xs text-ink-mute">loading…</div>
-            ) : transportConfigs.length === 0 ? (
-              <div className="text-xs text-amber-700">
-                No transport_configs configured. Add one under Settings → Transport (or Nodes → Add Node → S3 dead-drop) first.
-              </div>
-            ) : (
-              <select
-                value={transportConfigID ?? ''}
-                onChange={(e) => setTransportConfigID(e.target.value ? Number(e.target.value) : null)}
-                className="w-full px-3 py-1.5 text-sm border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500/30 bg-panel"
-              >
-                {transportConfigs.map((tc) => (
-                  <option key={tc.id} value={tc.id}>
-                    {tc.name} · {tc.bucket} @ {tc.endpoint}
-                  </option>
-                ))}
-              </select>
-            )}
           </Field>
         )}
         <Field label="Parent URL (optional)">
@@ -920,6 +872,132 @@ function GenerateBundlePanel({ onClose }: { onClose: () => void }) {
         <button
           onClick={submit}
           disabled={busy || !displayName || !region}
+          className="text-xs px-3 py-1.5 bg-brand-500 hover:bg-brand-600 disabled:opacity-50 text-white rounded-md font-medium inline-flex items-center gap-1.5"
+        >
+          {busy && <Loader2 size={12} className="animate-spin" />}
+          Generate & download
+        </button>
+      </footer>
+    </>
+  );
+}
+
+// S3DeadDropPanel — promote-to-top-level tab for the bucket-pipe
+// transport. Mirrors the Generate bundle flow but always emits the
+// s3-dead-drop format and includes the transport_config picker
+// inline. Once the operator clicks "Generate", the bundle is
+// downloaded; first boot auto-registers via the bucket — same shape
+// as Nodes' Add → S3 dead-drop tab.
+function S3DeadDropPanel({ onClose }: { onClose: () => void }) {
+  const [displayName, setDisplayName] = useState('');
+  const [region, setRegion] = useState('');
+  const [transportConfigID, setTransportConfigID] = useState<number | null>(null);
+  const [transportConfigs, setTransportConfigs] = useState<TransportConfigSummary[] | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [done, setDone] = useState<string | null>(null);
+
+  useEffect(() => {
+    api.transportConfigs()
+      .then((rows) => {
+        setTransportConfigs(rows);
+        if (rows.length > 0) setTransportConfigID(rows[0].id);
+      })
+      .catch((e) => setError('load transport configs: ' + String(e)));
+  }, []);
+
+  async function submit() {
+    if (!transportConfigID) {
+      setError('pick a transport_config (which bucket the child publishes to)');
+      return;
+    }
+    setBusy(true); setError(null); setDone(null);
+    try {
+      const { blob, filename } = await api.cpBundle({
+        display_name: displayName,
+        region,
+        format: 's3-dead-drop',
+        transport_config_id: transportConfigID,
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = filename;
+      document.body.appendChild(a); a.click(); a.remove();
+      URL.revokeObjectURL(url);
+      setDone(filename);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <>
+      <div className="p-5 space-y-3 text-sm">
+        <p className="text-xs text-ink-dim">
+          Bucket-pipe transport. Both CPs only need outbound HTTPS to the shared bucket — no
+          inbound port required on either side. Worst-case round-trip ~60s vs ~2s for the
+          mTLS path; acceptable for an air-gapped or NAT'd child where the alternative is
+          unreachability.
+        </p>
+        <Field label="Display name">
+          <input
+            type="text"
+            value={displayName}
+            onChange={(e) => setDisplayName(e.target.value)}
+            placeholder="us-edge-prod"
+            className="w-full px-3 py-1.5 text-sm border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500/30"
+          />
+        </Field>
+        <Field label="Region">
+          <input
+            type="text"
+            value={region}
+            onChange={(e) => setRegion(e.target.value)}
+            placeholder="us-east-1"
+            className="w-full px-3 py-1.5 text-sm border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500/30"
+          />
+        </Field>
+        <Field label="Bucket (transport_config)" hint="Which bucket the child publishes to + the parent reads from. Pick an existing transport_config that both ends can reach.">
+          {transportConfigs === null ? (
+            <div className="text-xs text-ink-mute">loading…</div>
+          ) : transportConfigs.length === 0 ? (
+            <div className="text-xs text-amber-700">
+              No transport_configs configured. Add one under <strong>Settings → Transport</strong>{' '}
+              (or Nodes → Add Node → S3 dead-drop) first.
+            </div>
+          ) : (
+            <select
+              value={transportConfigID ?? ''}
+              onChange={(e) => setTransportConfigID(e.target.value ? Number(e.target.value) : null)}
+              className="w-full px-3 py-1.5 text-sm border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500/30 bg-panel"
+            >
+              {transportConfigs.map((tc) => (
+                <option key={tc.id} value={tc.id}>
+                  {tc.name} · {tc.bucket} @ {tc.endpoint}
+                </option>
+              ))}
+            </select>
+          )}
+        </Field>
+        {error && (
+          <div className="text-xs text-red-700 bg-red-50 border border-red-200 px-3 py-2 rounded-md">
+            {error}
+          </div>
+        )}
+        {done && (
+          <div className="text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 px-3 py-2 rounded-md">
+            Downloaded <code>{done}</code>. The new CP auto-registers on first boot — give it
+            ~60s after start and check the Federation page for a fresh peer row.
+          </div>
+        )}
+      </div>
+      <footer className="px-5 py-3 border-t border-border flex items-center justify-end gap-2">
+        <button onClick={onClose} className="text-xs px-3 py-1.5 border border-border rounded-md">Close</button>
+        <button
+          onClick={submit}
+          disabled={busy || !displayName || !region || !transportConfigID}
           className="text-xs px-3 py-1.5 bg-brand-500 hover:bg-brand-600 disabled:opacity-50 text-white rounded-md font-medium inline-flex items-center gap-1.5"
         >
           {busy && <Loader2 size={12} className="animate-spin" />}
