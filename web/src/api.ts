@@ -416,7 +416,15 @@ export interface InvestigationFindingItem {
   Tags: { String: string; Valid: boolean };
   Subtype: { String: string; Valid: boolean };
   LinkedAt: string;
+  /** How the finding was linked to this case. NULL on legacy rows
+   *  that pre-date provenance tracking — UI renders those neutrally. */
+  LinkMethod: { String: string; Valid: boolean };
+  /** Operator email or 'system:<actor>' for engine-driven links.
+   *  NULL on legacy rows. */
+  LinkedBy: { String: string; Valid: boolean };
 }
+
+export type LinkMethod = 'manual' | 'bulk' | 'auto-promote' | 'autolink' | 'import';
 
 // InvestigationRunItem — narrow projection of orchestration_runs.
 // Note: this is the orchestration-managed run table, not the ad-hoc

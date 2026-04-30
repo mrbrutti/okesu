@@ -133,6 +133,89 @@ func TestSuggestFindings_DismissTombstone(t *testing.T) {
 	}
 }
 
+// TestLinkProvenance — link_method + linked_by are recorded on
+// every link path; legacy LinkFindingToInvestigation defaults to
+// 'manual'; first-link wins (re-link does not overwrite provenance).
+func TestLinkProvenance(t *testing.T) {
+	st := openTempStore(t)
+	caseA, _ := st.CreateInvestigation(&InvestigationInsert{Title: "A"})
+
+	if _, err := st.Exec(`INSERT INTO events (id, ts, type, raw_json) VALUES (1, 1, 'finding', '{}')`); err != nil {
+		t.Fatalf("seed event: %v", err)
+	}
+	if _, err := st.Exec(`
+		INSERT INTO findings (id, event_id, ts, severity, title, raw_json)
+		VALUES (101, 1, 1, 'HIGH', 'a', '{}'),
+		       (102, 1, 1, 'HIGH', 'b', '{}'),
+		       (103, 1, 1, 'HIGH', 'c', '{}')`); err != nil {
+		t.Fatalf("seed findings: %v", err)
+	}
+
+	// Path 1: legacy LinkFindingToInvestigation → method=manual, by=NULL.
+	if err := st.LinkFindingToInvestigation(caseA, 101); err != nil {
+		t.Fatalf("legacy link: %v", err)
+	}
+
+	// Path 2: WithProvenance(autolink, system:autolink).
+	if err := st.LinkFindingToInvestigationWithProvenance(
+		caseA, 102, LinkMethodAutoLink, "system:autolink",
+	); err != nil {
+		t.Fatalf("autolink link: %v", err)
+	}
+
+	// Path 3: WithProvenance(bulk, alice@x).
+	if err := st.LinkFindingToInvestigationWithProvenance(
+		caseA, 103, LinkMethodBulk, "alice@x",
+	); err != nil {
+		t.Fatalf("bulk link: %v", err)
+	}
+
+	// Read back via the enriched lister.
+	got, err := st.ListFindingsForInvestigationEnriched(caseA)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	byID := map[int64]InvestigationFindingItem{}
+	for _, it := range got {
+		byID[it.ID] = it
+	}
+
+	if m := byID[101].LinkMethod; !m.Valid || m.String != LinkMethodManual {
+		t.Errorf("101 method = %v; want manual", m)
+	}
+	if b := byID[101].LinkedBy; b.Valid {
+		t.Errorf("101 linked_by should be NULL, got %v", b)
+	}
+	if m := byID[102].LinkMethod; !m.Valid || m.String != LinkMethodAutoLink {
+		t.Errorf("102 method = %v; want autolink", m)
+	}
+	if b := byID[102].LinkedBy; !b.Valid || b.String != "system:autolink" {
+		t.Errorf("102 linked_by = %v; want system:autolink", b)
+	}
+	if m := byID[103].LinkMethod; !m.Valid || m.String != LinkMethodBulk {
+		t.Errorf("103 method = %v; want bulk", m)
+	}
+	if b := byID[103].LinkedBy; !b.Valid || b.String != "alice@x" {
+		t.Errorf("103 linked_by = %v; want alice@x", b)
+	}
+
+	// First-link-wins: re-linking 101 with autolink provenance MUST NOT
+	// overwrite the original manual link. Audit trails don't lie.
+	if err := st.LinkFindingToInvestigationWithProvenance(
+		caseA, 101, LinkMethodAutoLink, "system:autolink",
+	); err != nil {
+		t.Fatalf("re-link: %v", err)
+	}
+	got, _ = st.ListFindingsForInvestigationEnriched(caseA)
+	for _, it := range got {
+		if it.ID == 101 {
+			if it.LinkMethod.String != LinkMethodManual {
+				t.Errorf("re-link clobbered original provenance: method=%v", it.LinkMethod)
+			}
+		}
+	}
+}
+
 // TestAutoLinkFindingToTopCase — when AutoLinkThreshold is set and a
 // new finding scores above it against an active case, the engine
 // links it without operator action. Below threshold (or threshold==0)

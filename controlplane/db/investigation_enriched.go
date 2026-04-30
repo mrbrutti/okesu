@@ -27,7 +27,9 @@ type InvestigationFindingItem struct {
 	Status     sql.NullString
 	Tags       sql.NullString
 	Subtype    sql.NullString
-	LinkedAt   string // ISO RFC3339, from investigation_findings.linked_at
+	LinkedAt   string         // ISO RFC3339, from investigation_findings.linked_at
+	LinkMethod sql.NullString // 'manual' | 'bulk' | 'auto-promote' | 'autolink' | 'import' | NULL
+	LinkedBy   sql.NullString // operator email or 'system:<actor>'; NULL for legacy rows
 }
 
 // InvestigationRunItem is the orchestration_run summary the workspace
@@ -87,7 +89,8 @@ type InvestigationOrchestrationItem struct {
 func (s *Store) ListFindingsForInvestigationEnriched(invID int64) ([]InvestigationFindingItem, error) {
 	rows, err := s.Query(`
 		SELECT f.id, f.ts, f.agent, f.host, f.severity, f.title,
-		       f.status, f.tags, f.subtype, l.linked_at
+		       f.status, f.tags, f.subtype, l.linked_at,
+		       l.link_method, l.linked_by
 		FROM investigation_findings l
 		JOIN findings f ON f.id = l.finding_id
 		WHERE l.investigation_id = ?
@@ -102,7 +105,8 @@ func (s *Store) ListFindingsForInvestigationEnriched(invID int64) ([]Investigati
 		var linkedAt sql.NullTime
 		if err := rows.Scan(&it.ID, &it.Ts, &it.Agent, &it.Host,
 			&it.Severity, &it.Title, &it.Status, &it.Tags,
-			&it.Subtype, &linkedAt); err != nil {
+			&it.Subtype, &linkedAt,
+			&it.LinkMethod, &it.LinkedBy); err != nil {
 			return nil, err
 		}
 		if linkedAt.Valid {

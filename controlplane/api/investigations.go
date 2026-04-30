@@ -9,6 +9,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/section9labs/okesu/controlplane/auth"
 	"github.com/section9labs/okesu/controlplane/db"
 )
 
@@ -46,7 +47,13 @@ func CreateInvestigationHandler(store *db.Store) http.HandlerFunc {
 			// Soft-fail: investigation exists; if the link doesn't take
 			// (e.g. the finding was deleted between calls) the operator
 			// can still PUT it via /findings/{finding_id}.
-			_ = store.LinkFindingToInvestigation(id, req.FromFindingID)
+			by := req.CreatedBy
+			if by == "" {
+				by = actorFromRequest(r)
+			}
+			_ = store.LinkFindingToInvestigationWithProvenance(
+				id, req.FromFindingID, db.LinkMethodAutoPromote, by,
+			)
 		}
 		got, err := store.GetInvestigation(id)
 		if err != nil {
@@ -376,6 +383,11 @@ func UnlinkRunFromInvestigationHandler(store *db.Store) http.HandlerFunc {
 // Path: /api/investigations/{id}/findings/{finding_id}. Mounted on
 // the operator-facing route AND the federation route — chi.URLParam
 // hides the prefix difference between the two.
+//
+// Records provenance: link_method=manual, linked_by=<operator email>.
+// Federation requests (where the synthetic actor is "system:fed") are
+// also captured — the audit trail shows that the link came in via a
+// peer rather than from a local browser session.
 func LinkFindingToInvestigationHandler(store *db.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		invID, err := investigationIDFromChi(r)
@@ -388,12 +400,26 @@ func LinkFindingToInvestigationHandler(store *db.Store) http.HandlerFunc {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		if err := store.LinkFindingToInvestigation(invID, findingID); err != nil {
+		by := actorFromRequest(r)
+		if err := store.LinkFindingToInvestigationWithProvenance(
+			invID, findingID, db.LinkMethodManual, by,
+		); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
 	}
+}
+
+// actorFromRequest pulls the user email off the auth context. Empty
+// string means an unauthenticated path (federation token or test);
+// the caller should pass that through to nullableStr → NULL on the
+// database row, not fabricate a user identity.
+func actorFromRequest(r *http.Request) string {
+	if u := auth.UserFromContext(r.Context()); u != nil {
+		return u.Email
+	}
+	return ""
 }
 
 // SuggestFindingsHandler returns scored finding candidates for a case's
