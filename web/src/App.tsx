@@ -58,7 +58,7 @@ export default function App() {
         <Route path="/investigations" element={<InvestigationsPage />} />
         <Route path="/investigations/:id" element={<InvestigationDetailPage />} />
         <Route path="/catalog" element={<CatalogPage />} />
-        <Route path="/catalog/:id" element={<CatalogDetailPage />} />
+        <Route path="/catalog/:kind/:value" element={<CatalogDetailPage />} />
         <Route path="/events" element={<EventsPage />} />
         <Route path="/daimons" element={<DaimonsPage />} />
         <Route path="/daimons/:name" element={<DaimonDetailPage />} />

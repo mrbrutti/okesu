@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Library, Loader2 } from 'lucide-react';
 
-import { api, type IOCRecord } from '../api';
+import { api, type FederatedIOCRecord, type CPSourceRef } from '../api';
 import { cn } from '../lib/cn';
 import CatalogDrawer from '../components/CatalogDrawer';
 
@@ -18,12 +18,12 @@ const SOURCE_OPTIONS: { value: SourceFilter; label: string }[] = [
 
 export default function CatalogPage() {
   const navigate = useNavigate();
-  const [rows, setRows] = useState<IOCRecord[] | null>(null);
+  const [rows, setRows] = useState<FederatedIOCRecord[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [kindFilter, setKindFilter] = useState<Set<string>>(new Set(ALL_KINDS));
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>('');
   const [query, setQuery] = useState('');
-  const [drawerIOC, setDrawerIOC] = useState<IOCRecord | null>(null);
+  const [drawerIOC, setDrawerIOC] = useState<FederatedIOCRecord | null>(null);
 
   // Server-side: only source+q push to the API. Kind multi-select narrows
   // client-side because the API's ?kind= takes a single value.
@@ -138,6 +138,7 @@ export default function CatalogPage() {
                   <th className="px-3 py-2 font-medium w-24">Kind</th>
                   <th className="px-3 py-2 font-medium">Value</th>
                   <th className="px-3 py-2 font-medium hidden md:table-cell">Name</th>
+                  <th className="px-3 py-2 font-medium hidden md:table-cell">CPs</th>
                   <th className="px-3 py-2 font-medium hidden md:table-cell">Tags</th>
                   <th className="px-3 py-2 font-medium w-24">Severity</th>
                   <th className="px-3 py-2 font-medium w-24">Source</th>
@@ -156,6 +157,9 @@ export default function CatalogPage() {
                     <td className="px-3 py-2 font-mono text-[11px] text-ink-dim">{r.Kind}</td>
                     <td className="px-3 py-2 font-mono text-[11px] text-ink truncate max-w-xs">{r.Value}</td>
                     <td className="px-3 py-2 hidden md:table-cell text-ink">{r.Name || <span className="text-ink-mute">—</span>}</td>
+                    <td className="px-3 py-2 hidden md:table-cell">
+                      <CPChips sources={r.cp_sources} />
+                    </td>
                     <td className="px-3 py-2 hidden md:table-cell"><TagChips tags={r.Tags} /></td>
                     <td className="px-3 py-2"><SeverityChip s={r.SeverityFloor} /></td>
                     <td className="px-3 py-2 text-ink-dim text-xs">{r.Source}</td>
@@ -174,7 +178,7 @@ export default function CatalogPage() {
         <CatalogDrawer
           ioc={drawerIOC}
           onClose={() => setDrawerIOC(null)}
-          onOpenFullPage={() => navigate(`/catalog/${drawerIOC.ID}`)}
+          onOpenFullPage={() => navigate(`/catalog/${drawerIOC.Kind}/${encodeURIComponent(drawerIOC.NormalizedValue)}`)}
         />
       )}
     </div>
@@ -221,4 +225,21 @@ function fmtDate(iso: string): string {
     month: 'short', day: '2-digit', year: 'numeric',
     hour: '2-digit', minute: '2-digit',
   });
+}
+
+function CPChips({ sources }: { sources: CPSourceRef[] | undefined }) {
+  if (!sources || sources.length === 0) return <span className="text-ink-mute">—</span>;
+  return (
+    <div className="flex flex-wrap gap-1">
+      {sources.map(s => (
+        <span
+          key={s.instance_id}
+          className="px-1.5 py-0.5 text-[10px] rounded bg-slate-100 text-ink-dim ring-1 ring-border"
+          title={s.region || s.display_name || s.instance_id}
+        >
+          {s.display_name || s.instance_id}
+        </span>
+      ))}
+    </div>
+  );
 }
