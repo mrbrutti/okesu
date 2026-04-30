@@ -63,6 +63,14 @@ func (e *Engine) runMeetingStep(
 	}
 	mtg := step.Meeting
 
+	// TODO(phase-22.x): MeetingSpec.ContextWindow is parsed and
+	// validated ("trigger" | "trigger+last_5_findings") but not yet
+	// consumed. v1 always behaves as "trigger". Implementing
+	// "trigger+last_5_findings" requires querying the agent's recent
+	// findings via the data resolver and prepending them to each
+	// participant's prompt — defer until a real orchestration needs it.
+	_ = mtg.ContextWindow
+
 	timeout := spec.EffectiveTimeout(&step)
 	dispatchMode := spec.EffectiveDispatch(&step)
 
@@ -96,15 +104,18 @@ func (e *Engine) runMeetingStep(
 		})
 	}
 
-	synthPrompt := buildSynthesizerPrompt(step.Prompt, env, conversation)
+	synthPrompt := buildSynthesizerPrompt(step.Prompt, env, conversation, step.WarBridge)
 	res, err := dispatchOne(mtg.Synthesizer, synthPrompt)
 	if err != nil {
 		return DispatchResult{}, fmt.Errorf("meeting synthesizer %s: %w", mtg.Synthesizer, err)
 	}
-	// Default subtype to meeting_minutes on the orchestration_result;
-	// tag every finding with war-bridge when the operator marked the
-	// step as such. We touch findings in-place because the engine
-	// reads result.Findings downstream.
+	// Defensive in-memory fallback for downstream env-binding: if the
+	// agent forgot to set subtype/tags in its JSONL, patch the parsed
+	// DispatchedFinding so subsequent steps that read {{<step>.findings}}
+	// see consistent values. The DB row itself depends on the agent's
+	// JSONL — that's what eventpipeline ingests. The synthesizer prompt
+	// (buildSynthesizerPrompt) carries the explicit instructions so a
+	// well-behaved LLM emits subtype + tags itself.
 	for i := range res.Findings {
 		f := &res.Findings[i]
 		if f.Category == OrchestrationResultCategory && f.Subtype == "" {
@@ -149,8 +160,12 @@ func buildParticipantPrompt(stepPrompt string, env Env, prior []participantOutpu
 //   - structured outputs from each participant rendered as JSON so the
 //     synthesizer can quote them precisely;
 //   - a final "Synthesize" directive so the LLM emits a
-//     meeting_minutes orchestration_result rather than chiming in.
-func buildSynthesizerPrompt(stepPrompt string, env Env, conv []participantOutput) string {
+//     meeting_minutes orchestration_result rather than chiming in;
+//   - explicit subtype + tag instructions so the agent's JSONL output
+//     carries the right values into the eventpipeline → DB write
+//     (the in-memory mutation in runMeetingStep is a fallback for the
+//     env-binding path; the DB row depends on what the agent emits).
+func buildSynthesizerPrompt(stepPrompt string, env Env, conv []participantOutput, warBridge bool) string {
 	var b strings.Builder
 	b.WriteString("## Conversation transcript\n\n")
 	for _, p := range conv {
@@ -175,9 +190,16 @@ func buildSynthesizerPrompt(stepPrompt string, env Env, conv []participantOutput
 	} else {
 		b.WriteString(rendered)
 	}
-	b.WriteString("\n\nSynthesize the conversation above into a single orchestration_result " +
-		"finding with subtype=meeting_minutes. Include: agenda (one-liner), positions (per " +
-		"participant, one sentence each), action_items (array of strings), and decision (string).")
+	b.WriteString("\n\nSynthesize the conversation above into a single orchestration_result ")
+	b.WriteString("finding. Set `subtype` to `\"meeting_minutes\"` so the dashboard renders ")
+	b.WriteString("it as meeting output. Include in `attributes`: agenda (one-liner), positions ")
+	b.WriteString("(per participant, one sentence each), action_items (array of strings), and ")
+	b.WriteString("decision (string).")
+	if warBridge {
+		b.WriteString(" Also set `tags: [\"war-bridge\"]` on the finding — this signals ")
+		b.WriteString("immediate operator attention and surfaces the result in the dashboard's ")
+		b.WriteString("red banner. Do not skip this tag.")
+	}
 	return b.String()
 }
 

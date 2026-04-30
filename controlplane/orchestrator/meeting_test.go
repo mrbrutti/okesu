@@ -144,15 +144,34 @@ steps:
 	if err := engine.Run(context.Background(), 1); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	// We don't have direct access to the persisted finding here, but
-	// we do see what the engine bound into the step record. Check the
-	// last dispatch (synthesizer) result findings via the binding.
-	got := store.steps["discuss"]
-	if got == nil {
-		t.Fatalf("step record not persisted")
+	// 1. The synthesizer prompt must instruct the agent to set
+	//    subtype=meeting_minutes (so JSONL emission carries it through
+	//    to the DB row via the eventpipeline's findingFields).
+	synthPrompt := disp.calls[len(disp.calls)-1].Prompt
+	if !strings.Contains(synthPrompt, "meeting_minutes") {
+		t.Errorf("synth prompt missing subtype instruction: %q", synthPrompt)
 	}
-	if got.Status != StepStatusCompleted {
-		t.Errorf("step status = %q, want completed", got.Status)
+	// 2. When war_bridge=true, the prompt must instruct the agent to
+	//    set tags=[\"war-bridge\"] — same propagation reasoning.
+	if !strings.Contains(synthPrompt, "war-bridge") {
+		t.Errorf("synth prompt missing war-bridge tag instruction: %q", synthPrompt)
+	}
+	// 3. As a defensive in-memory fallback (for downstream env-binding
+	//    when the agent forgets), runMeetingStep mutates the parsed
+	//    DispatchedFinding. The recording dispatcher hands back the
+	//    response by reference; verify it was patched in place.
+	resp, ok := disp.responses["agent-synth"]
+	if !ok {
+		t.Fatalf("synthesizer response missing from dispatcher")
+	}
+	if len(resp.Findings) != 1 {
+		t.Fatalf("expected 1 synthesizer finding; got %d", len(resp.Findings))
+	}
+	if resp.Findings[0].Subtype != "meeting_minutes" {
+		t.Errorf("Subtype mutation missing: %q", resp.Findings[0].Subtype)
+	}
+	if !strings.Contains(resp.Findings[0].Tags, "war-bridge") {
+		t.Errorf("Tags should contain war-bridge: %q", resp.Findings[0].Tags)
 	}
 }
 

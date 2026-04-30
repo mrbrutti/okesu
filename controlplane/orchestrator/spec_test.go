@@ -266,6 +266,27 @@ steps:
     agent: a
     prompt: x
 ---`, false},
+		{"meeting with empty participants", `---
+name: tt
+description: tt
+steps:
+  - id: discuss
+    kind: meeting
+    meeting:
+      participants: []
+      synthesizer: b
+    prompt: ""
+---`, true},
+		{"meeting with missing synthesizer", `---
+name: tt
+description: tt
+steps:
+  - id: discuss
+    kind: meeting
+    meeting:
+      participants: [a]
+    prompt: ""
+---`, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
