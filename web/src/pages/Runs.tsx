@@ -110,9 +110,9 @@ export default function RunsPage() {
     }
   }
 
-  async function handleCancel(id: string) {
+  async function handleCancel(id: string, cpInstanceID?: string) {
     try {
-      await api.cancelRun(id);
+      await api.cancelRun(id, cpInstanceID);
       // The SSE 'done' callback will flip running=false once the node sends exit.
     } catch (err) {
       setError(String(err));
@@ -266,6 +266,7 @@ export default function RunsPage() {
               <thead className="bg-slate-50 border-b border-border">
                 <tr className="text-left text-[11px] uppercase tracking-wide text-ink-mute">
                   <th className="px-4 py-2 font-medium w-36">Started</th>
+                  <th className="px-3 py-2 font-medium w-28">CP</th>
                   <th className="px-3 py-2 font-medium w-36">Node</th>
                   <th className="px-3 py-2 font-medium w-20">Provider</th>
                   <th className="px-3 py-2 font-medium">Prompt</th>
@@ -274,8 +275,20 @@ export default function RunsPage() {
               </thead>
               <tbody>
                 {history.map((r) => (
-                  <tr key={r.id} className="border-b border-border/60 last:border-0">
+                  <tr key={`${r.cp_source?.instance_id ?? 'local'}:${r.id}`} className="border-b border-border/60 last:border-0">
                     <td className="px-4 py-2 text-xs text-ink-dim font-mono">{new Date(r.started_at).toLocaleTimeString()}</td>
+                    <td className="px-3 py-2 text-xs">
+                      {r.cp_source ? (
+                        <span
+                          className="text-[10px] uppercase tracking-wide font-medium px-1.5 py-0.5 rounded ring-1 text-violet-700 bg-violet-50 ring-violet-200"
+                          title={`Run lives on ${r.cp_source.display_name} (${r.cp_source.region})`}
+                        >
+                          {r.cp_source.display_name}
+                        </span>
+                      ) : (
+                        <span className="text-[10px] uppercase tracking-wide text-ink-mute">local</span>
+                      )}
+                    </td>
                     <td className="px-3 py-2 font-medium">{r.node}</td>
                     <td className="px-3 py-2 text-xs text-ink-dim">{r.provider || '—'}</td>
                     <td className="px-3 py-2 text-xs text-ink-dim truncate max-w-md">{r.prompt}</td>
@@ -292,9 +305,11 @@ export default function RunsPage() {
                         </span>
                         {r.status === 'running' && (
                           <button
-                            onClick={() => handleCancel(r.id)}
+                            onClick={() => handleCancel(r.id, r.cp_source?.instance_id)}
                             className="text-[10px] text-ink-mute hover:text-red-700 inline-flex items-center gap-0.5"
-                            title="Cancel run"
+                            title={r.cp_source
+                              ? `Cancel run on ${r.cp_source.display_name}`
+                              : 'Cancel run'}
                           >
                             <Square size={9} /> cancel
                           </button>

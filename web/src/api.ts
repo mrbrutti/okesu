@@ -940,8 +940,10 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(req),
     }),
-  cancelRun: (id: string) =>
-    request<void>(`/api/runs/${id}/cancel`, { method: 'POST' }),
+  cancelRun: (id: string, cpInstanceID?: string) => {
+    const qs = cpInstanceID ? `?cp=${encodeURIComponent(cpInstanceID)}` : '';
+    return request<void>(`/api/runs/${id}/cancel${qs}`, { method: 'POST' });
+  },
 
   // Phase 10 — system / database.
   dbStats: () => request<DBStatsResponse>('/api/system/db/stats'),
@@ -1273,6 +1275,10 @@ export interface RunListItem {
   started_by?: string;
   /** Set when the run was launched via "Investigate this finding". */
   finding_id?: number;
+  /** Federation tag — present iff the run lives on a federated child CP.
+   *  Caller must pass `?cp=<instance_id>` on detail/cancel/log requests
+   *  for these rows because run ids are scoped per-CP. */
+  cp_source?: CPSourceRef;
 }
 
 export interface DBStatsResponse {
