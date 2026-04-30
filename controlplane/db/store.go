@@ -203,6 +203,9 @@ var sqliteM044 string
 //go:embed migrations/sqlite/045_saved_searches.sql
 var sqliteM045 string
 
+//go:embed migrations/sqlite/046_fleet_env.sql
+var sqliteM046 string
+
 var sqliteMigrations = []string{
 	sqliteM001, sqliteM002, sqliteM003,
 	sqliteM004, sqliteM005, sqliteM006, sqliteM007,
@@ -213,7 +216,7 @@ var sqliteMigrations = []string{
 
 	sqliteM028, sqliteM029, sqliteM030, sqliteM031, sqliteM032, sqliteM033, sqliteM034,
 	sqliteM035, sqliteM036, sqliteM037, sqliteM038, sqliteM039, sqliteM040, sqliteM041, sqliteM042,
-	sqliteM043, sqliteM044, sqliteM045,
+	sqliteM043, sqliteM044, sqliteM045, sqliteM046,
 }
 
 //go:embed migrations/postgres/001_init.sql
@@ -352,6 +355,9 @@ var pgM044 string
 //go:embed migrations/postgres/045_saved_searches.sql
 var pgM045 string
 
+//go:embed migrations/postgres/046_fleet_env.sql
+var pgM046 string
+
 var postgresMigrations = []string{
 	pgM001, pgM002, pgM003,
 	pgM004, pgM005, pgM006, pgM007,
@@ -360,7 +366,7 @@ var postgresMigrations = []string{
 	pgM018, pgM019, pgM020, pgM021, pgM022,
 
 	pgM023, pgM024, pgM025, pgM026, pgM027, pgM028, pgM029, pgM030, pgM031, pgM032, pgM033, pgM034,
-	pgM035, pgM036, pgM037, pgM038, pgM039, pgM040, pgM041, pgM042, pgM043, pgM044, pgM045,
+	pgM035, pgM036, pgM037, pgM038, pgM039, pgM040, pgM041, pgM042, pgM043, pgM044, pgM045, pgM046,
 }
 
 // migrationsForDialect returns the embedded list matching the dialect.
