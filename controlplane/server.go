@@ -651,6 +651,15 @@ func (s *Server) routes() http.Handler {
 			// Phase 21.5 — per-credential monthly USD budget. Empty body
 			// (or {"monthly_budget_usd": null}) clears the cap.
 			r.Put("/api/cloud-credentials/{id}/budget", api.CloudCredentialBudgetUpdate(s.store))
+			// Cloud-side discovery for the +Add CP "Managed deploy"
+			// dropdowns. Each handler decrypts the credential, calls
+			// the relevant SDK list endpoint, and returns
+			// {id, name, attrs}[] so the UI can build a select.
+			r.Get("/api/cloud-credentials/{id}/oci/compartments", api.CloudDiscoveryOCICompartments(s.store))
+			r.Get("/api/cloud-credentials/{id}/oci/availability-domains", api.CloudDiscoveryOCIAvailabilityDomains(s.store))
+			r.Get("/api/cloud-credentials/{id}/oci/subnets", api.CloudDiscoveryOCISubnets(s.store))
+			r.Get("/api/cloud-credentials/{id}/oci/images", api.CloudDiscoveryOCIImages(s.store))
+			r.Get("/api/cloud-credentials/{id}/oci/shapes", api.CloudDiscoveryOCIShapes(s.store))
 
 			// Phase 9.5: federation peers — admin-only because adding a
 			// peer means storing a credential for an outbound CP.

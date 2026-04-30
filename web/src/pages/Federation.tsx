@@ -7,6 +7,8 @@ import { Link } from 'react-router-dom';
 import {
   AlertCircle,
   CheckCircle2,
+  ChevronDown,
+  ChevronRight,
   ExternalLink,
   Loader2,
   Network,
@@ -16,7 +18,7 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
-import { api, type CloudCredential, type CloudKind, type CPProvisionEstimate, type FederationPeer } from '../api';
+import { api, type CloudCredential, type CloudKind, type CPProvision, type CPProvisionEstimate, type DiscoveryItem, type FederationPeer } from '../api';
 import { cn } from '../lib/cn';
 
 export default function FederationPage() {
@@ -142,8 +144,14 @@ export default function FederationPage() {
                 ))}
               </ul>
             </section>
+
+            <ManagedDeploysPanel />
           </>
         )}
+
+        {/* Show managed deploys even without peers — a row in flight
+            here is exactly what's about to BECOME a peer. */}
+        {peers && peers.length === 0 && <ManagedDeploysPanel />}
       </div>
 
       {showAdd && (
@@ -337,7 +345,10 @@ function ManagedDeployPanel({ onClose }: { onClose: () => void }) {
   const [credentialID, setCredentialID] = useState<number | null>(null);
   const [displayName, setDisplayName] = useState('');
   const [region, setRegion] = useState('');
-  const [paramsJSON, setParamsJSON] = useState('{}');
+  // Structured cloud_params — populated by per-cloud form components.
+  // Submitting an empty object hits the worker's validator instantly,
+  // so the form below blocks submit until required keys are present.
+  const [cloudParams, setCloudParams] = useState<Record<string, unknown>>({});
   const [busy, setBusy] = useState(false);
   const [submitted, setSubmitted] = useState<{ id: number; status: string } | null>(null);
 
@@ -346,26 +357,25 @@ function ManagedDeployPanel({ onClose }: { onClose: () => void }) {
   const [estimate, setEstimate] = useState<CPProvisionEstimate | null>(null);
   const [overrideBudget, setOverrideBudget] = useState(false);
 
+  // Reset cloud_params when cloud changes — different schemas, no
+  // sense carrying OCI fields into an AWS submit.
+  useEffect(() => {
+    setCloudParams({});
+  }, [cloud]);
+
   useEffect(() => {
     if (!cloud || !credentialID) {
       setEstimate(null);
       return;
     }
     let cancelled = false;
-    let parsed: Record<string, unknown> = {};
-    try {
-      parsed = paramsJSON.trim() ? JSON.parse(paramsJSON) : {};
-    } catch {
-      setEstimate(null);
-      return;
-    }
     const handle = setTimeout(() => {
-      api.cpProvisionEstimate({ cloud, credential_id: credentialID, cloud_params: parsed })
+      api.cpProvisionEstimate({ cloud, credential_id: credentialID, cloud_params: cloudParams })
         .then((est) => { if (!cancelled) setEstimate(est); })
         .catch(() => { if (!cancelled) setEstimate(null); });
     }, 250);
     return () => { cancelled = true; clearTimeout(handle); };
-  }, [cloud, credentialID, paramsJSON]);
+  }, [cloud, credentialID, cloudParams]);
 
   // Re-allow submit when budget context shifts back under the cap.
   useEffect(() => {
@@ -404,17 +414,18 @@ function ManagedDeployPanel({ onClose }: { onClose: () => void }) {
 
   const usableCreds = (credentials ?? []).filter((c) => c.cloud === cloud);
 
+  // Per-cloud required-key list. Mirrors the validators in
+  // controlplane/cpprovision/{oci,aws}/*.go so the UI blocks the
+  // submit before the worker rejects it.
+  const missing = cloudParamsMissingFields(cloud, cloudParams);
+
   async function submit() {
     if (!cloud || !credentialID) return;
-    setBusy(true); setError(null);
-    let cloudParams: Record<string, unknown>;
-    try {
-      cloudParams = paramsJSON.trim() ? JSON.parse(paramsJSON) : {};
-    } catch (e) {
-      setError('cloud_params is not valid JSON: ' + String(e));
-      setBusy(false);
+    if (missing.length > 0) {
+      setError(`missing required cloud_params: ${missing.join(', ')}`);
       return;
     }
+    setBusy(true); setError(null);
     try {
       const row = await api.cpProvisionCreate({
         display_name: displayName,
@@ -472,7 +483,8 @@ function ManagedDeployPanel({ onClose }: { onClose: () => void }) {
         <div className="p-5 text-sm space-y-3">
           <div className="text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-md px-3 py-2">
             Provision job <strong>#{submitted.id}</strong> created (status: <code>{submitted.status}</code>).
-            Watch its progress in the Federation page's "Managed deploys" panel.
+            Close this dialog and watch progress in the <strong>Managed deploys</strong> panel below
+            the federation peers list — it auto-refreshes while the deploy is in flight.
           </div>
         </div>
         <footer className="px-5 py-3 border-t border-border flex items-center justify-end">
@@ -531,14 +543,15 @@ function ManagedDeployPanel({ onClose }: { onClose: () => void }) {
             className="w-full px-3 py-1.5 text-sm border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500/30"
           />
         </Field>
-        <Field label="Cloud params (JSON)" hint="Per-cloud knobs the Provisioner needs (subnet, image, shape/instance_type, ...). Schema is provisioner-specific.">
-          <textarea
-            value={paramsJSON} onChange={(e) => setParamsJSON(e.target.value)}
-            rows={4}
-            className="w-full px-3 py-1.5 text-xs font-mono border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500/30"
-            placeholder={cloudParamsPlaceholder(cloud)}
+        {cloud && credentialID && (
+          <CloudParamsForm
+            cloud={cloud}
+            credentialID={credentialID}
+            region={region}
+            value={cloudParams}
+            onChange={setCloudParams}
           />
-        </Field>
+        )}
         {estimate && <CostEstimateLine estimate={estimate} />}
         {estimate?.would_exceed_budget && (
           <label className="flex items-start gap-2 text-xs text-red-700 bg-red-50 border border-red-200 px-3 py-2 rounded-md cursor-pointer">
@@ -559,22 +572,55 @@ function ManagedDeployPanel({ onClose }: { onClose: () => void }) {
           <div className="text-xs text-red-700 bg-red-50 border border-red-200 px-3 py-2 rounded-md">{error}</div>
         )}
       </div>
-      <footer className="px-5 py-3 border-t border-border flex items-center justify-end gap-2">
-        <button onClick={onClose} className="text-xs px-3 py-1.5 border border-border rounded-md">Cancel</button>
-        <button
-          onClick={submit}
-          disabled={
-            busy || !displayName || !cloud || !credentialID || !region ||
-            (estimate?.would_exceed_budget === true && !overrideBudget)
+      <footer className="px-5 py-3 border-t border-border flex items-center justify-between gap-2">
+        <div className="text-[11px] text-ink-mute">
+          {missing.length > 0
+            ? <>missing: <span className="text-red-700">{missing.join(', ')}</span></>
+            : <>all required fields populated</>
           }
-          className="text-xs px-3 py-1.5 bg-brand-500 hover:bg-brand-600 disabled:opacity-50 text-white rounded-md font-medium inline-flex items-center gap-1.5"
-        >
-          {busy && <Loader2 size={12} className="animate-spin" />}
-          Provision
-        </button>
+        </div>
+        <div className="flex items-center gap-2">
+          <button onClick={onClose} className="text-xs px-3 py-1.5 border border-border rounded-md">Cancel</button>
+          <button
+            onClick={submit}
+            disabled={
+              busy || !displayName || !cloud || !credentialID || !region ||
+              missing.length > 0 ||
+              (estimate?.would_exceed_budget === true && !overrideBudget)
+            }
+            className="text-xs px-3 py-1.5 bg-brand-500 hover:bg-brand-600 disabled:opacity-50 text-white rounded-md font-medium inline-flex items-center gap-1.5"
+          >
+            {busy && <Loader2 size={12} className="animate-spin" />}
+            Provision
+          </button>
+        </div>
       </footer>
     </>
   );
+}
+
+// cloudParamsMissingFields enumerates which keys the per-cloud
+// Provisioner.Launch validator will reject if absent. Mirrors the
+// requireKeys() / decodeLaunchParams() logic on the server so the UI
+// blocks the submit instead of letting the worker fail post-token-mint.
+function cloudParamsMissingFields(cloud: CloudKind | '', params: Record<string, unknown>): string[] {
+  const has = (k: string) => {
+    const v = params[k];
+    if (v === undefined || v === null) return false;
+    if (typeof v === 'string') return v.trim() !== '';
+    if (Array.isArray(v)) return v.length > 0;
+    return true;
+  };
+  switch (cloud) {
+    case 'oci':
+      return ['compartment_id', 'availability_domain', 'subnet_id', 'image_id', 'shape']
+        .filter((k) => !has(k));
+    case 'aws':
+      return ['ami_id', 'instance_type', 'subnet_id', 'security_group_ids']
+        .filter((k) => !has(k));
+    default:
+      return [];
+  }
 }
 
 function CostEstimateLine({ estimate }: { estimate: CPProvisionEstimate }) {
@@ -611,17 +657,6 @@ function CostEstimateLine({ estimate }: { estimate: CPProvisionEstimate }) {
       )}
     </div>
   );
-}
-
-function cloudParamsPlaceholder(cloud: string): string {
-  switch (cloud) {
-    case 'oci':
-      return '{ "compartment_id": "ocid1.compartment.oc1..xxx", "availability_domain": "Uocm:US-ASHBURN-AD-1", "subnet_id": "ocid1.subnet.oc1..xxx", "image_id": "ocid1.image.oc1..xxx", "shape": "VM.Standard.E4.Flex", "ocpus": 1, "memory_in_gbs": 8 }';
-    case 'aws':
-      return '{ "ami_id": "ami-0abcd1234efgh", "instance_type": "t3.small", "subnet_id": "subnet-0abc1234", "security_group_ids": ["sg-0abc1234"] }';
-    default:
-      return '{ }';
-  }
 }
 
 function ModeTab({ active, onClick, label }: { active: boolean; onClick: () => void; label: string }) {
@@ -848,6 +883,458 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
       <div className="text-[11px] uppercase tracking-wide text-ink-mute font-medium mb-1">{label}</div>
       {children}
       {hint && <div className="text-[11px] text-ink-mute mt-1">{hint}</div>}
+    </div>
+  );
+}
+
+// ── Managed deploys panel ──────────────────────────────────────────
+//
+// Lists in-flight + recent cp_provisions rows below the peers list.
+// Auto-refreshes every 5s while any row is non-terminal so the
+// operator sees `queued → starting → cloud_init_running →
+// bootstrap_pending → ready` progress live without having to leave
+// the page. Each row is expandable to surface the worker's
+// streamed log, the cloud-resource id (with console-URL link), and
+// any error message on a failed deploy.
+
+function ManagedDeploysPanel() {
+  const [rows, setRows] = useState<CPProvision[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<Set<number>>(new Set());
+
+  useEffect(() => {
+    let cancelled = false;
+    let timer: number | undefined;
+    async function tick() {
+      try {
+        const data = await api.cpProvisionsList(50);
+        if (cancelled) return;
+        setRows(data);
+        setError(null);
+        // Reschedule fast (5s) only if at least one row is still
+        // moving; otherwise relax to 30s so we don't poll forever
+        // on a fleet that isn't deploying.
+        const live = data.some((r) => isNonTerminal(r.status));
+        timer = window.setTimeout(tick, live ? 5000 : 30_000);
+      } catch (e) {
+        if (cancelled) return;
+        setError(String(e));
+        timer = window.setTimeout(tick, 30_000);
+      }
+    }
+    tick();
+    return () => { cancelled = true; if (timer) clearTimeout(timer); };
+  }, []);
+
+  if (rows === null) {
+    return null; // first load — quiet so we don't flash a loading bar
+  }
+  if (rows.length === 0) {
+    // Don't render an empty section — the +Add CP modal teaches the
+    // operator about managed deploys; the panel only shows up once
+    // there's history.
+    return null;
+  }
+
+  function toggleExpand(id: number) {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+
+  return (
+    <section className="bg-panel border border-border rounded-xl shadow-card overflow-hidden">
+      <header className="px-4 py-2.5 border-b border-border flex items-center justify-between">
+        <div className="text-sm font-semibold flex items-center gap-2">
+          <Server size={14} className="text-brand-500" />
+          Managed deploys
+        </div>
+        <div className="text-[11px] text-ink-mute">{rows.length} job{rows.length === 1 ? '' : 's'}</div>
+      </header>
+      {error && (
+        <div className="px-4 py-2 text-xs text-red-700 bg-red-50 border-b border-red-200">{error}</div>
+      )}
+      <ul className="divide-y divide-border">
+        {rows.map((r) => (
+          <ManagedDeployRow
+            key={r.id}
+            row={r}
+            expanded={expanded.has(r.id)}
+            onToggle={() => toggleExpand(r.id)}
+          />
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+function ManagedDeployRow({ row, expanded, onToggle }: {
+  row: CPProvision;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  const Icon = expanded ? ChevronDown : ChevronRight;
+  return (
+    <li className="text-sm">
+      <button
+        onClick={onToggle}
+        className="w-full px-4 py-2.5 flex items-center gap-3 hover:bg-slate-50 text-left"
+      >
+        <Icon size={14} className="text-ink-mute shrink-0" />
+        <span className="font-medium truncate flex-1">{row.display_name}</span>
+        <span className="text-[11px] text-ink-mute font-mono">{row.cloud}{row.region ? ` · ${row.region}` : ''}</span>
+        <ProvisionStatusBadge status={row.status} />
+        <span className="text-[11px] text-ink-mute hidden md:block w-32 text-right">
+          {new Date(row.created_at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+        </span>
+      </button>
+      {expanded && (
+        <div className="px-10 pb-3 space-y-2 text-xs">
+          {row.error && (
+            <div className="text-red-700 bg-red-50 border border-red-200 px-3 py-2 rounded-md font-mono whitespace-pre-wrap">
+              {row.error}
+            </div>
+          )}
+          {row.cloud_resource_id && (
+            <div className="text-ink-dim">
+              instance: <code className="bg-slate-100 px-1 rounded">{row.cloud_resource_id}</code>
+              {row.cloud_resource_url && (
+                <> · <a href={row.cloud_resource_url} target="_blank" rel="noreferrer" className="text-brand-700 hover:underline inline-flex items-center gap-0.5">cloud console <ExternalLink size={10} /></a></>
+              )}
+            </div>
+          )}
+          {row.instance_shape && (
+            <div className="text-ink-mute">
+              shape: <code className="bg-slate-100 px-1 rounded">{row.instance_shape}</code>
+              {row.est_cost_per_hour_usd != null && <> · ~${(row.est_cost_per_hour_usd * 730).toFixed(2)}/mo est.</>}
+            </div>
+          )}
+          {row.log && (
+            <pre className="bg-slate-50 border border-border rounded-md p-2 text-[10px] font-mono whitespace-pre-wrap max-h-64 overflow-y-auto">
+              {row.log.trim() || '(worker has not written any log lines yet)'}
+            </pre>
+          )}
+          {!row.log && !row.error && row.status === 'queued' && (
+            <div className="text-ink-mute italic">queued — waiting for the worker to pick this up.</div>
+          )}
+        </div>
+      )}
+    </li>
+  );
+}
+
+function ProvisionStatusBadge({ status }: { status: string }) {
+  const cfg = PROVISION_STATUS_CFG[status] ?? PROVISION_STATUS_CFG.unknown;
+  return (
+    <span className={cn(
+      'inline-flex items-center gap-1 text-[11px] uppercase tracking-wide font-medium px-2 py-0.5 rounded-md ring-1 shrink-0',
+      cfg.cls,
+    )}>
+      {cfg.label}
+    </span>
+  );
+}
+
+const PROVISION_STATUS_CFG: Record<string, { label: string; cls: string }> = {
+  queued:               { label: 'queued',      cls: 'text-ink-mute bg-slate-50 ring-slate-200' },
+  starting:             { label: 'starting',    cls: 'text-brand-700 bg-brand-50 ring-brand-100' },
+  cloud_init_running:   { label: 'cloud-init',  cls: 'text-brand-700 bg-brand-50 ring-brand-100' },
+  bootstrap_pending:    { label: 'bootstrap',   cls: 'text-amber-700 bg-amber-50 ring-amber-100' },
+  ready:                { label: 'ready',       cls: 'text-emerald-700 bg-emerald-50 ring-emerald-200' },
+  failed:               { label: 'failed',      cls: 'text-red-700 bg-red-50 ring-red-200' },
+  cancelled:            { label: 'cancelled',   cls: 'text-ink-mute bg-slate-50 ring-slate-200' },
+  unknown:              { label: 'unknown',     cls: 'text-ink-mute bg-slate-50 ring-slate-200' },
+};
+
+function isNonTerminal(status: string): boolean {
+  switch (status) {
+    case 'queued':
+    case 'starting':
+    case 'cloud_init_running':
+    case 'bootstrap_pending':
+      return true;
+    default:
+      return false;
+  }
+}
+
+// ── Cloud-params structured form ───────────────────────────────────
+//
+// Replaces the old JSON textarea. Per cloud, surfaces labelled
+// inputs/dropdowns and (for OCI) auto-discovers tenant resources via
+// the /api/cloud-credentials/{id}/oci/* endpoints. All writes go
+// through the parent component's setCloudParams so the cost-estimate
+// + missing-fields validators see the same value at all times.
+
+function CloudParamsForm({
+  cloud, credentialID, region, value, onChange,
+}: {
+  cloud: CloudKind;
+  credentialID: number;
+  region: string;
+  value: Record<string, unknown>;
+  onChange: (next: Record<string, unknown>) => void;
+}) {
+  if (cloud === 'oci') {
+    return <OciCloudParamsForm credentialID={credentialID} region={region} value={value} onChange={onChange} />;
+  }
+  if (cloud === 'aws') {
+    return <AwsCloudParamsFormStub value={value} onChange={onChange} />;
+  }
+  return null;
+}
+
+function OciCloudParamsForm({
+  credentialID, region, value, onChange,
+}: {
+  credentialID: number;
+  region: string;
+  value: Record<string, unknown>;
+  onChange: (next: Record<string, unknown>) => void;
+}) {
+  const compartmentID = (value.compartment_id as string) ?? '';
+  const ad = (value.availability_domain as string) ?? '';
+  const subnetID = (value.subnet_id as string) ?? '';
+  const imageID = (value.image_id as string) ?? '';
+  const shape = (value.shape as string) ?? '';
+  const ocpus = value.ocpus as number | undefined;
+  const memoryGB = value.memory_in_gbs as number | undefined;
+  const sshKeys = (value.ssh_authorized_keys as string) ?? '';
+
+  const set = (patch: Record<string, unknown>) => onChange({ ...value, ...patch });
+
+  // Discovery state. Each list loads when its prerequisites are set.
+  const [compartments, setCompartments] = useState<DiscoveryItem[] | null>(null);
+  const [ads, setAds] = useState<DiscoveryItem[] | null>(null);
+  const [subnets, setSubnets] = useState<DiscoveryItem[] | null>(null);
+  const [images, setImages] = useState<DiscoveryItem[] | null>(null);
+  const [shapes, setShapes] = useState<DiscoveryItem[] | null>(null);
+  const [discoveryError, setDiscoveryError] = useState<string | null>(null);
+
+  // Compartments load on credential/region change.
+  useEffect(() => {
+    let cancelled = false;
+    setCompartments(null); setDiscoveryError(null);
+    api.cloudDiscoveryOCI.compartments(credentialID, region || undefined)
+      .then((items) => { if (!cancelled) setCompartments(items); })
+      .catch((e) => { if (!cancelled) setDiscoveryError(`compartments: ${e}`); });
+    return () => { cancelled = true; };
+  }, [credentialID, region]);
+
+  // ADs / subnets / images / shapes load when compartment is set.
+  useEffect(() => {
+    if (!compartmentID) {
+      setAds(null); setSubnets(null); setImages(null); setShapes(null);
+      return;
+    }
+    let cancelled = false;
+    api.cloudDiscoveryOCI.availabilityDomains(credentialID, compartmentID, region || undefined)
+      .then((items) => { if (!cancelled) setAds(items); }).catch(() => {});
+    api.cloudDiscoveryOCI.subnets(credentialID, compartmentID, { region: region || undefined })
+      .then((items) => { if (!cancelled) setSubnets(items); }).catch(() => {});
+    api.cloudDiscoveryOCI.images(credentialID, compartmentID, { region: region || undefined })
+      .then((items) => { if (!cancelled) setImages(items); }).catch(() => {});
+    api.cloudDiscoveryOCI.shapes(credentialID, compartmentID, { region: region || undefined })
+      .then((items) => { if (!cancelled) setShapes(items); }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [credentialID, compartmentID, region]);
+
+  // Shape attrs gate the OCPU/memory inputs (.Flex shapes only) and
+  // give us min/max bounds for the number fields.
+  const flexShape = shape.endsWith('.Flex') || shape.includes('.Flex.');
+  const shapeAttrs = shapes?.find((s) => s.id === shape)?.attrs as
+    | { ocpus_min?: number; ocpus_max?: number; memory_min_gb?: number; memory_max_gb?: number }
+    | undefined;
+
+  // Fill sensible defaults when shape changes.
+  useEffect(() => {
+    if (flexShape && shapeAttrs && (ocpus == null || memoryGB == null)) {
+      set({
+        ocpus: ocpus ?? shapeAttrs.ocpus_min ?? 1,
+        memory_in_gbs: memoryGB ?? Math.min(shapeAttrs.memory_max_gb ?? 8, Math.max(shapeAttrs.memory_min_gb ?? 8, 8)),
+      });
+    }
+    if (!flexShape && (ocpus != null || memoryGB != null)) {
+      // Strip flex-only fields when leaving a flex shape.
+      const { ocpus: _o, memory_in_gbs: _m, ...rest } = value;
+      void _o; void _m;
+      onChange(rest);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shape]);
+
+  return (
+    <div className="bg-slate-50 border border-border rounded-md p-3 space-y-3">
+      <div className="text-[11px] uppercase tracking-wide text-ink-mute font-medium flex items-center justify-between">
+        <span>OCI deployment target</span>
+        <span className="normal-case text-ink-mute">auto-discovered from credential</span>
+      </div>
+      {discoveryError && (
+        <div className="text-xs text-red-700 bg-red-50 border border-red-200 px-2 py-1 rounded">{discoveryError}</div>
+      )}
+
+      <Field label="Compartment" hint="Where the VM will be created. The tenancy root is the safe default if you don't have sub-compartments.">
+        <DiscoverySelect
+          items={compartments}
+          value={compartmentID}
+          onChange={(v) => set({
+            compartment_id: v,
+            // Resetting downstream selections on compartment change —
+            // their valid values depend on it.
+            availability_domain: '', subnet_id: '', image_id: '', shape: '',
+          })}
+          placeholder={compartments === null ? 'loading…' : '— pick compartment —'}
+        />
+      </Field>
+
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="Availability domain">
+          <DiscoverySelect
+            items={ads} value={ad}
+            onChange={(v) => set({ availability_domain: v })}
+            placeholder={!compartmentID ? 'pick compartment first' : ads === null ? 'loading…' : '— pick AD —'}
+            disabled={!compartmentID}
+          />
+        </Field>
+        <Field label="Shape">
+          <DiscoverySelect
+            items={shapes} value={shape}
+            onChange={(v) => set({ shape: v })}
+            placeholder={!compartmentID ? 'pick compartment first' : shapes === null ? 'loading…' : '— pick shape —'}
+            disabled={!compartmentID}
+          />
+        </Field>
+      </div>
+
+      <Field label="Subnet" hint="The VNIC attaches here. Subnets that prohibit public IPs are still selectable; provisioning will succeed but the bootstrap callback path needs your own NAT.">
+        <DiscoverySelect
+          items={subnets} value={subnetID}
+          onChange={(v) => set({ subnet_id: v })}
+          placeholder={!compartmentID ? 'pick compartment first' : subnets === null ? 'loading…' : '— pick subnet —'}
+          disabled={!compartmentID}
+          renderItem={(s) => `${s.name}${(s.attrs?.cidr_block as string) ? `  (${s.attrs!.cidr_block})` : ''}`}
+        />
+      </Field>
+
+      <Field label="Image" hint="Latest build per OS+version is shown.">
+        <DiscoverySelect
+          items={images} value={imageID}
+          onChange={(v) => set({ image_id: v })}
+          placeholder={!compartmentID ? 'pick compartment first' : images === null ? 'loading…' : '— pick image —'}
+          disabled={!compartmentID}
+        />
+      </Field>
+
+      {flexShape && (
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="OCPUs" hint={shapeAttrs ? `${shapeAttrs.ocpus_min}–${shapeAttrs.ocpus_max} for ${shape}` : ''}>
+            <input
+              type="number"
+              value={ocpus ?? ''}
+              min={shapeAttrs?.ocpus_min ?? 1}
+              max={shapeAttrs?.ocpus_max ?? 64}
+              step="0.25"
+              onChange={(e) => set({ ocpus: e.target.value === '' ? undefined : Number(e.target.value) })}
+              className="w-full px-3 py-1.5 text-sm border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500/30"
+            />
+          </Field>
+          <Field label="Memory (GB)" hint={shapeAttrs ? `${shapeAttrs.memory_min_gb}–${shapeAttrs.memory_max_gb} for ${shape}` : ''}>
+            <input
+              type="number"
+              value={memoryGB ?? ''}
+              min={shapeAttrs?.memory_min_gb ?? 1}
+              max={shapeAttrs?.memory_max_gb ?? 1024}
+              onChange={(e) => set({ memory_in_gbs: e.target.value === '' ? undefined : Number(e.target.value) })}
+              className="w-full px-3 py-1.5 text-sm border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500/30"
+            />
+          </Field>
+        </div>
+      )}
+
+      <Field label="SSH authorized keys (optional)" hint="One public key per line. Used for break-glass debugging only — the CP itself doesn't need SSH to function.">
+        <textarea
+          value={sshKeys}
+          onChange={(e) => set({ ssh_authorized_keys: e.target.value })}
+          rows={2}
+          placeholder="ssh-ed25519 AAAA…"
+          className="w-full px-3 py-1.5 text-xs font-mono border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500/30"
+        />
+      </Field>
+    </div>
+  );
+}
+
+function DiscoverySelect({
+  items, value, onChange, placeholder, disabled, renderItem,
+}: {
+  items: DiscoveryItem[] | null;
+  value: string;
+  onChange: (v: string) => void;
+  placeholder: string;
+  disabled?: boolean;
+  renderItem?: (item: DiscoveryItem) => string;
+}) {
+  return (
+    <select
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      disabled={disabled || items === null}
+      className="w-full px-3 py-1.5 text-sm border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500/30 bg-panel disabled:opacity-50"
+    >
+      <option value="">{placeholder}</option>
+      {(items ?? []).map((it) => (
+        <option key={it.id} value={it.id}>
+          {renderItem ? renderItem(it) : it.name}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+// AwsCloudParamsFormStub — auto-discovery for AWS lands in a follow-up.
+// Until then operators on AWS get the same JSON-textarea fallback they
+// had pre-this-PR, with up-front validation so the worker can't
+// fail-on-empty-payload.
+function AwsCloudParamsFormStub({
+  value, onChange,
+}: {
+  value: Record<string, unknown>;
+  onChange: (next: Record<string, unknown>) => void;
+}) {
+  // Edit each required field as a labelled input — no discovery yet.
+  const set = (patch: Record<string, unknown>) => onChange({ ...value, ...patch });
+  const sgs = (value.security_group_ids as string[] | undefined)?.join(',') ?? '';
+  return (
+    <div className="bg-slate-50 border border-border rounded-md p-3 space-y-3">
+      <div className="text-[11px] uppercase tracking-wide text-ink-mute font-medium flex items-center justify-between">
+        <span>AWS deployment target</span>
+        <span className="normal-case text-amber-700">auto-discovery for AWS lands in a follow-up</span>
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="AMI id">
+          <input value={(value.ami_id as string) ?? ''} onChange={(e) => set({ ami_id: e.target.value })}
+            placeholder="ami-0abcd1234efgh"
+            className="w-full px-3 py-1.5 text-sm border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500/30" />
+        </Field>
+        <Field label="Instance type">
+          <input value={(value.instance_type as string) ?? ''} onChange={(e) => set({ instance_type: e.target.value })}
+            placeholder="t3.small"
+            className="w-full px-3 py-1.5 text-sm border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500/30" />
+        </Field>
+      </div>
+      <Field label="Subnet id">
+        <input value={(value.subnet_id as string) ?? ''} onChange={(e) => set({ subnet_id: e.target.value })}
+          placeholder="subnet-0abc1234"
+          className="w-full px-3 py-1.5 text-sm border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500/30" />
+      </Field>
+      <Field label="Security group ids" hint="Comma-separated list of sg-… ids.">
+        <input value={sgs}
+          onChange={(e) => set({ security_group_ids: e.target.value.split(',').map((s) => s.trim()).filter(Boolean) })}
+          placeholder="sg-0abc1234,sg-0def5678"
+          className="w-full px-3 py-1.5 text-sm border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500/30" />
+      </Field>
     </div>
   );
 }
