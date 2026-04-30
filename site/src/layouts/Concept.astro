@@ -1,0 +1,58 @@
+---
+import Base from './Base.astro';
+
+interface TOCItem {
+  id: string;
+  label: string;
+}
+
+interface Props {
+  title: string;
+  subtitle: string;
+  glyph: string;
+  description: string;     // for <meta description>
+  toc: TOCItem[];
+  diagram?: string;        // optional component name reference, used in MDX directly
+}
+
+const { title, subtitle, glyph, description, toc } = Astro.props;
+---
+
+<Base title={title} description={description}>
+  <div class="bg-panel border-b border-border">
+    <div class="max-w-page mx-auto px-6 py-10">
+      <div class="flex items-start gap-4">
+        <div class="w-11 h-11 rounded-lg bg-brand-50 text-brand-700 flex items-center justify-center text-2xl border border-brand-100 shrink-0">
+          <span class="font-mono">{glyph}</span>
+        </div>
+        <div>
+          <h1 class="text-[28px] md:text-[32px] font-bold text-brand-700 leading-tight">{title}</h1>
+          <p class="mt-1.5 text-sm md:text-[15px] text-ink-dim leading-relaxed max-w-2xl">{subtitle}</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="max-w-page mx-auto px-6 py-8">
+    <div class="grid md:grid-cols-[220px_minmax(0,1fr)] gap-x-10">
+      {/* Sticky TOC */}
+      <aside class="hidden md:block">
+        <div class="sticky top-20">
+          <div class="text-[10px] uppercase tracking-wide text-ink-mute font-bold mb-2">On this page</div>
+          <ul class="text-xs space-y-1.5">
+            {toc.map(item => (
+              <li>
+                <a href={`#${item.id}`} class="text-ink-dim hover:text-brand-700 transition-colors">{item.label}</a>
+              </li>
+            ))}
+          </ul>
+        </div>
+      </aside>
+
+      {/* Content */}
+      <article class="concept-prose max-w-content">
+        <slot />
+      </article>
+    </div>
+  </div>
+</Base>
