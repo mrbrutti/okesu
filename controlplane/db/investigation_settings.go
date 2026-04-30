@@ -37,6 +37,14 @@ type SuggestionSettings struct {
 	// which is stronger correlation than a one-off match.
 	IOCCrossCPMinObservations int `json:"ioc_cross_cp_min_observations"`
 	IOCCrossCPWindowHours     int `json:"ioc_cross_cp_window_hours"`
+
+	// Autolink threshold — when a newly-projected finding scores at
+	// or above this against any active case, the engine links it
+	// without operator action. 0 disables autolink (default — opt-in).
+	// Higher than the suggestion threshold by design: surfacing a
+	// suggestion is cheap, auto-linking is a commitment, so the
+	// confidence bar should be higher.
+	AutoLinkThreshold int `json:"autolink_threshold"`
 }
 
 const metaKeySuggestionSettings = "investigation.suggestion_settings"
@@ -58,6 +66,7 @@ func DefaultSuggestionSettings() SuggestionSettings {
 		DaimonSevWindowHours:      24,
 		IOCCrossCPMinObservations: 3,
 		IOCCrossCPWindowHours:     24,
+		AutoLinkThreshold:         0, // disabled by default — opt-in
 	}
 }
 
@@ -102,9 +111,68 @@ func (s *Store) SetSuggestionSettings(in SuggestionSettings) error {
 	return s.MetaSet(metaKeySuggestionSettings, string(b))
 }
 
+// AutoLinkResult is what AutoLinkFindingToTopCase returns when a link
+// fires. Useful for logging + the audit row a future commit may add.
+type AutoLinkResult struct {
+	InvestigationID int64
+	Title           string
+	Score           int
+	Signals         []SuggestionSignal
+}
+
+// AutoLinkFindingToTopCase scores a newly-projected finding against
+// active cases via the same signals as the workspace card. If any
+// case scores at or above the configured AutoLinkThreshold, the
+// finding is linked there and the result is returned.
+//
+// Returns (nil, nil) when:
+//   - autolink is disabled (threshold == 0)
+//   - no active case scores above threshold
+//
+// The link reuses LinkFindingToInvestigation so the dismissal-
+// tombstone-clear side effect runs (consistent with manual + bulk
+// link paths).
+//
+// "Top case" = highest score. Ties broken by the inner ORDER BY
+// (most-recently-updated case wins). Single-case-per-finding is the
+// right default for autolink — operators can manually link to
+// additional cases later.
+func (s *Store) AutoLinkFindingToTopCase(findingID int64) (*AutoLinkResult, error) {
+	settings, err := s.GetSuggestionSettings()
+	if err != nil {
+		return nil, err
+	}
+	if settings.AutoLinkThreshold <= 0 {
+		return nil, nil
+	}
+	cases, err := s.ListRelatedCasesForFinding(findingID, settings.AutoLinkThreshold, 1)
+	if err != nil {
+		return nil, err
+	}
+	if len(cases) == 0 {
+		return nil, nil
+	}
+	top := cases[0]
+	if err := s.LinkFindingToInvestigation(top.InvestigationID, findingID); err != nil {
+		return nil, err
+	}
+	return &AutoLinkResult{
+		InvestigationID: top.InvestigationID,
+		Title:           top.Title,
+		Score:           top.Score,
+		Signals:         top.Signals,
+	}, nil
+}
+
 // mergeSuggestionDefaults fills any zero/nil field on `in` from `def`.
 // Mutates `in` in place. Centralised so Get and Set both produce the
 // same shape.
+//
+// Note: AutoLinkThreshold's default IS 0 (disabled) — the merge's
+// "<= 0 → use default" rule happens to land on 0 either way, which
+// is the desired no-op. If we ever change the default to non-zero,
+// the merge function will need a special case so admins can
+// explicitly disable autolink.
 func mergeSuggestionDefaults(in *SuggestionSettings, def SuggestionSettings) {
 	if in.Threshold <= 0 {
 		in.Threshold = def.Threshold

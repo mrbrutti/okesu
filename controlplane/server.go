@@ -408,6 +408,15 @@ func New(cfg Config) (*Server, error) {
 
 	// Wire the finding-trigger hook before the pipeline starts so we
 	// don't miss the first projected finding after boot.
+	//
+	// Two side effects fire per projected finding:
+	//   1. orchestrator.OnFinding — drives `on: finding` triggers
+	//   2. AutoLinkFindingToTopCase — opt-in (disabled when
+	//      autolink_threshold == 0); links new high-score findings
+	//      to their best-scoring active case without operator action.
+	//
+	// Each is wrapped so a failure in one doesn't suppress the other —
+	// orchestration is the load-bearing path; autolink is ergonomics.
 	pipelineWorker.SetFindingHook(func(e eventpipeline.FindingProjectedEvent) {
 		srv.orchestra.OnFinding(orchestrator.FindingPayload{
 			ID:         e.FindingID,
@@ -421,6 +430,12 @@ func New(cfg Config) (*Server, error) {
 			Resource:   e.Resource,
 			Attributes: e.Attributes,
 		})
+		if r, err := store.AutoLinkFindingToTopCase(e.FindingID); err != nil {
+			log.Printf("autolink: finding=%d failed: %v", e.FindingID, err)
+		} else if r != nil {
+			log.Printf("autolink: finding=%d → case=%d (%q) score=%d signals=%v",
+				e.FindingID, r.InvestigationID, r.Title, r.Score, r.Signals)
+		}
 	})
 	go func() {
 		if err := pipelineWorker.Run(pipelineCtx); err != nil && pipelineCtx.Err() == nil {
