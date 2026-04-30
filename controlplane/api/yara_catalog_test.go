@@ -40,6 +40,14 @@ func TestYARARulesYar_ConcatenatesCatalogRules(t *testing.T) {
 	if !strings.Contains(body, "rule One") || !strings.Contains(body, "rule Two") {
 		t.Errorf("body should contain both rules; got:\n%s", body)
 	}
+	// Per-rule comment headers must be present so a human reading the
+	// bundle can trace each rule back to its catalog entry.
+	if !strings.Contains(body, "// catalog name: One") {
+		t.Errorf("expected '// catalog name: One' header in bundle; got:\n%s", body)
+	}
+	if !strings.Contains(body, "// tags: ransomware") {
+		t.Errorf("expected '// tags: ransomware' header in bundle; got:\n%s", body)
+	}
 }
 
 func TestYARARulesYar_FiltersByTag(t *testing.T) {
@@ -64,6 +72,27 @@ func TestYARARulesYar_FiltersByTag(t *testing.T) {
 	}
 	if strings.Contains(body, "rule P1") {
 		t.Errorf("phishing rule should have been filtered out")
+	}
+}
+
+// Rules exist in the catalog but none match the requested tag — must
+// still return 200 with empty body, NOT 404. Operators piping this
+// through `yara` get an empty rule set rather than an error.
+func TestYARARulesYar_TagFilterNoMatches(t *testing.T) {
+	st := newTestStore(t)
+	st.UpsertIOC(&db.IOCUpsert{
+		Kind: "yara_rule", Value: "rule R { condition: true }",
+		NormalizedValue: "rule r { condition: true }",
+		Source:          "catalog", Tags: "ransomware",
+	})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/api/catalog/yara-rules.yar?tag=does-not-exist", nil)
+	YARARulesYarHandler(st)(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if rec.Body.Len() != 0 {
+		t.Errorf("expected empty body when filter matches nothing; got: %q", rec.Body.String())
 	}
 }
 
