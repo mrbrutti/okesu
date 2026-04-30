@@ -1,0 +1,79 @@
+---
+layout: ../../layouts/Concept.astro
+title: Orchestrations
+subtitle: The coordination layer. YAML specs that sequence agents into playbooks — with fan-out, gates, and branching.
+glyph: ⊞
+description: Orchestrations are Okesu's playbook layer — YAML specs that drive agents step-by-step, with fan-out across hosts and human approval gates.
+toc:
+  - { id: what,        label: "What an orchestration is" }
+  - { id: spec,        label: "The YAML spec" }
+  - { id: fanout,      label: "Fan-out across hosts" }
+  - { id: gates,       label: "Approval gates" }
+  - { id: branching,   label: "Branching on results" }
+  - { id: next,        label: "Where to next" }
+---
+
+import OrchestrationFlow from '../../components/diagrams/OrchestrationFlow.astro';
+
+<div class="bg-bg border border-border rounded-xl p-6 md:p-8 my-8">
+  <OrchestrationFlow />
+</div>
+
+<h2 id="what">What an orchestration is</h2>
+
+<p>An <span class="term">orchestration</span> is a YAML spec that describes a sequence of agent runs. Each step says <em>which agent</em> to run, <em>which host(s)</em> to run it on, and <em>what prompt</em> to give it. The control plane parses the spec, dispatches each step in turn, persists results, and renders a live DAG on the run-detail page.</p>
+
+<p>Orchestrations are not "if-this-then-that" workflows. They're <em>investigative playbooks</em> — the kind of "here's how a senior analyst would approach this" runbook you'd otherwise carry around as a Confluence page. Okesu makes those runbooks executable.</p>
+
+<h2 id="spec">The YAML spec</h2>
+
+<p>A minimal orchestration looks like this:</p>
+
+<div class="code-block">
+<span class="cmt">---</span><br/>
+<span class="key">name</span>: c2-callback-triage<br/>
+<span class="key">description</span>: triage a suspected C2 callback<br/>
+<span class="key">steps</span>:<br/>
+&nbsp;&nbsp;- <span class="key">id</span>: scan<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="key">agent</span>: edr-investigator<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="key">node</span>: <span class="str">"{`{{trigger.host}}`}"</span><br/>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="key">prompt</span>: <span class="str">"check for C2 indicators around process {`{{trigger.pid}}`}"</span><br/>
+&nbsp;&nbsp;- <span class="key">id</span>: contain<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="key">agent</span>: forensic-collector<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="key">node</span>: <span class="str">"{`{{trigger.host}}`}"</span><br/>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="key">prompt</span>: <span class="str">"snapshot volatile state from {`{{scan.result.pid}}`}"</span><br/>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="key">approval</span>: required
+</div>
+
+<p>The <code>{`{{trigger.X}}`}</code> placeholders bind context from whatever fired the orchestration (a finding, a manual run, a scheduled cron). <code>{`{{stepN.result.field}}`}</code> binds structured data from earlier steps.</p>
+
+<h2 id="fanout">Fan-out across hosts</h2>
+
+<p>Replace <code>node:</code> with <code>nodes:</code> and an array of hostnames. The engine dispatches the step on every host in parallel, aggregates the results, and exposes per-host status on the run-detail canvas.</p>
+
+<div class="code-block">
+&nbsp;&nbsp;- <span class="key">id</span>: scan<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="key">agent</span>: edr-triage<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="key">nodes</span>: [web-prod-01, web-prod-02, web-prod-03]<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="key">prompt</span>: <span class="str">"sweep for known IOCs"</span>
+</div>
+
+<p>The platform's run viewer renders a per-host status strip — a colored dot per host plus a histogram bar — so you can see which host succeeded, failed, or is still running at a glance. Failed hosts surface inline with their error.</p>
+
+<h2 id="gates">Approval gates</h2>
+
+<p>Add <code>approval: required</code> to any step. The engine pauses the run at that step until an operator approves it from the dashboard. Useful for steps that mutate state — containment actions, tag changes, finding triage — where you want a human in the loop. The CP enforces a per-action-class allowlist so a runaway agent can't push beyond what's been pre-authorised.</p>
+
+<h2 id="branching">Branching on results</h2>
+
+<p>Steps can read structured fields from earlier steps via the binding system. An agent that emits an <code>orchestration_result</code> finding exposes its attributes as <code>{`{{stepN.result.X}}`}</code>; the next step can use them in its prompt or as input parameters.</p>
+
+<p>For runs that fanned out, each host's payload is also addressable: <code>{`{{stepN.byNode["host-1"].result.foo}}`}</code>.</p>
+
+<h2 id="next">Where to next</h2>
+
+<ul>
+  <li><a href="/concepts/daimons">Daimons</a> — what runs the dispatched steps.</li>
+  <li><a href="/concepts/agents">Agents</a> — the worker units orchestrations sequence.</li>
+  <li><a href="/install">Install Okesu</a> — bootstrap a CP and write your first orchestration.</li>
+</ul>
