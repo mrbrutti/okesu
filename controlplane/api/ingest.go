@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -130,30 +131,65 @@ func FindingIngest(store *db.Store, eventStore ports.EventStore, bcast Broadcast
 				attrJSON = string(b)
 			}
 		}
+
+		// Phase 22.2 — extract IOCs and compute propagation values BEFORE
+		// inserting the finding so cluster_id, severity_floor, attribution,
+		// and classification land on the row at insert time.
+		parts := []string{req.Title, req.Evidence, req.Resource, req.RecommendedAction}
+		for _, v := range req.Attributes {
+			if s, ok := v.(string); ok {
+				parts = append(parts, s)
+			}
+		}
+		hits := extract.Extract(strings.Join(parts, "\n"))
+		prop, perr := propagateFromIOCs(store, hits, req.Severity)
+		if perr != nil {
+			log.Printf("ioc propagate: %v (continuing with raw severity)", perr)
+			prop = PropagationResult{Severity: req.Severity}
+		}
+		req.Severity = prop.Severity
+
 		findingID, err := store.InsertFinding(&db.FindingInsert{
-			EventID:         eventID,
-			Ts:              req.Ts,
-			Agent:           req.Agent,
-			Host:            req.Host,
-			Severity:        req.Severity,
-			Title:           agent.NormalizeFindingTitle(req.Title),
-			Resource:        req.Resource,
-			Evidence:        req.Evidence,
-			DedupKey:        req.DedupKey,
-			RawJSON:         string(raw),
-			Category:        req.Category,
-			ProcessPID:      req.ProcessPID,
-			ProcessName:     req.ProcessName,
-			Path:            req.Path,
-			NetworkEndpoint: req.NetworkEndpoint,
-			CVE:             req.CVE,
-			Tags:            strings.ToLower(strings.Join(req.Tags, ",")),
-			Attributes:      attrJSON,
+			EventID:           eventID,
+			Ts:                req.Ts,
+			Agent:             req.Agent,
+			Host:              req.Host,
+			Severity:          req.Severity,
+			Title:             agent.NormalizeFindingTitle(req.Title),
+			Resource:          req.Resource,
+			Evidence:          req.Evidence,
+			DedupKey:          req.DedupKey,
+			RawJSON:           string(raw),
+			Category:          req.Category,
+			ProcessPID:        req.ProcessPID,
+			ProcessName:       req.ProcessName,
+			Path:              req.Path,
+			NetworkEndpoint:   req.NetworkEndpoint,
+			CVE:               req.CVE,
+			Tags:              strings.ToLower(strings.Join(req.Tags, ",")),
+			Attributes:        attrJSON,
+			ClusterID:         prop.ClusterID,
+			IOCConfidence:     prop.IOCConfidence,
+			IOCAttribution:    prop.IOCAttribution,
+			IOCClassification: prop.IOCClassification,
 		})
 		if err != nil {
 			http.Error(w, "store finding: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
+
+		// If no existing cluster matched, mint one from the finding's own id.
+		// Only mint when there were extracted IOCs — findings with no IOCs
+		// don't participate in clustering.
+		if prop.ClusterID == "" && len(prop.IOCIDs) > 0 {
+			newCID := strconv.FormatInt(findingID, 10)
+			if _, err := store.Exec(`UPDATE findings SET cluster_id = ? WHERE id = ?`, newCID, findingID); err != nil {
+				log.Printf("cluster mint (finding=%d): %v", findingID, err)
+			}
+		}
+
+		// Link IOC observations to the finding.
+		linkIOCObservations(store, findingID, prop.IOCIDs, req.Host)
 
 		// Broadcast — feeds notify.Worker + the live SSE stream.
 		bcast.Publish(raw)
@@ -171,11 +207,6 @@ func FindingIngest(store *db.Store, eventStore ports.EventStore, bcast Broadcast
 		})
 		_ = audit.Emit // keep the import if the caller is via cookie auth
 
-		// Phase 22.1 Task D2 — auto-extract IOCs from finding text and link
-		// observations to the finding. Synchronous so a smoke test that
-		// asserts "after POST, IOC exists in DB" doesn't need to sleep.
-		extractAndLinkIOCs(store, findingID, &req)
-
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusAccepted)
 		_ = json.NewEncoder(w).Encode(map[string]any{
@@ -185,45 +216,20 @@ func FindingIngest(store *db.Store, eventStore ports.EventStore, bcast Broadcast
 	}
 }
 
-// extractAndLinkIOCs scans the finding's text fields, upserts each IOC
-// hit as source="observed", and records an observation linking it to
-// the finding. Errors are logged but do not fail the ingest — IOC
-// extraction is best-effort enrichment, not a precondition for the
-// finding being persisted.
+// linkIOCObservations writes ioc_observations rows for each IOC the
+// pre-insert propagateFromIOCs identified. Errors are logged but do
+// not fail the ingest — IOC linkage is best-effort enrichment.
 //
-// TODO(phase-22.x): currently synchronous so smoke tests can assert
-// "after POST, IOC exists in DB" without sleeps. A finding with N IOCs
-// adds N × (UpsertIOC + RecordIOCObservation) round-trips to the
-// request path (~1ms each on sqlite). Move to a worker queue once the
-// expected per-finding hit counts justify the indirection.
-//
-// TODO(phase-22.x): if UpsertIOC succeeds but RecordIOCObservation
-// fails, the IOC row exists with no link to the finding that surfaced
-// it. Acceptable for v1 (the IOC is still queryable by kind), but
-// worth fixing once we have the worker queue — wrap both in one
-// retry-on-failure unit.
-func extractAndLinkIOCs(store *db.Store, findingID int64, req *FindingIngestRequest) {
-	parts := []string{req.Title, req.Evidence, req.Resource, req.RecommendedAction}
-	for _, v := range req.Attributes {
-		if s, ok := v.(string); ok {
-			parts = append(parts, s)
-		}
-	}
-	text := strings.Join(parts, "\n")
-	for _, hit := range extract.Extract(text) {
-		id, _, err := store.UpsertIOC(&db.IOCUpsert{
-			Kind:            hit.Kind,
-			Value:           hit.Value,
-			NormalizedValue: hit.NormalizedValue,
-			Source:          "observed",
-		})
-		if err != nil {
-			log.Printf("ioc upsert (%s/%s): %v", hit.Kind, hit.NormalizedValue, err)
-			continue
-		}
+// Phase 22.2 split: the original extractAndLinkIOCs ran synchronously
+// AFTER InsertFinding and combined extraction + upsert + observation
+// in one pass. With propagation needed at insert time, the upsert
+// step moved into propagateFromIOCs (pre-insert) and only the
+// observation linkage remains here.
+func linkIOCObservations(store *db.Store, findingID int64, iocIDs []int64, host string) {
+	for _, id := range iocIDs {
 		if err := store.RecordIOCObservation(id, &db.IOCObservation{
 			FindingID: findingID,
-			Host:      req.Host,
+			Host:      host,
 		}); err != nil {
 			log.Printf("ioc observation (id=%d, finding=%d): %v", id, findingID, err)
 		}
