@@ -16,7 +16,7 @@ CREATE INDEX IF NOT EXISTS idx_investigations_status ON investigations(status, u
 
 CREATE TABLE IF NOT EXISTS investigation_findings (
   investigation_id BIGINT NOT NULL REFERENCES investigations(id) ON DELETE CASCADE,
-  finding_id       BIGINT NOT NULL REFERENCES findings(id) ON DELETE CASCADE,
+  finding_id       BIGINT NOT NULL REFERENCES findings(id) ON DELETE RESTRICT,
   linked_at        TIMESTAMPTZ DEFAULT NOW(),
   PRIMARY KEY (investigation_id, finding_id)
 );
@@ -25,7 +25,7 @@ CREATE INDEX IF NOT EXISTS idx_inv_findings_finding ON investigation_findings(fi
 
 CREATE TABLE IF NOT EXISTS investigation_runs (
   investigation_id     BIGINT NOT NULL REFERENCES investigations(id) ON DELETE CASCADE,
-  orchestration_run_id BIGINT NOT NULL REFERENCES orchestration_runs(id) ON DELETE CASCADE,
+  orchestration_run_id BIGINT NOT NULL REFERENCES orchestration_runs(id) ON DELETE RESTRICT,
   linked_at            TIMESTAMPTZ DEFAULT NOW(),
   PRIMARY KEY (investigation_id, orchestration_run_id)
 );

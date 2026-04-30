@@ -19,6 +19,11 @@ import (
 
 // Investigation is a T2 case — operators open one, link findings/runs
 // to it, write notes, and close it with a resolution. Phase 22.3.
+//
+// Timestamp shape uses time.Time (matching Finding and IOCRecord
+// precedent in this package). The store layer parses the SQL string
+// representations via ParseTimestamp (controlplane/db/timestamps.go);
+// callers serialize via the standard time.Time JSON encoding.
 type Investigation struct {
 	ID         int64
 	Title      string
@@ -26,9 +31,9 @@ type Investigation struct {
 	Resolution string
 	Summary    string
 	CreatedBy  string
-	CreatedAt  int64 // unix milli
-	ClosedAt   int64
-	UpdatedAt  int64
+	CreatedAt  time.Time
+	ClosedAt   time.Time // zero when not closed
+	UpdatedAt  time.Time
 }
 
 // InvestigationInsert is the create-time payload. Title is required;
@@ -56,7 +61,7 @@ type InvestigationNote struct {
 	InvestigationID int64
 	Author          string
 	Body            string
-	CreatedAt       int64
+	CreatedAt       time.Time
 }
 
 // validStatuses / validResolutions gate the small enum vocabulary the
@@ -96,9 +101,9 @@ func (s *Store) GetInvestigation(id int64) (*Investigation, error) {
 		&inv.CreatedBy, &createdAt, &closedAt, &updatedAt); err != nil {
 		return nil, err
 	}
-	inv.CreatedAt = parseTimestampMillis(createdAt.String)
-	inv.ClosedAt = parseTimestampMillis(closedAt.String)
-	inv.UpdatedAt = parseTimestampMillis(updatedAt.String)
+	inv.CreatedAt = ParseTimestamp(createdAt.String)
+	inv.ClosedAt = ParseTimestamp(closedAt.String)
+	inv.UpdatedAt = ParseTimestamp(updatedAt.String)
 	return &inv, nil
 }
 
@@ -183,9 +188,9 @@ func (s *Store) ListInvestigations(status string, limit int) ([]*Investigation, 
 			&inv.CreatedBy, &createdAt, &closedAt, &updatedAt); err != nil {
 			return nil, err
 		}
-		inv.CreatedAt = parseTimestampMillis(createdAt.String)
-		inv.ClosedAt = parseTimestampMillis(closedAt.String)
-		inv.UpdatedAt = parseTimestampMillis(updatedAt.String)
+		inv.CreatedAt = ParseTimestamp(createdAt.String)
+		inv.ClosedAt = ParseTimestamp(closedAt.String)
+		inv.UpdatedAt = ParseTimestamp(updatedAt.String)
 		out = append(out, &inv)
 	}
 	return out, rows.Err()
@@ -302,30 +307,8 @@ func (s *Store) ListInvestigationNotes(investigationID int64) ([]InvestigationNo
 		if err := rows.Scan(&n.ID, &n.InvestigationID, &n.Author, &n.Body, &createdAt); err != nil {
 			return nil, err
 		}
-		n.CreatedAt = parseTimestampMillis(createdAt.String)
+		n.CreatedAt = ParseTimestamp(createdAt.String)
 		out = append(out, n)
 	}
 	return out, rows.Err()
-}
-
-// parseTimestampMillis parses one of the timestamp string formats SQLite
-// + Postgres scan as TEXT into unix-milli, returning 0 on unparseable
-// input. We try the formats in order of empirical likelihood: SQLite's
-// CURRENT_TIMESTAMP yields the bare "2006-01-02 15:04:05" form, Postgres
-// yields RFC3339-ish.
-func parseTimestampMillis(ts string) int64 {
-	if ts == "" {
-		return 0
-	}
-	for _, layout := range []string{
-		"2006-01-02 15:04:05",
-		"2006-01-02T15:04:05Z",
-		"2006-01-02T15:04:05.000000Z",
-		time.RFC3339,
-	} {
-		if t, err := time.Parse(layout, ts); err == nil {
-			return t.UnixMilli()
-		}
-	}
-	return 0
 }

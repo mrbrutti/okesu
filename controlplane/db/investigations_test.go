@@ -1,6 +1,7 @@
 package db
 
 import (
+	"database/sql"
 	"testing"
 )
 
@@ -43,7 +44,7 @@ func TestUpdateInvestigation_TransitionsToClosed(t *testing.T) {
 	if got.Status != "closed" || got.Resolution != "resolved" {
 		t.Errorf("after close: %+v", got)
 	}
-	if got.ClosedAt == 0 {
+	if got.ClosedAt.IsZero() {
 		t.Errorf("expected ClosedAt to be set on close")
 	}
 }
@@ -67,9 +68,17 @@ func TestUpdateInvestigation_RejectsResolutionOnActive(t *testing.T) {
 func TestLinkFindingToInvestigation_Idempotent(t *testing.T) {
 	s := openTempStore(t)
 	id, _ := s.CreateInvestigation(&InvestigationInsert{Title: "test"})
-	// Need a real finding to FK against.
-	res, _ := s.Exec(`INSERT INTO events (ts, type, agent, raw_json) VALUES (1, 'finding', 't', '{}')`)
-	eventID, _ := res.LastInsertId()
+	// Need a real finding to FK against. Use the InsertEvent helper so
+	// the test stays drift-resistant if the events schema grows.
+	eventID, err := s.InsertEvent(&Event{
+		Ts:      1,
+		Type:    "finding",
+		Agent:   sql.NullString{String: "t", Valid: true},
+		RawJSON: "{}",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	findingID, _ := s.InsertFinding(&FindingInsert{
 		EventID: eventID, Ts: 1, Title: "x", Severity: "MEDIUM",
 	})

@@ -33,9 +33,18 @@ CREATE TABLE IF NOT EXISTS investigations (
 
 CREATE INDEX IF NOT EXISTS idx_investigations_status ON investigations(status, updated_at DESC);
 
+-- Cascade direction is asymmetric on purpose: deleting an investigation
+-- cleans up its outbound links (cascade on investigation_id), but a
+-- finding or run referenced from any investigation is RESTRICTED — it
+-- can't be deleted while it's evidence in a case file. Operators must
+-- unlink (or close + archive) the investigation first. This is the
+-- right default for case-file content (lose nothing silently); compare
+-- ioc_observations which uses SET NULL because *observations* outliving
+-- their finding is meaningful, but a CASE losing its finding without
+-- a paper trail is not.
 CREATE TABLE IF NOT EXISTS investigation_findings (
   investigation_id INTEGER NOT NULL REFERENCES investigations(id) ON DELETE CASCADE,
-  finding_id       INTEGER NOT NULL REFERENCES findings(id) ON DELETE CASCADE,
+  finding_id       INTEGER NOT NULL REFERENCES findings(id) ON DELETE RESTRICT,
   linked_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (investigation_id, finding_id)
 );
@@ -44,7 +53,7 @@ CREATE INDEX IF NOT EXISTS idx_inv_findings_finding ON investigation_findings(fi
 
 CREATE TABLE IF NOT EXISTS investigation_runs (
   investigation_id     INTEGER NOT NULL REFERENCES investigations(id) ON DELETE CASCADE,
-  orchestration_run_id INTEGER NOT NULL REFERENCES orchestration_runs(id) ON DELETE CASCADE,
+  orchestration_run_id INTEGER NOT NULL REFERENCES orchestration_runs(id) ON DELETE RESTRICT,
   linked_at            TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (investigation_id, orchestration_run_id)
 );
