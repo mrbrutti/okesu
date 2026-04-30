@@ -582,6 +582,10 @@ func (s *Server) routes() http.Handler {
 		r.Get("/api/findings", api.FederatedFindingsList(s.store, s.fedAgg))
 		r.Get("/api/findings/summary", api.FederatedFindingsSummary(s.store, s.fedAgg))
 		r.Get("/api/findings/grouped", api.FederatedFindingsGrouped(s.store, s.fedAgg))
+		// Phase 22.3 — active war-bridge feed for the dashboard red banner.
+		// Static segment must register before /api/findings/{id} so chi
+		// doesn't try to ParseInt "war-bridge". Local-only for now.
+		r.Get("/api/findings/war-bridge", api.ListActiveWarBridgeFindingsHandler(s.store))
 		r.Get("/api/findings/{id}", api.FederatedFindingDetail(s.store, s.fedAgg))
 		r.Get("/api/findings/{id}/runs", api.FederatedRunsForFinding(s.store, s.fedAgg))
 

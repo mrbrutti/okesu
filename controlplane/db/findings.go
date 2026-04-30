@@ -1547,3 +1547,65 @@ func (s *Store) OpenFindingsByHost(limit int) ([]HostFindingCount, error) {
 	}
 	return out, rows.Err()
 }
+
+// ListActiveWarBridgeFindings returns findings tagged "war-bridge"
+// that are still in an open status. Drives the dashboard's red banner.
+//
+// Tag matching is loose (LIKE '%war-bridge%') because tags is a
+// comma-separated string column. Operators don't typically pollute
+// tags with strings that contain "war-bridge" as a substring of
+// something else, so the false-positive risk is minimal. If we ever
+// want stricter matching, switch to a JSON-array column or a
+// finding_tags m2m table.
+//
+// The SELECT column list and Scan target order MUST stay in sync with
+// (*Store).ListFindings — same shape, same Phase 22.2 + 22.3 columns.
+func (s *Store) ListActiveWarBridgeFindings(limit int) ([]*Finding, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 25
+	}
+	rows, err := s.Query(`
+		SELECT id, event_id, ts, agent, host, severity, title,
+		       resource, evidence, dedup_key, raw_json,
+		       acknowledged, acknowledged_at, acknowledged_by, ack_note,
+		       created_at,
+		       category, process_pid, process_name, path, network_endpoint, cve, tags, attributes,
+		       status, triage_note, triaged_at, triaged_by_user_id, triaged_by_email,
+		       operator_severity, severity_override_at, severity_override_by,
+		       COALESCE(cluster_id, ''), COALESCE(ioc_confidence, ''),
+		       COALESCE(ioc_attribution, ''), COALESCE(ioc_classification, ''),
+		       COALESCE(subtype, '')
+		FROM findings
+		WHERE tags LIKE '%war-bridge%'
+		  AND status IN ('open', 'queue', 'pending')
+		ORDER BY ts DESC
+		LIMIT ?
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*Finding
+	for rows.Next() {
+		fr := &Finding{}
+		var ack int64
+		if err := rows.Scan(
+			&fr.ID, &fr.EventID, &fr.Ts,
+			&fr.Agent, &fr.Host, &fr.Severity, &fr.Title,
+			&fr.Resource, &fr.Evidence, &fr.DedupKey, &fr.RawJSON,
+			&ack, &fr.AckedAt, &fr.AckedBy, &fr.AckNote,
+			&fr.CreatedAt,
+			&fr.Category, &fr.ProcessPID, &fr.ProcessName, &fr.Path,
+			&fr.NetworkEndpoint, &fr.CVE, &fr.Tags, &fr.Attributes,
+			&fr.Status, &fr.TriageNote, &fr.TriagedAt, &fr.TriagedByUser, &fr.TriagedByEmail,
+			&fr.OperatorSeverity, &fr.SeverityOverrideAt, &fr.SeverityOverrideByID,
+			&fr.ClusterID, &fr.IOCConfidence, &fr.IOCAttribution, &fr.IOCClassification,
+			&fr.Subtype,
+		); err != nil {
+			return nil, err
+		}
+		fr.Acknowledged = ack != 0
+		out = append(out, fr)
+	}
+	return out, rows.Err()
+}

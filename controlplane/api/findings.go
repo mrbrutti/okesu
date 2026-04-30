@@ -681,3 +681,21 @@ func SeverityRuleDelete(store *db.Store) http.HandlerFunc {
 		w.WriteHeader(http.StatusNoContent)
 	}
 }
+
+// ListActiveWarBridgeFindingsHandler powers the dashboard red banner.
+// Returns up to 25 currently-open war-bridge findings, newest first.
+func ListActiveWarBridgeFindingsHandler(store *db.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		findings, err := store.ListActiveWarBridgeFindings(25)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		out := make([]findingJSON, 0, len(findings))
+		for _, fr := range findings {
+			out = append(out, toFindingJSON(fr, false))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(out)
+	}
+}
