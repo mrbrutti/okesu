@@ -11,6 +11,7 @@ toc:
   - { id: gates,       label: "Approval gates" }
   - { id: branching,   label: "Branching on results" }
   - { id: triggers,    label: "Triggers" }
+  - { id: in-platform, label: "In the platform" }
   - { id: next,        label: "Where to next" }
 ---
 
@@ -19,6 +20,7 @@ import FanoutStripDemo from '../../components/diagrams/FanoutStripDemo.astro';
 import ApprovalGateDemo from '../../components/diagrams/ApprovalGateDemo.astro';
 import BindingsDemo from '../../components/diagrams/BindingsDemo.astro';
 import TriggersDemo from '../../components/diagrams/TriggersDemo.astro';
+import OperatorView from '../../components/OperatorView.astro';
 
 <div class="bg-bg border border-border rounded-xl p-6 md:p-8 my-8">
   <OrchestrationDAGDemo />
@@ -102,6 +104,19 @@ import TriggersDemo from '../../components/diagrams/TriggersDemo.astro';
 </div>
 
 <p>Whatever the source, the orchestration spec sees the trigger context as <code>{`{{trigger.X}}`}</code>, so the same playbook handles all three modes without spec changes.</p>
+
+<h2 id="in-platform">In the platform</h2>
+
+<p>The <strong>Orchestrations</strong> editor is a drag-and-drop canvas: agents on the left, the DAG in the middle, an inspector on the right. Steps with <code>nodes: [...]</code> render as fan-out cards (purple border, host bullets); steps with <code>approval: required</code> get a gated badge.</p>
+
+<div class="my-6">
+  <OperatorView
+    src="orchestration-editor"
+    alt="Orchestration editor canvas in the Okesu Control Plane — agent palette on the left, multi-step DAG in the middle including a fan-out step and an approval-gated step."
+    url="okesu / Orchestrations / edr-critical-response"
+    caption="The editor canvas — agents palette, DAG, fan-out + approval-gated steps rendered with their distinct chrome."
+  />
+</div>
 
 <h2 id="next">Where to next</h2>
 

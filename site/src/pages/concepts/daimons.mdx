@@ -11,12 +11,14 @@ toc:
   - { id: contract,    label: "The dispatch contract" }
   - { id: transport,   label: "Tunnel vs jobs mode" }
   - { id: upgrades,    label: "Auto-deploy & upgrades" }
+  - { id: in-platform, label: "In the platform" }
   - { id: next,        label: "Where to next" }
 ---
 
 import DispatchFlowDemo from '../../components/diagrams/DispatchFlowDemo.astro';
 import HeartbeatDemo from '../../components/diagrams/HeartbeatDemo.astro';
 import BinaryUpgradeDemo from '../../components/diagrams/BinaryUpgradeDemo.astro';
+import OperatorView from '../../components/OperatorView.astro';
 
 <div class="bg-bg border border-border rounded-xl p-6 md:p-8 my-8">
   <DispatchFlowDemo />
@@ -94,6 +96,19 @@ import BinaryUpgradeDemo from '../../components/diagrams/BinaryUpgradeDemo.astro
 
 <div class="my-6">
   <BinaryUpgradeDemo />
+</div>
+
+<h2 id="in-platform">In the platform</h2>
+
+<p>What daimons produce shows up in the operator's <strong>Findings</strong> view — severity-stratified counts, per-category breakdown, per-agent attribution, and the live feed itself.</p>
+
+<div class="my-6">
+  <OperatorView
+    src="findings-list"
+    alt="Findings page in the Okesu Control Plane — severity-stratified counts, per-category and per-agent breakdowns, paginated finding list."
+    url="okesu / Findings"
+    caption="Findings emitted by daimons across the fleet, grouped by severity and clustered by IOC."
+  />
 </div>
 
 <h2 id="next">Where to next</h2>
