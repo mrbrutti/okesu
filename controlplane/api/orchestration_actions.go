@@ -102,6 +102,22 @@ func (a *FindingActionApplier) EscalateRun(runID int64, reason, severity string)
 	return nil
 }
 
+// FindingAgent satisfies orchestrator.FindingAgentLookup. The
+// engine's auto-lesson hook calls this after closing a finding as
+// false_positive (or dropping its severity to INFO/LOW) to find
+// the daemon agent that originally emitted it. Returns "" when the
+// finding has no agent stamped — auto-lessons silently skip.
+func (a *FindingActionApplier) FindingAgent(findingID int64) (string, error) {
+	f, err := a.store.FindingByID(findingID)
+	if err != nil {
+		return "", err
+	}
+	if f.Agent.Valid {
+		return f.Agent.String, nil
+	}
+	return "", nil
+}
+
 // EnrichIOC routes to the enrichment service: cache check, live vendor
 // calls, persist results in ioc_enrichments. Best-effort — partial
 // vendor failures are logged but don't fail the orchestration.
