@@ -32,6 +32,7 @@ import (
 	"github.com/section9labs/okesu/controlplane/adapters/redispubsub"
 	"github.com/section9labs/okesu/controlplane/adapters/sqliteevents"
 	"github.com/section9labs/okesu/controlplane/api"
+	"github.com/section9labs/okesu/controlplane/api/enrichment"
 	"github.com/section9labs/okesu/controlplane/auth"
 	"github.com/section9labs/okesu/controlplane/cpprovision"
 	awsprovisioner "github.com/section9labs/okesu/controlplane/cpprovision/aws"
@@ -363,10 +364,31 @@ func New(cfg Config) (*Server, error) {
 	if cfg.FleetOpenAIAPIKey != "" {
 		cpLocalEnv = append(cpLocalEnv, "OPENAI_API_KEY="+cfg.FleetOpenAIAPIKey)
 	}
+
+	// Phase 22.4: IOC enrichment service. Adapters self-skip when their
+	// API key is empty, so the service is harmless to construct on a CP
+	// with no vendor keys configured — the enrich_ioc action then
+	// returns an empty result rather than failing. The cache adapter
+	// (api.enrichmentStoreAdapter) carries the operator-configured TTL
+	// so each Upsert stamps a per-row expires_at.
+	enrichmentAdapters := []enrichment.Enricher{}
+	if cfg.Enrichment.VirusTotalAPIKey != "" {
+		enrichmentAdapters = append(enrichmentAdapters, &enrichment.VirusTotal{APIKey: cfg.Enrichment.VirusTotalAPIKey})
+	}
+	if cfg.Enrichment.AbuseIPDBAPIKey != "" {
+		enrichmentAdapters = append(enrichmentAdapters, &enrichment.AbuseIPDB{APIKey: cfg.Enrichment.AbuseIPDBAPIKey})
+	}
+	if cfg.Enrichment.ShodanAPIKey != "" {
+		enrichmentAdapters = append(enrichmentAdapters, &enrichment.Shodan{APIKey: cfg.Enrichment.ShodanAPIKey})
+	}
+	enrichmentStore := api.NewEnrichmentStoreAdapter(store, cfg.Enrichment.DefaultTTL)
+	enrichmentSvc := enrichment.New(enrichmentAdapters, enrichmentStore, cfg.Enrichment.DefaultTTL, cfg.Enrichment.RatePerSecond)
+
 	srv.orchestra = api.NewOrchestrationCoordinator(store, srv.runs, srv.tunReg, cfg.AgentFilesDirs, srv.fedAgg, api.CoordinatorOpts{
-		AutoDeployer:     autoDep,
-		CPLocalEnvExtras: cpLocalEnv,
-		ActionPolicy:     orchestrator.Policy{AutoApprove: cfg.Policy.AutoApprove},
+		AutoDeployer:      autoDep,
+		CPLocalEnvExtras:  cpLocalEnv,
+		ActionPolicy:      orchestrator.Policy{AutoApprove: cfg.Policy.AutoApprove},
+		EnrichmentService: enrichmentSvc,
 	})
 
 	// Wire the finding-trigger hook before the pipeline starts so we
@@ -606,6 +628,17 @@ func (s *Server) routes() http.Handler {
 		// Phase 22.1 — IOC list. Filter by finding_id (drawer drill-down)
 		// or kind (e.g. all observed sha256s). Local-only for now.
 		r.Get("/api/iocs", api.ListIOCs(s.store))
+		// Phase 22.4 — cross-CP IOC pattern rollup. Drives the
+		// cross-cp-ioc-pattern-supervisor daimon. Static segment must
+		// register before any future /api/iocs/{id} catch-all so chi
+		// doesn't try to ParseInt "cross-cp-patterns".
+		r.Get("/api/iocs/cross-cp-patterns", api.ListCrossCPPatternsHandler(s.store))
+		// Phase 22.4 — typed relationship edges for a single IOC (both
+		// directions). Sub-path must register before any /api/iocs/{id}
+		// catch-all so chi routes it correctly.
+		r.Get("/api/iocs/{id}/relationships", api.ListIOCRelationshipsHandler(s.store))
+		// Phase 22.4 — STIX 2.1 bundle export. Supports ?kind= and ?since= filters.
+		r.Get("/api/stix2/iocs", api.STIX2ExportHandler(s.store))
 
 		// Phase 22.3 — Investigations (T2 case workspace). CRUD plus
 		// notes and finding linking; viewer+ for now (no admin gate)

@@ -1951,3 +1951,28 @@ the agent's JSONL emission, so the DB row reflects what the agent
 emitted; the meeting executor mutates the in-memory DispatchedFinding
 as a defensive fallback for downstream env-binding when the agent
 forgets.
+
+## Cross-fleet pattern surfacing (Phase 22.4)
+
+Four pieces work together:
+
+1. **Cross-CP IOC pattern supervisor** — `agents/cross-cp-ioc-pattern-supervisor.md`
+   ticks every 5 minutes on the parent CP. Queries
+   `GET /api/iocs/cross-cp-patterns?min_observations=N&window_hours=H`
+   and emits a finding for each IOC that hits the threshold.
+
+2. **IOC enrichment + cache** — `enrich_ioc` orchestration action
+   (class: enrich) routes through a service that fans out to
+   VirusTotal, AbuseIPDB, and Shodan adapters with per-adapter rate
+   limits. Cached in `ioc_enrichments` (per-adapter row, TTL-bounded;
+   default 24h).
+
+3. **Typed IOC relationships** — `ioc_relationships` table holds
+   directed edges with a fixed v1 vocabulary
+   (resolves-to, exploits, hosted-at, belongs-to, signed-with,
+   dropped-by). Populated by enrichment + agent emissions; queryable
+   via `GET /api/iocs/{id}/relationships`.
+
+4. **STIX 2.1 export** — `GET /api/stix2/iocs` returns indicators +
+   relationships as a STIX 2.1 bundle for ingestion into MISP /
+   OpenCTI / other TIPs. Query params `?since=<RFC3339>&kind=<kind>`.

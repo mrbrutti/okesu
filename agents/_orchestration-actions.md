@@ -48,6 +48,7 @@ orchestration author scoped permission deliberately.
 | `link_run_to_finding` | `{ finding_id, reason? }` | Record this orchestration run as having handled the finding. Surfaces in the finding-detail page as "auto-handled by run #N". |
 | `escalate` | `{ reason, severity? }` | Soft signal that the on-call should review the run even though it ran cleanly. v1: logged; v2: surfaces on the dashboard's "needs review" tile. |
 | `reflect_with_lessons` | `{ lessons: [string, ...] }` | Append one or more short lessons to the agent's per-agent KV. The daemon prepends the most recent N (default 10, max 200 chars each) to its system prompt on the next tick. Use to capture cross-run insights — what worked, what didn't, what to validate before doing again. |
+| `enrich_ioc` | `{ ioc_id }` | Run all configured vendor adapters (VirusTotal, AbuseIPDB, Shodan) against an IOC and cache results. Cache TTL is 24h by default. Class: enrich allows operators to blanket-auto-approve enrichment. |
 
 ## Action classes
 
@@ -89,6 +90,19 @@ truncation clips to a rune boundary so no invalid bytes leak into the
 daemon's next system prompt). Per-agent retention is the 10 newest
 entries; older ones are pruned on insert. Lesson text is global across
 agent_lessons rows scoped by agent_name.
+
+### `enrich_ioc`
+
+```json
+{ "kind": "enrich_ioc", "ioc_id": 42 }
+```
+
+`ioc_id` is the row id from the `iocs` table (Phase 22.1). The applier
+fans out to every configured adapter that supports the IOC's kind:
+sha*/ipv4/domain → VirusTotal; ipv4 → AbuseIPDB + Shodan. Adapters
+without API keys configured are silently skipped. Results are cached
+in `ioc_enrichments` keyed by (ioc_id, adapter); subsequent calls
+within the TTL skip the live API hit.
 
 ## Conventions
 

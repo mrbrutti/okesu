@@ -29,3 +29,21 @@ func TestParseActions_ReflectWithLessons_RejectsEmpty(t *testing.T) {
 		t.Errorf("expected error for empty lessons")
 	}
 }
+
+func TestParseActions_EnrichIOC(t *testing.T) {
+	in := []any{map[string]any{"kind": "enrich_ioc", "ioc_id": float64(42)}}
+	got, err := ParseActions(in)
+	if err != nil {
+		t.Fatalf("ParseActions: %v", err)
+	}
+	if len(got) != 1 || got[0].Kind != ActionEnrichIOC || got[0].IOCID != 42 {
+		t.Errorf("unexpected: %+v", got)
+	}
+}
+
+func TestParseActions_EnrichIOC_RejectsMissingID(t *testing.T) {
+	in := []any{map[string]any{"kind": "enrich_ioc"}}
+	if _, err := ParseActions(in); err == nil {
+		t.Errorf("expected error for missing ioc_id")
+	}
+}

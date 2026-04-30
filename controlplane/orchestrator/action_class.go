@@ -58,7 +58,8 @@ var actionClassRegistry = map[string]string{
 	ActionRemoveFindingTag:           ClassModify,
 	ActionLinkRunToFinding:           ClassCreate,
 	ActionReflectWithLessons:         ClassCreate,
-	// Future (Phase 22.4): enrich_ioc -> ClassEnrich, link_iocs -> ClassCreate.
+	ActionEnrichIOC:                  ClassEnrich,
+	// Future (Phase 22.4): link_iocs -> ClassCreate.
 }
 
 // ClassFor returns the class for an action kind. Unknown kinds default

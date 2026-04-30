@@ -62,6 +62,14 @@ const (
 	//
 	//   { "kind": "reflect_with_lessons", "lessons": ["short text", ...] }
 	ActionReflectWithLessons = "reflect_with_lessons"
+
+	// ActionEnrichIOC kicks off vendor enrichment for an IOC. Class:
+	// "enrich" — operators can auto-approve all enrichment actions
+	// without granting every per-vendor approval gate.
+	//
+	// Wire shape:
+	//   { "kind": "enrich_ioc", "ioc_id": 42 }
+	ActionEnrichIOC = "enrich_ioc"
 )
 
 // AllowedActionKinds is the source of truth for the spec validator
@@ -69,6 +77,7 @@ const (
 // a new kind.
 var AllowedActionKinds = []string{
 	ActionAddFindingTag,
+	ActionEnrichIOC,
 	ActionEscalate,
 	ActionLinkRunToFinding,
 	ActionReflectWithLessons,
@@ -102,6 +111,8 @@ type Action struct {
 	Reason    string `json:"reason,omitempty"`
 	// Lessons is populated for ActionReflectWithLessons actions.
 	Lessons []string `json:"lessons,omitempty"`
+	// IOCID is populated for ActionEnrichIOC.
+	IOCID int64 `json:"ioc_id,omitempty"`
 }
 
 // ParseActions decodes the agent's wire array into Action structs.
@@ -165,6 +176,11 @@ func decodeAction(m map[string]any) (Action, error) {
 			return Action{}, fmt.Errorf("%s: lessons must be a non-empty array of strings", kind)
 		}
 		a.Lessons = out
+	case ActionEnrichIOC:
+		a.IOCID = anyInt64(m["ioc_id"])
+		if a.IOCID == 0 {
+			return Action{}, fmt.Errorf("%s: ioc_id is required", kind)
+		}
 	}
 	return a, nil
 }
