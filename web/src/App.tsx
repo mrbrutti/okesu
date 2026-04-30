@@ -11,6 +11,8 @@ import DashboardPage from './pages/Dashboard';
 import FindingsPage from './pages/Findings';
 import InvestigationsPage from './pages/Investigations';
 import InvestigationDetailPage from './pages/InvestigationDetail';
+import CatalogPage from './pages/Catalog';
+import CatalogDetailPage from './pages/CatalogDetail';
 import NodesPage from './pages/Nodes';
 import NodeDetailPage from './pages/NodeDetail';
 import SettingsPage from './pages/Settings';
@@ -55,6 +57,8 @@ export default function App() {
         <Route path="/findings" element={<FindingsPage />} />
         <Route path="/investigations" element={<InvestigationsPage />} />
         <Route path="/investigations/:id" element={<InvestigationDetailPage />} />
+        <Route path="/catalog" element={<CatalogPage />} />
+        <Route path="/catalog/:id" element={<CatalogDetailPage />} />
         <Route path="/events" element={<EventsPage />} />
         <Route path="/daimons" element={<DaimonsPage />} />
         <Route path="/daimons/:name" element={<DaimonDetailPage />} />
