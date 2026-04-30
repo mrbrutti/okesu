@@ -142,7 +142,9 @@ func TestListIOCs_QueryParam(t *testing.T) {
 		t.Fatalf("status = %d", rec.Code)
 	}
 	var rows []db.IOCRecord
-	json.NewDecoder(rec.Body).Decode(&rows)
+	if err := json.NewDecoder(rec.Body).Decode(&rows); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
 	if len(rows) != 1 || rows[0].NormalizedValue != "abc" {
 		t.Errorf("?q=RANSOM expected one match by tag; got %+v", rows)
 	}
