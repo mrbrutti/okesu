@@ -233,3 +233,27 @@ func TestStepNodeDispatch_InsertIsIdempotent(t *testing.T) {
 		t.Errorf("error should be NULL after re-insert, got %q", got[0].Error.String)
 	}
 }
+
+func TestFinishOrchestrationRun_ReconcilesFanoutRows(t *testing.T) {
+	s := openTempStore(t)
+	runID := makeRunForFanout(t, s)
+	now := time.Now().UTC()
+	_ = s.InsertStepNodeDispatch(StepNodeDispatchInsert{
+		RunID: runID, StepID: "step-1", Host: "h1",
+		Status: "running", StartedAt: &now,
+	})
+
+	if err := s.FinishOrchestrationRun(runID, "cancelled", "operator cancelled"); err != nil {
+		t.Fatalf("FinishOrchestrationRun: %v", err)
+	}
+	got, _ := s.ListStepNodeDispatchesByRun(runID)
+	if len(got) != 1 {
+		t.Fatalf("len = %d", len(got))
+	}
+	if got[0].Status != "failed" {
+		t.Errorf("expected fanout row reconciled to failed, got %s", got[0].Status)
+	}
+	if got[0].Error.String != "operator cancelled" {
+		t.Errorf("expected reason to propagate, got %q", got[0].Error.String)
+	}
+}
