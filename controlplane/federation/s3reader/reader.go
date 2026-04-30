@@ -25,6 +25,7 @@ package s3reader
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -225,18 +226,66 @@ func (l *Loop) scanPeer(ctx context.Context, p db.FederationPeer) {
 	// cache. Each is best-effort: a 404 / empty body just leaves the
 	// previous cached value in place, so the parent UI degrades to
 	// "stale data" rather than disappearing the peer's findings.
-	if l.assets == nil {
+	if l.assets != nil {
+		for _, name := range extraAssets {
+			assetBody, err := cli.GetBytes(rctx, prefix+name)
+			if err != nil || len(assetBody) == 0 {
+				// Don't downgrade peer health on missing assets — the
+				// publisher might be on an older build that doesn't write
+				// them yet, or the child has nothing to report.
+				continue
+			}
+			l.assets.put(p.ID, name, assetBody)
+		}
+	}
+
+	// Fleet-env mirror. Deliberately NOT in extraAssets — that slice
+	// is for the federation aggregator's HTTPS read path and fleet-env
+	// keys must never be exposed there. Handled separately so the
+	// payload only ever flows store→store via SetFleetEnvFromFederation.
+	// Best-effort: missing object / older parent / parse failures are
+	// silent. Errors are logged and never downgrade peer health.
+	l.fetchAndApplyFleetEnv(rctx, p, cli, prefix, body)
+}
+
+// fetchAndApplyFleetEnv reads {prefix}/fleet-env.json out of the
+// peer's bucket and mirrors it into the local fleet_env row via
+// SetFleetEnvFromFederation. The store call is idempotent + skips
+// when source='local' or parentVersion <= currentVersion.
+func (l *Loop) fetchAndApplyFleetEnv(ctx context.Context, p db.FederationPeer, cli *s3transport.Client, prefix string, introspectBody []byte) {
+	var probe struct {
+		InstanceID string `json:"instance_id"`
+	}
+	if err := json.Unmarshal(introspectBody, &probe); err != nil || probe.InstanceID == "" {
+		// Introspect already succeeded; this just means we can't pin a
+		// parent_cp_id, so skip the mirror silently.
 		return
 	}
-	for _, name := range extraAssets {
-		assetBody, err := cli.GetBytes(rctx, prefix+name)
-		if err != nil || len(assetBody) == 0 {
-			// Don't downgrade peer health on missing assets — the
-			// publisher might be on an older build that doesn't write
-			// them yet, or the child has nothing to report.
-			continue
-		}
-		l.assets.put(p.ID, name, assetBody)
+	feBody, err := cli.GetBytes(ctx, prefix+"fleet-env.json")
+	if err != nil || len(feBody) == 0 {
+		// 404 / missing object / older parent → nothing to mirror.
+		return
+	}
+	var fe struct {
+		AnthropicAPIKey string `json:"anthropic_api_key"`
+		OpenAIAPIKey    string `json:"openai_api_key"`
+		Version         int64  `json:"version"`
+	}
+	if err := json.Unmarshal(feBody, &fe); err != nil {
+		log.Printf("s3reader peer=%d fleet-env decode: %v", p.ID, err)
+		return
+	}
+	if fe.Version == 0 && fe.AnthropicAPIKey == "" && fe.OpenAIAPIKey == "" {
+		// Parent has no fleet-env configured yet.
+		return
+	}
+	mk, err := l.store.MasterKeyFromMeta()
+	if err != nil {
+		log.Printf("s3reader peer=%d fleet-env apply: master key unavailable: %v", p.ID, err)
+		return
+	}
+	if _, _, err := l.store.SetFleetEnvFromFederation(mk, probe.InstanceID, fe.AnthropicAPIKey, fe.OpenAIAPIKey, fe.Version); err != nil {
+		log.Printf("s3reader peer=%d fleet-env apply parent=%s version=%d: %v", p.ID, probe.InstanceID, fe.Version, err)
 	}
 }
 

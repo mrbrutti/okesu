@@ -150,6 +150,89 @@ func (p *Poller) pollOne(ctx context.Context, peer *db.FederationPeer) {
 	if p.onUpdate != nil {
 		p.onUpdate(peer.ID)
 	}
+	// Best-effort fleet-env mirror. Errors here MUST NOT downgrade peer
+	// health — the peer's introspect already succeeded. We log and move
+	// on. Parents that don't expose fleet-env (older builds) just 404
+	// and we skip.
+	p.fetchAndApplyFleetEnv(ctx, peer, body)
+}
+
+// fetchAndApplyFleetEnv runs the second GET against the peer's
+// federation fleet-env endpoint and, on success, mirrors the keys
+// into our local fleet_env row via SetFleetEnvFromFederation. The
+// store call is idempotent + skips when source='local' or
+// parentVersion <= currentVersion. Any error is logged and swallowed.
+func (p *Poller) fetchAndApplyFleetEnv(ctx context.Context, peer *db.FederationPeer, introspectBody string) {
+	var probe struct {
+		InstanceID string `json:"instance_id"`
+	}
+	if err := json.Unmarshal([]byte(introspectBody), &probe); err != nil || probe.InstanceID == "" {
+		// Already validated by fetchIntrospect; defensive parse only.
+		return
+	}
+	anthropic, openai, version, err := p.fetchFleetEnv(ctx, peer.URL, peer.Token)
+	if err != nil {
+		log.Printf("federation poller: fleet-env fetch peer=%d: %v", peer.ID, err)
+		return
+	}
+	p.applyFleetEnvFromPeer(probe.InstanceID, anthropic, openai, version)
+}
+
+// fetchFleetEnv issues a GET against {baseURL}/api/v1/federation/fleet-env
+// and parses the JSON response. Returns the plaintext keys + parent's
+// version. Reuses the same TLS config + token header as fetchIntrospect.
+func (p *Poller) fetchFleetEnv(ctx context.Context, baseURL, token string) (string, string, int64, error) {
+	url := strings.TrimRight(baseURL, "/") + "/api/v1/federation/fleet-env"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", "", 0, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("X-Okesu-Federation-Token", token)
+	req.Header.Set("Accept", "application/json")
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return "", "", 0, fmt.Errorf("dial: %w", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
+	if err != nil {
+		return "", "", 0, fmt.Errorf("read body: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		snippet := strings.TrimSpace(string(body))
+		if len(snippet) > 120 {
+			snippet = snippet[:120] + "…"
+		}
+		return "", "", 0, fmt.Errorf("HTTP %d %s: %s", resp.StatusCode, http.StatusText(resp.StatusCode), snippet)
+	}
+	var out struct {
+		AnthropicAPIKey string `json:"anthropic_api_key"`
+		OpenAIAPIKey    string `json:"openai_api_key"`
+		Version         int64  `json:"version"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		return "", "", 0, fmt.Errorf("invalid JSON response: %w", err)
+	}
+	return out.AnthropicAPIKey, out.OpenAIAPIKey, out.Version, nil
+}
+
+// applyFleetEnvFromPeer is the shared apply step. Skips silently when
+// the master key isn't available yet or when there's nothing to mirror
+// (parent has no fleet-env configured). Errors from the store are
+// logged but swallowed — the peer is already healthy.
+func (p *Poller) applyFleetEnvFromPeer(parentInstanceID, anthropic, openai string, parentVersion int64) {
+	// Nothing to mirror: parent has no fleet-env yet.
+	if parentVersion == 0 && anthropic == "" && openai == "" {
+		return
+	}
+	mk, err := p.store.MasterKeyFromMeta()
+	if err != nil {
+		log.Printf("federation poller: fleet-env apply: master key unavailable: %v", err)
+		return
+	}
+	if _, _, err := p.store.SetFleetEnvFromFederation(mk, parentInstanceID, anthropic, openai, parentVersion); err != nil {
+		log.Printf("federation poller: fleet-env apply parent=%s version=%d: %v", parentInstanceID, parentVersion, err)
+	}
 }
 
 // PollOnce performs one introspect call against a peer and records
