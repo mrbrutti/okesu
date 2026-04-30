@@ -211,12 +211,20 @@ type NodeDispatch struct {
 // per-step run output. It mirrors the parts of `findings.go` the
 // orchestrator cares about — the Dispatcher fills it from the run's
 // emitted JSONL.
+//
+// Phase 22.3: Subtype lets a meeting synthesizer emit a structured
+// "meeting_minutes" sub-classification on its orchestration_result
+// finding, and Tags lets the engine attach a "war-bridge" marker
+// post-hoc when the step has war_bridge: true. Both fields are
+// optional and ignored on non-meeting steps.
 type DispatchedFinding struct {
 	Severity   string
 	Title      string
 	Category   string
+	Subtype    string
 	Resource   string
 	DedupKey   string
+	Tags       string
 	Attributes map[string]any
 }
 
@@ -513,8 +521,15 @@ func (e *Engine) Run(ctx context.Context, runID int64) error {
 
 		var result DispatchResult
 		var dispatchErr error
-		switch len(targets) {
-		case 0, 1:
+		switch {
+		case step.Kind == "meeting":
+			// Phase 22.3: sequential participants → synthesizer.
+			// The meeting executor handles its own dispatch fan;
+			// the engine then treats the synthesizer's result as
+			// the step's canonical DispatchResult for distillation
+			// and binding (downstream {{stepN.result}} reads it).
+			result, dispatchErr = e.runMeetingStep(stepCtx, orch.Spec, step, cpSel, env)
+		case len(targets) <= 1:
 			node := ""
 			if len(targets) == 1 {
 				node = targets[0]
