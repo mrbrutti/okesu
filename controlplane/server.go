@@ -1473,6 +1473,17 @@ func (s *Server) Run(ctx context.Context) error {
 		log.Printf("runs: reconciled %d in-flight run(s) → cancelled", n)
 	}
 
+	// Same problem for orchestration runs: the engine state is in
+	// process memory, so a restart while a run is mid-flight strands
+	// the row. Without this sweep, every CP restart leaks ~however-
+	// many runs were active. The lab DB built up 200+ such rows over
+	// a single day of PR-cycle restarts before this landed.
+	if n, err := s.store.MarkInflightOrchestrationsCancelled(); err != nil {
+		log.Printf("orchestrations: reconcile in-flight: %v", err)
+	} else if n > 0 {
+		log.Printf("orchestrations: reconciled %d in-flight run(s) → cancelled", n)
+	}
+
 	// Retention: prune events older than EventTTLDays every 6 hours. Findings
 	// are kept independently — operators want to keep the curated finding
 	// table for trend analysis even after the raw event stream is rotated.

@@ -468,6 +468,81 @@ func (s *Store) FinishOrchestrationRun(id int64, status, errMsg string) error {
 	return s.ReconcileStepNodeDispatchesForRun(id, reason)
 }
 
+// MarkInflightOrchestrationsCancelled is the boot-time reconciler for
+// orchestration_runs. The engine state lives in process memory, so a
+// CP restart while a run is in flight strands the run + its current
+// step at status='running' forever — there's no other path that
+// flips the row.
+//
+// We mirror what the runs table does (MarkInflightCancelled): flip
+// the rows to 'cancelled' with an explanatory error, plus close out
+// any 'running' or 'pending' step rows on the same runs so the
+// workspace's run-history reads coherently.
+//
+// Returns the number of orchestration_runs updated. Step rows are
+// updated in the same transaction; we don't return their count
+// separately to keep the caller's log line simple.
+//
+// Idempotent: calling on a clean DB is a cheap UPDATE-with-no-rows.
+func (s *Store) MarkInflightOrchestrationsCancelled() (int64, error) {
+	tx, err := s.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	const reason = "control plane restarted while run was in flight"
+
+	// Step rows first — once the run flips to terminal, the engine
+	// won't touch this row again, so we want a coherent state if a
+	// reader queries between the two updates.
+	if _, err := tx.Exec(`
+		UPDATE orchestration_steps
+		   SET status = 'failed',
+		       ended_at = CURRENT_TIMESTAMP,
+		       error    = COALESCE(error, ?)
+		 WHERE status IN ('running', 'pending')
+		   AND orchestration_run_id IN (
+		       SELECT id FROM orchestration_runs WHERE status = 'running' OR status = 'pending'
+		   )
+	`, reason); err != nil {
+		return 0, err
+	}
+
+	res, err := tx.Exec(`
+		UPDATE orchestration_runs
+		   SET status   = 'cancelled',
+		       ended_at = CURRENT_TIMESTAMP,
+		       error    = COALESCE(error, ?)
+		 WHERE status = 'running' OR status = 'pending'
+	`, reason)
+	if err != nil {
+		return 0, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+
+	// Fan-out rows (per-host dispatches) attached to those runs need
+	// the same treatment — same logic as FinishOrchestrationRun's
+	// post-finish cleanup, just batched for the boot recovery path.
+	if _, err := tx.Exec(`
+		UPDATE orchestration_step_node_dispatches
+		   SET status   = 'failed',
+		       ended_at = CURRENT_TIMESTAMP,
+		       error    = COALESCE(error, ?)
+		 WHERE status = 'running'
+		   AND run_id IN (
+		       SELECT id FROM orchestration_runs WHERE status = 'cancelled'
+		   )
+	`, reason); err != nil {
+		return 0, err
+	}
+
+	return n, tx.Commit()
+}
+
 func isOrchestrationTerminal(s string) bool {
 	switch s {
 	case "completed", "failed", "cancelled":
