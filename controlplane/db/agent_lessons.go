@@ -13,6 +13,7 @@ package db
 
 import (
 	"fmt"
+	"unicode/utf8"
 )
 
 // AgentLesson is a single per-agent lesson record. Returned by
@@ -36,6 +37,12 @@ const MaxAgentLessonsPerAgent = 10
 
 // RecordAgentLesson appends a lesson and prunes older entries beyond
 // the per-agent cap.
+//
+// Insert + prune are two separate Exec calls (not transactional).
+// If the prune fails after a successful insert, the table can briefly
+// hold cap+1 rows; the next successful RecordAgentLesson reconciles.
+// Daemon reads use LIMIT 10 regardless, so the cap+1 state is invisible
+// to the consumer.
 func (s *Store) RecordAgentLesson(agent, text string, runID int64, stepID string) error {
 	if agent == "" {
 		return fmt.Errorf("RecordAgentLesson: agent is required")
@@ -43,9 +50,7 @@ func (s *Store) RecordAgentLesson(agent, text string, runID int64, stepID string
 	if text == "" {
 		return fmt.Errorf("RecordAgentLesson: text is required")
 	}
-	if len(text) > MaxAgentLessonChars {
-		text = text[:MaxAgentLessonChars]
-	}
+	text = truncateUTF8(text, MaxAgentLessonChars)
 	if _, err := s.Exec(`
 		INSERT INTO agent_lessons (agent_name, lesson_text, orchestration_run_id, orchestration_step_id)
 		VALUES (?, ?, ?, ?)`,
@@ -53,6 +58,23 @@ func (s *Store) RecordAgentLesson(agent, text string, runID int64, stepID string
 		return err
 	}
 	return s.PruneAgentLessons(agent, MaxAgentLessonsPerAgent)
+}
+
+// truncateUTF8 returns s clipped to at most maxBytes bytes without
+// splitting a multi-byte rune. We start at the byte cap and walk
+// backward until the prefix is valid UTF-8 — at most 3 bytes of
+// scan-back since UTF-8 runes are at most 4 bytes. Plain `s[:maxBytes]`
+// would persist invalid bytes that downstream model APIs reject; the
+// daemon prepends these into a system prompt verbatim.
+func truncateUTF8(s string, maxBytes int) string {
+	if len(s) <= maxBytes {
+		return s
+	}
+	clipped := s[:maxBytes]
+	for !utf8.ValidString(clipped) && len(clipped) > 0 {
+		clipped = clipped[:len(clipped)-1]
+	}
+	return clipped
 }
 
 // ListAgentLessons returns the agent's most recent lessons, newest first.

@@ -1,7 +1,9 @@
 package db
 
 import (
+	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestRecordAgentLesson_InsertsRow(t *testing.T) {
@@ -57,5 +59,24 @@ func TestRecordAgentLesson_TruncatesOversizeText(t *testing.T) {
 	got, _ := s.ListAgentLessons("investigator", 1)
 	if len(got[0].Text) != 200 {
 		t.Errorf("expected lesson truncated to 200; got %d chars", len(got[0].Text))
+	}
+}
+
+func TestRecordAgentLesson_TruncatesUTF8Cleanly(t *testing.T) {
+	s := openTempStore(t)
+	// "é" is 2 UTF-8 bytes. Repeating it produces a string that, if
+	// naively sliced at byte 200, would split the rune at the boundary
+	// and leave invalid bytes. We assert the persisted text is valid UTF-8
+	// and ≤ 200 bytes — the truncation must clip back to a rune boundary.
+	long := strings.Repeat("é", 200) // 400 bytes
+	if err := s.RecordAgentLesson("investigator", long, 0, ""); err != nil {
+		t.Fatalf("RecordAgentLesson: %v", err)
+	}
+	got, _ := s.ListAgentLessons("investigator", 1)
+	if len(got[0].Text) > 200 {
+		t.Errorf("expected ≤200 bytes; got %d", len(got[0].Text))
+	}
+	if !utf8.ValidString(got[0].Text) {
+		t.Errorf("truncation produced invalid UTF-8: %q", got[0].Text)
 	}
 }
