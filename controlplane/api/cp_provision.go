@@ -66,6 +66,12 @@ type cpProvisionReq struct {
 	// for /api/v1/cp/bootstrap. Optional — defaults to the parent's
 	// EffectivePublicURL when empty, same as the manual bundle path.
 	ParentURL string `json:"parent_url,omitempty"`
+	// Phase 21.6 — managed deploy can target the s3-dead-drop transport
+	// instead of HTTPS bootstrap. "https" (default, empty) keeps the
+	// existing flow; "s3_dead_drop" uses the bucket pipe and requires
+	// TransportConfigID to be set.
+	Transport         string `json:"transport,omitempty"`
+	TransportConfigID int64  `json:"transport_config_id,omitempty"`
 	// ForceOverBudget bypasses the per-credential monthly_budget_usd
 	// check. The handler returns 409 with a structured payload if a
 	// submit would breach the budget; the operator can then re-submit
@@ -134,6 +140,31 @@ func CPProvisionCreateHandler(store *db.Store, reg *cpprovision.Registry, parent
 		}
 		if cred.Cloud != req.Cloud {
 			http.Error(w, fmt.Sprintf("credential is for cloud %q, request says %q", cred.Cloud, req.Cloud), http.StatusBadRequest)
+			return
+		}
+
+		// Phase 21.6 — validate transport. Empty / "https" = mTLS
+		// bootstrap (existing flow). "s3_dead_drop" requires a
+		// transport_config_id pointing at a usable bucket; the worker
+		// will switch to writeS3DeadDropBundle.
+		transport := req.Transport
+		if transport == "" {
+			transport = "https"
+		}
+		switch transport {
+		case "https":
+			// no-op
+		case "s3_dead_drop":
+			if req.TransportConfigID == 0 {
+				http.Error(w, "transport=s3_dead_drop requires transport_config_id (the bucket the new CP will publish to)", http.StatusBadRequest)
+				return
+			}
+			if _, err := store.GetTransportConfig(req.TransportConfigID); err != nil {
+				http.Error(w, fmt.Sprintf("transport_config %d: %v", req.TransportConfigID, err), http.StatusBadRequest)
+				return
+			}
+		default:
+			http.Error(w, fmt.Sprintf("unsupported transport %q (use \"https\" or \"s3_dead_drop\")", transport), http.StatusBadRequest)
 			return
 		}
 
@@ -209,6 +240,8 @@ func CPProvisionCreateHandler(store *db.Store, reg *cpprovision.Registry, parent
 			BundleTokenID:     tokenID,
 			EstCostPerHourUSD: newHourlyUSD,
 			InstanceShape:     shape,
+			Transport:         transport,
+			TransportConfigID: req.TransportConfigID,
 			CreatedByUserID:   userID,
 			CreatedByEmail:    userEmail,
 		})
@@ -387,6 +420,8 @@ type cpProvisionJSON struct {
 	Error             string         `json:"error,omitempty"`
 	EstCostPerHourUSD *float64       `json:"est_cost_per_hour_usd,omitempty"`
 	InstanceShape     string         `json:"instance_shape,omitempty"`
+	Transport         string         `json:"transport,omitempty"`
+	TransportConfigID int64          `json:"transport_config_id,omitempty"`
 	CreatedAt         string         `json:"created_at"`
 	StartedAt         string         `json:"started_at,omitempty"`
 	EndedAt           string         `json:"ended_at,omitempty"`
@@ -401,7 +436,11 @@ func toCPProvisionJSON(p *db.CPProvision) cpProvisionJSON {
 		Cloud:       p.Cloud,
 		Status:      string(p.Status),
 		Log:         p.Log,
+		Transport:   p.Transport,
 		CreatedAt:   p.CreatedAt.UTC().Format(rfc3339),
+	}
+	if p.TransportConfigID.Valid {
+		out.TransportConfigID = p.TransportConfigID.Int64
 	}
 	if p.CredentialName.Valid {
 		out.CredentialName = p.CredentialName.String

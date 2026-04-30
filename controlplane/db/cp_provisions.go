@@ -44,27 +44,33 @@ const (
 // here — the provisioner re-decrypts on demand from cloud_credentials
 // using the linked credential_id.
 type CPProvision struct {
-	ID                 int64
-	DisplayName        string
-	Region             string
-	Cloud              string
-	CredentialID       sql.NullInt64
-	CredentialName     sql.NullString
-	CloudParamsJSON    string
-	Status             CPProvisionStatus
-	CloudResourceID    sql.NullString
-	CloudResourceURL   sql.NullString
-	BundleTokenID      sql.NullInt64
-	PeerID             sql.NullInt64
-	Log                string
-	Error              sql.NullString
-	EstCostPerHourUSD  sql.NullFloat64
-	InstanceShape      sql.NullString
-	CreatedAt          time.Time
-	StartedAt          sql.NullTime
-	EndedAt            sql.NullTime
-	CreatedByUserID    sql.NullInt64
-	CreatedByEmail     sql.NullString
+	ID                int64
+	DisplayName       string
+	Region            string
+	Cloud             string
+	CredentialID      sql.NullInt64
+	CredentialName    sql.NullString
+	CloudParamsJSON   string
+	Status            CPProvisionStatus
+	CloudResourceID   sql.NullString
+	CloudResourceURL  sql.NullString
+	BundleTokenID     sql.NullInt64
+	PeerID            sql.NullInt64
+	Log               string
+	Error             sql.NullString
+	EstCostPerHourUSD sql.NullFloat64
+	InstanceShape     sql.NullString
+	// Phase 21.6 — federation transport for the deployed CP. Default
+	// 'https' (mTLS bootstrap callback). 's3_dead_drop' uses the
+	// bucket pipe, with the bucket coords coming from
+	// transport_configs[transport_config_id].
+	Transport         string
+	TransportConfigID sql.NullInt64
+	CreatedAt         time.Time
+	StartedAt         sql.NullTime
+	EndedAt           sql.NullTime
+	CreatedByUserID   sql.NullInt64
+	CreatedByEmail    sql.NullString
 }
 
 // CPProvisionInsert is the input shape for InsertCPProvision. Operator
@@ -84,6 +90,10 @@ type CPProvisionInsert struct {
 	// even when the rate is unknown so an operator can grep for it.
 	EstCostPerHourUSD *float64
 	InstanceShape     string
+	// Phase 21.6 — Transport defaults to "https" when empty.
+	// TransportConfigID 0 = no bucket selected (HTTPS path).
+	Transport         string
+	TransportConfigID int64
 	CreatedByUserID   int64
 	CreatedByEmail    string
 }
@@ -91,6 +101,9 @@ type CPProvisionInsert struct {
 func (s *Store) InsertCPProvision(in CPProvisionInsert) (*CPProvision, error) {
 	if in.CloudParamsJSON == "" {
 		in.CloudParamsJSON = "{}"
+	}
+	if in.Transport == "" {
+		in.Transport = "https"
 	}
 	var costArg sql.NullFloat64
 	if in.EstCostPerHourUSD != nil {
@@ -101,13 +114,15 @@ func (s *Store) InsertCPProvision(in CPProvisionInsert) (*CPProvision, error) {
 		    display_name, region, cloud, credential_id, credential_name,
 		    cloud_params_json, bundle_token_id, status,
 		    est_cost_per_hour_usd, instance_shape,
+		    transport, transport_config_id,
 		    created_by_user_id, created_by_email
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, in.DisplayName, in.Region, in.Cloud,
 		nullableInt64(in.CredentialID), nullable(in.CredentialName),
 		in.CloudParamsJSON, nullableInt64(in.BundleTokenID),
 		string(CPProvisionQueued),
 		costArg, nullable(in.InstanceShape),
+		in.Transport, nullableInt64(in.TransportConfigID),
 		nullableInt64(in.CreatedByUserID), nullable(in.CreatedByEmail))
 	if err != nil {
 		return nil, fmt.Errorf("insert: %w", err)
@@ -125,6 +140,7 @@ func (s *Store) GetCPProvision(id int64) (*CPProvision, error) {
 		       cloud_params_json, status, cloud_resource_id, cloud_resource_url,
 		       bundle_token_id, peer_id, log, error,
 		       est_cost_per_hour_usd, instance_shape,
+		       transport, transport_config_id,
 		       created_at, started_at, ended_at,
 		       created_by_user_id, created_by_email
 		FROM cp_provisions WHERE id = ?
@@ -144,6 +160,7 @@ func (s *Store) ListCPProvisions(limit int) ([]CPProvision, error) {
 		       cloud_params_json, status, cloud_resource_id, cloud_resource_url,
 		       bundle_token_id, peer_id, log, error,
 		       est_cost_per_hour_usd, instance_shape,
+		       transport, transport_config_id,
 		       created_at, started_at, ended_at,
 		       created_by_user_id, created_by_email
 		FROM cp_provisions ORDER BY created_at DESC LIMIT ?
@@ -241,6 +258,7 @@ func (s *Store) FindCPProvisionByBundleToken(tokenID int64) (*CPProvision, error
 		       cloud_params_json, status, cloud_resource_id, cloud_resource_url,
 		       bundle_token_id, peer_id, log, error,
 		       est_cost_per_hour_usd, instance_shape,
+		       transport, transport_config_id,
 		       created_at, started_at, ended_at,
 		       created_by_user_id, created_by_email
 		FROM cp_provisions WHERE bundle_token_id = ?
@@ -265,6 +283,7 @@ func scanCPProvision(s rowScanner) (*CPProvision, error) {
 		&c.CloudResourceID, &c.CloudResourceURL,
 		&c.BundleTokenID, &c.PeerID, &c.Log, &c.Error,
 		&c.EstCostPerHourUSD, &c.InstanceShape,
+		&c.Transport, &c.TransportConfigID,
 		&c.CreatedAt, &c.StartedAt, &c.EndedAt,
 		&c.CreatedByUserID, &c.CreatedByEmail,
 	); err != nil {

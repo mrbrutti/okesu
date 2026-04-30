@@ -178,19 +178,41 @@ func RunCPProvisionWorker(ctx context.Context, cfg CPProvisionWorkerConfig, prov
 		IssuedAt:       time.Now().UTC().Format(time.RFC3339),
 	}
 	var buf bytes.Buffer
-	if cfg.Bundle.LinuxBinaryPath != "" {
-		if err := writeDockerfileBundle(&buf, bv, cfg.Bundle.LinuxBinaryPath); err != nil {
-			failNow("build bundle: " + err.Error())
+	switch row.Transport {
+	case "s3_dead_drop":
+		// Phase 21.6 — managed deploy targeting the bucket pipe.
+		// writeS3DeadDropBundle pre-registers the federation peer
+		// itself, so no /api/v1/cp/bootstrap callback is needed; the
+		// child auto-publishes to the bucket on first boot and the
+		// parent's s3reader picks it up within ~30s.
+		if cfg.Bundle.LinuxBinaryPath == "" {
+			failNow("transport=s3_dead_drop requires --daemon-binary on the parent (no linux binary configured)")
 			return
 		}
-	} else if cfg.Bundle.LinuxImageTarPath != "" {
-		if err := writeComposeBundle(&buf, bv, cfg.Bundle.LinuxImageTarPath); err != nil {
-			failNow("build bundle: " + err.Error())
+		if !row.TransportConfigID.Valid || row.TransportConfigID.Int64 == 0 {
+			failNow("transport=s3_dead_drop but transport_config_id is unset on the row — handler validation should have caught this")
 			return
 		}
-	} else {
-		failNow("parent has no LinuxBinaryPath or LinuxImageTarPath configured — cannot build a bundle")
-		return
+		if err := writeS3DeadDropBundle(&buf, cfg.Store, bv, row.TransportConfigID.Int64, cfg.Bundle.LinuxBinaryPath); err != nil {
+			failNow("build s3 bundle: " + err.Error())
+			return
+		}
+	default:
+		// "https" path (default + legacy).
+		if cfg.Bundle.LinuxBinaryPath != "" {
+			if err := writeDockerfileBundle(&buf, bv, cfg.Bundle.LinuxBinaryPath); err != nil {
+				failNow("build bundle: " + err.Error())
+				return
+			}
+		} else if cfg.Bundle.LinuxImageTarPath != "" {
+			if err := writeComposeBundle(&buf, bv, cfg.Bundle.LinuxImageTarPath); err != nil {
+				failNow("build bundle: " + err.Error())
+				return
+			}
+		} else {
+			failNow("parent has no LinuxBinaryPath or LinuxImageTarPath configured — cannot build a bundle")
+			return
+		}
 	}
 	bundleBytes := buf.Bytes()
 	bundleFilename := fmt.Sprintf("okesu-cp-%s.tar.gz", slugify(row.DisplayName))
