@@ -45,6 +45,7 @@ export function SuggestedFindingsCard({
   invID,
   cpInstanceID,
   onChange,
+  readOnly = false,
 }: {
   invID: number;
   cpInstanceID?: string;
@@ -52,6 +53,11 @@ export function SuggestedFindingsCard({
    *  (the linked finding now lives in `bundle.findings`). Dismiss
    *  doesn't trigger this — it's a card-local refresh. */
   onChange: () => void;
+  /** When true, the card renders as a retrospective "would have
+   *  suggested" view: no Add / Dismiss / bulk-add buttons. Used for
+   *  closed and archived cases so post-mortems can see the engine's
+   *  hypothetical recommendations without re-opening the case. */
+  readOnly?: boolean;
 }) {
   const [items, setItems] = useState<SuggestedFinding[] | null>(null);
   const [busy, setBusy] = useState(false);
@@ -149,13 +155,21 @@ export function SuggestedFindingsCard({
       <header className="px-4 py-2.5 border-b border-border flex items-center gap-2 flex-wrap">
         <Lightbulb size={13} className="text-amber-600" />
         <h4 className="text-[11px] uppercase tracking-wide font-semibold text-ink-mute">
-          Suggested findings
+          {readOnly ? 'Would have suggested' : 'Suggested findings'}
         </h4>
         {items && items.length > 0 && (
           <span className="text-[11px] text-ink-mute">· {items.length}</span>
         )}
+        {readOnly && (
+          <span
+            className="text-[10px] uppercase tracking-wide text-slate-700 bg-slate-100 ring-1 ring-slate-200 px-1.5 py-0.5 rounded"
+            title="Case is closed or archived — surfacing the engine's hypothetical recommendations for retrospective review."
+          >
+            retrospective
+          </span>
+        )}
         <div className="ml-auto flex items-center gap-1.5">
-          {items && items.length > 1 && BULK_THRESHOLDS.map((t) => {
+          {!readOnly && items && items.length > 1 && BULK_THRESHOLDS.map((t) => {
             const n = eligibleCounts.get(t) ?? 0;
             if (n < 2) return null; // hide buttons that wouldn't change anything
             return (
@@ -195,7 +209,10 @@ export function SuggestedFindingsCard({
         </div>
       ) : items.length === 0 ? (
         <div className="p-4 text-xs text-ink-mute italic">
-          Nothing related to suggest right now. Link more findings to widen the search.
+          {readOnly
+            ? 'No retrospective suggestions — the engine had nothing related to surface against this case.'
+            : 'Nothing related to suggest right now. Link more findings to widen the search.'
+          }
         </div>
       ) : (
         <ul className="divide-y divide-border">
@@ -235,26 +252,28 @@ export function SuggestedFindingsCard({
                   ))}
                 </div>
               </div>
-              <div className="shrink-0 flex items-center gap-1.5">
-                <button
-                  onClick={() => add(s.ID)}
-                  disabled={busy}
-                  className="text-[11px] px-2 py-1 rounded-md bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50 inline-flex items-center gap-1"
-                  title="Link this finding to the case"
-                >
-                  {pendingID === s.ID && busy ? <Loader2 size={11} className="animate-spin" /> : <Plus size={11} />}
-                  Add
-                </button>
-                <button
-                  onClick={() => dismiss(s.ID)}
-                  disabled={busy}
-                  className="text-[11px] px-2 py-1 rounded-md text-ink-dim border border-border hover:bg-slate-50 disabled:opacity-50 inline-flex items-center gap-1"
-                  title="Dismiss this suggestion (per-case tombstone — won't surface here again)"
-                >
-                  {pendingID === s.ID && busy ? <Loader2 size={11} className="animate-spin" /> : <ThumbsDown size={11} />}
-                  Dismiss
-                </button>
-              </div>
+              {!readOnly && (
+                <div className="shrink-0 flex items-center gap-1.5">
+                  <button
+                    onClick={() => add(s.ID)}
+                    disabled={busy}
+                    className="text-[11px] px-2 py-1 rounded-md bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50 inline-flex items-center gap-1"
+                    title="Link this finding to the case"
+                  >
+                    {pendingID === s.ID && busy ? <Loader2 size={11} className="animate-spin" /> : <Plus size={11} />}
+                    Add
+                  </button>
+                  <button
+                    onClick={() => dismiss(s.ID)}
+                    disabled={busy}
+                    className="text-[11px] px-2 py-1 rounded-md text-ink-dim border border-border hover:bg-slate-50 disabled:opacity-50 inline-flex items-center gap-1"
+                    title="Dismiss this suggestion (per-case tombstone — won't surface here again)"
+                  >
+                    {pendingID === s.ID && busy ? <Loader2 size={11} className="animate-spin" /> : <ThumbsDown size={11} />}
+                    Dismiss
+                  </button>
+                </div>
+              )}
             </li>
           ))}
         </ul>
