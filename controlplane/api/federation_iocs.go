@@ -2,7 +2,9 @@ package api
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/url"
 	"sync"
@@ -127,16 +129,23 @@ func FederatedGetIOCByKV(store *db.Store, agg *federation.Aggregator) http.Handl
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		contribs := []contribIOCs{}
-		if rec, err := store.GetIOCByKV(kind, value); err == nil {
+		var contribs []contribIOCs
+		rec, err := store.GetIOCByKV(kind, value)
+		switch {
+		case err == nil:
 			contribs = append(contribs, contribIOCs{cp: localCP, rows: []*db.IOCRecord{rec}})
+		case errors.Is(err, sql.ErrNoRows):
+			// Local doesn't have it — peers might. Continue.
+		default:
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
 		}
 
 		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 		defer cancel()
 		path := "/api/v1/federation/iocs/by-kv?kind=" + url.QueryEscape(kind) + "&value=" + url.QueryEscape(value)
 		var mu sync.Mutex
-		results, _ := agg.FanOut(ctx, func(ctx context.Context, peer federation.Peer) error {
+		results, fanErr := agg.FanOut(ctx, func(ctx context.Context, peer federation.Peer) error {
 			var rec db.IOCRecord
 			if err := agg.FetchJSON(ctx, peer, path, &rec); err != nil {
 				return err
@@ -146,6 +155,9 @@ func FederatedGetIOCByKV(store *db.Store, agg *federation.Aggregator) http.Handl
 			contribs = append(contribs, contribIOCs{cp: peerCPSource(peer), rows: []*db.IOCRecord{&rec}})
 			return nil
 		})
+		if fanErr != nil {
+			w.Header().Set("X-Okesu-Federation-Warning", fanErr.Error())
+		}
 		if pErr := federation.AnyError(results); pErr != nil {
 			w.Header().Set("X-Okesu-Federation-Warning", pErr.Error())
 		}
@@ -173,14 +185,18 @@ func FederatedListIOCObservationsByKV(store *db.Store, agg *federation.Aggregato
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		local, _ := store.ListIOCObservationsByKV(kind, value)
+		local, err := store.ListIOCObservationsByKV(kind, value)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 		contribs := []contribObs{{cp: localCP, rows: local}}
 
 		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 		defer cancel()
 		path := "/api/v1/federation/iocs/by-kv/observations?kind=" + url.QueryEscape(kind) + "&value=" + url.QueryEscape(value)
 		var mu sync.Mutex
-		results, _ := agg.FanOut(ctx, func(ctx context.Context, peer federation.Peer) error {
+		results, fanErr := agg.FanOut(ctx, func(ctx context.Context, peer federation.Peer) error {
 			var rows []db.IOCObservation
 			if err := agg.FetchJSON(ctx, peer, path, &rows); err != nil {
 				return err
@@ -190,6 +206,9 @@ func FederatedListIOCObservationsByKV(store *db.Store, agg *federation.Aggregato
 			contribs = append(contribs, contribObs{cp: peerCPSource(peer), rows: rows})
 			return nil
 		})
+		if fanErr != nil {
+			w.Header().Set("X-Okesu-Federation-Warning", fanErr.Error())
+		}
 		if pErr := federation.AnyError(results); pErr != nil {
 			w.Header().Set("X-Okesu-Federation-Warning", pErr.Error())
 		}
@@ -213,14 +232,18 @@ func FederatedListIOCRelationshipsByKV(store *db.Store, agg *federation.Aggregat
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		local, _ := store.ListIOCRelationshipsByKVPaired(kind, value)
+		local, err := store.ListIOCRelationshipsByKVPaired(kind, value)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 		contribs := []contribRels{{cp: localCP, rows: local}}
 
 		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 		defer cancel()
 		path := "/api/v1/federation/iocs/by-kv/relationships?kind=" + url.QueryEscape(kind) + "&value=" + url.QueryEscape(value)
 		var mu sync.Mutex
-		results, _ := agg.FanOut(ctx, func(ctx context.Context, peer federation.Peer) error {
+		results, fanErr := agg.FanOut(ctx, func(ctx context.Context, peer federation.Peer) error {
 			var rows []db.IOCRelationshipPaired
 			if err := agg.FetchJSON(ctx, peer, path, &rows); err != nil {
 				return err
@@ -230,6 +253,9 @@ func FederatedListIOCRelationshipsByKV(store *db.Store, agg *federation.Aggregat
 			contribs = append(contribs, contribRels{cp: peerCPSource(peer), rows: rows})
 			return nil
 		})
+		if fanErr != nil {
+			w.Header().Set("X-Okesu-Federation-Warning", fanErr.Error())
+		}
 		if pErr := federation.AnyError(results); pErr != nil {
 			w.Header().Set("X-Okesu-Federation-Warning", pErr.Error())
 		}
