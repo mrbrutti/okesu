@@ -1,9 +1,9 @@
 variable "compartment_ocid" { type = string }
-variable "name_prefix"      { type = string }
-variable "subnet_ocid"      { type = string }
-variable "shape"            { type = string }
-variable "image_ocid"       { type = string }
-variable "ssh_public_key"   { type = string }
+variable "name_prefix" { type = string }
+variable "subnet_ocid" { type = string }
+variable "shape" { type = string }
+variable "image_ocid" { type = string }
+variable "ssh_public_key" { type = string }
 
 data "oci_identity_availability_domains" "ads" {
   compartment_id = var.compartment_ocid
@@ -50,6 +50,6 @@ resource "oci_core_instance" "cp" {
   }
 }
 
-output "public_ip"   { value = oci_core_instance.cp.public_ip }
-output "private_ip"  { value = oci_core_instance.cp.private_ip }
+output "public_ip" { value = oci_core_instance.cp.public_ip }
+output "private_ip" { value = oci_core_instance.cp.private_ip }
 output "instance_id" { value = oci_core_instance.cp.id }

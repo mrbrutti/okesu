@@ -7,11 +7,11 @@
 # Cost: per-GB storage + per-request. Smoke volumes are pennies.
 
 variable "compartment_ocid" { type = string }
-variable "tenancy_ocid"     { type = string }
-variable "user_ocid"        { type = string }
-variable "name_prefix"      { type = string }
-variable "region"           { type = string }
-variable "secrets_dir"      { type = string }
+variable "tenancy_ocid" { type = string }
+variable "user_ocid" { type = string }
+variable "name_prefix" { type = string }
+variable "region" { type = string }
+variable "secrets_dir" { type = string }
 
 data "oci_objectstorage_namespace" "ns" {
   compartment_id = var.tenancy_ocid

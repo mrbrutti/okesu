@@ -27,12 +27,12 @@ module "network" {
 module "db" {
   source = "./modules/db"
 
-  compartment_ocid    = var.compartment_ocid
-  name_prefix         = var.name_prefix
-  subnet_ocid         = module.network.private_subnet_ocid
-  vcn_ocid            = module.network.vcn_ocid
-  admin_username      = var.db_admin_username
-  secrets_dir         = pathexpand(var.secrets_dir)
+  compartment_ocid = var.compartment_ocid
+  name_prefix      = var.name_prefix
+  subnet_ocid      = module.network.private_subnet_ocid
+  vcn_ocid         = module.network.vcn_ocid
+  admin_username   = var.db_admin_username
+  secrets_dir      = pathexpand(var.secrets_dir)
 }
 
 module "streaming" {

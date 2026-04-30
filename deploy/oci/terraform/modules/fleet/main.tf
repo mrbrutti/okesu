@@ -5,12 +5,12 @@
 # flow installs the okesu binary + edr.md agent file post-provision.
 
 variable "compartment_ocid" { type = string }
-variable "name_prefix"      { type = string }
-variable "subnet_ocid"      { type = string }
-variable "fleet_size"       { type = number }
-variable "shape"            { type = string }
-variable "image_ocid"       { type = string }
-variable "ssh_public_key"   { type = string }
+variable "name_prefix" { type = string }
+variable "subnet_ocid" { type = string }
+variable "fleet_size" { type = number }
+variable "shape" { type = string }
+variable "image_ocid" { type = string }
+variable "ssh_public_key" { type = string }
 
 data "oci_identity_availability_domains" "ads" {
   compartment_id = var.compartment_ocid

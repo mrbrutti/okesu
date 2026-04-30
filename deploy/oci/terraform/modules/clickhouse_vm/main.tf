@@ -1,10 +1,10 @@
-variable "compartment_ocid"    { type = string }
-variable "name_prefix"         { type = string }
-variable "subnet_ocid"         { type = string }
-variable "shape"               { type = string }
-variable "image_ocid"          { type = string }
-variable "ssh_public_key"      { type = string }
-variable "clickhouse_version"  { type = string }
+variable "compartment_ocid" { type = string }
+variable "name_prefix" { type = string }
+variable "subnet_ocid" { type = string }
+variable "shape" { type = string }
+variable "image_ocid" { type = string }
+variable "ssh_public_key" { type = string }
+variable "clickhouse_version" { type = string }
 variable "clickhouse_password" {
   type      = string
   sensitive = true

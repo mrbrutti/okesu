@@ -4,9 +4,9 @@
 # auth token; we pin a generated one and write it to the secrets dir.
 
 variable "compartment_ocid" { type = string }
-variable "name_prefix"      { type = string }
-variable "subnet_ocid"      { type = string }
-variable "secrets_dir"      { type = string }
+variable "name_prefix" { type = string }
+variable "subnet_ocid" { type = string }
+variable "secrets_dir" { type = string }
 
 resource "random_password" "auth" {
   length  = 32
