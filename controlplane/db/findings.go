@@ -53,6 +53,14 @@ type Finding struct {
 	OperatorSeverity     sql.NullString
 	SeverityOverrideAt   sql.NullTime
 	SeverityOverrideByID sql.NullInt64
+
+	// Phase 22.2: IOC propagation. cluster_id ties findings that share
+	// an IOC into a single operator-visible cluster. The IOC* fields
+	// are only set when a catalog-source IOC matched at ingest.
+	ClusterID         string
+	IOCConfidence     string
+	IOCAttribution    string
+	IOCClassification string
 }
 
 // EffectiveSeverity returns the operator override if present, otherwise
@@ -155,6 +163,14 @@ type FindingInsert struct {
 	CVE             string
 	Tags            string
 	Attributes      string // expected to be valid JSON; not validated here
+
+	// Phase 22.2 — IOC propagation. Set by api.propagateFromIOCs at
+	// pre-insert time when the finding's text matches one or more IOCs in
+	// the catalog. Empty string = no propagation applied.
+	ClusterID         string
+	IOCConfidence     string
+	IOCAttribution    string
+	IOCClassification string
 }
 
 // InsertFinding stores a finding row tied to an event. If a per-fingerprint
@@ -185,8 +201,9 @@ func (s *Store) InsertFinding(f *FindingInsert) (int64, error) {
 			event_id, ts, agent, host, severity, title,
 			resource, evidence, dedup_key, raw_json,
 			category, process_pid, process_name, path, network_endpoint, cve, tags, attributes,
-			status, operator_severity, severity_override_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, `+overrideAtCol+`)
+			status, operator_severity, severity_override_at,
+			cluster_id, ioc_confidence, ioc_attribution, ioc_classification
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, `+overrideAtCol+`, ?, ?, ?, ?)
 	`,
 		f.EventID, f.Ts,
 		nullable(f.Agent), nullable(f.Host), nullable(f.Severity), nullable(f.Title),
@@ -195,6 +212,7 @@ func (s *Store) InsertFinding(f *FindingInsert) (int64, error) {
 		nullable(f.Category), pid, nullable(f.ProcessName), nullable(f.Path),
 		nullable(f.NetworkEndpoint), nullable(f.CVE), nullable(f.Tags), nullable(f.Attributes),
 		operatorSeverity,
+		nullable(f.ClusterID), nullable(f.IOCConfidence), nullable(f.IOCAttribution), nullable(f.IOCClassification),
 	)
 	if err != nil {
 		return 0, err
@@ -266,7 +284,9 @@ func (s *Store) ListFindings(f FindingFilter) ([]*Finding, error) {
 	             created_at,
 	             category, process_pid, process_name, path, network_endpoint, cve, tags, attributes,
 	             status, triage_note, triaged_at, triaged_by_user_id, triaged_by_email,
-	             operator_severity, severity_override_at, severity_override_by
+	             operator_severity, severity_override_at, severity_override_by,
+	             COALESCE(cluster_id, ''), COALESCE(ioc_confidence, ''),
+	             COALESCE(ioc_attribution, ''), COALESCE(ioc_classification, '')
 	      FROM findings`
 	if len(clauses) > 0 {
 		q += " WHERE " + strings.Join(clauses, " AND ")
@@ -293,6 +313,7 @@ func (s *Store) ListFindings(f FindingFilter) ([]*Finding, error) {
 			&fr.NetworkEndpoint, &fr.CVE, &fr.Tags, &fr.Attributes,
 			&fr.Status, &fr.TriageNote, &fr.TriagedAt, &fr.TriagedByUser, &fr.TriagedByEmail,
 			&fr.OperatorSeverity, &fr.SeverityOverrideAt, &fr.SeverityOverrideByID,
+			&fr.ClusterID, &fr.IOCConfidence, &fr.IOCAttribution, &fr.IOCClassification,
 		); err != nil {
 			return nil, err
 		}
@@ -313,7 +334,9 @@ func (s *Store) FindingByID(id int64) (*Finding, error) {
 		       created_at,
 		       category, process_pid, process_name, path, network_endpoint, cve, tags, attributes,
 		       status, triage_note, triaged_at, triaged_by_user_id, triaged_by_email,
-		       operator_severity, severity_override_at, severity_override_by
+		       operator_severity, severity_override_at, severity_override_by,
+		       COALESCE(cluster_id, ''), COALESCE(ioc_confidence, ''),
+		       COALESCE(ioc_attribution, ''), COALESCE(ioc_classification, '')
 		FROM findings WHERE id = ?
 	`, id).Scan(
 		&fr.ID, &fr.EventID, &fr.Ts,
@@ -325,6 +348,7 @@ func (s *Store) FindingByID(id int64) (*Finding, error) {
 		&fr.NetworkEndpoint, &fr.CVE, &fr.Tags, &fr.Attributes,
 		&fr.Status, &fr.TriageNote, &fr.TriagedAt, &fr.TriagedByUser, &fr.TriagedByEmail,
 		&fr.OperatorSeverity, &fr.SeverityOverrideAt, &fr.SeverityOverrideByID,
+		&fr.ClusterID, &fr.IOCConfidence, &fr.IOCAttribution, &fr.IOCClassification,
 	)
 	if err != nil {
 		return nil, err
