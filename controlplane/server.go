@@ -1153,6 +1153,7 @@ func (s *Server) startFederationS3Publisher(ctx context.Context) {
 		{Path: "nodes.json", Render: s.renderFederationNodesJSON},
 		{Path: "orchestrations.json", Render: s.renderFederationOrchestrationsJSON},
 		{Path: "investigations.json", Render: s.renderFederationInvestigationsJSON},
+		{Path: "fleet-env.json", Render: s.renderFederationFleetEnvJSON},
 	}
 	pub, err := s3publisher.New(ctx, *cfg, s.renderIntrospectJSON, assets...)
 	if err != nil {
@@ -1358,6 +1359,33 @@ func (s *Server) renderFederationInvestigationsJSON(ctx context.Context) ([]byte
 func (s *Server) renderFederationOrchestrationsJSON(ctx context.Context) ([]byte, error) {
 	_ = ctx
 	return api.RenderFederationOrchestrations(s.store)
+}
+
+// renderFederationFleetEnvJSON renders the fleet_env row as the
+// fleet-env.json artifact published to each federated peer's
+// outbound bucket path. Plaintext on the wire — but the bucket
+// blob is encrypted to the per-peer fleet keypair by the publisher
+// before write (Phase 9.7).
+func (s *Server) renderFederationFleetEnvJSON(ctx context.Context) ([]byte, error) {
+	_ = ctx
+	mk, err := s.store.MasterKeyFromMeta()
+	if err != nil {
+		return nil, err
+	}
+	fe, err := s.store.GetFleetEnvWithKeys(mk)
+	if err != nil {
+		return nil, err
+	}
+	out := struct {
+		AnthropicAPIKey string `json:"anthropic_api_key"`
+		OpenAIAPIKey    string `json:"openai_api_key"`
+		Version         int64  `json:"version"`
+	}{
+		AnthropicAPIKey: fe.AnthropicAPIKey,
+		OpenAIAPIKey:    fe.OpenAIAPIKey,
+		Version:         fe.Version,
+	}
+	return json.Marshal(out)
 }
 
 // hooks so the rest of the CP doesn't need to know which transport
