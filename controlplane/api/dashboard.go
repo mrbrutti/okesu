@@ -33,6 +33,12 @@ type dashboardResponse struct {
 	OSDistribution []osBucket        `json:"os_distribution"`  // nodes by OS family
 	FleetStatus   fleetStatus        `json:"fleet_status"`     // healthy / needs_patching / offline / frozen
 
+	// Phase 22.7 — investigations rollup. Active case count, recent
+	// closure rate, autolink activity, and the top-5 most-recently-
+	// updated active cases for the "Recent investigations" card.
+	// Local-only in v1; federated rollup is a future follow-up.
+	Investigations *db.DashboardInvestigations `json:"investigations"`
+
 	// Phase 9.5 — federation rollup. Populated when this CP has
 	// registered children. Counts include LOCAL state plus the cached
 	// introspect counts from each child, so the parent's Dashboard
@@ -299,6 +305,18 @@ func Dashboard(store *db.Store, eventStore ports.EventStore, tunReg *tunnel.Regi
 		}
 		if out.Drift.Items == nil {
 			out.Drift.Items = []driftRow{}
+		}
+
+		// Phase 22.7 — investigations rollup. Soft-fail: if the
+		// query errors (unlikely; same DB the rest of the response
+		// just read), we'd rather render the dashboard with an
+		// empty Investigations section than 500.
+		if invs, err := store.DashboardInvestigationStats(5); err == nil {
+			out.Investigations = invs
+		} else {
+			out.Investigations = &db.DashboardInvestigations{
+				RecentActive: []db.DashboardInvestigationItem{},
+			}
 		}
 
 		// Phase 9.5: fold federated peer counts into the headline
