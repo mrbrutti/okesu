@@ -34,6 +34,11 @@ type Investigation struct {
 	CreatedAt  time.Time
 	ClosedAt   time.Time // zero when not closed
 	UpdatedAt  time.Time
+	// External dedup handle for auto-opened cases (Phase 22.5+).
+	// Empty string for operator-created cases. Format is
+	// caller-defined (e.g. "cross-cp-pattern:<ioc_id>"). Unique
+	// when non-empty.
+	ExternalKey string
 }
 
 // InvestigationInsert is the create-time payload. Title is required;
@@ -93,18 +98,111 @@ func (s *Store) GetInvestigation(id int64) (*Investigation, error) {
 	row := s.QueryRow(`
 		SELECT id, title, status, COALESCE(resolution, ''), COALESCE(summary, ''),
 		       COALESCE(created_by, ''), created_at,
-		       COALESCE(closed_at, ''), updated_at
+		       COALESCE(closed_at, ''), updated_at,
+		       COALESCE(external_key, '')
 		FROM investigations WHERE id = ?`, id)
 	var inv Investigation
 	var createdAt, closedAt, updatedAt sql.NullString
 	if err := row.Scan(&inv.ID, &inv.Title, &inv.Status, &inv.Resolution, &inv.Summary,
-		&inv.CreatedBy, &createdAt, &closedAt, &updatedAt); err != nil {
+		&inv.CreatedBy, &createdAt, &closedAt, &updatedAt,
+		&inv.ExternalKey); err != nil {
 		return nil, err
 	}
 	inv.CreatedAt = ParseTimestamp(createdAt.String)
 	inv.ClosedAt = ParseTimestamp(closedAt.String)
 	inv.UpdatedAt = ParseTimestamp(updatedAt.String)
 	return &inv, nil
+}
+
+// GetInvestigationByExternalKey returns the case identified by an
+// auto-opener's dedup handle, or sql.ErrNoRows if no row matches.
+// Empty key returns sql.ErrNoRows immediately — manual cases
+// (NULL external_key) shouldn't be findable via this lookup.
+func (s *Store) GetInvestigationByExternalKey(key string) (*Investigation, error) {
+	if key == "" {
+		return nil, sql.ErrNoRows
+	}
+	row := s.QueryRow(`
+		SELECT id, title, status, COALESCE(resolution, ''), COALESCE(summary, ''),
+		       COALESCE(created_by, ''), created_at,
+		       COALESCE(closed_at, ''), updated_at,
+		       COALESCE(external_key, '')
+		FROM investigations WHERE external_key = ?`, key)
+	var inv Investigation
+	var createdAt, closedAt, updatedAt sql.NullString
+	if err := row.Scan(&inv.ID, &inv.Title, &inv.Status, &inv.Resolution, &inv.Summary,
+		&inv.CreatedBy, &createdAt, &closedAt, &updatedAt,
+		&inv.ExternalKey); err != nil {
+		return nil, err
+	}
+	inv.CreatedAt = ParseTimestamp(createdAt.String)
+	inv.ClosedAt = ParseTimestamp(closedAt.String)
+	inv.UpdatedAt = ParseTimestamp(updatedAt.String)
+	return &inv, nil
+}
+
+// UpsertInvestigationByExternalKey returns the existing case for the
+// dedup key, or creates a new one and returns it. Idempotent —
+// background daimons can call this every tick without piling up
+// duplicate rows for the same logical incident.
+//
+// Title + Summary are applied only on CREATE. Operators editing the
+// case after auto-creation see their edits preserved across daimon
+// ticks; refreshing the title from a daimon would clobber operator
+// intent.
+func (s *Store) UpsertInvestigationByExternalKey(key, title, summary, createdBy string) (*Investigation, bool, error) {
+	if key == "" {
+		return nil, false, fmt.Errorf("UpsertInvestigationByExternalKey: external_key required")
+	}
+	existing, err := s.GetInvestigationByExternalKey(key)
+	if err == nil {
+		return existing, false, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return nil, false, err
+	}
+	if title == "" {
+		title = "(auto-opened)"
+	}
+	res, err := s.Exec(`
+		INSERT INTO investigations (title, status, summary, created_by, external_key)
+		VALUES (?, 'active', ?, ?, ?)`,
+		title, nullable(summary), nullable(createdBy), key)
+	if err != nil {
+		return nil, false, err
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return nil, false, err
+	}
+	inv, err := s.GetInvestigation(id)
+	if err != nil {
+		return nil, false, err
+	}
+	return inv, true, nil
+}
+
+// LinkFindingsByIOCObservations links every finding that has an
+// observation referencing iocID into the investigation. Idempotent
+// per (invID, finding_id) pair via the join row's PK.
+//
+// Returns the count of newly-linked findings (existing links are
+// silently ignored). The OR IGNORE on conflict makes this safe to
+// call repeatedly as new observations arrive.
+func (s *Store) LinkFindingsByIOCObservations(invID, iocID int64) (int, error) {
+	res, err := s.Exec(`
+		INSERT INTO investigation_findings (investigation_id, finding_id)
+		SELECT ?, finding_id FROM (
+			SELECT DISTINCT finding_id FROM ioc_observations
+			WHERE ioc_id = ? AND finding_id IS NOT NULL
+		) AS src
+		ON CONFLICT (investigation_id, finding_id) DO NOTHING`,
+		invID, iocID)
+	if err != nil {
+		return 0, err
+	}
+	n, err := res.RowsAffected()
+	return int(n), err
 }
 
 // UpdateInvestigation applies a partial patch. Validates the small
