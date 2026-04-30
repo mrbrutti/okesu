@@ -26,6 +26,20 @@ import (
 type Aggregator struct {
 	store  *db.Store
 	client *http.Client
+	// s3 holds the per-peer bucket-cached payloads that s3reader
+	// populates. FetchRaw consults this before doing its HTTPS GET
+	// when the peer's transport is s3_dead_drop — that's how
+	// federated findings/daimons surface from a child CP that has
+	// no inbound HTTPS path. Nil disables S3 federation reads.
+	s3 S3Source
+}
+
+// S3Source is the read-side interface the aggregator uses to look
+// up bucket-cached payloads for s3_dead_drop peers. Implemented by
+// federation/s3reader's AssetCache — defined as an interface here
+// so aggregator.go doesn't import s3reader.
+type S3Source interface {
+	Get(peerID int64, asset string) ([]byte, bool)
 }
 
 func NewAggregator(store *db.Store) *Aggregator {
@@ -38,6 +52,14 @@ func NewAggregator(store *db.Store) *Aggregator {
 			},
 		},
 	}
+}
+
+// SetS3Source wires up the bucket-cached read path for s3_dead_drop
+// peers. Called once at server boot after both the aggregator and
+// s3reader have been constructed (the order matters because
+// s3reader's AssetCache must outlive the aggregator).
+func (a *Aggregator) SetS3Source(src S3Source) {
+	a.s3 = src
 }
 
 // PeerSnapshot is the parsed introspect cached on each peer row.
@@ -117,6 +139,32 @@ func (a *Aggregator) FetchJSON(ctx context.Context, peer Peer, path string, out 
 // param (e.g. /api/orchestration-runs?counts=1 returns a wrapper
 // object instead of an array). Same auth + size cap.
 func (a *Aggregator) FetchRaw(ctx context.Context, peer Peer, path string) ([]byte, error) {
+	// Phase A.2 — s3_dead_drop peers don't have an HTTPS path. Look
+	// up the cached bucket payload by mapping the federation API path
+	// to the asset name the publisher writes. Empty cache (publisher
+	// hasn't ticked yet, or that asset isn't in the publisher's
+	// schedule) returns "no data" rather than an error so federated
+	// reads degrade to "show local + known-S3-peer data" cleanly.
+	if peer.Row.Transport == "s3_dead_drop" {
+		if a.s3 == nil {
+			return nil, fmt.Errorf("%s: s3 source not configured", peer.Snapshot.DisplayName)
+		}
+		asset := s3AssetForPath(path)
+		if asset == "" {
+			return nil, fmt.Errorf("%s: s3 transport has no asset for path %s", peer.Snapshot.DisplayName, path)
+		}
+		body, ok := a.s3.Get(peer.Row.ID, asset)
+		if !ok {
+			// First poll hasn't completed yet, or the publisher
+			// doesn't write this asset. Empty array is the
+			// neutral element for the typical list endpoints; the
+			// federated handler caller will Unmarshal it into an
+			// empty slice and merge cleanly.
+			return []byte("[]"), nil
+		}
+		return body, nil
+	}
+
 	url := strings.TrimRight(peer.Row.URL, "/") + path
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -141,6 +189,26 @@ func (a *Aggregator) FetchRaw(ctx context.Context, peer Peer, path string) ([]by
 		return nil, fmt.Errorf("%s: HTTP %d: %s", peer.Snapshot.DisplayName, resp.StatusCode, snippet)
 	}
 	return body, nil
+}
+
+// s3AssetForPath maps a federation read path to the bucket asset
+// the publisher writes for it. Query strings are dropped — Phase A.2
+// publishes the unfiltered list and the parent-side filter is best-
+// effort (operators get all-S3-peer findings even with severity/etc
+// filters set in the URL). Phase B+ may publish per-filter snapshots
+// or parse-and-filter at the boundary; for now, the straight
+// path→asset map keeps the wiring trivial.
+func s3AssetForPath(path string) string {
+	// Strip query params.
+	if i := strings.IndexByte(path, '?'); i >= 0 {
+		path = path[:i]
+	}
+	switch {
+	case strings.HasPrefix(path, "/api/v1/federation/findings"):
+		return "findings.json"
+	// Phase A.3 will add daimons / nodes / orchestrations cases here.
+	}
+	return ""
 }
 
 // FanOutResult is one peer's outcome — either parsed rows (caller

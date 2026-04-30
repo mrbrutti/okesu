@@ -217,6 +217,35 @@ func FindingsList(store *db.Store) http.HandlerFunc {
 	}
 }
 
+// RenderFederationFindings produces the JSON the federation S3
+// publisher writes to findings.json on each tick. Same wire shape
+// FindingsList emits at default filters: open findings only,
+// newest-first, capped at `limit` rows. The parent's aggregator
+// caches this and serves federated /api/findings requests off it
+// for s3 peers.
+//
+// Phase A.2 publishes the unfiltered open list. Severity / agent /
+// host filters in the parent's URL are applied client-side at the
+// aggregator boundary today (best-effort — see s3AssetForPath); a
+// future per-filter publish is possible if operator UX demands it.
+func RenderFederationFindings(store *db.Store, limit int) ([]byte, error) {
+	if limit <= 0 || limit > 5000 {
+		limit = 1000
+	}
+	rows, err := store.ListFindings(db.FindingFilter{
+		OnlyOpen: true,
+		Limit:    limit,
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]findingJSON, 0, len(rows))
+	for _, fr := range rows {
+		out = append(out, toFindingJSON(fr, false))
+	}
+	return json.Marshal(out)
+}
+
 // FindingDetail handles GET /api/findings/{id}.
 func FindingDetail(store *db.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {

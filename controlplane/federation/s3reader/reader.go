@@ -51,10 +51,63 @@ type Loop struct {
 
 	mu      sync.Mutex
 	clients map[int64]*peerClient // keyed by federation_peers.id
+
+	// Asset cache, keyed by (peer_id, asset_name). Populated on
+	// each tick. The federation aggregator reads from this for s3
+	// peers, replacing what would otherwise be an HTTPS GET against
+	// the peer's URL. Fed to NewAggregator at server boot via
+	// SetAssetSource so the aggregator package doesn't have to
+	// depend on s3reader's internals.
+	assets *AssetCache
+}
+
+// AssetCache holds the most recent bucket-fetched payload for each
+// (peer_id, asset_name). Reads + writes are concurrency-safe; values
+// are returned by reference (callers MUST NOT mutate). On peer
+// removal the entry stays until the next tick replaces it; eviction
+// happens when the federation_peers row is deleted (we don't track
+// that today — leftover entries are harmless, they just take RAM).
+type AssetCache struct {
+	mu sync.RWMutex
+	// peerID → assetName → bytes
+	data map[int64]map[string][]byte
+}
+
+// NewAssetCache returns an empty cache.
+func NewAssetCache() *AssetCache {
+	return &AssetCache{data: map[int64]map[string][]byte{}}
+}
+
+// Get looks up an asset for a peer. ok=false when nothing's been
+// cached yet (first poll hasn't completed) or the asset name isn't
+// one the publisher writes.
+func (c *AssetCache) Get(peerID int64, asset string) (body []byte, ok bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if m, ok := c.data[peerID]; ok {
+		v, ok := m[asset]
+		return v, ok
+	}
+	return nil, false
+}
+
+// put stores an asset; intended for use by the s3reader Loop.
+func (c *AssetCache) put(peerID int64, asset string, body []byte) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	m, ok := c.data[peerID]
+	if !ok {
+		m = map[string][]byte{}
+		c.data[peerID] = m
+	}
+	m[asset] = body
 }
 
 // New constructs a Loop. interval defaults to PollInterval when zero.
-func New(store *db.Store, interval time.Duration) *Loop {
+// Pass a non-nil AssetCache to enable Phase A.2+ asset publishing
+// (findings, daimons, ...). When nil, the loop only fetches
+// introspect.json for peer-health (Phase A.0 behavior).
+func New(store *db.Store, interval time.Duration, assets *AssetCache) *Loop {
 	if interval <= 0 {
 		interval = PollInterval
 	}
@@ -62,7 +115,18 @@ func New(store *db.Store, interval time.Duration) *Loop {
 		store:    store,
 		interval: interval,
 		clients:  map[int64]*peerClient{},
+		assets:   assets,
 	}
+}
+
+// extraAssets enumerates the bucket objects beyond introspect.json
+// the reader pulls into its cache. Names match what the publisher
+// writes — the publisher and reader are deliberately decoupled
+// from the federation aggregator's path schema (no /api/* baked in)
+// so the bucket layout can evolve without churning either side.
+var extraAssets = []string{
+	"findings.json",
+	// Phase A.3: "daimons.json", "nodes.json", "orchestrations.json"
 }
 
 // peerClient is the cached s3 client for one peer + its prefix. We
@@ -152,6 +216,24 @@ func (l *Loop) scanPeer(ctx context.Context, p db.FederationPeer) {
 	}
 	if err := l.store.RecordPeerSuccess(p.ID, string(body)); err != nil {
 		log.Printf("s3reader peer=%d record success: %v", p.ID, err)
+	}
+
+	// Phase A.2 — also fetch the resource snapshots into the asset
+	// cache. Each is best-effort: a 404 / empty body just leaves the
+	// previous cached value in place, so the parent UI degrades to
+	// "stale data" rather than disappearing the peer's findings.
+	if l.assets == nil {
+		return
+	}
+	for _, name := range extraAssets {
+		assetBody, err := cli.GetBytes(rctx, prefix+name)
+		if err != nil || len(assetBody) == 0 {
+			// Don't downgrade peer health on missing assets — the
+			// publisher might be on an older build that doesn't write
+			// them yet, or the child has nothing to report.
+			continue
+		}
+		l.assets.put(p.ID, name, assetBody)
 	}
 }
 

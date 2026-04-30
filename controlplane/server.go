@@ -909,14 +909,24 @@ func (s *Server) startFederationS3Publisher(ctx context.Context) {
 		log.Printf("federation s3 publisher: %v", err)
 		return
 	}
-	pub, err := s3publisher.New(ctx, *cfg, s.renderIntrospectJSON)
+	// Phase A.2 — extra assets the publisher writes alongside
+	// introspect.json. findings.json is the unfiltered list; the
+	// parent's aggregator reads it for /api/v1/federation/findings*
+	// requests against this peer.
+	assets := []s3publisher.Asset{
+		{
+			Path:   "findings.json",
+			Render: s.renderFederationFindingsJSON,
+		},
+	}
+	pub, err := s3publisher.New(ctx, *cfg, s.renderIntrospectJSON, assets...)
 	if err != nil {
 		log.Printf("federation s3 publisher: connect: %v", err)
 		return
 	}
 	go pub.Run(ctx)
-	log.Printf("federation s3 publisher: writing to %s/%s every 30s",
-		cfg.Bucket, cfg.BucketPrefix)
+	log.Printf("federation s3 publisher: writing to %s/%s every 30s (introspect + %d extra asset(s))",
+		cfg.Bucket, cfg.BucketPrefix, len(assets))
 }
 
 // federationPublisherConfig assembles the s3publisher.Config from
@@ -983,6 +993,20 @@ func (s *Server) renderIntrospectJSON(ctx context.Context) ([]byte, error) {
 		},
 	})
 	return json.Marshal(resp)
+}
+
+// renderFederationFindingsJSON returns the JSON the
+// /api/v1/federation/findings endpoint would emit at default-filter
+// (open status, latest 1000). The parent's aggregator caches this
+// for s3 peers and serves federated /api/findings requests off it.
+//
+// Phase A.2 publishes the unfiltered list and the parent applies
+// query-param filters client-side at the boundary (best-effort —
+// see s3AssetForPath in the aggregator). Phase B+ may publish
+// per-filter snapshots if operator UX demands it.
+func (s *Server) renderFederationFindingsJSON(ctx context.Context) ([]byte, error) {
+	_ = ctx
+	return api.RenderFederationFindings(s.store, 1000)
 }
 
 // hooks so the rest of the CP doesn't need to know which transport
@@ -1098,7 +1122,14 @@ func (s *Server) Run(ctx context.Context) error {
 	// any federation_peers row with transport='s3_dead_drop'. No-op
 	// when no S3 peers are registered, so it's safe to start
 	// unconditionally; HTTPS-only operators pay nothing.
-	go s3reader.New(s.store, 0).Run(ctx)
+	//
+	// The AssetCache holds the bucket-fetched findings/etc the
+	// aggregator reads from for s3 peers. We construct it once and
+	// hand it to both the reader (which writes into it) and the
+	// aggregator (which reads from it via the S3Source interface).
+	s3AssetCache := s3reader.NewAssetCache()
+	s.fedAgg.SetS3Source(s3AssetCache)
+	go s3reader.New(s.store, 0, s3AssetCache).Run(ctx)
 
 	// Phase A — S3 dead-drop federation: child-side publisher.
 	// Enabled when FederationS3PublishPrefix is set AND we have
