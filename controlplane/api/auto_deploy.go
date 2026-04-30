@@ -14,6 +14,7 @@ package api
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"sync"
 	"time"
@@ -35,11 +36,6 @@ type FleetAutoDeployer struct {
 	binPath  string
 	resolver sshdeploy.DaemonBinaryResolver
 
-	// API keys forwarded to the runtime via /etc/okesu/jobs.env so
-	// spawned `okesu claude` jobs can authenticate. Empty disables.
-	anthropicKey string
-	openaiKey    string
-
 	// per-node locks so concurrent dispatches against the same
 	// fresh host don't trigger N parallel SSH installs.
 	locks sync.Map // nodeName → *sync.Mutex
@@ -55,7 +51,6 @@ func NewFleetAutoDeployer(
 	mgmtURL string,
 	binPath string,
 	resolver sshdeploy.DaemonBinaryResolver,
-	anthropicKey, openaiKey string,
 ) (*FleetAutoDeployer, error) {
 	if sshKeyPath == "" {
 		return nil, nil
@@ -65,14 +60,12 @@ func NewFleetAutoDeployer(
 		return nil, fmt.Errorf("read fleet ssh key %q: %w", sshKeyPath, err)
 	}
 	return &FleetAutoDeployer{
-		store:        store,
-		issuer:       issuer,
-		sshKey:       key,
-		mgmtURL:      mgmtURL,
-		binPath:      binPath,
-		resolver:     resolver,
-		anthropicKey: anthropicKey,
-		openaiKey:    openaiKey,
+		store:    store,
+		issuer:   issuer,
+		sshKey:   key,
+		mgmtURL:  mgmtURL,
+		binPath:  binPath,
+		resolver: resolver,
 	}, nil
 }
 
@@ -119,6 +112,23 @@ func (a *FleetAutoDeployer) AutoDeploy(ctx context.Context, nodeName string) err
 		return fmt.Errorf("issue cert: %w", err)
 	}
 
+	// Fetch fleet keys fresh on each deploy so operator rotations
+	// (via Settings → LLM Keys) propagate without restarting the CP.
+	// On error, log + proceed with empty keys — the deploy still
+	// installs the daemon; the operator can re-deploy after fixing
+	// the underlying issue.
+	var anthropicKey, openaiKey string
+	if mk, err := a.store.MasterKeyFromMeta(); err == nil {
+		if fe, err := a.store.GetFleetEnvWithKeys(mk); err == nil {
+			anthropicKey = fe.AnthropicAPIKey
+			openaiKey = fe.OpenAIAPIKey
+		} else {
+			log.Printf("auto_deploy: GetFleetEnvWithKeys: %v — deploying with empty keys", err)
+		}
+	} else {
+		log.Printf("auto_deploy: MasterKeyFromMeta: %v — deploying with empty keys", err)
+	}
+
 	ireq := sshdeploy.InstallJobsRequest{
 		Cred: sshdeploy.Credential{
 			User:       sshUser,
@@ -133,8 +143,8 @@ func (a *FleetAutoDeployer) AutoDeploy(ctx context.Context, nodeName string) err
 		ClientCertPEM:        clientCert,
 		ClientKeyPEM:         clientKey,
 		CACertPEM:            caCert,
-		AnthropicAPIKey:      a.anthropicKey,
-		OpenAIAPIKey:         a.openaiKey,
+		AnthropicAPIKey:      anthropicKey,
+		OpenAIAPIKey:         openaiKey,
 	}
 	installCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()

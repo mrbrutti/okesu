@@ -348,7 +348,7 @@ func New(cfg Config) (*Server, error) {
 		if cfg.DaemonBinariesDir != "" {
 			binResolver = api.NewDBBinaryResolver(store)
 		}
-		dep, derr := api.NewFleetAutoDeployer(store, srv, cfg.FleetSSHKeyPath, cfg.EffectiveMgmtURL(), cfg.DaemonBinaryPath, binResolver, cfg.FleetAnthropicAPIKey, cfg.FleetOpenAIAPIKey)
+		dep, derr := api.NewFleetAutoDeployer(store, srv, cfg.FleetSSHKeyPath, cfg.EffectiveMgmtURL(), cfg.DaemonBinaryPath, binResolver)
 		if derr != nil {
 			log.Printf("orchestrator auto-deploy disabled: %v", derr)
 		} else if dep != nil {
