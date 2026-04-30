@@ -37,12 +37,18 @@ import (
 // deploy_daimon, run_agent, ...). `body` is the kind-specific
 // payload — the child unmarshals it into its handler's expected
 // shape.
+//
+// `path_params` carries chi-style URL parameters when the underlying
+// HTTP handler needs them (e.g. NodeDeploy reads `{id}` via
+// chi.URLParam). For directives that don't have path parameters
+// (NodeCreate, CreateRun) the field is omitted entirely.
 type Request struct {
-	RequestID    string          `json:"request_id"`
-	Kind         string          `json:"kind"`
-	IssuedAt     time.Time       `json:"issued_at"`
-	IssuedByUser string          `json:"issued_by_user,omitempty"`
-	Body         json.RawMessage `json:"body"`
+	RequestID    string            `json:"request_id"`
+	Kind         string            `json:"kind"`
+	IssuedAt     time.Time         `json:"issued_at"`
+	IssuedByUser string            `json:"issued_by_user,omitempty"`
+	Body         json.RawMessage   `json:"body"`
+	PathParams   map[string]string `json:"path_params,omitempty"`
 }
 
 // Response is the JSON object the child writes into resp/<id>.json.
@@ -68,16 +74,16 @@ type Response struct {
 // constants so a typo in either end produces a compile error rather
 // than a silent "no handler" rejection on the child.
 const (
-	KindCreateNode = "create_node"
-	// Future kinds the write pipe gains in B.1+:
+	KindCreateNode   = "create_node"
+	KindDeployDaimon = "deploy_daimon"
+	KindCreateRun    = "create_run"
+	// Future kinds the write pipe gains in B.2+:
 	//
-	// KindDeployDaimon = "deploy_daimon"
-	// KindCreateRun    = "create_run"
-	// KindCancelRun    = "cancel_run"
-	// KindFindingSetStatus = "finding_set_status"
-	// KindOrchestrationCreate = "orchestration_create"
-	// KindOrchestrationUpdate = "orchestration_update"
-	// KindOrchestrationDelete = "orchestration_delete"
+	// KindCancelRun              = "cancel_run"
+	// KindFindingSetStatus       = "finding_set_status"
+	// KindOrchestrationCreate    = "orchestration_create"
+	// KindOrchestrationUpdate    = "orchestration_update"
+	// KindOrchestrationDelete    = "orchestration_delete"
 	// KindOrchestrationRunCreate = "orchestration_run_create"
 )
 

@@ -1008,9 +1008,29 @@ func (s *Server) startFederationS3Dispatcher(ctx context.Context) {
 		return
 	}
 	srv.Register(s3rpc.KindCreateNode, api.NewS3CreateNodeHandler(s.store))
+	srv.Register(s3rpc.KindDeployDaimon,
+		api.NewS3DeployDaimonHandler(s.store, s.jobs, s, s.deployNodesConfig()))
+	srv.Register(s3rpc.KindCreateRun,
+		api.NewS3CreateRunHandler(s.runs, s.tunReg, s.store, s.cfg.AgentFilesDirs))
 	go srv.Run(ctx)
-	log.Printf("federation s3 dispatcher: polling cp/*/outbound/%s/req/ every %s",
-		meta.InstanceID, s3rpc.DefaultServerPollInterval)
+	log.Printf("federation s3 dispatcher: polling cp/*/outbound/%s/req/ every %s (kinds: %s, %s, %s)",
+		meta.InstanceID, s3rpc.DefaultServerPollInterval,
+		s3rpc.KindCreateNode, s3rpc.KindDeployDaimon, s3rpc.KindCreateRun)
+}
+
+// deployNodesConfig assembles the api.NodesConfig used by deploy and
+// install handlers. Factored out so the s3 dispatcher and the HTTP
+// route registration share one definition.
+func (s *Server) deployNodesConfig() api.NodesConfig {
+	return api.NodesConfig{
+		DaemonBinaryPath:  s.cfg.DaemonBinaryPath,
+		DaemonBinariesDir: s.cfg.DaemonBinariesDir,
+		DaimonFilesDir:    s.cfg.DaimonFilesDir,
+		WebhookSecret:     s.cfg.WebhookSecret,
+		WebhookURL:        s.cfg.EffectiveWebhookURL(),
+		MgmtURL:           s.cfg.EffectiveMgmtURL(),
+		Secrets:           s.secrets,
+	}
 }
 
 // federationPublisherConfig assembles the s3publisher.Config from
