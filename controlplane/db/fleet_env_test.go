@@ -129,6 +129,37 @@ func TestFleetEnv_FederatedSet_OnlyWhenSourceIsFederated(t *testing.T) {
 	}
 }
 
+func TestFleetEnv_FederatedSet_SeedsEmptyRow(t *testing.T) {
+	// Migration default leaves the singleton row at source='local',
+	// version=0 — the "empty" state. Federation must be allowed to
+	// seed it without the operator first toggling source manually
+	// from the UI; otherwise a freshly-bootstrapped child CP never
+	// auto-receives keys from its parent.
+	s := openTempStore(t)
+	mk := mustMasterKey(t)
+	pre, _ := s.GetFleetEnv()
+	if pre.Source != "local" || pre.Version != 0 {
+		t.Fatalf("setup: source=%q version=%d, want local/0", pre.Source, pre.Version)
+	}
+	_, applied, err := s.SetFleetEnvFromFederation(mk, "parent-cp-1", "sk-seed", "sk-oai-seed", 7)
+	if err != nil {
+		t.Fatalf("SetFleetEnvFromFederation: %v", err)
+	}
+	if !applied {
+		t.Fatalf("expected federation to seed empty row, but applied=false")
+	}
+	fe, _ := s.GetFleetEnvWithKeys(mk)
+	if fe.Source != "federated_from_parent" {
+		t.Errorf("Source = %q, want federated_from_parent", fe.Source)
+	}
+	if fe.Version != 7 {
+		t.Errorf("Version = %d, want 7", fe.Version)
+	}
+	if fe.AnthropicAPIKey != "sk-seed" || fe.OpenAIAPIKey != "sk-oai-seed" {
+		t.Errorf("keys not stored: anthropic=%q openai=%q", fe.AnthropicAPIKey, fe.OpenAIAPIKey)
+	}
+}
+
 func TestFleetEnv_FederatedSet_WhenFederated(t *testing.T) {
 	s := openTempStore(t)
 	mk := mustMasterKey(t)

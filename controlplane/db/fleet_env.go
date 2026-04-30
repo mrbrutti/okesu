@@ -212,8 +212,13 @@ func (s *Store) SetFleetEnvFromFederation(masterKey []byte, parentCPID, anthropi
 	if err := tx.QueryRow(`SELECT source, version FROM fleet_env WHERE id = 1`).Scan(&currentSource, &currentVersion); err != nil {
 		return 0, false, err
 	}
-	// Operator-set local values are not overridden by federation.
-	if currentSource == "local" {
+	// Operator-set local values are not overridden by federation. The
+	// migration default is source='local', version=0 — that "empty"
+	// state still lets federation seed the row (per spec: poller
+	// updates when source=federated OR row is empty). Once the
+	// operator types a key in Settings, version > 0 and this guard
+	// keeps their value untouched.
+	if currentSource == "local" && currentVersion > 0 {
 		return currentVersion, false, nil
 	}
 	// Only update if the parent's version is newer than ours.
