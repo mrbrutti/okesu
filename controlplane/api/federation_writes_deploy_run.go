@@ -90,3 +90,27 @@ func ForwardingCreateRun(reg *RunRegistry, tunReg *tunnel.Registry, store *db.St
 func FederationCreateRun(reg *RunRegistry, tunReg *tunnel.Registry, store *db.Store, agentDirs []string) http.HandlerFunc {
 	return requireFederationToken(store, CreateRun(reg, tunReg, store, agentDirs))
 }
+
+// ForwardingCancelRun wraps CancelRun. When the URL has `?cp=<id>`,
+// the cancel is proxied (HTTPS or s3) to the child that owns the run.
+// Without `?cp=`, the cancel runs locally — same convention the
+// federated orchestration-run cancel uses, so the UI just appends the
+// query param when the run came from a federated child.
+//
+// CancelRun is the ad-hoc-run cancel; orchestration runs route through
+// FederatedOrchestrationRunCancel.
+func ForwardingCancelRun(reg *RunRegistry, tunReg *tunnel.Registry, store *db.Store, agg *federation.Aggregator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		path := strings.Replace(r.URL.Path, "/api/runs/", "/api/v1/federation/runs/", 1)
+		if handled, _ := proxyWriteByQuery(w, r, agg, path, s3rpc.KindCancelRun, idPathParams(r)); handled {
+			return
+		}
+		CancelRun(reg, tunReg, store).ServeHTTP(w, r)
+	}
+}
+
+// FederationCancelRun is the child-side endpoint that
+// ForwardingCancelRun proxies to.
+func FederationCancelRun(reg *RunRegistry, tunReg *tunnel.Registry, store *db.Store) http.HandlerFunc {
+	return requireFederationToken(store, CancelRun(reg, tunReg, store))
+}
