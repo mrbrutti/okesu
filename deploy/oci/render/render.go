@@ -79,11 +79,15 @@ func RenderCPYAML(in Inputs) ([]byte, error) {
 	return render("cp.yaml", cpYAMLTmpl, in)
 }
 
-// RenderEnvFile renders the systemd EnvironmentFile from the embedded
-// okesu-cp.env.tmpl template against the given inputs. The result is
-// written to /etc/default/okesu-cp on the CP host so that the
-// okesu-cp.service unit picks up secrets (API keys, OIDC client secret)
-// that are not present in cp.yaml.
+// RenderEnvFile renders /etc/default/okesu-cp from operator env. The
+// systemd unit references this file via EnvironmentFile=. Returns an
+// error if any required operator env var (currently: ANTHROPIC_API_KEY)
+// is missing or empty — agent jobs need it to function, and a
+// silently-empty value would produce a broken-CP-at-runtime rather
+// than a fail-at-render.
 func RenderEnvFile(in Inputs) ([]byte, error) {
+	if in.OperatorEnv["ANTHROPIC_API_KEY"] == "" {
+		return nil, fmt.Errorf("ANTHROPIC_API_KEY is required in OperatorEnv")
+	}
 	return render("okesu-cp.env", envTmpl, in)
 }

@@ -73,12 +73,47 @@ func TestRenderCPYAML_Child(t *testing.T) {
 }
 
 func TestRenderEnvFile(t *testing.T) {
-	in := loadInputs(t, "standalone")
-	in.OperatorEnv["ANTHROPIC_API_KEY"] = "sk-ant-test"
-	in.OperatorEnv["OPENAI_API_KEY"] = "sk-openai-test"
-	got, err := RenderEnvFile(in)
-	if err != nil {
-		t.Fatalf("RenderEnvFile: %v", err)
+	cases := []struct {
+		name string
+		env  map[string]string
+	}{
+		{
+			name: "anthropic_only",
+			env:  map[string]string{"ANTHROPIC_API_KEY": "sk-ant-test"},
+		},
+		{
+			name: "with_openai",
+			env: map[string]string{
+				"ANTHROPIC_API_KEY": "sk-ant-test",
+				"OPENAI_API_KEY":    "sk-openai-test",
+			},
+		},
+		{
+			name: "with_openai_and_oidc",
+			env: map[string]string{
+				"ANTHROPIC_API_KEY":  "sk-ant-test",
+				"OPENAI_API_KEY":     "sk-openai-test",
+				"OIDC_CLIENT_SECRET": "oidc-secret-test",
+			},
+		},
 	}
-	assertGolden(t, "okesu-cp.env", got)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			in := loadInputs(t, "standalone")
+			in.OperatorEnv = tc.env
+			got, err := RenderEnvFile(in)
+			if err != nil {
+				t.Fatalf("RenderEnvFile: %v", err)
+			}
+			assertGolden(t, "okesu-cp.env."+tc.name, got)
+		})
+	}
+}
+
+func TestRenderEnvFile_RequiresAnthropic(t *testing.T) {
+	in := Inputs{Mode: "standalone", TerraformOut: map[string]any{}, OperatorEnv: map[string]string{}}
+	_, err := RenderEnvFile(in)
+	if err == nil {
+		t.Fatalf("RenderEnvFile with no ANTHROPIC_API_KEY should error")
+	}
 }
