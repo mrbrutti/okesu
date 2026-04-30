@@ -956,6 +956,39 @@ export const api = {
       body: JSON.stringify(req),
     }),
 
+  // Cloud-side discovery: dropdown population for the +Add CP managed
+  // deploy form. The server decrypts the credential, calls the OCI
+  // SDK, and returns {id, name, attrs}[] so the UI doesn't need to
+  // know SDK shapes.
+  cloudDiscoveryOCI: {
+    compartments: (credId: number, region?: string) =>
+      request<DiscoveryItem[]>(`/api/cloud-credentials/${credId}/oci/compartments${region ? `?region=${encodeURIComponent(region)}` : ''}`),
+    availabilityDomains: (credId: number, compartmentId: string, region?: string) => {
+      const qs = new URLSearchParams({ compartment_id: compartmentId });
+      if (region) qs.set('region', region);
+      return request<DiscoveryItem[]>(`/api/cloud-credentials/${credId}/oci/availability-domains?${qs}`);
+    },
+    subnets: (credId: number, compartmentId: string, opts?: { region?: string; vcnId?: string }) => {
+      const qs = new URLSearchParams({ compartment_id: compartmentId });
+      if (opts?.region) qs.set('region', opts.region);
+      if (opts?.vcnId) qs.set('vcn_id', opts.vcnId);
+      return request<DiscoveryItem[]>(`/api/cloud-credentials/${credId}/oci/subnets?${qs}`);
+    },
+    images: (credId: number, compartmentId: string, opts?: { region?: string; os?: string; shape?: string }) => {
+      const qs = new URLSearchParams({ compartment_id: compartmentId });
+      if (opts?.region) qs.set('region', opts.region);
+      if (opts?.os) qs.set('os', opts.os);
+      if (opts?.shape) qs.set('shape', opts.shape);
+      return request<DiscoveryItem[]>(`/api/cloud-credentials/${credId}/oci/images?${qs}`);
+    },
+    shapes: (credId: number, compartmentId: string, opts?: { region?: string; availabilityDomain?: string }) => {
+      const qs = new URLSearchParams({ compartment_id: compartmentId });
+      if (opts?.region) qs.set('region', opts.region);
+      if (opts?.availabilityDomain) qs.set('availability_domain', opts.availabilityDomain);
+      return request<DiscoveryItem[]>(`/api/cloud-credentials/${credId}/oci/shapes?${qs}`);
+    },
+  },
+
   // Phase 21.1 — generate a bootstrap bundle for a fresh child CP.
   // Returns the tar.gz response as a Blob the caller hands to the
   // browser's download flow. The endpoint sends Content-Disposition
@@ -1708,6 +1741,13 @@ export interface CPProvisionEstimate {
   projected_monthly_usd?: number;
   unknown_active_count?: number;
   would_exceed_budget?: boolean;
+}
+
+// Cloud-discovery list item — every /oci/{resource} handler returns this.
+export interface DiscoveryItem {
+  id: string;
+  name: string;
+  attrs?: Record<string, unknown>;
 }
 
 // Phase 21.5 — structured 409 from cp-provision when over budget.
