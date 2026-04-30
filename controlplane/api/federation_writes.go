@@ -494,6 +494,85 @@ func FederationOrchestrationsList(store *db.Store) http.HandlerFunc {
 	return requireFederationToken(store, OrchestrationsList(store))
 }
 
+// ── investigations federation wrappers ──────────────────────────────
+
+// FederatedInvestigationsList returns the local list merged with each
+// federated child's. Each remote row carries cp_source so the
+// investigations page UI can show the case's owning CP and deep-link
+// to the child via ?cp=<id> on detail.
+//
+// Investigation detail (the workspace tabs) stays child-scoped via
+// the existing ?cp= proxy convention — federated cases aren't
+// "merged" into a parent case; they're surfaced for visibility.
+func FederatedInvestigationsList(store *db.Store, agg *federation.Aggregator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		localRR := httpRecorder()
+		ListInvestigationsHandler(store).ServeHTTP(localRR, r)
+		if localRR.code != http.StatusOK {
+			w.WriteHeader(localRR.code)
+			_, _ = w.Write(localRR.body)
+			return
+		}
+		var localRows []map[string]any
+		_ = json.Unmarshal(localRR.body, &localRows)
+
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+
+		var mu sync.Mutex
+		merged := append([]map[string]any{}, localRows...)
+		results, _ := agg.FanOut(ctx, func(ctx context.Context, peer federation.Peer) error {
+			var rows []map[string]any
+			if err := agg.FetchJSON(ctx, peer, "/api/v1/federation/investigations", &rows); err != nil {
+				return err
+			}
+			tag := map[string]any{
+				"instance_id":  peer.Snapshot.InstanceID,
+				"display_name": peer.Snapshot.DisplayName,
+				"region":       peer.Snapshot.Region,
+			}
+			for i := range rows {
+				rows[i]["cp_source"] = tag
+			}
+			mu.Lock()
+			merged = append(merged, rows...)
+			mu.Unlock()
+			return nil
+		})
+		if pErr := federation.AnyError(results); pErr != nil {
+			w.Header().Set("X-Okesu-Federation-Warning", pErr.Error())
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(merged)
+	}
+}
+
+// FederationInvestigationsList — child-side token-authed sibling.
+// Same query-string contract as ListInvestigationsHandler (?status,
+// ?limit). Used by the parent's aggregator over HTTPS and by the
+// s3publisher for the bucket-cached snapshot.
+func FederationInvestigationsList(store *db.Store) http.HandlerFunc {
+	return requireFederationToken(store, ListInvestigationsHandler(store))
+}
+
+// FederatedInvestigationDetail proxies a single GET via ?cp= to the
+// owning child CP, falling through to the local store otherwise.
+// Mirrors FederatedOrchestrationDetail's shape.
+func FederatedInvestigationDetail(store *db.Store, agg *federation.Aggregator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		path := strings.Replace(r.URL.Path, "/api/investigations/", "/api/v1/federation/investigations/", 1)
+		if handled, _ := proxyToCPByQuery(w, r, agg, path); handled {
+			return
+		}
+		GetInvestigationHandler(store).ServeHTTP(w, r)
+	}
+}
+
+// FederationInvestigationDetail — child-side token-authed sibling.
+func FederationInvestigationDetail(store *db.Store) http.HandlerFunc {
+	return requireFederationToken(store, GetInvestigationHandler(store))
+}
+
 // FederatedOrchestrationDetail proxies a single GET via ?cp= to the
 // owning child CP, falling through to the local store otherwise.
 func FederatedOrchestrationDetail(store *db.Store, agg *federation.Aggregator) http.HandlerFunc {

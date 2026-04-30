@@ -109,33 +109,54 @@ export default function InvestigationsPage() {
               <thead>
                 <tr className="text-left text-[11px] uppercase tracking-wide text-ink-mute bg-slate-50 border-b border-border">
                   <th className="px-3 py-2 font-medium">Title</th>
+                  <th className="px-3 py-2 font-medium w-28">CP</th>
                   <th className="px-3 py-2 font-medium w-28">Status</th>
                   <th className="px-3 py-2 font-medium w-36">Resolution</th>
                   <th className="px-3 py-2 font-medium w-44">Updated</th>
                 </tr>
               </thead>
               <tbody>
-                {items.map((inv) => (
-                  <tr key={inv.ID} className="border-b border-border last:border-b-0 hover:bg-slate-50/60">
-                    <td className="px-3 py-2">
-                      <Link
-                        to={`/investigations/${inv.ID}`}
-                        className="text-brand-700 hover:underline"
-                      >
-                        {inv.Title || '(untitled)'}
-                      </Link>
-                    </td>
-                    <td className="px-3 py-2">
-                      <StatusChip status={inv.Status} />
-                    </td>
-                    <td className="px-3 py-2 text-ink-dim text-xs">
-                      {inv.Resolution || <span className="text-ink-mute">—</span>}
-                    </td>
-                    <td className="px-3 py-2 text-ink-dim text-xs font-mono">
-                      {fmtDate(inv.UpdatedAt)}
-                    </td>
-                  </tr>
-                ))}
+                {items.map((inv) => {
+                  // Federated rows live on a child CP — preserve cp_source
+                  // through the detail link so the workspace can ?cp= the
+                  // bundle fetch back to the owning child.
+                  const detailHref = inv.cp_source
+                    ? `/investigations/${inv.ID}?cp=${encodeURIComponent(inv.cp_source.instance_id)}`
+                    : `/investigations/${inv.ID}`;
+                  return (
+                    <tr key={`${inv.cp_source?.instance_id ?? 'local'}:${inv.ID}`} className="border-b border-border last:border-b-0 hover:bg-slate-50/60">
+                      <td className="px-3 py-2">
+                        <Link
+                          to={detailHref}
+                          className="text-brand-700 hover:underline"
+                        >
+                          {inv.Title || '(untitled)'}
+                        </Link>
+                      </td>
+                      <td className="px-3 py-2 text-xs">
+                        {inv.cp_source ? (
+                          <span
+                            className="text-[10px] uppercase tracking-wide font-medium px-1.5 py-0.5 rounded ring-1 text-violet-700 bg-violet-50 ring-violet-200"
+                            title={`${inv.cp_source.display_name} (${inv.cp_source.region})`}
+                          >
+                            {inv.cp_source.display_name}
+                          </span>
+                        ) : (
+                          <span className="text-[10px] uppercase tracking-wide text-ink-mute">local</span>
+                        )}
+                      </td>
+                      <td className="px-3 py-2">
+                        <StatusChip status={inv.Status} />
+                      </td>
+                      <td className="px-3 py-2 text-ink-dim text-xs">
+                        {inv.Resolution || <span className="text-ink-mute">—</span>}
+                      </td>
+                      <td className="px-3 py-2 text-ink-dim text-xs font-mono">
+                        {fmtDate(inv.UpdatedAt)}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

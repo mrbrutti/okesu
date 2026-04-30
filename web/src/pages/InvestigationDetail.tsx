@@ -17,7 +17,7 @@
 // of urgency in the case view.
 
 import { useEffect, useMemo, useState } from 'react';
-import { Link, useNavigate, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import {
   Activity,
   AlertTriangle,
@@ -70,6 +70,12 @@ export default function InvestigationDetailPage() {
   const { id = '' } = useParams<{ id: string }>();
   const invID = Number(id);
   const navigate = useNavigate();
+  // ?cp=<instance_id> is set when navigating from the federated
+  // investigations list. The detail proxy on the parent forwards
+  // GET /api/investigations/{id} to the owning child via the
+  // existing ?cp= convention.
+  const [search] = useSearchParams();
+  const cpInstanceID = search.get('cp') || undefined;
 
   const [bundle, setBundle] = useState<InvestigationDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -83,7 +89,7 @@ export default function InvestigationDetailPage() {
   const reload = () => {
     setError(null);
     api.investigations
-      .get(invID)
+      .get(invID, cpInstanceID)
       .then((b) => {
         setBundle(b);
         setDraftTitle(b.investigation.Title);
