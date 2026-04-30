@@ -1,4 +1,4 @@
--- Phase 22.4 postgres parity. See migrations/sqlite/037_ioc_enrichments_and_relationships.sql.
+-- Phase 22.4 postgres parity. See migrations/sqlite/038_ioc_enrichments_and_relationships.sql.
 
 CREATE TABLE IF NOT EXISTS ioc_enrichments (
   id          BIGSERIAL PRIMARY KEY,

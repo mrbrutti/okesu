@@ -18,7 +18,7 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
-import { api, type CloudCredential, type CloudKind, type CPProvision, type CPProvisionEstimate, type DiscoveryItem, type FederationPeer } from '../api';
+import { api, type CloudCredential, type CloudKind, type CPProvision, type CPProvisionEstimate, type DiscoveryItem, type FederationPeer, type TransportConfigSummary } from '../api';
 import { cn } from '../lib/cn';
 
 export default function FederationPage() {
@@ -749,14 +749,36 @@ function ConnectExistingPanel({ onClose, onAdded }: { onClose: () => void; onAdd
 function GenerateBundlePanel({ onClose }: { onClose: () => void }) {
   const [displayName, setDisplayName] = useState('');
   const [region, setRegion] = useState('');
-  const [format, setFormat] = useState<'dockerfile-tarball' | 'compose-tarball' | 'terraform'>('dockerfile-tarball');
+  const [format, setFormat] = useState<'dockerfile-tarball' | 'compose-tarball' | 'terraform' | 's3-dead-drop'>('dockerfile-tarball');
   const [cloud, setCloud] = useState<'oci' | 'aws'>('oci');
   const [parentURL, setParentURL] = useState('');
+  const [transportConfigID, setTransportConfigID] = useState<number | null>(null);
+  const [transportConfigs, setTransportConfigs] = useState<TransportConfigSummary[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
 
+  // Pull transport_configs lazily once — only needed when the
+  // operator picks s3-dead-drop. The list is small.
+  useEffect(() => {
+    if (format === 's3-dead-drop' && transportConfigs === null) {
+      api.transportConfigs()
+        .then((rows) => {
+          setTransportConfigs(rows);
+          if (rows.length > 0 && transportConfigID === null) {
+            setTransportConfigID(rows[0].id);
+          }
+        })
+        .catch((e) => setError('load transport configs: ' + String(e)));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [format]);
+
   async function submit() {
+    if (format === 's3-dead-drop' && !transportConfigID) {
+      setError('pick a transport_config (which bucket the child publishes to)');
+      return;
+    }
     setBusy(true); setError(null); setDone(null);
     try {
       const { blob, filename } = await api.cpBundle({
@@ -765,6 +787,7 @@ function GenerateBundlePanel({ onClose }: { onClose: () => void }) {
         format,
         cloud: format === 'terraform' ? cloud : undefined,
         parent_url: parentURL || undefined,
+        transport_config_id: format === 's3-dead-drop' ? (transportConfigID ?? undefined) : undefined,
       });
       // Trigger the browser's save-as flow.
       const url = URL.createObjectURL(blob);
@@ -828,6 +851,13 @@ function GenerateBundlePanel({ onClose }: { onClose: () => void }) {
                 <div className="text-ink-mute">IaC export — operator runs <code>terraform apply</code> with their own cloud creds.</div>
               </div>
             </label>
+            <label className="flex items-start gap-2 cursor-pointer">
+              <input type="radio" checked={format === 's3-dead-drop'} onChange={() => setFormat('s3-dead-drop')} className="mt-0.5" />
+              <div className="text-xs">
+                <div className="font-medium text-ink">S3 dead-drop</div>
+                <div className="text-ink-mute">Child writes its state to a bucket; parent reads it back. Use when the parent has no public IP — outbound HTTPS to the bucket is the only network requirement on either side.</div>
+              </div>
+            </label>
           </div>
         </Field>
         {format === 'terraform' && (
@@ -840,6 +870,29 @@ function GenerateBundlePanel({ onClose }: { onClose: () => void }) {
               <option value="oci">OCI (oracle/oci)</option>
               <option value="aws">AWS (hashicorp/aws)</option>
             </select>
+          </Field>
+        )}
+        {format === 's3-dead-drop' && (
+          <Field label="Bucket (transport_config)" hint="Which bucket the child publishes to + the parent reads from. Pick an existing transport_config that both ends can reach.">
+            {transportConfigs === null ? (
+              <div className="text-xs text-ink-mute">loading…</div>
+            ) : transportConfigs.length === 0 ? (
+              <div className="text-xs text-amber-700">
+                No transport_configs configured. Add one under Settings → Transport (or Nodes → Add Node → S3 dead-drop) first.
+              </div>
+            ) : (
+              <select
+                value={transportConfigID ?? ''}
+                onChange={(e) => setTransportConfigID(e.target.value ? Number(e.target.value) : null)}
+                className="w-full px-3 py-1.5 text-sm border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500/30 bg-panel"
+              >
+                {transportConfigs.map((tc) => (
+                  <option key={tc.id} value={tc.id}>
+                    {tc.name} · {tc.bucket} @ {tc.endpoint}
+                  </option>
+                ))}
+              </select>
+            )}
           </Field>
         )}
         <Field label="Parent URL (optional)">

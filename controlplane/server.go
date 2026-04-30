@@ -40,6 +40,9 @@ import (
 	"github.com/section9labs/okesu/controlplane/db"
 	"github.com/section9labs/okesu/controlplane/eventpipeline"
 	"github.com/section9labs/okesu/controlplane/federation"
+	"github.com/section9labs/okesu/controlplane/federation/s3publisher"
+	"github.com/section9labs/okesu/controlplane/federation/s3reader"
+	"github.com/section9labs/okesu/controlplane/federation/s3rpc"
 	"github.com/section9labs/okesu/controlplane/ioc/catalog"
 	"github.com/section9labs/okesu/controlplane/jobs"
 	"github.com/section9labs/okesu/controlplane/notify"
@@ -178,6 +181,17 @@ func New(cfg Config) (*Server, error) {
 	tokenOp := cfg.FederationToken
 	if tokenOp == "" {
 		// preserve existing hash
+	}
+	// Phase A.1 — when --cp-instance-id is set AND cp_meta has no
+	// row yet, seed bootstrap with that exact uuid. The federation
+	// enrollment bundle uses this so the parent can pre-register the
+	// child's bucket prefix before the child has even booted. On a
+	// re-launched CP this is a no-op: the row exists, we keep its
+	// already-issued id (CPMeta() returns it unchanged).
+	if cfg.CPInstanceID != "" {
+		if err := store.SeedCPInstanceID(cfg.CPInstanceID); err != nil {
+			return nil, fmt.Errorf("cp_meta seed instance_id: %w", err)
+		}
 	}
 	if _, err := store.UpdateCPMeta(cfg.CPRegion, cfg.CPDisplayName, "", tokenOp); err != nil {
 		return nil, fmt.Errorf("cp_meta init: %w", err)
@@ -715,6 +729,12 @@ func (s *Server) routes() http.Handler {
 			// peer means storing a credential for an outbound CP.
 			r.Get("/api/federation/peers", api.FederationListPeers(s.store))
 			r.Post("/api/federation/peers", api.FederationAddPeer(s.store, s.fedPoller))
+			// Phase A — register an S3-dead-drop child CP. Operator
+			// supplies a transport_config (the bucket coords + creds
+			// the parent will read with) + the bucket prefix the
+			// child publishes to. No synchronous probe — the bucket
+			// may legitimately be empty until the child's first tick.
+			r.Post("/api/federation/peers/s3", api.FederationAddS3Peer(s.store))
 			r.Delete("/api/federation/peers/{id}", api.FederationDeletePeer(s.store))
 			r.Post("/api/federation/peers/{id}/refresh", api.FederationRefreshPeer(s.store, s.fedPoller))
 			// Phase 21.1 — generate a bootstrap bundle for a new
@@ -902,6 +922,196 @@ func resolvePackageBinary(s *Server, target string) ([]byte, error) {
 
 // startS3Scanner spins up one s3scanner.Scanner against a transport
 // config. Forwards events into the existing eventpipeline + findings
+// startFederationS3Publisher starts the child-side S3 publisher
+// (Phase A) — writes this CP's introspect snapshot to the configured
+// bucket prefix every 30s. The parent's s3reader picks it up.
+//
+// Two paths to bucket coords:
+//
+//   1. Inline (Phase A.1) — preferred when --federation-s3-publish-bucket
+//      etc. are set. Used by the enrollment bundle which bakes everything
+//      into env-vars so first boot doesn't need an existing
+//      transport_config row.
+//   2. By transport_config_id — preferred for operators with one bucket
+//      shared across nodes + federation. Reuses the existing table.
+//
+// Errors here are logged + the publisher is skipped — a missing config
+// or unreachable bucket should never crash the CP.
+func (s *Server) startFederationS3Publisher(ctx context.Context) {
+	cfg, err := s.federationPublisherConfig(ctx)
+	if err != nil {
+		log.Printf("federation s3 publisher: %v", err)
+		return
+	}
+	// Phase A.2/A.3 — extra assets the publisher writes alongside
+	// introspect.json. Each maps 1:1 with what the matching
+	// /api/v1/federation/* endpoint emits over HTTPS, so the
+	// aggregator's cached read returns the same wire shape.
+	assets := []s3publisher.Asset{
+		{Path: "findings.json", Render: s.renderFederationFindingsJSON},
+		{Path: "daimons.json", Render: s.renderFederationDaimonsJSON},
+		{Path: "nodes.json", Render: s.renderFederationNodesJSON},
+		{Path: "orchestrations.json", Render: s.renderFederationOrchestrationsJSON},
+	}
+	pub, err := s3publisher.New(ctx, *cfg, s.renderIntrospectJSON, assets...)
+	if err != nil {
+		log.Printf("federation s3 publisher: connect: %v", err)
+		return
+	}
+	go pub.Run(ctx)
+	log.Printf("federation s3 publisher: writing to %s/%s every 30s (introspect + %d extra asset(s))",
+		cfg.Bucket, cfg.BucketPrefix, len(assets))
+}
+
+// startFederationS3Dispatcher starts the child-side write-pipe server
+// (Phase B). Polls cp/*/outbound/<self>/req/*.json for directives the
+// parent CP submitted, dispatches into the local HTTP handlers via the
+// s3rpc bridge, and writes the response back to
+// cp/<self>/outbound/<parent>/resp/<id>.json.
+//
+// Same enable gate as the publisher — if the bucket isn't configured,
+// the dispatcher silently skips (an offline bucket should never crash
+// the CP). The s3transport.Client used here is freshly built rather
+// than shared with the publisher because the publisher's client is
+// internal to that goroutine; the costs of one extra connect at boot
+// are negligible.
+func (s *Server) startFederationS3Dispatcher(ctx context.Context) {
+	cfg, err := s.federationPublisherConfig(ctx)
+	if err != nil {
+		log.Printf("federation s3 dispatcher: %v", err)
+		return
+	}
+	cli, err := s3transport.NewClient(ctx, s3transport.ClientConfig{
+		Bucket:    cfg.Bucket,
+		Endpoint:  cfg.Endpoint,
+		Region:    cfg.Region,
+		UseSSL:    cfg.UseSSL,
+		AccessKey: cfg.AccessKey,
+		SecretKey: cfg.SecretKey,
+	})
+	if err != nil {
+		log.Printf("federation s3 dispatcher: connect: %v", err)
+		return
+	}
+	meta, err := s.store.CPMeta()
+	if err != nil {
+		log.Printf("federation s3 dispatcher: cp_meta: %v", err)
+		return
+	}
+	if meta.InstanceID == "" {
+		log.Printf("federation s3 dispatcher: cp_meta has no instance_id (run --cp-instance-id on first boot)")
+		return
+	}
+	srv, err := s3rpc.New(cli, meta.InstanceID)
+	if err != nil {
+		log.Printf("federation s3 dispatcher: %v", err)
+		return
+	}
+	srv.Register(s3rpc.KindCreateNode, api.NewS3CreateNodeHandler(s.store))
+	go srv.Run(ctx)
+	log.Printf("federation s3 dispatcher: polling cp/*/outbound/%s/req/ every %s",
+		meta.InstanceID, s3rpc.DefaultServerPollInterval)
+}
+
+// federationPublisherConfig assembles the s3publisher.Config from
+// either inline flags (preferred when set) or a transport_config row.
+// Returns an error if neither path has all required fields.
+func (s *Server) federationPublisherConfig(ctx context.Context) (*s3publisher.Config, error) {
+	prefix := s.cfg.FederationS3PublishPrefix
+	if prefix == "" {
+		return nil, fmt.Errorf("FederationS3PublishPrefix is empty")
+	}
+
+	// Path 1: inline coords. Need bucket + endpoint + access_key +
+	// secret_key at minimum; region/use_ssl have sensible defaults.
+	if s.cfg.FederationS3PublishBucket != "" &&
+		s.cfg.FederationS3PublishEndpoint != "" &&
+		s.cfg.FederationS3PublishAccessKey != "" &&
+		s.cfg.FederationS3PublishSecretKey != "" {
+		return &s3publisher.Config{
+			Bucket:       s.cfg.FederationS3PublishBucket,
+			Endpoint:     s.cfg.FederationS3PublishEndpoint,
+			Region:       s.cfg.FederationS3PublishRegion,
+			UseSSL:       s.cfg.FederationS3PublishUseSSL,
+			AccessKey:    s.cfg.FederationS3PublishAccessKey,
+			SecretKey:    s.cfg.FederationS3PublishSecretKey,
+			BucketPrefix: prefix,
+		}, nil
+	}
+
+	// Path 2: transport_config row.
+	if s.cfg.FederationS3PublishConfigID == 0 {
+		return nil, fmt.Errorf("neither inline bucket coords nor FederationS3PublishConfigID set")
+	}
+	tc, err := s.store.GetTransportConfig(s.cfg.FederationS3PublishConfigID)
+	if err != nil {
+		return nil, fmt.Errorf("transport_config %d: %w", s.cfg.FederationS3PublishConfigID, err)
+	}
+	_ = ctx // unused — minio-go's New() takes context internally
+	return &s3publisher.Config{
+		Bucket:       tc.Bucket,
+		Endpoint:     tc.Endpoint, // public endpoint (the child writes from outside the VPC)
+		Region:       tc.Region.String,
+		UseSSL:       tc.UseSSL,
+		AccessKey:    tc.AccessKey.String,
+		SecretKey:    tc.SecretKey.String,
+		BucketPrefix: prefix,
+	}, nil
+}
+
+// renderIntrospectJSON returns the same JSON the local
+// /api/v1/cp/introspect handler emits, marshaled to bytes. Used by
+// the federation S3 publisher.
+func (s *Server) renderIntrospectJSON(ctx context.Context) ([]byte, error) {
+	_ = ctx
+	resp := api.BuildIntrospectResponse(api.CPIntrospectDepsValue{
+		Store:           s.store,
+		Version:         Version(),
+		DaemonVersionFn: s.daemonBinaryVersion,
+		Features: api.AboutFeatures{
+			OIDC:          s.oidc != nil,
+			MgmtPlane:     s.cfg.MgmtListen != "",
+			Tunnel:        s.tunReg != nil,
+			WebhookIngest: s.cfg.Listen != "",
+			Deploy:        s.cfg.DaemonBinaryPath != "" || s.cfg.DaemonBinariesDir != "",
+		},
+	})
+	return json.Marshal(resp)
+}
+
+// renderFederationFindingsJSON returns the JSON the
+// /api/v1/federation/findings endpoint would emit at default-filter
+// (open status, latest 1000). The parent's aggregator caches this
+// for s3 peers and serves federated /api/findings requests off it.
+//
+// Phase A.2 publishes the unfiltered list and the parent applies
+// query-param filters client-side at the boundary (best-effort —
+// see s3AssetForPath in the aggregator). Phase B+ may publish
+// per-filter snapshots if operator UX demands it.
+func (s *Server) renderFederationFindingsJSON(ctx context.Context) ([]byte, error) {
+	_ = ctx
+	return api.RenderFederationFindings(s.store, 1000)
+}
+
+// renderFederationDaimonsJSON / renderFederationNodesJSON /
+// renderFederationOrchestrationsJSON — Phase A.3 siblings to the
+// findings renderer. Same mechanic: produce the body the matching
+// federation endpoint would emit at default filters.
+func (s *Server) renderFederationDaimonsJSON(ctx context.Context) ([]byte, error) {
+	_ = ctx
+	return api.RenderFederationDaimons(s.store, 1000)
+}
+
+func (s *Server) renderFederationNodesJSON(ctx context.Context) ([]byte, error) {
+	_ = ctx
+	return api.RenderFederationNodes(s.store, 1000)
+}
+
+func (s *Server) renderFederationOrchestrationsJSON(ctx context.Context) ([]byte, error) {
+	_ = ctx
+	return api.RenderFederationOrchestrations(s.store)
+}
+
 // hooks so the rest of the CP doesn't need to know which transport
 // the data arrived through.
 func (s *Server) startS3Scanner(ctx context.Context, c db.TransportConfig) {
@@ -1011,6 +1221,30 @@ func (s *Server) Run(ctx context.Context) error {
 	go s.sessionGC(ctx)
 	go s.notify.Run(ctx)
 	s.fedPoller.Start(ctx)
+	// Phase A — S3 dead-drop federation: parent-side reader for
+	// any federation_peers row with transport='s3_dead_drop'. No-op
+	// when no S3 peers are registered, so it's safe to start
+	// unconditionally; HTTPS-only operators pay nothing.
+	//
+	// The AssetCache holds the bucket-fetched findings/etc the
+	// aggregator reads from for s3 peers. We construct it once and
+	// hand it to both the reader (which writes into it) and the
+	// aggregator (which reads from it via the S3Source interface).
+	s3AssetCache := s3reader.NewAssetCache()
+	s.fedAgg.SetS3Source(s3AssetCache)
+	go s3reader.New(s.store, 0, s3AssetCache).Run(ctx)
+
+	// Phase A — S3 dead-drop federation: child-side publisher.
+	// Enabled when FederationS3PublishPrefix is set AND we have
+	// either inline bucket coords (Phase A.1 enrollment bundle path)
+	// or a transport_config_id pointing at an existing row. The
+	// helper below picks the right path; the enable check just gates
+	// the goroutine spawn.
+	if s.cfg.FederationS3PublishPrefix != "" &&
+		(s.cfg.FederationS3PublishConfigID > 0 || s.cfg.FederationS3PublishBucket != "") {
+		s.startFederationS3Publisher(ctx)
+		s.startFederationS3Dispatcher(ctx)
+	}
 
 	// Phase 22: SIGHUP triggers a re-scan of every IOC catalog
 	// directory. Same code path as the boot-time load — operators

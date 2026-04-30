@@ -169,6 +169,15 @@ func serveCmd() *cobra.Command {
 	cmd.Flags().StringVar(&cfg.FederationToken, "federation-token", cfg.FederationToken, "Shared secret a parent CP presents on /api/v1/cp/introspect (X-Okesu-Federation-Token). Empty disables federation auth.")
 	cmd.Flags().StringVar(&cfg.CPBootstrapBinaryPath, "cp-bootstrap-binary", cfg.CPBootstrapBinaryPath, "Linux build of okesu-cp embedded in dockerfile-format CP bootstrap bundles. Empty disables that format.")
 	cmd.Flags().StringVar(&cfg.CPBootstrapImageTarPath, "cp-bootstrap-image-tar", cfg.CPBootstrapImageTarPath, "`docker save`-format tarball of the okesu-cp image embedded in compose-format CP bootstrap bundles. Empty disables that format.")
+	cmd.Flags().StringVar(&cfg.FederationS3PublishPrefix, "federation-s3-publish-prefix", cfg.FederationS3PublishPrefix, "Bucket prefix this child CP writes its introspect manifest to, e.g. 'cp/<self>/outbound/<parent>/'. Empty disables S3-dead-drop publishing.")
+	cmd.Flags().Int64Var(&cfg.FederationS3PublishConfigID, "federation-s3-publish-config-id", cfg.FederationS3PublishConfigID, "transport_configs.id whose bucket coords the publisher uses. 0 disables.")
+	cmd.Flags().StringVar(&cfg.FederationS3PublishBucket, "federation-s3-publish-bucket", cfg.FederationS3PublishBucket, "Inline bucket name for the publisher (alternative to --federation-s3-publish-config-id). Set with the other --federation-s3-publish-* flags by the enrollment bundle.")
+	cmd.Flags().StringVar(&cfg.FederationS3PublishEndpoint, "federation-s3-publish-endpoint", cfg.FederationS3PublishEndpoint, "Inline bucket endpoint (host:port).")
+	cmd.Flags().StringVar(&cfg.FederationS3PublishRegion, "federation-s3-publish-region", cfg.FederationS3PublishRegion, "Inline bucket region.")
+	cmd.Flags().BoolVar(&cfg.FederationS3PublishUseSSL, "federation-s3-publish-use-ssl", cfg.FederationS3PublishUseSSL, "Whether to talk to the bucket over TLS.")
+	cmd.Flags().StringVar(&cfg.FederationS3PublishAccessKey, "federation-s3-publish-access-key", cfg.FederationS3PublishAccessKey, "Inline bucket access key.")
+	cmd.Flags().StringVar(&cfg.FederationS3PublishSecretKey, "federation-s3-publish-secret-key", cfg.FederationS3PublishSecretKey, "Inline bucket secret key.")
+	cmd.Flags().StringVar(&cfg.CPInstanceID, "cp-instance-id", cfg.CPInstanceID, "Pre-assigned CP instance UUID. Honored only on a fresh DB; existing rows keep their generated id. Set by the federation enrollment bundle.")
 
 	return cmd
 }
