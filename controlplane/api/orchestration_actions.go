@@ -14,6 +14,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/section9labs/okesu/controlplane/api/enrichment"
@@ -71,12 +72,28 @@ func (a *FindingActionApplier) SetFindingSeverityOverride(findingID int64, sever
 	})
 }
 
+// LinkRunToFinding records the run↔finding edge AND auto-threads the
+// run into every investigation the finding is on. The investigation
+// pass is best-effort: a failure logs but doesn't abort the action,
+// since the finding-level link is the primary contract.
 func (a *FindingActionApplier) LinkRunToFinding(findingID int64, runID int64, stepID, reason string) error {
-	return a.store.LinkRunToFinding(findingID, runID, stepID, reason, db.EditOrigin{
+	if err := a.store.LinkRunToFinding(findingID, runID, stepID, reason, db.EditOrigin{
 		OrchestrationRunID: runID,
 		OrchestrationStep:  stepID,
 		Reason:             reason,
-	})
+	}); err != nil {
+		return err
+	}
+	// Auto-thread runs into investigations via the finding's case
+	// membership. Best-effort — the finding-level link already
+	// succeeded, so a failure here doesn't get the run "wrong"; it
+	// just costs the operator a manual workspace re-link.
+	if n, err := a.store.LinkRunToInvestigationsForFinding(runID, findingID); err != nil {
+		log.Printf("auto-link run %d to investigations via finding %d: %v", runID, findingID, err)
+	} else if n > 0 {
+		log.Printf("auto-linked run %d to %d investigation(s) via finding %d", runID, n, findingID)
+	}
+	return nil
 }
 
 // RecordAgentLesson delegates to the db.Store's bounded KV. Daemons

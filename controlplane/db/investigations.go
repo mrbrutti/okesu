@@ -402,6 +402,29 @@ func (s *Store) ListInvestigationsForFinding(findingID int64) ([]Investigation, 
 	return out, rows.Err()
 }
 
+// LinkRunToInvestigationsForFinding bulk-links an orchestration run
+// to every investigation the finding is currently in. Used by the
+// engine's auto-link hook when the `link_run_to_finding` action
+// fires — if the touched finding is on a case, the run that
+// touched it should be on the same case.
+//
+// Idempotent per (investigation_id, run_id) via the join row's PK.
+// Returns the count of newly-linked rows (existing links silently
+// ignored). Empty result when the finding isn't on any case.
+func (s *Store) LinkRunToInvestigationsForFinding(runID, findingID int64) (int, error) {
+	res, err := s.Exec(`
+		INSERT INTO investigation_runs (investigation_id, orchestration_run_id)
+		SELECT investigation_id, ? FROM investigation_findings
+		WHERE finding_id = ?
+		ON CONFLICT (investigation_id, orchestration_run_id) DO NOTHING`,
+		runID, findingID)
+	if err != nil {
+		return 0, err
+	}
+	n, err := res.RowsAffected()
+	return int(n), err
+}
+
 // AddInvestigationNote appends a markdown analyst note to a case and
 // bumps the case's updated_at so the case rises in the recency-sorted
 // list.

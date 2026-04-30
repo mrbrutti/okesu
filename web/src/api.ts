@@ -839,11 +839,21 @@ export const api = {
       const qs = cpInstanceID ? `?cp=${encodeURIComponent(cpInstanceID)}` : '';
       return request<InvestigationDetail>(`/api/investigations/${id}${qs}`);
     },
-    create: (req: { title: string; summary?: string; from_finding_id?: number; created_by?: string }) =>
-      request<Investigation>('/api/investigations', {
+    create: (
+      req: { title: string; summary?: string; from_finding_id?: number; created_by?: string },
+      cpInstanceID?: string,
+    ) => {
+      // Federated finding flow: when the finding lives on a child CP,
+      // append ?cp=<id> so the parent forwards the create to that
+      // child. Otherwise the FK on investigation_findings.finding_id
+      // would fail because the parent doesn't have a row for the
+      // federated finding's id.
+      const qs = cpInstanceID ? `?cp=${encodeURIComponent(cpInstanceID)}` : '';
+      return request<Investigation>(`/api/investigations${qs}`, {
         method: 'POST',
         body: JSON.stringify(req),
-      }),
+      });
+    },
     update: (id: number, patch: Partial<{ title: string; status: string; resolution: string; summary: string }>) =>
       request<Investigation>(`/api/investigations/${id}`, {
         method: 'PATCH',
@@ -854,10 +864,12 @@ export const api = {
         method: 'POST',
         body: JSON.stringify({ author, body }),
       }),
-    linkFinding: (invID: number, findingID: number) =>
-      request<void>(`/api/investigations/${invID}/findings/${findingID}`, {
+    linkFinding: (invID: number, findingID: number, cpInstanceID?: string) => {
+      const qs = cpInstanceID ? `?cp=${encodeURIComponent(cpInstanceID)}` : '';
+      return request<void>(`/api/investigations/${invID}/findings/${findingID}${qs}`, {
         method: 'PUT',
-      }),
+      });
+    },
     unlinkFinding: (invID: number, findingID: number) =>
       request<void>(`/api/investigations/${invID}/findings/${findingID}`, {
         method: 'DELETE',

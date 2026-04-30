@@ -573,6 +573,50 @@ func FederationInvestigationDetail(store *db.Store) http.HandlerFunc {
 	return requireFederationToken(store, GetInvestigationHandler(store))
 }
 
+// FederatedCreateInvestigation forwards POST /api/investigations to
+// the owning child CP when `?cp=<instance_id>` is set. Without
+// the query param, the case is created locally.
+//
+// This is what makes "Open in investigation" work from a federated
+// finding's drawer: the finding lives on the child, so the case +
+// link must also live there (the parent has no row for the finding,
+// so the FK on investigation_findings would fail). The UI passes
+// `?cp=` from `finding.cp_source.instance_id` when promoting a
+// federated finding.
+func FederatedCreateInvestigation(store *db.Store, agg *federation.Aggregator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if handled, _ := proxyWriteByQuery(w, r, agg, "/api/v1/federation/investigations", "", nil); handled {
+			return
+		}
+		CreateInvestigationHandler(store).ServeHTTP(w, r)
+	}
+}
+
+// FederationCreateInvestigation — child-side, token-authed sibling.
+// Reuses the local CreateInvestigationHandler so `from_finding_id`
+// resolves against the child's local finding id space.
+func FederationCreateInvestigation(store *db.Store) http.HandlerFunc {
+	return requireFederationToken(store, CreateInvestigationHandler(store))
+}
+
+// FederatedLinkFindingToInvestigation forwards PUT /api/investigations/
+// {id}/findings/{fid} to the owning child via `?cp=<id>`. Used when
+// linking a federated finding to a federated case from the parent UI.
+func FederatedLinkFindingToInvestigation(store *db.Store, agg *federation.Aggregator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		path := strings.Replace(r.URL.Path, "/api/investigations/", "/api/v1/federation/investigations/", 1)
+		if handled, _ := proxyWriteByQuery(w, r, agg, path, "", nil); handled {
+			return
+		}
+		LinkFindingToInvestigationHandler(store).ServeHTTP(w, r)
+	}
+}
+
+// FederationLinkFindingToInvestigation — child-side, token-authed.
+func FederationLinkFindingToInvestigation(store *db.Store) http.HandlerFunc {
+	return requireFederationToken(store, LinkFindingToInvestigationHandler(store))
+}
+
 // FederatedOrchestrationDetail proxies a single GET via ?cp= to the
 // owning child CP, falling through to the local store otherwise.
 func FederatedOrchestrationDetail(store *db.Store, agg *federation.Aggregator) http.HandlerFunc {

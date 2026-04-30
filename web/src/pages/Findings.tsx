@@ -16,6 +16,7 @@ import {
   Layers,
   Lightbulb,
   List,
+  Loader2,
   Repeat,
   Server,
   ShieldAlert,
@@ -24,7 +25,7 @@ import {
   ThumbsDown,
   X,
 } from 'lucide-react';
-import { api, type Finding, type FindingGroup, type FindingsSummary, type FindingStatus, type IOCRecord, type RunListItem } from '../api';
+import { api, type Finding, type FindingGroup, type FindingsSummary, type FindingStatus, type Investigation, type IOCRecord, type RunListItem } from '../api';
 import { FindingHistory, History as HistoryIcon } from '../components/FindingHistory';
 import { cn } from '../lib/cn';
 import { useIOCDisplayPrefs } from '../lib/preferences';
@@ -875,30 +876,9 @@ export function FindingDrawer({ id, cpInstanceID, onClose, onChanged }: DrawerPr
   const [showRaw, setShowRaw] = useState(false);
   const [investigations, setInvestigations] = useState<RunListItem[]>([]);
   const [investigateOpen, setInvestigateOpen] = useState(false);
+  const [openInvOpen, setOpenInvOpen] = useState(false);
+  const [addToInvOpen, setAddToInvOpen] = useState(false);
   const [iocs, setIOCs] = useState<IOCRecord[]>([]);
-
-  // Phase 22.3 — open the finding as a new T2 case. The backend
-  // POST /api/investigations supports `from_finding_id` for one-call
-  // create + link, so this is a single round-trip + a route push.
-  async function openInInvestigation() {
-    if (!f) return;
-    const defaultTitle = f.title || `Finding #${f.id}`;
-    const title = window.prompt('Title for the new investigation?', defaultTitle);
-    if (!title) return;
-    setBusy(true); setError(null);
-    try {
-      const inv = await api.investigations.create({
-        title,
-        summary: f.evidence || '',
-        from_finding_id: f.id,
-      });
-      navigate(`/investigations/${inv.ID}`);
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setBusy(false);
-    }
-  }
 
   useEffect(() => {
     setF(null);
@@ -1237,12 +1217,20 @@ export function FindingDrawer({ id, cpInstanceID, onClose, onChanged }: DrawerPr
             <Sparkles size={11} /> Investigate
           </button>
           <button
-            onClick={openInInvestigation}
+            onClick={() => setOpenInvOpen(true)}
             disabled={busy}
             className="inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded-md ring-1 ring-border text-ink-dim hover:text-ink hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed"
-            title="Open a T2 case for this finding"
+            title="Open a new T2 case for this finding"
           >
             <ClipboardList size={11} /> Open in investigation
+          </button>
+          <button
+            onClick={() => setAddToInvOpen(true)}
+            disabled={busy}
+            className="inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded-md ring-1 ring-border text-ink-dim hover:text-ink hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed"
+            title="Add this finding to an already open investigation"
+          >
+            <ClipboardList size={11} /> Add to existing
           </button>
           <Link
             to={`/events?agent=${encodeURIComponent(f.agent || '')}`}
@@ -1270,8 +1258,278 @@ export function FindingDrawer({ id, cpInstanceID, onClose, onChanged }: DrawerPr
           onLaunched={() => { setInvestigateOpen(false); refreshInvestigations(); }}
         />
       )}
+      {openInvOpen && (
+        <OpenInvestigationDialog
+          finding={f}
+          cpInstanceID={cpInstanceID}
+          onClose={() => setOpenInvOpen(false)}
+          onCreated={(invID, cp) => {
+            setOpenInvOpen(false);
+            const qs = cp ? `?cp=${encodeURIComponent(cp)}` : '';
+            navigate(`/investigations/${invID}${qs}`);
+          }}
+        />
+      )}
+      {addToInvOpen && (
+        <AddToExistingInvestigationDialog
+          finding={f}
+          cpInstanceID={cpInstanceID}
+          onClose={() => setAddToInvOpen(false)}
+          onLinked={() => { setAddToInvOpen(false); onChanged(); }}
+        />
+      )}
     </aside>
   );
+}
+
+// ── Investigation dialogs ───────────────────────────────────────────
+
+function OpenInvestigationDialog({
+  finding, cpInstanceID, onClose, onCreated,
+}: {
+  finding: Finding;
+  cpInstanceID?: string;
+  onClose: () => void;
+  onCreated: (invID: number, cp?: string) => void;
+}) {
+  const [title, setTitle] = useState(finding.title || `Finding #${finding.id}`);
+  const [summary, setSummary] = useState(finding.evidence || '');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function submit() {
+    if (!title.trim()) return;
+    setBusy(true); setError(null);
+    try {
+      // Federated finding → forward the create to the owning child
+      // CP via ?cp=<id> so the FK on investigation_findings.finding_id
+      // resolves locally to a real row.
+      const inv = await api.investigations.create(
+        { title: title.trim(), summary: summary.trim(), from_finding_id: finding.id },
+        cpInstanceID,
+      );
+      onCreated(inv.ID, cpInstanceID);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/30 flex items-center justify-center p-4 z-50" onClick={onClose}>
+      <div
+        className="bg-panel border border-border rounded-xl shadow-card w-full max-w-md"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <header className="px-5 py-3 border-b border-border flex items-center justify-between">
+          <h2 className="text-sm font-semibold flex items-center gap-2">
+            <ClipboardList size={14} className="text-brand-500" />
+            Open in investigation
+          </h2>
+          <button onClick={onClose} className="p-1 text-ink-dim hover:text-ink rounded-md">
+            <X size={16} />
+          </button>
+        </header>
+        <div className="p-5 space-y-3 text-sm">
+          <p className="text-xs text-ink-dim">
+            Promotes finding <code className="font-mono">#{finding.id}</code> into a new T2
+            case. Title + summary are operator-editable later.
+            {cpInstanceID && (
+              <> The case will live on the federated child <code className="font-mono">{cpInstanceID}</code> (where the finding lives).</>
+            )}
+          </p>
+          <div>
+            <div className="text-[11px] uppercase tracking-wide text-ink-mute font-medium mb-1">
+              Title
+            </div>
+            <input
+              type="text"
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              autoFocus
+              className="w-full px-2.5 py-1.5 text-sm border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500/30"
+            />
+          </div>
+          <div>
+            <div className="text-[11px] uppercase tracking-wide text-ink-mute font-medium mb-1">
+              Summary
+            </div>
+            <textarea
+              value={summary}
+              onChange={(e) => setSummary(e.target.value)}
+              rows={4}
+              className="w-full px-2.5 py-1.5 text-sm border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500/30"
+              placeholder="Hypothesis, scope, working theory…"
+            />
+          </div>
+          {error && (
+            <div className="text-xs text-red-700 bg-red-50 border border-red-200 px-3 py-2 rounded-md">
+              {error}
+            </div>
+          )}
+        </div>
+        <footer className="px-5 py-3 border-t border-border flex items-center justify-end gap-2">
+          <button onClick={onClose} className="text-xs px-3 py-1.5 border border-border rounded-md">
+            Cancel
+          </button>
+          <button
+            onClick={submit}
+            disabled={busy || !title.trim()}
+            className="text-xs px-3 py-1.5 bg-brand-500 hover:bg-brand-600 disabled:opacity-50 text-white rounded-md font-medium inline-flex items-center gap-1.5"
+          >
+            {busy && <Loader2 size={12} className="animate-spin" />}
+            Open case
+          </button>
+        </footer>
+      </div>
+    </div>
+  );
+}
+
+function AddToExistingInvestigationDialog({
+  finding, cpInstanceID, onClose, onLinked,
+}: {
+  finding: Finding;
+  cpInstanceID?: string;
+  onClose: () => void;
+  onLinked: () => void;
+}) {
+  const [items, setItems] = useState<Investigation[] | null>(null);
+  const [pickedID, setPickedID] = useState<number | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [filter, setFilter] = useState('');
+
+  useEffect(() => {
+    api.investigations.list('active')
+      .then((rows) => {
+        // Federated finding → only allow linking to cases on the
+        // SAME child CP. Cross-CP linking would need the FK on
+        // investigation_findings to resolve, which it can't unless
+        // the finding and case share a row space.
+        const filtered = cpInstanceID
+          ? rows.filter((r) => r.cp_source && r.cp_source.instance_id === cpInstanceID)
+          : rows.filter((r) => !r.cp_source);
+        setItems(filtered);
+      })
+      .catch((e) => setError(String(e)));
+  }, [cpInstanceID]);
+
+  async function submit() {
+    if (!pickedID) return;
+    setBusy(true); setError(null);
+    try {
+      await api.investigations.linkFinding(pickedID, finding.id, cpInstanceID);
+      onLinked();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const filtered = (items ?? []).filter((i) =>
+    !filter || i.Title.toLowerCase().includes(filter.toLowerCase()),
+  );
+
+  return (
+    <div className="fixed inset-0 bg-black/30 flex items-center justify-center p-4 z-50" onClick={onClose}>
+      <div
+        className="bg-panel border border-border rounded-xl shadow-card w-full max-w-md flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+        style={{ maxHeight: '70vh' }}
+      >
+        <header className="px-5 py-3 border-b border-border flex items-center justify-between">
+          <h2 className="text-sm font-semibold flex items-center gap-2">
+            <ClipboardList size={14} className="text-brand-500" />
+            Add to existing investigation
+          </h2>
+          <button onClick={onClose} className="p-1 text-ink-dim hover:text-ink rounded-md">
+            <X size={16} />
+          </button>
+        </header>
+        <div className="p-5 space-y-3 text-sm flex flex-col flex-1 overflow-hidden">
+          <p className="text-xs text-ink-dim">
+            Pick an active case on{' '}
+            {cpInstanceID
+              ? <>the federated child <code className="font-mono">{cpInstanceID}</code></>
+              : <>this CP</>
+            }. Closed and archived cases are filtered out — reopen them from the case page if you need to link there.
+          </p>
+          <input
+            type="text"
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            placeholder="Filter by title…"
+            className="w-full px-2.5 py-1.5 text-sm border border-border rounded-md"
+          />
+          <div className="flex-1 overflow-auto border border-border rounded-md">
+            {items === null ? (
+              <div className="p-3 text-xs text-ink-mute">Loading…</div>
+            ) : filtered.length === 0 ? (
+              <div className="p-3 text-xs text-ink-mute">
+                No active investigations{cpInstanceID ? ` on ${cpInstanceID}` : ''} yet.
+              </div>
+            ) : (
+              <ul className="divide-y divide-border">
+                {filtered.map((i) => (
+                  <li key={i.ID}>
+                    <label className="flex items-start gap-2 px-3 py-2 cursor-pointer hover:bg-slate-50">
+                      <input
+                        type="radio"
+                        checked={pickedID === i.ID}
+                        onChange={() => setPickedID(i.ID)}
+                        className="mt-1"
+                      />
+                      <div className="min-w-0">
+                        <div className="text-sm font-medium truncate">{i.Title || '(untitled)'}</div>
+                        <div className="text-[11px] text-ink-mute font-mono">
+                          #{i.ID} · {fmtRelativeDate(i.UpdatedAt)}
+                        </div>
+                      </div>
+                    </label>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+          {error && (
+            <div className="text-xs text-red-700 bg-red-50 border border-red-200 px-3 py-2 rounded-md">
+              {error}
+            </div>
+          )}
+        </div>
+        <footer className="px-5 py-3 border-t border-border flex items-center justify-end gap-2">
+          <button onClick={onClose} className="text-xs px-3 py-1.5 border border-border rounded-md">
+            Cancel
+          </button>
+          <button
+            onClick={submit}
+            disabled={busy || !pickedID}
+            className="text-xs px-3 py-1.5 bg-brand-500 hover:bg-brand-600 disabled:opacity-50 text-white rounded-md font-medium inline-flex items-center gap-1.5"
+          >
+            {busy && <Loader2 size={12} className="animate-spin" />}
+            Link
+          </button>
+        </footer>
+      </div>
+    </div>
+  );
+}
+
+function fmtRelativeDate(iso: string): string {
+  if (!iso || iso === '0001-01-01T00:00:00Z') return '—';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '—';
+  const ageMs = Date.now() - d.getTime();
+  const ageMin = Math.floor(ageMs / 60_000);
+  if (ageMin < 1) return 'just now';
+  if (ageMin < 60) return `${ageMin}m ago`;
+  const ageHr = Math.floor(ageMin / 60);
+  if (ageHr < 24) return `${ageHr}h ago`;
+  const ageDay = Math.floor(ageHr / 24);
+  return `${ageDay}d ago`;
 }
 
 // ── helpers ─────────────────────────────────────────────────────────────────
