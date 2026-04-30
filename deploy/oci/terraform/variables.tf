@@ -75,3 +75,64 @@ variable "secrets_dir" {
   type        = string
   default     = "~/.okesu-secrets"
 }
+
+variable "mode" {
+  description = "Deployment mode — used only by the Makefile to pick a tfvars file. Validated for sanity, ignored at the terraform layer."
+  type        = string
+  default     = "standalone"
+  validation {
+    condition     = contains(["standalone", "parent", "child"], var.mode)
+    error_message = "mode must be standalone, parent, or child."
+  }
+}
+
+variable "cp_shape" {
+  description = "Compute shape for the CP VM."
+  type        = string
+  default     = "VM.Standard.E4.Flex.1.16GB"
+}
+
+variable "cp_image_ocid" {
+  description = "Image OCID for the CP VM (Oracle Linux 9 amd64 by default in us-ashburn-1)."
+  type        = string
+  default     = ""
+}
+
+variable "clickhouse_shape" {
+  description = "Compute shape for the ClickHouse VM."
+  type        = string
+  default     = "VM.Standard.E4.Flex.1.16GB"
+}
+
+variable "clickhouse_image_ocid" {
+  description = "Image OCID for the ClickHouse VM."
+  type        = string
+  default     = ""
+}
+
+variable "clickhouse_version" {
+  description = "Pinned ClickHouse package version (no -<arch> suffix)."
+  type        = string
+  default     = "24.8.4.13"
+}
+
+# Child-mode only — informational; the Makefile validates these.
+variable "parent_federation_bucket" {
+  type    = string
+  default = ""
+}
+
+variable "parent_federation_endpoint" {
+  type    = string
+  default = ""
+}
+
+variable "parent_federation_region" {
+  type    = string
+  default = ""
+}
+
+variable "parent_federation_access_key" {
+  type    = string
+  default = ""
+}

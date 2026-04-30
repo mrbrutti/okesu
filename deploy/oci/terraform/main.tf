@@ -27,12 +27,12 @@ module "network" {
 module "db" {
   source = "./modules/db"
 
-  compartment_ocid    = var.compartment_ocid
-  name_prefix         = var.name_prefix
-  subnet_ocid         = module.network.private_subnet_ocid
-  vcn_ocid            = module.network.vcn_ocid
-  admin_username      = var.db_admin_username
-  secrets_dir         = pathexpand(var.secrets_dir)
+  compartment_ocid = var.compartment_ocid
+  name_prefix      = var.name_prefix
+  subnet_ocid      = module.network.private_subnet_ocid
+  vcn_ocid         = module.network.vcn_ocid
+  admin_username   = var.db_admin_username
+  secrets_dir      = pathexpand(var.secrets_dir)
 }
 
 module "streaming" {
@@ -65,17 +65,30 @@ module "objectstorage" {
   secrets_dir      = pathexpand(var.secrets_dir)
 }
 
-# ── OKE + ClickHouse: validates the events firehose ─────────────────
-module "oke" {
-  source = "./modules/oke"
+# ── CP VM ────────────────────────────────────────────────────────────
+module "cp_vm" {
+  source = "./modules/cp_vm"
+
+  compartment_ocid = var.compartment_ocid
+  name_prefix      = var.name_prefix
+  subnet_ocid      = module.network.public_subnet_ocid
+  shape            = var.cp_shape
+  image_ocid       = var.cp_image_ocid
+  ssh_public_key   = var.ssh_public_key
+}
+
+# ── ClickHouse VM ────────────────────────────────────────────────────
+module "clickhouse_vm" {
+  source = "./modules/clickhouse_vm"
 
   compartment_ocid    = var.compartment_ocid
   name_prefix         = var.name_prefix
-  vcn_ocid            = module.network.vcn_ocid
-  oke_subnet_ocid     = module.network.oke_subnet_ocid
-  public_subnet_ocid  = module.network.public_subnet_ocid
-  region              = var.region
-  secrets_dir         = pathexpand(var.secrets_dir)
+  subnet_ocid         = module.network.private_subnet_ocid
+  shape               = var.clickhouse_shape
+  image_ocid          = var.clickhouse_image_ocid
+  ssh_public_key      = var.ssh_public_key
+  clickhouse_version  = var.clickhouse_version
+  clickhouse_password = random_password.clickhouse.result
 }
 
 # ── Fleet: 8 VMs running the daemon ─────────────────────────────────

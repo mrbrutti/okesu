@@ -52,17 +52,6 @@ output "blob_access_key" {
   value       = module.objectstorage.access_key
 }
 
-# ── OKE ─────────────────────────────────────────────────────────────
-output "oke_kubeconfig_path" {
-  description = "Path to the kubeconfig Terraform fetched. Set KUBECONFIG to this."
-  value       = module.oke.kubeconfig_path
-}
-
-output "oke_cluster_id" {
-  description = "OKE cluster OCID."
-  value       = module.oke.cluster_id
-}
-
 # ── Fleet ───────────────────────────────────────────────────────────
 output "fleet_ips" {
   description = "Public IPs of the daemon VMs — feed into the CP's Add Node flow."
@@ -72,4 +61,51 @@ output "fleet_ips" {
 output "fleet_size_actual" {
   description = "Number of VMs actually provisioned."
   value       = module.fleet.size
+}
+
+# ── CP VM ────────────────────────────────────────────────────────────
+output "cp_public_ip" {
+  description = "Public IP for SSH + the CP UI (https://<ip>:8443)."
+  value       = module.cp_vm.public_ip
+}
+
+output "cp_private_ip" {
+  description = "Private IP for intra-VCN access."
+  value       = module.cp_vm.private_ip
+}
+
+# ── ClickHouse VM ────────────────────────────────────────────────────
+output "ch_private_ip" {
+  description = "Private IP — fed into cp.yaml's clickhouse_addrs."
+  value       = module.clickhouse_vm.private_ip
+}
+
+# ── ClickHouse password (sensitive) ──────────────────────────────────
+output "clickhouse_password_path" {
+  description = "Local path where the password file lives."
+  value       = local_sensitive_file.clickhouse_password.filename
+}
+
+# ── Federation outputs (parent mode operators paste these into a child's tfvars) ───
+output "federation_outputs" {
+  description = "Parent-mode bundle for child enrollment."
+  value       = module.objectstorage.federation_outputs
+  sensitive   = true
+}
+
+# ── Cache (Redis) ────────────────────────────────────────────────────
+output "redis_host" {
+  description = "Redis FQDN (no scheme, no auth)."
+  value       = module.cache.endpoint
+}
+
+output "redis_port" {
+  description = "Redis port."
+  value       = 6379
+}
+
+# ── Region (for blob_region in cp.yaml) ──────────────────────────────
+output "blob_region" {
+  description = "Blob region (mirrors var.region)."
+  value       = var.region
 }

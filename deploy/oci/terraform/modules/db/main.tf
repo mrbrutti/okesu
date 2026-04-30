@@ -4,18 +4,18 @@
 # Postgres major version 16 (matches dev/docker-compose).
 
 variable "compartment_ocid" { type = string }
-variable "name_prefix"      { type = string }
-variable "subnet_ocid"      { type = string }
-variable "vcn_ocid"         { type = string }
-variable "admin_username"   { type = string }
-variable "secrets_dir"      { type = string }
+variable "name_prefix" { type = string }
+variable "subnet_ocid" { type = string }
+variable "vcn_ocid" { type = string }
+variable "admin_username" { type = string }
+variable "secrets_dir" { type = string }
 
 # Generate a random admin password and write it to the secrets dir
 # where the CP's file:// secrets adapter can read it.
 resource "random_password" "admin" {
-  length      = 32
-  special     = true
-  min_special = 4
+  length           = 32
+  special          = true
+  min_special      = 4
   override_special = "!#$%&*()-_=+"
 }
 
@@ -26,10 +26,10 @@ resource "local_sensitive_file" "admin_password" {
 }
 
 resource "oci_psql_db_system" "main" {
-  compartment_id   = var.compartment_ocid
-  display_name     = "${var.name_prefix}-pg"
-  db_version       = "16"
-  shape            = "PostgreSQL.VM.Standard.E4.Flex.2.32GB"
+  compartment_id = var.compartment_ocid
+  display_name   = "${var.name_prefix}-pg"
+  db_version     = "16"
+  shape          = "PostgreSQL.VM.Standard.E4.Flex.2.32GB"
   storage_details {
     is_regionally_durable = true
     system_type           = "OCI_OPTIMIZED_STORAGE"

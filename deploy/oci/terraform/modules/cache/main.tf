@@ -4,9 +4,9 @@
 # auth token; we pin a generated one and write it to the secrets dir.
 
 variable "compartment_ocid" { type = string }
-variable "name_prefix"      { type = string }
-variable "subnet_ocid"      { type = string }
-variable "secrets_dir"      { type = string }
+variable "name_prefix" { type = string }
+variable "subnet_ocid" { type = string }
+variable "secrets_dir" { type = string }
 
 resource "random_password" "auth" {
   length  = 32
@@ -47,4 +47,9 @@ output "url_no_password" {
 
 output "cluster_id" {
   value = oci_redis_redis_cluster.main.id
+}
+
+output "endpoint" {
+  description = "Bare FQDN — Makefile/render package combine with port + auth themselves."
+  value       = local.endpoint
 }

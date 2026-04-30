@@ -1,0 +1,24 @@
+{
+  "Mode": "child",
+  "TerraformOut": {
+    "db_dsn":          { "value": "postgres://okesu@db.adb.us-ashburn-1.oraclecloud.com:5432/cpdb?sslmode=require" },
+    "kafka_brokers":   { "value": "streampool-x.streaming.us-ashburn-1.oci.oraclecloud.com:9092" },
+    "kafka_username":  { "value": "ocid1.tenancy/ocid1.user/ocid1.streampool" },
+    "redis_host":      { "value": "redis-x.us-ashburn-1.oci.oraclecloud.com" },
+    "redis_port":      { "value": 6379 },
+    "blob_endpoint":   { "value": "ns.compat.objectstorage.us-ashburn-1.oraclecloud.com" },
+    "blob_bucket":     { "value": "okesu-smoke-bucket" },
+    "blob_access_key": { "value": "AKID-EXAMPLE" },
+    "blob_region":     { "value": "us-ashburn-1" },
+    "ch_private_ip":   { "value": "10.0.1.42" }
+  },
+  "OperatorEnv": {
+    "ADMIN_EMAIL": "admin@example.com",
+    "PARENT_FEDERATION_BUCKET":     "okesu-parent-bucket",
+    "PARENT_FEDERATION_ENDPOINT":   "ns.compat.objectstorage.us-ashburn-1.oraclecloud.com",
+    "PARENT_FEDERATION_REGION":     "us-ashburn-1",
+    "PARENT_FEDERATION_ACCESS_KEY": "PARENT-AKID-EXAMPLE",
+    "PARENT_FEDERATION_TOKEN":      "ftoken-example-32chars",
+    "CP_INSTANCE_ID":               "cp-child-001"
+  }
+}

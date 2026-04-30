@@ -1,0 +1,37 @@
+# Rendered by deploy/oci/render — do not edit by hand.
+# Inputs: terraform output -json + .env.oci
+
+listen: ":8443"
+mgmt_listen: ":8444"
+
+db: "{{ tfval .TerraformOut "db_dsn" }}"
+
+admin_email: "{{ envOr .OperatorEnv "ADMIN_EMAIL" "admin@example.com" }}"
+admin_password: "${secret:cp/admin-password}"
+session_key:    "${secret:cp/session-key}"
+webhook_secret: "${secret:cp/webhook-secret}"
+
+events_store: "clickhouse"
+clickhouse_addrs:
+  - "{{ tfval .TerraformOut "ch_private_ip" }}:9000"
+clickhouse_database: "okesu_events"
+clickhouse_username: "default"
+clickhouse_password: "${secret:clickhouse/password}"
+clickhouse_secure:   false
+
+queue: "kafka"
+kafka_brokers:
+  - "{{ tfval .TerraformOut "kafka_brokers" }}"
+kafka_sasl_username: "{{ tfval .TerraformOut "kafka_username" }}"
+kafka_sasl_password: "${secret:kafka/sasl-password}"
+kafka_use_tls:       true
+
+pubsub_url: "redis://:${secret:redis/auth-token}@{{ tfval .TerraformOut "redis_host" }}:{{ tfval .TerraformOut "redis_port" }}/0"
+
+blob_url:        "{{ tfval .TerraformOut "blob_endpoint" }}"
+blob_access_key: "{{ tfval .TerraformOut "blob_access_key" }}"
+blob_secret_key: "${secret:blob/secret-key}"
+blob_bucket:     "{{ tfval .TerraformOut "blob_bucket" }}"
+blob_region:     "{{ tfval .TerraformOut "blob_region" }}"
+
+event_ttl_days: 30

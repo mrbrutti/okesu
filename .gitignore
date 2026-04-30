@@ -45,6 +45,9 @@
 # Stray build-output dir.
 /dist/
 
+# Transient OCI env files with injected secrets (e.g. FEDERATION_TOKEN).
+dist/oci/*/env.injected
+
 # Operator-local CLI scheduler state (Claude Code internals).
 /.claude/scheduled_tasks.lock
 
@@ -54,3 +57,4 @@
 # OS / editor noise.
 .DS_Store
 *.swp
+.env.oci

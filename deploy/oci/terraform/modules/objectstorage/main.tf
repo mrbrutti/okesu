@@ -7,11 +7,11 @@
 # Cost: per-GB storage + per-request. Smoke volumes are pennies.
 
 variable "compartment_ocid" { type = string }
-variable "tenancy_ocid"     { type = string }
-variable "user_ocid"        { type = string }
-variable "name_prefix"      { type = string }
-variable "region"           { type = string }
-variable "secrets_dir"      { type = string }
+variable "tenancy_ocid" { type = string }
+variable "user_ocid" { type = string }
+variable "name_prefix" { type = string }
+variable "region" { type = string }
+variable "secrets_dir" { type = string }
 
 data "oci_objectstorage_namespace" "ns" {
   compartment_id = var.tenancy_ocid
@@ -53,4 +53,37 @@ output "access_key" {
 
 output "namespace" {
   value = data.oci_objectstorage_namespace.ns.namespace
+}
+
+# Always-generated federation token. Whether the CP USES it is a
+# config-time decision in cp.yaml.tmpl (only mode=parent emits the
+# federation_token line referencing it); generating it unconditionally
+# keeps the terraform graph free of mode-conditional branching.
+resource "random_password" "federation_token" {
+  length  = 32
+  special = false
+}
+
+resource "local_sensitive_file" "federation_token" {
+  filename        = "${var.secrets_dir}/federation/token"
+  content         = random_password.federation_token.result
+  file_permission = "0600"
+}
+
+output "federation_token_path" {
+  description = "Local file holding the federation token (for parent mode operators)."
+  value       = local_sensitive_file.federation_token.filename
+}
+
+output "federation_outputs" {
+  description = "Bundle parent-mode operators paste into a child's tfvars + .env.oci."
+  value = {
+    parent_federation_bucket     = oci_objectstorage_bucket.main.name
+    parent_federation_endpoint   = "${data.oci_objectstorage_namespace.ns.namespace}.compat.objectstorage.${var.region}.oraclecloud.com"
+    parent_federation_region     = var.region
+    parent_federation_access_key = oci_identity_customer_secret_key.main.id
+    parent_federation_secret_key = oci_identity_customer_secret_key.main.key
+    parent_federation_token      = random_password.federation_token.result
+  }
+  sensitive = true
 }

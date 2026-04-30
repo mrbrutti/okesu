@@ -12,10 +12,10 @@
 # the formatted username string.
 
 variable "compartment_ocid" { type = string }
-variable "name_prefix"      { type = string }
-variable "user_ocid"        { type = string }
-variable "tenancy_ocid"     { type = string }
-variable "secrets_dir"      { type = string }
+variable "name_prefix" { type = string }
+variable "user_ocid" { type = string }
+variable "tenancy_ocid" { type = string }
+variable "secrets_dir" { type = string }
 
 resource "oci_streaming_stream_pool" "main" {
   compartment_id = var.compartment_ocid

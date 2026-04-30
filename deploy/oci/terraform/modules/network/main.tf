@@ -8,7 +8,7 @@
 # are all infrastructure resources without per-hour billing.
 
 variable "compartment_ocid" { type = string }
-variable "name_prefix"      { type = string }
+variable "name_prefix" { type = string }
 
 resource "oci_core_vcn" "main" {
   compartment_id = var.compartment_ocid
@@ -142,6 +142,18 @@ resource "oci_core_security_list" "private" {
       max = 6379
     }
   }
+
+  # ClickHouse — explicit rule (functionally redundant given the
+  # all-protocols intra-VCN rule on the public SL, but documents intent
+  # and lets us tighten 5432/6379-only later if we ever drop the wildcard).
+  ingress_security_rules {
+    protocol = "6"
+    source   = "10.0.0.0/16"
+    tcp_options {
+      min = 9000
+      max = 9000
+    }
+  }
 }
 
 # ── Subnets ─────────────────────────────────────────────────────────
@@ -182,7 +194,7 @@ resource "oci_core_subnet" "oke" {
 }
 
 # ── Outputs ─────────────────────────────────────────────────────────
-output "vcn_ocid"             { value = oci_core_vcn.main.id }
-output "public_subnet_ocid"   { value = oci_core_subnet.public.id }
-output "private_subnet_ocid"  { value = oci_core_subnet.private.id }
-output "oke_subnet_ocid"      { value = oci_core_subnet.oke.id }
+output "vcn_ocid" { value = oci_core_vcn.main.id }
+output "public_subnet_ocid" { value = oci_core_subnet.public.id }
+output "private_subnet_ocid" { value = oci_core_subnet.private.id }
+output "oke_subnet_ocid" { value = oci_core_subnet.oke.id }

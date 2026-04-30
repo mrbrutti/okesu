@@ -1,0 +1,23 @@
+# Child CP — federates into a parent. Fill in BOTH:
+#   1) the standard infra fields (tenancy, region, ssh key, ...)
+#   2) the parent_federation_* fields, pasted from the parent's
+#      `make oci-print MODE=parent` output.
+# Operator MUST also set PARENT_FEDERATION_TOKEN and PARENT_FEDERATION_SECRET_KEY
+# in `.env.oci` (the parent's secrets are not in the parent's terraform
+# state output by default — copy them from the parent's secrets dir
+# or from the parent's terraform output -json federation_outputs).
+
+mode             = "child"
+tenancy_ocid     = ""
+user_ocid        = ""
+compartment_ocid = ""
+region           = "us-ashburn-1"
+ssh_public_key   = ""
+name_prefix      = "okesu-child"
+fleet_size       = 1
+secrets_dir      = "~/.okesu-child-secrets"
+
+parent_federation_bucket     = ""
+parent_federation_endpoint   = ""
+parent_federation_region     = ""
+parent_federation_access_key = ""
