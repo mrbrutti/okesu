@@ -19,6 +19,8 @@ type IOCUpsert struct {
 	SeverityFloor   string
 	Classification  string
 	Notes           string
+	Name            string
+	Tags            string
 }
 
 // IOCRecord is what the store reads back.
@@ -34,6 +36,8 @@ type IOCRecord struct {
 	SeverityFloor    string
 	Classification   string
 	Notes            string
+	Name             string
+	Tags             string
 	ObservationCount int64
 	FirstSeen        time.Time
 	LastSeen         time.Time
@@ -75,12 +79,14 @@ func (s *Store) UpsertIOC(in *IOCUpsert) (id int64, created bool, err error) {
 	//    already exists, this is a no-op.
 	res, err := s.Exec(`
 		INSERT INTO iocs (kind, value, normalized_value, source, definition_path,
-		                  confidence, attribution, severity_floor, classification, notes)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		                  confidence, attribution, severity_floor, classification, notes,
+		                  name, tags)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (kind, normalized_value) DO NOTHING`,
 		in.Kind, in.Value, in.NormalizedValue, source,
 		nullable(in.DefinitionPath), nullable(in.Confidence), nullable(in.Attribution),
-		nullable(in.SeverityFloor), nullable(in.Classification), nullable(in.Notes))
+		nullable(in.SeverityFloor), nullable(in.Classification), nullable(in.Notes),
+		nullable(in.Name), nullable(in.Tags))
 	if err != nil {
 		return 0, false, err
 	}
@@ -98,10 +104,12 @@ func (s *Store) UpsertIOC(in *IOCUpsert) (id int64, created bool, err error) {
 			if _, err := s.Exec(`
 				UPDATE iocs
 				SET source = ?, definition_path = ?, confidence = ?, attribution = ?,
-				    severity_floor = ?, classification = ?, notes = ?, updated_at = CURRENT_TIMESTAMP
+				    severity_floor = ?, classification = ?, notes = ?,
+				    name = ?, tags = ?, updated_at = CURRENT_TIMESTAMP
 				WHERE kind = ? AND normalized_value = ?`,
 				source, nullable(in.DefinitionPath), nullable(in.Confidence), nullable(in.Attribution),
 				nullable(in.SeverityFloor), nullable(in.Classification), nullable(in.Notes),
+				nullable(in.Name), nullable(in.Tags),
 				in.Kind, in.NormalizedValue); err != nil {
 				return 0, false, err
 			}
@@ -131,14 +139,15 @@ func (s *Store) GetIOC(id int64) (*IOCRecord, error) {
 		SELECT id, kind, value, normalized_value, source,
 		       COALESCE(definition_path,''), COALESCE(confidence,''),
 		       COALESCE(attribution,''), COALESCE(severity_floor,''),
-		       COALESCE(classification,''), COALESCE(notes,''), observation_count,
-		       first_seen, last_seen
+		       COALESCE(classification,''), COALESCE(notes,''),
+		       COALESCE(name,''), COALESCE(tags,''),
+		       observation_count, first_seen, last_seen
 		FROM iocs WHERE id = ?`, id)
 	var r IOCRecord
 	if err := row.Scan(&r.ID, &r.Kind, &r.Value, &r.NormalizedValue, &r.Source,
 		&r.DefinitionPath, &r.Confidence, &r.Attribution, &r.SeverityFloor,
-		&r.Classification, &r.Notes, &r.ObservationCount,
-		&r.FirstSeen, &r.LastSeen); err != nil {
+		&r.Classification, &r.Notes, &r.Name, &r.Tags,
+		&r.ObservationCount, &r.FirstSeen, &r.LastSeen); err != nil {
 		return nil, err
 	}
 	return &r, nil
@@ -284,8 +293,9 @@ func (s *Store) ListIOCs(f IOCListFilter) ([]*IOCRecord, error) {
 	q := `SELECT DISTINCT iocs.id, iocs.kind, iocs.value, iocs.normalized_value, iocs.source,
 	       COALESCE(iocs.definition_path,''), COALESCE(iocs.confidence,''),
 	       COALESCE(iocs.attribution,''), COALESCE(iocs.severity_floor,''),
-	       COALESCE(iocs.classification,''), COALESCE(iocs.notes,''), iocs.observation_count,
-	       iocs.first_seen, iocs.last_seen
+	       COALESCE(iocs.classification,''), COALESCE(iocs.notes,''),
+	       COALESCE(iocs.name,''), COALESCE(iocs.tags,''),
+	       iocs.observation_count, iocs.first_seen, iocs.last_seen
 	FROM iocs ` + join + where + ` ORDER BY iocs.last_seen DESC LIMIT ?`
 	args = append(args, f.Limit)
 
@@ -299,8 +309,8 @@ func (s *Store) ListIOCs(f IOCListFilter) ([]*IOCRecord, error) {
 		var r IOCRecord
 		if err := rows.Scan(&r.ID, &r.Kind, &r.Value, &r.NormalizedValue, &r.Source,
 			&r.DefinitionPath, &r.Confidence, &r.Attribution, &r.SeverityFloor,
-			&r.Classification, &r.Notes, &r.ObservationCount,
-			&r.FirstSeen, &r.LastSeen); err != nil {
+			&r.Classification, &r.Notes, &r.Name, &r.Tags,
+			&r.ObservationCount, &r.FirstSeen, &r.LastSeen); err != nil {
 			return nil, err
 		}
 		out = append(out, &r)

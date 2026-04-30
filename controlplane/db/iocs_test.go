@@ -106,6 +106,37 @@ func TestRecordObservation_CreatesLink(t *testing.T) {
 	}
 }
 
+func TestUpsertIOC_NameAndTags(t *testing.T) {
+	st := openTempStore(t)
+	id, _, err := st.UpsertIOC(&IOCUpsert{
+		Kind:            "yara_rule",
+		Value:           "rule X { condition: true }",
+		NormalizedValue: "rule x { condition: true }",
+		Source:          "catalog",
+		Name:            "rule-X",
+		Tags:            "test,phase-22.5",
+	})
+	if err != nil {
+		t.Fatalf("UpsertIOC: %v", err)
+	}
+	if id == 0 {
+		t.Fatalf("id should be non-zero")
+	}
+	rows, err := st.ListIOCs(IOCListFilter{Kind: "yara_rule"})
+	if err != nil {
+		t.Fatalf("ListIOCs: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 row; got %d", len(rows))
+	}
+	if rows[0].Name != "rule-X" {
+		t.Errorf("Name = %q, want rule-X", rows[0].Name)
+	}
+	if rows[0].Tags != "test,phase-22.5" {
+		t.Errorf("Tags = %q, want test,phase-22.5", rows[0].Tags)
+	}
+}
+
 func TestUpsertIOC_ObservedDoesNotOverwriteCatalog(t *testing.T) {
 	s := openTempStore(t)
 	// Seed a catalog row with curated metadata.
