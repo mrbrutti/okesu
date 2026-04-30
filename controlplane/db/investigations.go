@@ -297,13 +297,26 @@ func (s *Store) ListInvestigations(status string, limit int) ([]*Investigation, 
 // LinkFindingToInvestigation associates a finding with a case.
 // Idempotent: re-linking the same pair is a no-op (ON CONFLICT DO
 // NOTHING) so callers don't need to dedupe.
+//
+// Side effect: clears any prior dismissal tombstone for this pair.
+// "+ Add wins over Dismiss" is the suggested-findings UX contract —
+// re-linking a finding that someone previously dismissed lifts the
+// tombstone so the suggestion machinery treats the case as having
+// changed its mind. Tombstone delete is best-effort; a failure
+// shouldn't block the link.
 func (s *Store) LinkFindingToInvestigation(investigationID, findingID int64) error {
-	_, err := s.Exec(`
+	if _, err := s.Exec(`
 		INSERT INTO investigation_findings (investigation_id, finding_id)
 		VALUES (?, ?)
 		ON CONFLICT (investigation_id, finding_id) DO NOTHING`,
+		investigationID, findingID); err != nil {
+		return err
+	}
+	_, _ = s.Exec(`
+		DELETE FROM investigation_finding_dismissals
+		WHERE investigation_id = ? AND finding_id = ?`,
 		investigationID, findingID)
-	return err
+	return nil
 }
 
 // LinkRunToInvestigation associates an orchestration run with a case.

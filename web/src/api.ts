@@ -465,6 +465,37 @@ export interface InvestigationOrchestrationItem {
   LastStartedAt: string;
 }
 
+// SuggestedFinding — server-scored candidate the workspace's
+// "Suggested findings" card surfaces. `signals` lists the rule names
+// that fired ("dedup_key" | "ioc" | "host_window" | "daimon_sev"); the
+// score is the sum of their fixed weights.
+export interface SuggestedFinding {
+  ID: number;
+  Ts: number;
+  Agent: { String: string; Valid: boolean };
+  Host: { String: string; Valid: boolean };
+  Severity: { String: string; Valid: boolean };
+  Title: { String: string; Valid: boolean };
+  Status: { String: string; Valid: boolean };
+  Tags: { String: string; Valid: boolean };
+  Subtype: { String: string; Valid: boolean };
+  Score: number;
+  Signals: SuggestionSignal[];
+}
+
+export type SuggestionSignal = 'dedup_key' | 'ioc' | 'host_window' | 'daimon_sev';
+
+// RelatedCase — server-scored active case that might be related to a
+// given finding. Inverse view of SuggestedFinding (workspace card).
+// Used by the Findings drawer's "looks related to N cases" banner.
+export interface RelatedCase {
+  InvestigationID: number;
+  Title: string;
+  Status: string;
+  Score: number;
+  Signals: SuggestionSignal[];
+}
+
 // InvestigationDetail is the shape of GET /api/investigations/{id}.
 // The handler returns enriched lists for every workspace tab; see
 // controlplane/api/investigations.go GetInvestigationHandler.
@@ -733,6 +764,17 @@ export const api = {
   // Cases this finding is currently linked to. Drives the
   // InvestigateDialog's "Already in N cases" header so the operator
   // can deep-link instead of accidentally creating a duplicate case.
+  findingRelatedCases: (
+    id: number,
+    opts?: { threshold?: number; limit?: number; cpInstanceID?: string },
+  ) => {
+    const p = new URLSearchParams();
+    if (opts?.threshold != null) p.set('threshold', String(opts.threshold));
+    if (opts?.limit != null) p.set('limit', String(opts.limit));
+    if (opts?.cpInstanceID) p.set('cp', opts.cpInstanceID);
+    const qs = p.toString();
+    return request<RelatedCase[]>(`/api/findings/${id}/related-cases${qs ? `?${qs}` : ''}`);
+  },
   findingInvestigations: (id: number, cpInstanceID?: string) =>
     request<Investigation[]>(
       cpInstanceID
@@ -955,6 +997,33 @@ export const api = {
       request<void>(`/api/investigations/${invID}/runs/${runID}`, {
         method: 'DELETE',
       }),
+    suggestFindings: (
+      invID: number,
+      opts?: { threshold?: number; limit?: number; cpInstanceID?: string },
+    ) => {
+      const p = new URLSearchParams();
+      if (opts?.threshold != null) p.set('threshold', String(opts.threshold));
+      if (opts?.limit != null) p.set('limit', String(opts.limit));
+      if (opts?.cpInstanceID) p.set('cp', opts.cpInstanceID);
+      const qs = p.toString();
+      return request<SuggestedFinding[]>(
+        `/api/investigations/${invID}/suggested-findings${qs ? `?${qs}` : ''}`,
+      );
+    },
+    dismissSuggestedFinding: (
+      invID: number,
+      findingID: number,
+      opts?: { dismissedBy?: string; cpInstanceID?: string },
+    ) => {
+      const qs = opts?.cpInstanceID ? `?cp=${encodeURIComponent(opts.cpInstanceID)}` : '';
+      return request<void>(
+        `/api/investigations/${invID}/dismissed-findings/${findingID}${qs}`,
+        {
+          method: 'PUT',
+          body: JSON.stringify({ dismissed_by: opts?.dismissedBy ?? '' }),
+        },
+      );
+    },
   },
 
   // Phase 5 — nodes & deploy.

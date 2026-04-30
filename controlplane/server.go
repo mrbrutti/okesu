@@ -536,6 +536,9 @@ func (s *Server) routes() http.Handler {
 	r.Get("/api/v1/federation/investigations/{id}", api.FederationInvestigationDetail(s.store))
 	// Phase 22.8 — federated finding-side case-membership lookup.
 	r.Get("/api/v1/federation/findings/{id}/investigations", api.FederationListInvestigationsForFinding(s.store))
+	// Phase 22.6 — federated finding-side related-cases scoring (for the
+	// Findings drawer's "related to N cases" banner).
+	r.Get("/api/v1/federation/findings/{id}/related-cases", api.FederationRelatedCasesForFinding(s.store))
 	// Phase 22.7 — write proxies. Open-investigation from a federated
 	// finding (FederationCreateInvestigation), add-to-existing
 	// (FederationLinkFindingToInvestigation), and workspace-driven
@@ -544,6 +547,11 @@ func (s *Server) routes() http.Handler {
 	r.Post("/api/v1/federation/investigations", api.FederationCreateInvestigation(s.store))
 	r.Put("/api/v1/federation/investigations/{id}/findings/{finding_id}", api.FederationLinkFindingToInvestigation(s.store))
 	r.Put("/api/v1/federation/investigations/{id}/runs/{run_id}", api.FederationLinkRunToInvestigation(s.store))
+	// Phase 22.6 — Suggested findings on a case workspace. Read +
+	// dismiss are CP-local (tombstones live with the case row), so
+	// federate via the same `?cp=<id>` proxy convention.
+	r.Get("/api/v1/federation/investigations/{id}/suggested-findings", api.FederationSuggestFindings(s.store))
+	r.Put("/api/v1/federation/investigations/{id}/dismissed-findings/{finding_id}", api.FederationDismissSuggestedFinding(s.store))
 	r.Post("/api/v1/federation/orchestrations", api.FederationOrchestrationCreate(s.store))
 	r.Put("/api/v1/federation/orchestrations/{id}", api.FederationOrchestrationUpdate(s.store))
 	r.Delete("/api/v1/federation/orchestrations/{id}", api.FederationOrchestrationDelete(s.store))
@@ -668,6 +676,7 @@ func (s *Server) routes() http.Handler {
 		// t2-hypothesis-test orchestration to discover which cases
 		// need a verdict note + by the UI's finding-detail panel.
 		r.Get("/api/findings/{id}/investigations", api.FederatedListInvestigationsForFinding(s.store, s.fedAgg))
+		r.Get("/api/findings/{id}/related-cases", api.FederatedRelatedCasesForFinding(s.store, s.fedAgg))
 
 		// Catalog IOC routes — federated where federation is on.
 		// Legacy id-based detail routes stay mounted unchanged for external
@@ -714,6 +723,8 @@ func (s *Server) routes() http.Handler {
 		r.Delete("/api/investigations/{id}/findings/{finding_id}", api.UnlinkFindingFromInvestigationHandler(s.store))
 		r.Put("/api/investigations/{id}/runs/{run_id}", api.FederatedLinkRunToInvestigation(s.store, s.fedAgg))
 		r.Delete("/api/investigations/{id}/runs/{run_id}", api.UnlinkRunFromInvestigationHandler(s.store))
+		r.Get("/api/investigations/{id}/suggested-findings", api.FederatedSuggestFindings(s.store, s.fedAgg))
+		r.Put("/api/investigations/{id}/dismissed-findings/{finding_id}", api.FederatedDismissSuggestedFinding(s.store, s.fedAgg))
 
 		// Read endpoints (continued)
 		r.Get("/api/nodes", api.FederatedNodesList(s.store, s.fedAgg))
