@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS agent_lessons (
   id                    BIGSERIAL PRIMARY KEY,
   agent_name            TEXT NOT NULL,
   lesson_text           TEXT NOT NULL,
-  orchestration_run_id  BIGINT,
+  orchestration_run_id  BIGINT REFERENCES orchestration_runs(id) ON DELETE SET NULL,
   orchestration_step_id TEXT,
   created_at            TIMESTAMPTZ DEFAULT NOW()
 );

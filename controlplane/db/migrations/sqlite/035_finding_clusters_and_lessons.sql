@@ -17,6 +17,10 @@
 --                    10 newest entries per agent_name (older are pruned
 --                    on insert by RecordAgentLesson).
 
+-- cluster_id is TEXT (not INTEGER + FK) so a finding can self-reference
+-- its own id stringified ('42') after a 2-phase INSERT-then-UPDATE; an
+-- INTEGER FK would force resolving the id chicken-and-egg differently.
+-- Future cluster id schemes (ULIDs, etc.) also stay possible.
 ALTER TABLE findings ADD COLUMN cluster_id TEXT;
 ALTER TABLE findings ADD COLUMN ioc_confidence TEXT;
 ALTER TABLE findings ADD COLUMN ioc_attribution TEXT;
@@ -24,11 +28,14 @@ ALTER TABLE findings ADD COLUMN ioc_classification TEXT;
 
 CREATE INDEX IF NOT EXISTS idx_findings_cluster ON findings(cluster_id) WHERE cluster_id IS NOT NULL;
 
+-- agent_lessons.orchestration_run_id is SET NULL on cascade (parity
+-- with Phase 22.1's ioc_observations) so a deleted run leaves the
+-- lesson text intact — the lesson outlives the source record.
 CREATE TABLE IF NOT EXISTS agent_lessons (
   id                    INTEGER PRIMARY KEY AUTOINCREMENT,
   agent_name            TEXT NOT NULL,
   lesson_text           TEXT NOT NULL,
-  orchestration_run_id  INTEGER,
+  orchestration_run_id  INTEGER REFERENCES orchestration_runs(id) ON DELETE SET NULL,
   orchestration_step_id TEXT,
   created_at            TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
