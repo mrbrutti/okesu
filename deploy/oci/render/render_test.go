@@ -63,3 +63,11 @@ func TestRenderCPYAML_Parent(t *testing.T) {
 	}
 	assertGolden(t, "cp.yaml.parent", got)
 }
+
+func TestRenderCPYAML_Child(t *testing.T) {
+	got, err := RenderCPYAML(loadInputs(t, "child"))
+	if err != nil {
+		t.Fatalf("RenderCPYAML: %v", err)
+	}
+	assertGolden(t, "cp.yaml.child", got)
+}
