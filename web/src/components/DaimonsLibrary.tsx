@@ -8,9 +8,10 @@
 // follow-up — for now operators familiar with the existing files prefer
 // editing them directly.
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   AlertCircle,
+  AlertTriangle,
   Clock,
   FileEdit,
   FilePlus,
@@ -18,6 +19,7 @@ import {
   RefreshCw,
   RotateCcw,
   Save,
+  Search,
   Trash2,
   X,
 } from 'lucide-react';
@@ -60,11 +62,21 @@ outputs:
 You are an agent that ...
 `;
 
+type SortMode = 'name' | 'modified' | 'drift';
+
 export default function DaimonsLibrary() {
   const [items, setItems] = useState<DaimonLibraryItem[] | null>(null);
   const [registered, setRegistered] = useState<DaimonItem[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState<{ name: string; isNew: boolean } | null>(null);
+  // Daily-use polish — search box, drift-only toggle, and a sort
+  // selector. None of these touch the API; everything's local
+  // filtering on the already-fetched list. Keeps the operator's
+  // muscle memory ("type to filter") consistent with the Findings
+  // and Investigations surfaces.
+  const [search, setSearch] = useState('');
+  const [driftOnly, setDriftOnly] = useState(false);
+  const [sort, setSort] = useState<SortMode>('name');
 
   function refresh() {
     setError(null);
@@ -83,6 +95,51 @@ export default function DaimonsLibrary() {
     const t = setInterval(refresh, 15_000);
     return () => clearInterval(t);
   }, []);
+
+  // Derive the rendered list — filters first (cheap string match +
+  // drift gate), then sort. We compute rollout twice for the drift
+  // sort (once here, again in the row); that's fine — `registered`
+  // is small.
+  const visibleItems = useMemo(() => {
+    if (!items) return null;
+    const q = search.trim().toLowerCase();
+    let out = items.slice();
+    if (q) {
+      out = out.filter((it) => {
+        const hay = [
+          it.name,
+          it.description ?? '',
+          it.provider ?? '',
+          it.model ?? '',
+          it.mode ?? '',
+        ].join(' ').toLowerCase();
+        return hay.includes(q);
+      });
+    }
+    if (driftOnly) {
+      out = out.filter((it) => {
+        const r = computeRollout(it, registered);
+        return r !== null && r.drifted > 0;
+      });
+    }
+    if (sort === 'name') {
+      out.sort((a, b) => a.name.localeCompare(b.name));
+    } else if (sort === 'modified') {
+      out.sort((a, b) => (b.modified_at ?? '').localeCompare(a.modified_at ?? ''));
+    } else if (sort === 'drift') {
+      // Most-drifted first; ties broken by name. computeRollout
+      // returns null when there are no live daemons — those go last.
+      out.sort((a, b) => {
+        const ra = computeRollout(a, registered);
+        const rb = computeRollout(b, registered);
+        const da = ra?.drifted ?? -1;
+        const db = rb?.drifted ?? -1;
+        if (da !== db) return db - da;
+        return a.name.localeCompare(b.name);
+      });
+    }
+    return out;
+  }, [items, registered, search, driftOnly, sort]);
 
   return (
     <div className="h-full flex flex-col">
@@ -121,6 +178,61 @@ export default function DaimonsLibrary() {
           </div>
         )}
 
+        {/* Filter + sort strip. Hidden when the library is empty —
+            no point teasing controls with nothing to filter. */}
+        {items && items.length > 0 && (
+          <div className="mb-4 flex flex-wrap items-center gap-2 text-xs">
+            <div className="relative flex-1 min-w-[200px] max-w-md">
+              <Search size={12} className="absolute left-2 top-1/2 -translate-y-1/2 text-ink-mute" />
+              <input
+                type="text"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search by name, description, provider…"
+                className="w-full pl-7 pr-2 py-1.5 rounded-md border border-border focus:outline-none focus:ring-2 focus:ring-brand-500/30 bg-white"
+              />
+              {search && (
+                <button
+                  onClick={() => setSearch('')}
+                  className="absolute right-1.5 top-1/2 -translate-y-1/2 p-0.5 text-ink-mute hover:text-ink"
+                  title="Clear"
+                >
+                  <X size={11} />
+                </button>
+              )}
+            </div>
+            <button
+              onClick={() => setDriftOnly((v) => !v)}
+              className={cn(
+                'inline-flex items-center gap-1 px-2 py-1.5 rounded-md border text-[11px] font-medium',
+                driftOnly
+                  ? 'bg-yellow-50 text-yellow-800 border-yellow-200'
+                  : 'bg-white text-ink-dim border-border hover:bg-slate-50',
+              )}
+              title="Show only daimons with daemons running a stale definition"
+            >
+              <AlertTriangle size={11} /> Drift only
+            </button>
+            <div className="flex items-center gap-1 ml-auto text-[11px] text-ink-mute">
+              <span>Sort</span>
+              <select
+                value={sort}
+                onChange={(e) => setSort(e.target.value as SortMode)}
+                className="px-2 py-1 rounded-md border border-border bg-white text-xs"
+              >
+                <option value="name">Name</option>
+                <option value="modified">Recently modified</option>
+                <option value="drift">Most drifted</option>
+              </select>
+            </div>
+            {visibleItems && items.length !== visibleItems.length && (
+              <span className="text-[11px] text-ink-mute">
+                {visibleItems.length} of {items.length}
+              </span>
+            )}
+          </div>
+        )}
+
         {items === null && <p className="text-ink-mute">Loading…</p>}
 
         {items && items.length === 0 && !error && (
@@ -134,9 +246,22 @@ export default function DaimonsLibrary() {
           </div>
         )}
 
-        {items && items.length > 0 && (
+        {items && items.length > 0 && visibleItems && visibleItems.length === 0 && (
+          <div className="text-center py-12 text-ink-mute bg-panel border border-border rounded-xl shadow-card">
+            <Search size={24} className="mx-auto mb-2 opacity-40" />
+            <p className="text-sm mb-1">No daimons match the current filters.</p>
+            <button
+              onClick={() => { setSearch(''); setDriftOnly(false); }}
+              className="text-xs text-brand-700 hover:underline"
+            >
+              Clear filters
+            </button>
+          </div>
+        )}
+
+        {items && items.length > 0 && visibleItems && visibleItems.length > 0 && (
           <ul className="bg-panel border border-border rounded-xl shadow-card divide-y divide-border">
-            {items.map((it) => {
+            {visibleItems.map((it) => {
               const rollout = computeRollout(it, registered);
               return (
               <li
