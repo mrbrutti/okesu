@@ -15,6 +15,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/section9labs/okesu/agent"
 	"github.com/section9labs/okesu/controlplane/audit"
 	"github.com/section9labs/okesu/controlplane/auth"
 	"github.com/section9labs/okesu/controlplane/db"
@@ -30,10 +31,11 @@ type Run struct {
 	NodeName string
 	Status   string
 
-	mu     sync.Mutex
-	lines  []string // bounded buffer for late subscribers
-	subs   map[chan string]struct{}
-	finish chan struct{}
+	mu       sync.Mutex
+	lines    []string // bounded buffer for late subscribers
+	subs     map[chan string]struct{}
+	finish   chan struct{}
+	finished sync.Once // guards close(finish) so multiple paths can call markFinished
 }
 
 // RunLogCap caps the in-memory replay buffer per live run.
@@ -121,12 +123,6 @@ func CreateRun(reg *RunRegistry, tunReg *tunnel.Registry, store *db.Store, agent
 				return
 			}
 		}
-		conn := tunReg.Get(req.Node)
-		if conn == nil {
-			http.Error(w, fmt.Sprintf("node %q is not connected", req.Node), http.StatusBadRequest)
-			return
-		}
-
 		runID, _ := randomID()
 		var startedByID int64
 		var startedByEmail string
@@ -134,6 +130,24 @@ func CreateRun(reg *RunRegistry, tunReg *tunnel.Registry, store *db.Store, agent
 			startedByID = u.ID
 			startedByEmail = u.Email
 		}
+
+		// Decide dispatch: tunnel preferred (real-time stream), pull-
+		// mode fallback (write a node_jobs row; the okesu-jobs runtime
+		// claims it on its next poll). The orchestration step path
+		// already does this; ad-hoc runs now match that behaviour so
+		// nodes without a tunnel are dispatchable from the Run-Agent
+		// dialog. Future S3-transport nodes will route through the
+		// same node_jobs pipeline once the bucket-side writer lands
+		// (PR B in this design).
+		conn := tunReg.Get(req.Node)
+		if conn == nil && !jobsRuntimeFreshOnThisCP(store, req.Node) {
+			http.Error(w, fmt.Sprintf(
+				"node %q has no dispatch runtime: no tunnel attached and no recent jobs-runtime poll. "+
+					"Start `okesu node` (tunnel) or `okesu-jobs.service` (pull) on the host.", req.Node,
+			), http.StatusBadRequest)
+			return
+		}
+
 		if err := store.CreateRun(db.RunInsert{
 			ID:              runID,
 			NodeName:        req.Node,
@@ -159,36 +173,76 @@ func CreateRun(reg *RunRegistry, tunReg *tunnel.Registry, store *db.Store, agent
 		}
 		reg.put(run)
 
-		lines, exit, cleanup, err := conn.SendRun(tunnel.RunPayload{
-			RunID:        runID,
-			Provider:     req.Provider,
-			Model:        req.Model,
-			Effort:       req.Effort,
-			MaxTurns:     req.MaxTurns,
-			Agent:        req.Agent,
-			AgentContent: agentContent,
-			Prompt:       req.Prompt,
-		})
-		if err != nil {
-			_ = store.FinishRun(runID, db.RunStatusFailed, -1, err.Error())
-			run.completeError(err.Error())
-			reg.remove(runID)
-			http.Error(w, "tunnel send: "+err.Error(), http.StatusBadGateway)
-			return
+		dispatchMethod := "tunnel"
+		if conn != nil {
+			lines, exit, cleanup, err := conn.SendRun(tunnel.RunPayload{
+				RunID:        runID,
+				Provider:     req.Provider,
+				Model:        req.Model,
+				Effort:       req.Effort,
+				MaxTurns:     req.MaxTurns,
+				Agent:        req.Agent,
+				AgentContent: agentContent,
+				Prompt:       req.Prompt,
+			})
+			if err != nil {
+				_ = store.FinishRun(runID, db.RunStatusFailed, -1, err.Error())
+				run.completeError(err.Error())
+				reg.remove(runID)
+				http.Error(w, "tunnel send: "+err.Error(), http.StatusBadGateway)
+				return
+			}
+			go run.consume(store, reg, lines, exit, cleanup)
+		} else {
+			// Pull-mode path. Look up node id, write a node_jobs row;
+			// MgmtJobOutput / MgmtJobExit (with reg threaded in) will
+			// notify the in-memory Run as the daemon streams output and
+			// fires its terminal exit. No persistent connection held.
+			dispatchMethod = "pull"
+			row := store.QueryRow(`SELECT id FROM nodes WHERE name = ?`, req.Node)
+			var nodeID int64
+			if err := row.Scan(&nodeID); err != nil {
+				_ = store.FinishRun(runID, db.RunStatusFailed, -1, "no nodes row: "+err.Error())
+				run.completeError(err.Error())
+				reg.remove(runID)
+				http.Error(w, "no nodes row for "+req.Node, http.StatusBadRequest)
+				return
+			}
+			payload := agent.JobPayload{
+				Agent:        req.Agent,
+				AgentContent: agentContent,
+				Prompt:       req.Prompt,
+				// Provider/Model/Effort/MaxTurns aren't currently part of
+				// agent.JobPayload — pull-mode adopts the runtime's
+				// defaults. If/when we extend the pull-mode wire, plumb
+				// them through here too.
+			}
+			payloadJSON, _ := json.Marshal(payload)
+			if _, err := store.CreateNodeJob(runID, nodeID, string(agent.JobKindAgentRun), string(payloadJSON)); err != nil {
+				_ = store.FinishRun(runID, db.RunStatusFailed, -1, "enqueue job: "+err.Error())
+				run.completeError(err.Error())
+				reg.remove(runID)
+				http.Error(w, "enqueue job: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
 		}
-
-		go run.consume(store, reg, lines, exit, cleanup)
 
 		audit.Emit(r, store, db.AuditEntry{
 			Action:   "run.start",
 			Target:   fmt.Sprintf("run:%s", runID),
-			Metadata: map[string]any{"node": req.Node, "provider": req.Provider, "agent": req.Agent},
+			Metadata: map[string]any{
+				"node":     req.Node,
+				"provider": req.Provider,
+				"agent":    req.Agent,
+				"dispatch": dispatchMethod,
+			},
 		})
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusAccepted)
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"run_id": runID,
-			"node":   req.Node,
+			"run_id":   runID,
+			"node":     req.Node,
+			"dispatch": dispatchMethod,
 		})
 	}
 }
@@ -200,7 +254,7 @@ func (run *Run) consume(
 ) {
 	defer cleanup()
 	defer reg.remove(run.ID)
-	defer close(run.finish)
+	defer run.markFinishClosed()
 
 	for {
 		select {
@@ -285,6 +339,48 @@ func (run *Run) completeError(msg string) {
 	run.mu.Unlock()
 	_ = msg // recorded via FinishRun by the caller
 }
+
+// markFinishClosed closes run.finish at most once. Multiple paths can
+// race to declare a run done — the tunnel consume loop's exit branch,
+// the pull-mode exit POST handler, and a CP-side cancel — so the
+// close-once guard keeps the channel safe to use as the SSE handler's
+// "the run is over" signal regardless of which path got there first.
+func (run *Run) markFinishClosed() {
+	run.finished.Do(func() { close(run.finish) })
+}
+
+// AppendLine is the public entry-point used by handlers that ingest
+// run output produced outside the tunnel path (currently: the pull-
+// mode jobs runtime's MgmtJobOutput webhook). The DB write happens at
+// the call site (store.AppendRunLine); this just notifies the live
+// in-memory subscribers so the SSE stream sees the chunk in real time.
+//
+// Safe to call when nobody is subscribed — slow/missing subscribers
+// drop lines silently per appendLine's contract.
+func (run *Run) AppendLine(line string) { run.appendLine(line) }
+
+// Complete is the public entry-point that marks a run done from a
+// path other than the tunnel consume loop (currently: MgmtJobExit for
+// pull-mode and S3 transports). Closes subscriber channels and the
+// finish signal; idempotent via sync.Once on `finish`. The Status is
+// updated under the same lock as the in-memory line buffer, so a
+// subscriber reading Lines() after Complete returns sees the final
+// status atomically.
+func (run *Run) Complete(status string) {
+	run.complete(status)
+	run.markFinishClosed()
+}
+
+// MarkLive registers a Run in this registry. Used by the pull-mode
+// CreateRun path which doesn't go through consume() (no tunnel
+// goroutine to own the lifecycle). Tunnel path keeps using `put`
+// directly so the contract matches its existing semantics.
+func (r *RunRegistry) MarkLive(run *Run) { r.put(run) }
+
+// Forget removes a run from the registry. Pull-mode path calls this
+// when MgmtJobExit fires the terminal state, mirroring the deferred
+// `reg.remove` in consume(). Idempotent.
+func (r *RunRegistry) Forget(id string) { r.remove(id) }
 
 // Lines snapshots the live in-memory tail for replay to a new SSE subscriber.
 func (run *Run) Lines() []string {

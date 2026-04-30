@@ -778,6 +778,7 @@ func (s *Server) routes() http.Handler {
 		// Notifications: deliveries log is viewer+; channels/rules are admin-only.
 		r.Get("/api/notifications/deliveries", api.DeliveriesList(s.store))
 		r.Get("/api/nodes/connected", api.ConnectedNodes(s.tunReg))
+		r.Get("/api/nodes/reachable", api.ReachableNodes(s.tunReg, s.store))
 		r.Get("/api/jobs/{id}", api.JobStatus(s.jobs))
 		r.Get("/api/jobs/{id}/log", api.JobLogStream(s.jobs))
 		r.Get("/api/runs", api.FederatedRunsList(s.store, s.fedAgg))
@@ -1367,8 +1368,8 @@ func (s *Server) mgmtRoutes() http.Handler {
 	// reports terminal state via /exit. Same mTLS gate as everything
 	// else here — cert CN identifies the node.
 	r.Get("/api/v1/agents/jobs", api.MgmtJobsPoll(s.store))
-	r.Post("/api/v1/agents/jobs/{id}/output", api.MgmtJobOutput(s.store))
-	r.Post("/api/v1/agents/jobs/{id}/exit", api.MgmtJobExit(s.store))
+	r.Post("/api/v1/agents/jobs/{id}/output", api.MgmtJobOutput(s.runs, s.store))
+	r.Post("/api/v1/agents/jobs/{id}/exit", api.MgmtJobExit(s.runs, s.store))
 
 	// Reverse mTLS tunnel from `okesu node` clients (Phase 6).
 	tunSrv := tunnel.NewServer(s.tunReg)

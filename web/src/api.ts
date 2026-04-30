@@ -1301,6 +1301,11 @@ export const api = {
 
   // Phase 6 — ad-hoc runs over reverse tunnel.
   connectedNodes: () => request<string[]>('/api/nodes/connected'),
+  // Phase 22.7 — reachable nodes across all transports (tunnel +
+  // HTTPS pull; S3 once the bucket-side writer lands). The Run-Agent
+  // dialog uses this so nodes without an attached tunnel still
+  // surface when they have a fresh okesu-jobs.service poll.
+  reachableNodes: () => request<ReachableNode[]>('/api/nodes/reachable'),
   runs: (limit?: number, offset?: number) => {
     const p = new URLSearchParams();
     if (limit) p.set('limit', String(limit));
@@ -2105,6 +2110,16 @@ export interface DeployKeyStatus {
   /** When false, the configured Secrets adapter is read-only and the
    *  Save button should be disabled. */
   adapter_writable: boolean;
+}
+
+// ReachableNode — server-decided dispatchable node (tunnel or pull).
+// `method` is what dispatch would use *right now*; `transport` is the
+// node's persistent transport configuration.
+export interface ReachableNode {
+  name: string;
+  transport: string;            // 'https' | 's3' | '' for legacy
+  method: 'tunnel' | 'pull';
+  last_seen?: string;           // ISO-8601
 }
 
 export interface KnownHostItem {
