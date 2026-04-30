@@ -124,6 +124,33 @@ type StepSpec struct {
 	// See orchestrator.DataResolver and the api-package query
 	// registry for the supported queries.
 	Data map[string]DataSource `yaml:"data,omitempty"`
+
+	// Phase 22.3 — step kind. Default "" = legacy agent dispatch (today's
+	// behavior). "meeting" runs the participants sequentially with the
+	// Meeting block's config; the engine's dispatch path branches on this.
+	Kind string `yaml:"kind,omitempty"`
+
+	// Meeting carries the meeting-specific configuration when Kind == "meeting".
+	Meeting *MeetingSpec `yaml:"meeting,omitempty"`
+
+	// WarBridge marks a meeting step's resulting meeting_minutes finding
+	// as needing immediate operator attention. Tagged "war-bridge" so the
+	// dashboard renders the red banner. Only meaningful when Kind == "meeting".
+	WarBridge bool `yaml:"war_bridge,omitempty"`
+}
+
+// MeetingSpec is the configuration for a meeting-kind step. Each
+// participant is dispatched sequentially against the trigger payload
+// plus all prior participants' outputs; the synthesizer receives the
+// full conversation and emits a meeting_minutes finding.
+type MeetingSpec struct {
+	Participants []string `yaml:"participants"`
+	Synthesizer  string   `yaml:"synthesizer"`
+	// ContextWindow declares what context the participants see beyond
+	// the trigger. v1 supports "trigger" (just the triggering finding)
+	// and "trigger+last_5_findings" (also include the agent's 5 most
+	// recent findings). Empty = "trigger".
+	ContextWindow string `yaml:"context_window,omitempty"`
 }
 
 // DataSource is a single declarative read in a step's `data:` block.
@@ -278,11 +305,39 @@ func (s *Spec) Validate() error {
 		if prev, dup := seenIDs[st.ID]; dup {
 			return fmt.Errorf("step %d: id %q duplicates step %d", i, st.ID, prev)
 		}
-		if st.Agent == "" {
-			return fmt.Errorf("step %q: agent is required", st.ID)
-		}
-		if st.Prompt == "" {
-			return fmt.Errorf("step %q: prompt is required", st.ID)
+		// Phase 22.3 — kind-aware validation. Default-kind steps still
+		// require a top-level agent + prompt; meeting steps require a
+		// meeting block (participants + synthesizer) and forbid the
+		// top-level agent (which would silently be ignored).
+		switch st.Kind {
+		case "", "agent":
+			if st.Agent == "" {
+				return fmt.Errorf("step %q: agent is required for default-kind steps", st.ID)
+			}
+			if st.Prompt == "" {
+				return fmt.Errorf("step %q: prompt is required", st.ID)
+			}
+		case "meeting":
+			if st.Meeting == nil {
+				return fmt.Errorf("step %q: kind=meeting requires a meeting: block", st.ID)
+			}
+			if len(st.Meeting.Participants) == 0 {
+				return fmt.Errorf("step %q: meeting requires at least one participant", st.ID)
+			}
+			if st.Meeting.Synthesizer == "" {
+				return fmt.Errorf("step %q: meeting requires a synthesizer", st.ID)
+			}
+			if st.Agent != "" {
+				return fmt.Errorf("step %q: meeting steps must not declare a top-level agent (use participants/synthesizer)", st.ID)
+			}
+			switch st.Meeting.ContextWindow {
+			case "", "trigger", "trigger+last_5_findings":
+				// ok
+			default:
+				return fmt.Errorf("step %q: meeting.context_window must be empty|trigger|trigger+last_5_findings, got %q", st.ID, st.Meeting.ContextWindow)
+			}
+		default:
+			return fmt.Errorf("step %q: unknown kind %q (allowed: agent, meeting)", st.ID, st.Kind)
 		}
 		if st.Approval != "" && st.Approval != "required" {
 			return fmt.Errorf("step %q: approval must be 'required' or omitted, got %q", st.ID, st.Approval)
