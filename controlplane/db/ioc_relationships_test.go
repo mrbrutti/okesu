@@ -70,7 +70,10 @@ func TestListIOCRelationshipsByKVPaired(t *testing.T) {
 	}
 
 	// Querying the object side should also return the same edge.
-	relsB, _ := s.ListIOCRelationshipsByKVPaired("ipv4", "1.2.3.4")
+	relsB, err := s.ListIOCRelationshipsByKVPaired("ipv4", "1.2.3.4")
+	if err != nil {
+		t.Fatalf("ListIOCRelationshipsByKVPaired (object side): %v", err)
+	}
 	if len(relsB) != 1 || relsB[0].SubjectKind != "domain" {
 		t.Errorf("object-side query missing edge or shape wrong: %+v", relsB)
 	}

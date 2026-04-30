@@ -295,13 +295,12 @@ func (s *Store) ListCrossCPIOCPatterns(minObservations int, since time.Time) ([]
 }
 
 // LookupIOC fetches by (kind, normalized_value). Returns sql.ErrNoRows if absent.
+//
+// Single-query delegate to GetIOCByKV — kept for backwards compatibility
+// with callers that pre-date the federation work (both methods now share
+// the same contract).
 func (s *Store) LookupIOC(kind, normalizedValue string) (*IOCRecord, error) {
-	row := s.QueryRow(`SELECT id FROM iocs WHERE kind = ? AND normalized_value = ?`, kind, normalizedValue)
-	var id int64
-	if err := row.Scan(&id); err != nil {
-		return nil, err
-	}
-	return s.GetIOC(id)
+	return s.GetIOCByKV(kind, normalizedValue)
 }
 
 // IOCListFilter narrows ListIOCs. Zero-valued fields disable that

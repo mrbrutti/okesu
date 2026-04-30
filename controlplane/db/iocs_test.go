@@ -1,6 +1,8 @@
 package db
 
 import (
+	"database/sql"
+	"errors"
 	"testing"
 	"time"
 )
@@ -299,8 +301,21 @@ func TestGetIOCByKV(t *testing.T) {
 		t.Errorf("Name = %q, want test", got.Name)
 	}
 
-	if _, err := s.GetIOCByKV("sha256", "missing"); err == nil {
-		t.Errorf("expected sql.ErrNoRows for missing kv")
+	if _, err := s.GetIOCByKV("sha256", "missing"); !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("expected sql.ErrNoRows for missing kv; got %v", err)
+	}
+
+	// LookupIOC delegates to GetIOCByKV — same contract; lock that in
+	// so a future refactor can't quietly diverge.
+	gotL, err := s.LookupIOC("sha256", "abc")
+	if err != nil {
+		t.Fatalf("LookupIOC: %v", err)
+	}
+	if gotL.Name != "test" {
+		t.Errorf("LookupIOC Name = %q, want test", gotL.Name)
+	}
+	if _, err := s.LookupIOC("sha256", "missing"); !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("LookupIOC expected sql.ErrNoRows; got %v", err)
 	}
 }
 
