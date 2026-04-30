@@ -1,0 +1,50 @@
+---
+// Home-page system map. Renders the four-piece flow:
+//   Control Plane → Daimons → Agents → Orchestrations
+// Each node is a brand-50 rounded square with a glyph icon plus a
+// label below. Arrows are ink-mute. The diagram is a single static
+// SVG — no JS, scales with the container.
+---
+
+<svg
+  viewBox="0 0 760 200"
+  class="w-full h-auto"
+  role="img"
+  aria-label="Diagram: Control Plane dispatches to Daimons running on hosts, which execute Agents that emit findings into Orchestrations."
+>
+  <!-- nodes -->
+  <g>
+    {/* Control Plane */}
+    <rect x="20"  y="50" width="120" height="80" rx="10" fill="#f5f3ff" stroke="#ede9fe" />
+    <text x="80" y="84" text-anchor="middle" font-size="22" fill="#5b21b6" font-family="ui-monospace">⌬</text>
+    <text x="80" y="158" text-anchor="middle" font-size="13" fill="#0f172a" font-weight="600">Control Plane</text>
+
+    {/* Daimons */}
+    <rect x="200" y="50" width="120" height="80" rx="10" fill="#f5f3ff" stroke="#ede9fe" />
+    <text x="260" y="84" text-anchor="middle" font-size="22" fill="#5b21b6" font-family="ui-monospace">▦</text>
+    <text x="260" y="158" text-anchor="middle" font-size="13" fill="#0f172a" font-weight="600">Daimons</text>
+
+    {/* Agents */}
+    <rect x="380" y="50" width="120" height="80" rx="10" fill="#f5f3ff" stroke="#ede9fe" />
+    <text x="440" y="86" text-anchor="middle" font-size="22" fill="#5b21b6" font-family="ui-monospace">✦</text>
+    <text x="440" y="158" text-anchor="middle" font-size="13" fill="#0f172a" font-weight="600">Agents</text>
+
+    {/* Orchestrations */}
+    <rect x="560" y="50" width="180" height="80" rx="10" fill="#f5f3ff" stroke="#ede9fe" />
+    <text x="650" y="84" text-anchor="middle" font-size="22" fill="#5b21b6" font-family="ui-monospace">⊞</text>
+    <text x="650" y="158" text-anchor="middle" font-size="13" fill="#0f172a" font-weight="600">Orchestrations</text>
+  </g>
+
+  {/* arrows */}
+  <g stroke="#94a3b8" stroke-width="2" fill="none" marker-end="url(#arrow-tip)">
+    <line x1="142" y1="90" x2="200" y2="90" />
+    <line x1="322" y1="90" x2="380" y2="90" />
+    <line x1="502" y1="90" x2="560" y2="90" />
+  </g>
+
+  <defs>
+    <marker id="arrow-tip" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#94a3b8" />
+    </marker>
+  </defs>
+</svg>

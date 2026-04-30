@@ -1,0 +1,43 @@
+---
+// Daimons concept-page anchor. Host box with the daimon process
+// inside, dispatch + JSONL arrows in/out.
+---
+
+<svg viewBox="0 0 720 240" class="w-full h-auto" role="img" aria-label="Diagram: a daimon runs on a host, receives dispatched runs from the CP, and streams JSONL findings back.">
+  {/* CP marker */}
+  <rect x="20" y="100" width="100" height="40" rx="6" fill="#f5f3ff" stroke="#ede9fe" />
+  <text x="70" y="125" text-anchor="middle" font-size="12" fill="#5b21b6" font-weight="600">Control Plane</text>
+
+  {/* Host box */}
+  <rect x="240" y="40" width="320" height="160" rx="10" fill="#fafafa" stroke="#e5e7eb" stroke-dasharray="4 3" />
+  <text x="252" y="60" font-size="11" fill="#94a3b8" font-family="ui-monospace">host: web-prod-01</text>
+
+  {/* Daimon process inside the host */}
+  <rect x="280" y="80" width="240" height="100" rx="8" fill="#ffffff" stroke="#e5e7eb" />
+  <text x="400" y="110" text-anchor="middle" font-size="13" fill="#0f172a" font-weight="600">daimon (okesu)</text>
+  <text x="400" y="132" text-anchor="middle" font-size="11" fill="#64748b">long-running on each host</text>
+  <text x="400" y="154" text-anchor="middle" font-size="11" fill="#64748b">listens for run dispatches</text>
+  <text x="400" y="172" text-anchor="middle" font-size="11" fill="#64748b">emits findings as JSONL</text>
+
+  {/* CP → daimon arrow */}
+  <line x1="120" y1="115" x2="280" y2="115" stroke="#94a3b8" stroke-width="2" marker-end="url(#arrow-tip-2)" />
+  <text x="200" y="106" text-anchor="middle" font-size="10" fill="#5b21b6">dispatch run</text>
+
+  {/* daimon → CP return */}
+  <line x1="280" y1="155" x2="120" y2="155" stroke="#94a3b8" stroke-width="2" marker-end="url(#arrow-tip-2)" />
+  <text x="200" y="172" text-anchor="middle" font-size="10" fill="#5b21b6">findings (JSONL)</text>
+
+  {/* finding card on the right */}
+  <rect x="600" y="80" width="100" height="80" rx="6" fill="#ffffff" stroke="#e5e7eb" />
+  <rect x="600" y="80" width="100" height="3" fill="#7c3aed" />
+  <text x="650" y="106" text-anchor="middle" font-size="10" fill="#0f172a" font-weight="600">finding</text>
+  <text x="650" y="124" text-anchor="middle" font-size="9" fill="#64748b">severity: high</text>
+  <text x="650" y="138" text-anchor="middle" font-size="9" fill="#64748b">title: …</text>
+  <line x1="520" y1="130" x2="600" y2="120" stroke="#94a3b8" stroke-width="1" stroke-dasharray="3 3" />
+
+  <defs>
+    <marker id="arrow-tip-2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#94a3b8" />
+    </marker>
+  </defs>
+</svg>
