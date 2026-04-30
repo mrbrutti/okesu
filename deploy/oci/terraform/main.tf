@@ -73,6 +73,8 @@ module "cp_vm" {
   name_prefix      = var.name_prefix
   subnet_ocid      = module.network.public_subnet_ocid
   shape            = var.cp_shape
+  ocpus            = var.cp_ocpus
+  memory_in_gbs    = var.cp_memory_in_gbs
   image_ocid       = var.cp_image_ocid
   ssh_public_key   = var.ssh_public_key
 }
@@ -85,6 +87,8 @@ module "clickhouse_vm" {
   name_prefix         = var.name_prefix
   subnet_ocid         = module.network.private_subnet_ocid
   shape               = var.clickhouse_shape
+  ocpus               = var.clickhouse_ocpus
+  memory_in_gbs       = var.clickhouse_memory_in_gbs
   image_ocid          = var.clickhouse_image_ocid
   ssh_public_key      = var.ssh_public_key
   clickhouse_version  = var.clickhouse_version

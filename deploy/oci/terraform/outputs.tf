@@ -34,6 +34,7 @@ output "stream_pool_id" {
 output "redis_url" {
   description = "redis:// URL for the CP's --pubsub-url."
   value       = module.cache.url
+  sensitive   = true
 }
 
 # ── Object Storage ──────────────────────────────────────────────────

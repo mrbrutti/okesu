@@ -4,6 +4,8 @@ variable "subnet_ocid" { type = string }
 variable "shape" { type = string }
 variable "image_ocid" { type = string }
 variable "ssh_public_key" { type = string }
+variable "ocpus" { type = number }
+variable "memory_in_gbs" { type = number }
 
 data "oci_identity_availability_domains" "ads" {
   compartment_id = var.compartment_ocid
@@ -37,6 +39,11 @@ resource "oci_core_instance" "cp" {
   source_details {
     source_type = "image"
     source_id   = local.resolved_image_ocid
+  }
+
+  shape_config {
+    ocpus         = var.ocpus
+    memory_in_gbs = var.memory_in_gbs
   }
 
   create_vnic_details {

@@ -87,9 +87,21 @@ variable "mode" {
 }
 
 variable "cp_shape" {
-  description = "Compute shape for the CP VM."
+  description = "Compute shape for the CP VM. Flex shapes use a base name; OCPU/memory are set via cp_ocpus / cp_memory_in_gbs below."
   type        = string
-  default     = "VM.Standard.E4.Flex.1.16GB"
+  default     = "VM.Standard.E4.Flex"
+}
+
+variable "cp_ocpus" {
+  description = "OCPUs for the CP VM (Flex shape config)."
+  type        = number
+  default     = 1
+}
+
+variable "cp_memory_in_gbs" {
+  description = "Memory (GB) for the CP VM (Flex shape config)."
+  type        = number
+  default     = 16
 }
 
 variable "cp_image_ocid" {
@@ -99,9 +111,21 @@ variable "cp_image_ocid" {
 }
 
 variable "clickhouse_shape" {
-  description = "Compute shape for the ClickHouse VM."
+  description = "Compute shape for the ClickHouse VM. Flex base; OCPU/memory below."
   type        = string
-  default     = "VM.Standard.E4.Flex.1.16GB"
+  default     = "VM.Standard.E4.Flex"
+}
+
+variable "clickhouse_ocpus" {
+  description = "OCPUs for the ClickHouse VM."
+  type        = number
+  default     = 1
+}
+
+variable "clickhouse_memory_in_gbs" {
+  description = "Memory (GB) for the ClickHouse VM."
+  type        = number
+  default     = 16
 }
 
 variable "clickhouse_image_ocid" {
