@@ -12,7 +12,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/section9labs/okesu/agent/s3transport"
 	"github.com/section9labs/okesu/controlplane/db"
+	"github.com/section9labs/okesu/controlplane/federation/s3rpc"
 )
 
 // Aggregator fans out federated read requests across all healthy
@@ -32,6 +34,13 @@ type Aggregator struct {
 	// federated findings/daimons surface from a child CP that has
 	// no inbound HTTPS path. Nil disables S3 federation reads.
 	s3 S3Source
+
+	// s3Clients caches one *s3transport.Client per transport_config_id
+	// so the parent's write-pipe submitter doesn't redo bucket connect
+	// handshakes for every directive. Populated lazily on first
+	// SubmitS3Directive against a given peer's transport config.
+	s3ClientsMu sync.Mutex
+	s3Clients   map[int64]*s3transport.Client
 }
 
 // S3Source is the read-side interface the aggregator uses to look
@@ -217,6 +226,84 @@ func s3AssetForPath(path string) string {
 	// request_id correlation as directives.
 	}
 	return ""
+}
+
+// SubmitS3Directive is the parent-side write helper — used by the
+// federation_writes forwarding handlers when target_cp_instance_id
+// names a peer with transport=s3_dead_drop. Wraps:
+//
+//   1. Build an s3 client from the peer's transport_config (cached
+//      on the Aggregator so per-Submit calls don't redo connect).
+//   2. Look up the parent's own instance_id (cp_meta singleton).
+//   3. Mint a request_id, write req/<id>.json, poll resp/<id>.json,
+//      return the typed Response.
+//
+// Errors here are operator-facing — they bubble up to the dialog
+// the operator clicked Submit on. timeoutSec=0 uses the default.
+func (a *Aggregator) SubmitS3Directive(ctx context.Context, peer Peer, kind string, body json.RawMessage, issuedByEmail string) (*s3rpc.Response, error) {
+	if peer.Row.Transport != "s3_dead_drop" {
+		return nil, fmt.Errorf("SubmitS3Directive called on non-s3 peer (transport=%s)", peer.Row.Transport)
+	}
+	if !peer.Row.TransportConfigID.Valid || peer.Row.TransportConfigID.Int64 == 0 {
+		return nil, errors.New("s3 peer has no transport_config_id")
+	}
+	if !peer.Row.BucketPrefix.Valid || peer.Row.BucketPrefix.String == "" {
+		return nil, errors.New("s3 peer has no bucket_prefix")
+	}
+
+	cli, err := a.s3ClientFor(ctx, peer.Row.TransportConfigID.Int64)
+	if err != nil {
+		return nil, fmt.Errorf("s3 client: %w", err)
+	}
+	meta, err := a.store.CPMeta()
+	if err != nil {
+		return nil, fmt.Errorf("read parent cp_meta: %w", err)
+	}
+	rpcClient, err := s3rpc.NewClient(cli, meta.InstanceID, peer.Row.BucketPrefix.String)
+	if err != nil {
+		return nil, err
+	}
+	return rpcClient.Submit(ctx, s3rpc.Request{
+		Kind:         kind,
+		Body:         body,
+		IssuedByUser: issuedByEmail,
+	})
+}
+
+// s3ClientFor returns a cached or freshly-built s3transport.Client
+// for the given transport_config_id. Cached because a busy parent
+// can issue many directives per tick to the same peer; we don't
+// want to redo connect handshakes for each.
+func (a *Aggregator) s3ClientFor(ctx context.Context, configID int64) (*s3transport.Client, error) {
+	a.s3ClientsMu.Lock()
+	if a.s3Clients == nil {
+		a.s3Clients = map[int64]*s3transport.Client{}
+	}
+	if cli, ok := a.s3Clients[configID]; ok {
+		a.s3ClientsMu.Unlock()
+		return cli, nil
+	}
+	a.s3ClientsMu.Unlock()
+
+	tc, err := a.store.GetTransportConfig(configID)
+	if err != nil {
+		return nil, fmt.Errorf("transport_config %d: %w", configID, err)
+	}
+	cli, err := s3transport.NewClient(ctx, s3transport.ClientConfig{
+		Bucket:    tc.Bucket,
+		Endpoint:  tc.ScannerEndpoint(),
+		Region:    tc.Region.String,
+		UseSSL:    tc.UseSSL,
+		AccessKey: tc.AccessKey.String,
+		SecretKey: tc.SecretKey.String,
+	})
+	if err != nil {
+		return nil, err
+	}
+	a.s3ClientsMu.Lock()
+	a.s3Clients[configID] = cli
+	a.s3ClientsMu.Unlock()
+	return cli, nil
 }
 
 // FanOutResult is one peer's outcome — either parsed rows (caller
