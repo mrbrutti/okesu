@@ -251,6 +251,9 @@ type Engine struct {
 	// approval gate. Zero value (empty AutoApprove) means "gate as
 	// today" — strictly additive, never relaxes existing constraints.
 	actionPolicy Policy
+	// progressSink receives per-host fan-out telemetry. nil-safe via
+	// noopProgressSink — production wires a db-backed impl.
+	progressSink StepNodeProgressSink
 }
 
 // DataResolver fetches structured CP-side data on behalf of a step's
@@ -264,7 +267,11 @@ type DataResolver interface {
 }
 
 func NewEngine(store Store, dispatcher Dispatcher) *Engine {
-	return &Engine{store: store, dispatcher: dispatcher}
+	return &Engine{
+		store:        store,
+		dispatcher:   dispatcher,
+		progressSink: noopProgressSink{},
+	}
 }
 
 // SetActionApplier installs the CP-mutation backend. Called once at
@@ -289,6 +296,17 @@ func (e *Engine) SetDataResolver(d DataResolver) {
 // required step gates" behaviour.
 func (e *Engine) SetActionPolicy(p Policy) {
 	e.actionPolicy = p
+}
+
+// SetProgressSink installs the per-host fan-out telemetry hook. Called
+// once at boot from the api/orchestrations.go coordinator with a
+// db-backed impl. Safe to leave unset — the zero value is a no-op
+// sink that preserves existing behavior.
+func (e *Engine) SetProgressSink(s StepNodeProgressSink) {
+	if s == nil {
+		s = noopProgressSink{}
+	}
+	e.progressSink = s
 }
 
 // Run resumes the orchestration_run identified by runID. It's
@@ -546,7 +564,9 @@ func (e *Engine) Run(ctx context.Context, runID int64) error {
 				DispatchMode: orch.Spec.EffectiveDispatch(&step),
 			})
 		default:
-			result, dispatchErr = fanOut(stepCtx, e.dispatcher, step, renderedPrompt, cpSel, targets, orch.Spec.EffectiveTimeout(&step), orch.Spec.EffectiveDispatch(&step))
+			result, dispatchErr = fanOut(stepCtx, e.dispatcher, step, renderedPrompt, cpSel, targets,
+				orch.Spec.EffectiveTimeout(&step), orch.Spec.EffectiveDispatch(&step),
+				e.progressSink, run.ID)
 		}
 
 		// Persist step outcome.
@@ -860,6 +880,8 @@ func fanOut(
 	targets []string,
 	timeout time.Duration,
 	dispatchMode string,
+	sink StepNodeProgressSink,
+	runID int64,
 ) (DispatchResult, error) {
 	type one struct {
 		node   string
@@ -872,6 +894,10 @@ func fanOut(
 		wg.Add(1)
 		go func(i int, n string) {
 			defer wg.Done()
+			started := time.Now().UTC()
+			if err := sink.OnDispatchStart(runID, step.ID, n, started); err != nil {
+				log.Printf("orchestrator: fan-out sink OnDispatchStart err: %v", err)
+			}
 			r, err := disp.Dispatch(ctx, DispatchRequest{
 				StepID:       step.ID + "@" + n,
 				AgentName:    step.Agent,
@@ -883,6 +909,22 @@ func fanOut(
 				DispatchMode: dispatchMode,
 			})
 			results[i] = one{node: n, result: r, err: err}
+
+			// Persist the per-host outcome for the live-progress UI.
+			ended := time.Now().UTC()
+			status := r.Status
+			errStr := ""
+			if err != nil {
+				status = StepStatusFailed
+				errStr = err.Error()
+			} else if r.Status == StepStatusFailed && r.Error != "" {
+				errStr = r.Error
+			}
+			if sErr := sink.OnDispatchEnd(runID, step.ID, n,
+				status, r.RunID, len(r.Findings),
+				r.OutputTail, errStr, ended); sErr != nil {
+				log.Printf("orchestrator: fan-out sink OnDispatchEnd err: %v", sErr)
+			}
 		}(i, node)
 	}
 	wg.Wait()
