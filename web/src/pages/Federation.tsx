@@ -944,6 +944,57 @@ function ManagedDeploysPanel() {
     });
   }
 
+  async function handleDelete(row: CPProvision) {
+    // Two-tier confirm: row delete is always safe, cloud destroy is
+    // opt-in. Failed/cancelled rows almost always have no live VM,
+    // so we don't even offer destroy for them — the row delete is
+    // the entire intent.
+    const hasCloudResource = row.cloud_resource_id && row.cloud_resource_id.length > 0;
+    const isTerminalNoCloud = row.status === 'failed' || row.status === 'cancelled';
+    let destroy = false;
+
+    if (hasCloudResource && !isTerminalNoCloud) {
+      // Deploy succeeded or is in flight with a real VM — give the
+      // operator the choice.
+      const choice = window.confirm(
+        `Delete provision #${row.id} (${row.display_name})?\n\n` +
+        `Cloud resource: ${row.cloud_resource_id}\n\n` +
+        `OK = ALSO destroy the cloud instance via ${row.cloud}.Destroy()\n` +
+        `Cancel = back out without deleting\n\n` +
+        `(To delete the row but leave the cloud instance running, click OK on the next prompt instead of this one.)`,
+      );
+      if (!choice) {
+        const recordOnly = window.confirm(
+          `Delete provision #${row.id} record only?\n\n` +
+          `The cloud instance ${row.cloud_resource_id} will keep running and you'll need to clean it up via the cloud console.`,
+        );
+        if (!recordOnly) return;
+      } else {
+        destroy = true;
+      }
+    } else {
+      // Failed/cancelled or no cloud_resource_id — single confirm.
+      const ok = window.confirm(
+        `Delete provision #${row.id} (${row.display_name})?\n\n` +
+        (hasCloudResource ? `Cloud resource ${row.cloud_resource_id} (already terminated) will not be touched.` : 'No cloud resource was created — this is a record-only delete.'),
+      );
+      if (!ok) return;
+    }
+
+    try {
+      const res = await api.cpProvisionDelete(row.id, destroy);
+      // Optimistically prune from the visible list.
+      setRows((prev) => (prev ?? []).filter((r) => r.id !== row.id));
+      // Surface destroy errors inline — the row IS gone but the cloud
+      // instance may still be running, which is operator-actionable.
+      if (res && typeof res === 'object' && 'destroy_error' in res && res.destroy_error) {
+        setError(`row deleted, but destroy failed: ${res.destroy_error} — clean up ${res.cloud_resource} via cloud console`);
+      }
+    } catch (e) {
+      setError(`delete: ${String(e)}`);
+    }
+  }
+
   return (
     <section className="bg-panel border border-border rounded-xl shadow-card overflow-hidden">
       <header className="px-4 py-2.5 border-b border-border flex items-center justify-between">
@@ -963,6 +1014,7 @@ function ManagedDeploysPanel() {
             row={r}
             expanded={expanded.has(r.id)}
             onToggle={() => toggleExpand(r.id)}
+            onDelete={() => handleDelete(r)}
           />
         ))}
       </ul>
@@ -970,10 +1022,11 @@ function ManagedDeploysPanel() {
   );
 }
 
-function ManagedDeployRow({ row, expanded, onToggle }: {
+function ManagedDeployRow({ row, expanded, onToggle, onDelete }: {
   row: CPProvision;
   expanded: boolean;
   onToggle: () => void;
+  onDelete: () => void;
 }) {
   const Icon = expanded ? ChevronDown : ChevronRight;
   return (
@@ -1019,6 +1072,15 @@ function ManagedDeployRow({ row, expanded, onToggle }: {
           {!row.log && !row.error && row.status === 'queued' && (
             <div className="text-ink-mute italic">queued — waiting for the worker to pick this up.</div>
           )}
+          <div className="flex justify-end pt-1">
+            <button
+              onClick={onDelete}
+              title="Delete this provision row (and optionally destroy the cloud instance)"
+              className="text-[11px] px-2 py-1 border border-border hover:bg-red-50 hover:text-red-700 rounded inline-flex items-center gap-1"
+            >
+              <Trash2 size={11} /> Delete
+            </button>
+          </div>
         </div>
       )}
     </li>

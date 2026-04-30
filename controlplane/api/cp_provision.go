@@ -284,6 +284,91 @@ func CPProvisionGetHandler(store *db.Store) http.HandlerFunc {
 	}
 }
 
+// CPProvisionDeleteHandler removes a provision row. Optional cloud-side
+// cleanup via `?destroy=true` — when set, the parent first calls
+// Provisioner.Destroy on the cloud_resource_id, then drops the row.
+//
+// Without `destroy=true` the cloud-side instance is untouched. That's
+// the safe default for the common operator workflow ("get rid of these
+// failed rows that have no live VM"). For a launch that succeeded but
+// is no longer wanted, the operator must opt-in to destroy so we don't
+// silently kill an instance they may still want.
+//
+// Idempotent: deleting a missing id returns 204. The destroy step is
+// best-effort — failure there does NOT block the row delete; the
+// operator gets the destroy error in the response body but the row
+// is gone (so they can retry destroy via the cloud console).
+func CPProvisionDeleteHandler(store *db.Store, reg *cpprovision.Registry) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+		if err != nil {
+			http.Error(w, "bad id", http.StatusBadRequest)
+			return
+		}
+		row, err := store.GetCPProvision(id)
+		if err != nil {
+			// Treat already-gone as success — the operator's intent
+			// was "make this row not exist" and that's the post-state.
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
+		var destroyErr string
+		if r.URL.Query().Get("destroy") == "true" && row.CloudResourceID.Valid && row.CloudResourceID.String != "" {
+			prov, perr := reg.Get(row.Cloud)
+			if perr != nil {
+				destroyErr = "no provisioner for " + row.Cloud + ": " + perr.Error()
+			} else if !row.CredentialID.Valid {
+				destroyErr = "credential gone — destroy via cloud console: " + row.CloudResourceID.String
+			} else {
+				masterKey, mkErr := store.MasterKeyFromMeta()
+				if mkErr != nil {
+					destroyErr = "master key: " + mkErr.Error()
+				} else {
+					credPayload, cerr := store.DecryptCloudCredential(row.CredentialID.Int64, masterKey)
+					if cerr != nil {
+						destroyErr = "decrypt credential: " + cerr.Error()
+					} else if derr := prov.Destroy(r.Context(), row.CloudResourceID.String, row.Region, credPayload); derr != nil {
+						destroyErr = derr.Error()
+					}
+				}
+			}
+		}
+
+		if err := store.DeleteCPProvision(id); err != nil {
+			http.Error(w, "delete: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		audit.Emit(r, store, db.AuditEntry{
+			Action: "cp_provision.delete",
+			Target: fmt.Sprintf("cp_provision:%d", id),
+			Metadata: map[string]any{
+				"display_name":      row.DisplayName,
+				"cloud":             row.Cloud,
+				"status":            row.Status,
+				"destroy_attempted": r.URL.Query().Get("destroy") == "true",
+				"destroy_error":     destroyErr,
+			},
+		})
+
+		// 204 when the row is gone and (if requested) destroy
+		// succeeded; 200 + body when destroy failed so the operator
+		// sees the cloud-side error inline.
+		if destroyErr != "" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"deleted":         true,
+				"destroy_error":   destroyErr,
+				"cloud_resource":  row.CloudResourceID.String,
+			})
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
 // cpProvisionJSON is the wire shape for the Federation page. The log
 // is included on per-row GET but truncated to 64KB on the list
 // endpoint to keep the page small for operators with many deploys.

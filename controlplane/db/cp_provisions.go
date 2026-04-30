@@ -221,6 +221,16 @@ func (s *Store) SetCPProvisionError(id int64, msg string) error {
 	return err
 }
 
+// DeleteCPProvision removes a provision row by id. Idempotent; the
+// linked cp_bootstrap_tokens row is left in place (it expires on
+// its own and may have already been burned). Cloud-side resources
+// are NOT touched here — the api handler decides whether to call
+// Provisioner.Destroy first based on operator intent.
+func (s *Store) DeleteCPProvision(id int64) error {
+	_, err := s.Exec(`DELETE FROM cp_provisions WHERE id = ?`, id)
+	return err
+}
+
 // FindCPProvisionByBundleToken looks up the provision row a given
 // bootstrap token belongs to — called from the bootstrap handler so
 // it can advance the matching provision row to "ready" + record the
