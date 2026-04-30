@@ -45,6 +45,18 @@ type Scanner struct {
 	OnEvent   func(nodeID int64, e agent.Event)
 	OnFinding func(nodeID int64, e agent.Event)
 
+	// OnRunOutput / OnRunExit notify the live RunRegistry when an
+	// ad-hoc CreateRun used pull dispatch *and* the node uses the
+	// S3 transport. The HTTPS pull path threads the registry through
+	// MgmtJobOutput/MgmtJobExit; the S3 transport's equivalent
+	// chunks come in via the bucket sweep, so we need a parallel
+	// hook to keep SSE live-tailing consistent across both pull
+	// transports. Zero hooks → DB writes still happen; only the
+	// in-memory live notification is suppressed (reasonable when
+	// no SSE clients exist).
+	OnRunOutput func(runID, line string)
+	OnRunExit   func(runID, status string)
+
 	// CertIssuer signs CSRs during enrollment. Same interface the
 	// rest of the CP uses; supplied at construction.
 	IssueClientCert func(commonName string) (cert, key, ca []byte, err error)
@@ -85,6 +97,13 @@ func (s *Scanner) Run(ctx context.Context) {
 func (s *Scanner) sweep(ctx context.Context) {
 	if err := s.sweepRegistrations(ctx); err != nil {
 		log.Printf("s3scanner: registrations: %v", err)
+	}
+	// Publish queued work to per-node bucket inboxes BEFORE reading
+	// outputs/exits — a job created in the same sweep cycle gets a
+	// chance to land before the sweep ends. The agent-side runner's
+	// next poll picks it up.
+	if err := s.publishPendingJobs(ctx); err != nil {
+		log.Printf("s3scanner: publish jobs: %v", err)
 	}
 	nodes, err := s.listS3Nodes(ctx)
 	if err != nil {
@@ -382,6 +401,102 @@ func (s *Scanner) sweepFindings(ctx context.Context, nodeID int64) error {
 	return nil
 }
 
+// ───────────────────────── job inbox writer ─────────────────────────
+
+// publishPendingJobs translates queued node_jobs rows owned by S3-
+// transport nodes (matching this scanner's transport_config) into
+// per-node bucket inbox files. The agent-side runner polls
+// `cp/<id>/nodes/<nid>/jobs/inbox/`, claims via PutIfAbsent, executes,
+// and reports back via the existing output / exit sweeps.
+//
+// Idempotency: writes are by the same key the agent uses (the row's
+// numeric id), so a re-publish across consecutive scanner ticks just
+// overwrites with identical content. A separate `Skip if inbox/<id>
+// already published` guard cuts the redundant PUT in the common case
+// where the agent hasn't polled yet between sweeps.
+//
+// Failure mode notes:
+//   - DB row stays 'pending' until the agent posts exit; if the agent
+//     never claims, sweepJobExits never fires, so the row stays pending
+//     forever. That's the same failure shape pull-mode HTTPS has when
+//     the runtime stops polling — operators see the run hung in the UI
+//     and can cancel via CancelPendingNodeJobs.
+//   - PUT failures are logged but the loop continues; the next sweep
+//     retries automatically.
+func (s *Scanner) publishPendingJobs(ctx context.Context) error {
+	jobs, err := s.store.ListPendingJobsForS3Config(s.cfgID, 100)
+	if err != nil {
+		return err
+	}
+	if len(jobs) == 0 {
+		return nil
+	}
+
+	// One-shot list per node: enumerate already-published inbox keys
+	// to skip redundant PUTs. Cheap (small prefix) and avoids per-job
+	// HEAD calls.
+	publishedByNode := map[int64]map[string]struct{}{}
+	for _, j := range jobs {
+		if _, ok := publishedByNode[j.NodeID]; ok {
+			continue
+		}
+		prefix := s3transport.NodePrefix(s.cpID, j.NodeID) + s3transport.DirJobsInbox
+		objs, err := s.client.List(ctx, prefix, 1000)
+		if err != nil {
+			log.Printf("s3scanner: list inbox node=%d: %v", j.NodeID, err)
+			publishedByNode[j.NodeID] = map[string]struct{}{}
+			continue
+		}
+		set := map[string]struct{}{}
+		for _, o := range objs {
+			// .../jobs/inbox/<id>.json → take base, strip .json
+			name := strings.TrimSuffix(o.Key[strings.LastIndex(o.Key, "/")+1:], ".json")
+			set[name] = struct{}{}
+		}
+		publishedByNode[j.NodeID] = set
+	}
+
+	for _, j := range jobs {
+		idStr := strconv.FormatInt(j.ID, 10)
+		if _, already := publishedByNode[j.NodeID][idStr]; already {
+			continue
+		}
+
+		// Build the wire envelope the agent's runner.go expects —
+		// {kind, run_id, payload, created_at}. Decode the stored
+		// payload_json so we can re-marshal as the typed JobPayload
+		// (the agent's deserializer is strict about field types).
+		var payload agent.JobPayload
+		if err := json.Unmarshal([]byte(j.PayloadJSON), &payload); err != nil {
+			log.Printf("s3scanner: bad payload_json job=%d: %v", j.ID, err)
+			continue
+		}
+		runID := ""
+		if j.RunID.Valid {
+			runID = j.RunID.String
+		}
+		envelope := agent.Job{
+			ID:        j.ID,
+			Kind:      agent.JobKind(j.Kind),
+			RunID:     runID,
+			Payload:   payload,
+			CreatedAt: j.CreatedAt.UnixMilli(),
+		}
+		body, err := json.Marshal(envelope)
+		if err != nil {
+			log.Printf("s3scanner: marshal job=%d: %v", j.ID, err)
+			continue
+		}
+		key := s3transport.NodePrefix(s.cpID, j.NodeID) + s3transport.DirJobsInbox + idStr + ".json"
+		if err := s.client.Put(ctx, key, body, "application/json"); err != nil {
+			log.Printf("s3scanner: put inbox %s: %v", key, err)
+			continue
+		}
+		log.Printf("s3scanner: published job=%d kind=%s node=%d → %s", j.ID, j.Kind, j.NodeID, key)
+	}
+	return nil
+}
+
 // ───────────────────────── job output ─────────────────────────
 
 func (s *Scanner) sweepJobOutput(ctx context.Context, nodeID int64) error {
@@ -405,6 +520,14 @@ func (s *Scanner) sweepJobOutput(ctx context.Context, nodeID int64) error {
 		runID := s.runIDForJob(ctx, jobID)
 		if runID != "" {
 			_ = s.store.AppendRunLine(runID, "stdout", string(body))
+			// Mirror the live in-memory notification the HTTPS pull
+			// path does in MgmtJobOutput, so SSE subscribers tail
+			// chunks for ad-hoc S3 runs the same way they do for
+			// HTTPS pull. Hook is nil-safe — orchestration step paths
+			// don't need it.
+			if s.OnRunOutput != nil {
+				s.OnRunOutput(runID, string(body))
+			}
 		}
 		_ = s.client.Delete(ctx, o.Key)
 	}
@@ -455,11 +578,31 @@ func (s *Scanner) sweepJobExits(ctx context.Context, nodeID int64) error {
 			continue
 		}
 		jobID := jobIDFromExitKey(o.Key)
+		jobIDInt := parseInt64(jobID)
 		status := "succeeded"
 		if ex.ExitCode != 0 || ex.Error != "" {
 			status = "failed"
 		}
-		_ = s.store.FinishNodeJob(parseInt64(jobID), status, ex.ExitCode, ex.Error, ex.TunnelStarted)
+		// Resolve run_id BEFORE FinishNodeJob — the row is unaffected
+		// by the status flip but reading first keeps the lookup
+		// independent of the transaction order.
+		runID := s.runIDForJob(ctx, jobID)
+		_ = s.store.FinishNodeJob(jobIDInt, status, ex.ExitCode, ex.Error, ex.TunnelStarted)
+		// FinishNodeJob's transactional sibling FinishRun (called via
+		// MgmtJobExit on HTTPS) doesn't run on this path — call it
+		// explicitly so the underlying Run row reaches a terminal
+		// status the same way HTTPS pull does. Idempotent against the
+		// SSE notification below.
+		if runID != "" {
+			runStatus := "succeeded"
+			if status == "failed" {
+				runStatus = "failed"
+			}
+			_ = s.store.FinishRun(runID, runStatus, ex.ExitCode, ex.Error)
+			if s.OnRunExit != nil {
+				s.OnRunExit(runID, runStatus)
+			}
+		}
 		_ = s.client.Delete(ctx, o.Key)
 	}
 	return nil

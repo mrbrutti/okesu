@@ -1330,6 +1330,22 @@ func (s *Server) startS3Scanner(ctx context.Context, c db.TransportConfig) {
 		raw, _ := json.Marshal(e)
 		publish(e, raw)
 	}
+	// Wire the live RunRegistry into the scanner so ad-hoc CreateRun
+	// SSE subscribers tail S3-pull chunks the same way they tail
+	// HTTPS-pull chunks (see MgmtJobOutput). Hook is nil-safe — when
+	// no Run is registered (orchestration step path), the closure
+	// short-circuits.
+	scanner.OnRunOutput = func(runID, line string) {
+		if live := s.runs.Get(runID); live != nil {
+			live.AppendLine(line)
+		}
+	}
+	scanner.OnRunExit = func(runID, status string) {
+		if live := s.runs.Get(runID); live != nil {
+			live.Complete(status)
+			s.runs.Forget(runID)
+		}
+	}
 	go scanner.Run(ctx)
 	log.Printf("s3 scanner started: cfg=%d cp=%s bucket=%s every=%dms", c.ID, c.CPID.String, c.Bucket, c.ScannerIntervalMs)
 }

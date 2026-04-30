@@ -167,6 +167,50 @@ func (s *Store) CancelPendingNodeJobs(runID string) error {
 	return err
 }
 
+// ListPendingJobsForS3Config returns pending node_jobs for nodes that
+// transport via S3 dead-drop and belong to the given transport_config.
+// Used by the s3scanner to publish queued work into per-node bucket
+// inboxes. Limit is clamped so a backlogged scanner cycle doesn't
+// pull thousands of rows in one go — pending rows that don't fit roll
+// over to the next sweep tick.
+//
+// Returned rows include node_id so the writer can build the per-node
+// bucket prefix without an extra round-trip per job.
+func (s *Store) ListPendingJobsForS3Config(cfgID int64, max int) ([]*NodeJob, error) {
+	if max <= 0 || max > 500 {
+		max = 100
+	}
+	rows, err := s.Query(`
+		SELECT j.id, j.run_id, j.node_id, j.kind, j.status, j.payload_json,
+		       j.claimed_at, j.finished_at, j.exit_code, j.error, j.tunnel_started, j.created_at
+		  FROM node_jobs j
+		  JOIN nodes    n ON n.id = j.node_id
+		 WHERE j.status = 'pending'
+		   AND n.transport = 's3'
+		   AND n.transport_config_id = ?
+		 ORDER BY j.created_at
+		 LIMIT ?
+	`, cfgID, max)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*NodeJob
+	for rows.Next() {
+		j := &NodeJob{}
+		var tunnelStarted int64
+		if err := rows.Scan(
+			&j.ID, &j.RunID, &j.NodeID, &j.Kind, &j.Status, &j.PayloadJSON,
+			&j.ClaimedAt, &j.FinishedAt, &j.ExitCode, &j.Error, &tunnelStarted, &j.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		j.TunnelStarted = tunnelStarted != 0
+		out = append(out, j)
+	}
+	return out, rows.Err()
+}
+
 // MarkJobsRuntimeSeen bumps the node's liveness column. Called every
 // time a daemon's heartbeat carries jobs_runtime_ready=true. The
 // orchestrator's dispatch decision tree reads this column to decide
