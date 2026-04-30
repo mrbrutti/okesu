@@ -1123,10 +1123,13 @@ function OciCloudParamsForm({
     return () => { cancelled = true; };
   }, [credentialID, region]);
 
-  // ADs / subnets / images / shapes load when compartment is set.
+  // ADs / subnets / shapes load when compartment is set. Images
+  // depend ALSO on the selected shape — see the next effect — so an
+  // operator can't accidentally pair an ARM image with an x86 shape
+  // (OCI silently terminates the launch when arches don't match).
   useEffect(() => {
     if (!compartmentID) {
-      setAds(null); setSubnets(null); setImages(null); setShapes(null);
+      setAds(null); setSubnets(null); setShapes(null);
       return;
     }
     let cancelled = false;
@@ -1134,12 +1137,27 @@ function OciCloudParamsForm({
       .then((items) => { if (!cancelled) setAds(items); }).catch(() => {});
     api.cloudDiscoveryOCI.subnets(credentialID, compartmentID, { region: region || undefined })
       .then((items) => { if (!cancelled) setSubnets(items); }).catch(() => {});
-    api.cloudDiscoveryOCI.images(credentialID, compartmentID, { region: region || undefined })
-      .then((items) => { if (!cancelled) setImages(items); }).catch(() => {});
     api.cloudDiscoveryOCI.shapes(credentialID, compartmentID, { region: region || undefined })
       .then((items) => { if (!cancelled) setShapes(items); }).catch(() => {});
     return () => { cancelled = true; };
   }, [credentialID, compartmentID, region]);
+
+  // Images list is shape-scoped — OCI only returns images compatible
+  // with the requested shape, so the operator can't pick a wrong-arch
+  // image. Refires when shape changes.
+  useEffect(() => {
+    if (!compartmentID) {
+      setImages(null);
+      return;
+    }
+    let cancelled = false;
+    api.cloudDiscoveryOCI.images(credentialID, compartmentID, {
+      region: region || undefined,
+      shape: shape || undefined,
+    })
+      .then((items) => { if (!cancelled) setImages(items); }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [credentialID, compartmentID, region, shape]);
 
   // Shape attrs gate the OCPU/memory inputs (.Flex shapes only) and
   // give us min/max bounds for the number fields.
@@ -1148,8 +1166,19 @@ function OciCloudParamsForm({
     | { ocpus_min?: number; ocpus_max?: number; memory_min_gb?: number; memory_max_gb?: number }
     | undefined;
 
-  // Fill sensible defaults when shape changes.
+  // Fill sensible defaults when shape changes — and clear the
+  // image because the new shape's image list is about to refresh
+  // and the previously-picked id may not be in it (different arch).
   useEffect(() => {
+    if (shape && imageID) {
+      // Only clear if the image is no longer in the latest list.
+      // The list itself updates via the shape-scoped effect; this
+      // local reset just keeps the form in a coherent state during
+      // the brief gap between shape change and list refresh.
+      if (images && !images.some((i) => i.id === imageID)) {
+        set({ image_id: '' });
+      }
+    }
     if (flexShape && shapeAttrs && (ocpus == null || memoryGB == null)) {
       set({
         ocpus: ocpus ?? shapeAttrs.ocpus_min ?? 1,
