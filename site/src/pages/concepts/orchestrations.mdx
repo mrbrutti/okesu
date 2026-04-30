@@ -10,13 +10,18 @@ toc:
   - { id: fanout,      label: "Fan-out across hosts" }
   - { id: gates,       label: "Approval gates" }
   - { id: branching,   label: "Branching on results" }
+  - { id: triggers,    label: "Triggers" }
   - { id: next,        label: "Where to next" }
 ---
 
-import OrchestrationFlow from '../../components/diagrams/OrchestrationFlow.astro';
+import OrchestrationDAGDemo from '../../components/diagrams/OrchestrationDAGDemo.astro';
+import FanoutStripDemo from '../../components/diagrams/FanoutStripDemo.astro';
+import ApprovalGateDemo from '../../components/diagrams/ApprovalGateDemo.astro';
+import BindingsDemo from '../../components/diagrams/BindingsDemo.astro';
+import TriggersDemo from '../../components/diagrams/TriggersDemo.astro';
 
 <div class="bg-bg border border-border rounded-xl p-6 md:p-8 my-8">
-  <OrchestrationFlow />
+  <OrchestrationDAGDemo />
 </div>
 
 <h2 id="what">What an orchestration is</h2>
@@ -58,17 +63,45 @@ import OrchestrationFlow from '../../components/diagrams/OrchestrationFlow.astro
 &nbsp;&nbsp;&nbsp;&nbsp;<span class="key">prompt</span>: <span class="str">"sweep for known IOCs"</span>
 </div>
 
+<div class="my-6">
+  <FanoutStripDemo />
+</div>
+
 <p>The platform's run viewer renders a per-host status strip — a colored dot per host plus a histogram bar — so you can see which host succeeded, failed, or is still running at a glance. Failed hosts surface inline with their error.</p>
 
 <h2 id="gates">Approval gates</h2>
 
 <p>Add <code>approval: required</code> to any step. The engine pauses the run at that step until an operator approves it from the dashboard. Useful for steps that mutate state — containment actions, tag changes, finding triage — where you want a human in the loop. The CP enforces a per-action-class allowlist so a runaway agent can't push beyond what's been pre-authorised.</p>
 
+<div class="my-6">
+  <ApprovalGateDemo />
+</div>
+
 <h2 id="branching">Branching on results</h2>
 
 <p>Steps can read structured fields from earlier steps via the binding system. An agent that emits an <code>orchestration_result</code> finding exposes its attributes as <code>{`{{stepN.result.X}}`}</code>; the next step can use them in its prompt or as input parameters.</p>
 
+<div class="my-6">
+  <BindingsDemo />
+</div>
+
 <p>For runs that fanned out, each host's payload is also addressable: <code>{`{{stepN.byNode["host-1"].result.foo}}`}</code>.</p>
+
+<h2 id="triggers">Triggers</h2>
+
+<p>Three ways an orchestration starts running:</p>
+
+<ul>
+  <li><span class="term">finding match</span> — a CP-side rule watches incoming findings and fires an orchestration when one matches the rule's filter (severity, category, agent, attributes).</li>
+  <li><span class="term">manual run</span> — an operator clicks Run in the dashboard, optionally supplying inputs.</li>
+  <li><span class="term">cron schedule</span> — a recurring orchestration fires on a cron expression for proactive sweeps.</li>
+</ul>
+
+<div class="my-6">
+  <TriggersDemo />
+</div>
+
+<p>Whatever the source, the orchestration spec sees the trigger context as <code>{`{{trigger.X}}`}</code>, so the same playbook handles all three modes without spec changes.</p>
 
 <h2 id="next">Where to next</h2>
 
