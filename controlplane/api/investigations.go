@@ -396,6 +396,121 @@ func LinkFindingToInvestigationHandler(store *db.Store) http.HandlerFunc {
 	}
 }
 
+// SuggestFindingsHandler returns scored finding candidates for a case's
+// Suggested findings card. Filters out already-linked + per-case-
+// dismissed candidates server-side.
+//
+// Path: /api/investigations/{id}/suggested-findings
+// Query: threshold=<int> (default 30), limit=<int> (default 10)
+//
+// Response is a thin wrapper over the store result; signals are
+// returned as a string slice so the UI can chip them. Empty list when
+// the case has no linked findings (no signals to score against) or
+// when nothing meets the threshold.
+func SuggestFindingsHandler(store *db.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		invID, err := investigationIDFromChi(r)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		threshold := 0
+		if v := r.URL.Query().Get("threshold"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+				threshold = n
+			}
+		}
+		limit := 0
+		if v := r.URL.Query().Get("limit"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n > 0 {
+				limit = n
+			}
+		}
+		items, err := store.SuggestFindingsForInvestigation(invID, threshold, limit)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		// Defensive: ensure JSON [] not null.
+		if items == nil {
+			items = []db.SuggestedFinding{}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(items)
+	}
+}
+
+// RelatedCasesForFindingHandler returns active cases that score above
+// threshold against this finding via the suggested-findings signals.
+// Used by the Findings drawer's "looks related to N cases" banner.
+//
+// Path: /api/findings/{id}/related-cases
+// Query: threshold=<int> (default 30), limit=<int> (default 5)
+func RelatedCasesForFindingHandler(store *db.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		findingID, err := childIDFromChi(r, "id")
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		threshold := 0
+		if v := r.URL.Query().Get("threshold"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+				threshold = n
+			}
+		}
+		limit := 0
+		if v := r.URL.Query().Get("limit"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n > 0 {
+				limit = n
+			}
+		}
+		items, err := store.ListRelatedCasesForFinding(findingID, threshold, limit)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if items == nil {
+			items = []db.RelatedCase{}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(items)
+	}
+}
+
+// DismissSuggestedFindingHandler writes a per-case tombstone. The
+// finding stops surfacing as a suggestion on this case (re-link via
+// + Add lifts the tombstone — see LinkFindingToInvestigation's side
+// effect).
+//
+// Path: /api/investigations/{id}/dismissed-findings/{finding_id}
+// Body (optional): `{"dismissed_by": "user@example.com"}`
+func DismissSuggestedFindingHandler(store *db.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		invID, err := investigationIDFromChi(r)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		findingID, err := childIDFromChi(r, "finding_id")
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		var body struct {
+			DismissedBy string `json:"dismissed_by"`
+		}
+		// Body is optional — bare DELETE with no body is fine; ignore
+		// decode errors so an empty/missing body doesn't 400.
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if err := store.DismissSuggestedFinding(invID, findingID, body.DismissedBy); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
 // investigationIDFromChi reads the {id} URL parameter and parses it
 // to int64. Replaces the older path-prefix parser so a single
 // handler can be mounted under both `/api/investigations/{id}` and

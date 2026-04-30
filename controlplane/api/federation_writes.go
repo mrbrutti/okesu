@@ -656,6 +656,61 @@ func FederationListInvestigationsForFinding(store *db.Store) http.HandlerFunc {
 	return requireFederationToken(store, ListInvestigationsForFindingHandler(store))
 }
 
+// FederatedSuggestFindings — read proxy. Suggested-findings scoring
+// queries `investigation_findings` + `ioc_observations` joined to
+// `findings`, all of which are CP-local — for a case on a child CP,
+// the parent has none of those rows, so the only correct answer is to
+// forward the request to the owning child.
+func FederatedSuggestFindings(store *db.Store, agg *federation.Aggregator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		path := strings.Replace(r.URL.Path, "/api/investigations/", "/api/v1/federation/investigations/", 1)
+		if handled, _ := proxyToCPByQuery(w, r, agg, path); handled {
+			return
+		}
+		SuggestFindingsHandler(store).ServeHTTP(w, r)
+	}
+}
+
+// FederationSuggestFindings — child-side, token-authed sibling.
+func FederationSuggestFindings(store *db.Store) http.HandlerFunc {
+	return requireFederationToken(store, SuggestFindingsHandler(store))
+}
+
+// FederatedDismissSuggestedFinding — write proxy. Tombstone lives in
+// the same DB as the case + finding, so we forward to the child via
+// `?cp=` when set.
+func FederatedDismissSuggestedFinding(store *db.Store, agg *federation.Aggregator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		path := strings.Replace(r.URL.Path, "/api/investigations/", "/api/v1/federation/investigations/", 1)
+		if handled, _ := proxyWriteByQuery(w, r, agg, path, "", nil); handled {
+			return
+		}
+		DismissSuggestedFindingHandler(store).ServeHTTP(w, r)
+	}
+}
+
+// FederationDismissSuggestedFinding — child-side, token-authed sibling.
+func FederationDismissSuggestedFinding(store *db.Store) http.HandlerFunc {
+	return requireFederationToken(store, DismissSuggestedFindingHandler(store))
+}
+
+// FederatedRelatedCasesForFinding — read proxy for the Findings drawer
+// banner. Same forwarding pattern as FederatedListInvestigationsForFinding.
+func FederatedRelatedCasesForFinding(store *db.Store, agg *federation.Aggregator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		path := strings.Replace(r.URL.Path, "/api/findings/", "/api/v1/federation/findings/", 1)
+		if handled, _ := proxyToCPByQuery(w, r, agg, path); handled {
+			return
+		}
+		RelatedCasesForFindingHandler(store).ServeHTTP(w, r)
+	}
+}
+
+// FederationRelatedCasesForFinding — child-side, token-authed.
+func FederationRelatedCasesForFinding(store *db.Store) http.HandlerFunc {
+	return requireFederationToken(store, RelatedCasesForFindingHandler(store))
+}
+
 // FederatedOrchestrationDetail proxies a single GET via ?cp= to the
 // owning child CP, falling through to the local store otherwise.
 func FederatedOrchestrationDetail(store *db.Store, agg *federation.Aggregator) http.HandlerFunc {

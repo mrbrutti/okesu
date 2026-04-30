@@ -24,7 +24,7 @@ import {
   ThumbsDown,
   X,
 } from 'lucide-react';
-import { api, type Finding, type FindingGroup, type FindingsSummary, type FindingStatus, type IOCRecord, type RunListItem } from '../api';
+import { api, type Finding, type FindingGroup, type FindingsSummary, type FindingStatus, type IOCRecord, type RelatedCase, type RunListItem } from '../api';
 import { FindingHistory, History as HistoryIcon } from '../components/FindingHistory';
 import { cn } from '../lib/cn';
 import { useIOCDisplayPrefs } from '../lib/preferences';
@@ -879,14 +879,20 @@ export function FindingDrawer({ id, cpInstanceID, onClose, onChanged }: DrawerPr
   // Run-an-agent moved up to the case workspace.
   const [investigateOpen, setInvestigateOpen] = useState(false);
   const [iocs, setIOCs] = useState<IOCRecord[]>([]);
+  // Active cases scored above threshold against this finding via the
+  // suggested-findings signals. Drives the "looks related to N cases"
+  // banner that opens the Investigate dialog with one click.
+  const [relatedCases, setRelatedCases] = useState<RelatedCase[]>([]);
 
   useEffect(() => {
     setF(null);
     setRelated([]);
     setShowRaw(false);
     setIOCs([]);
+    setRelatedCases([]);
     api.finding(id, cpInstanceID).then(setF).catch((e) => setError(String(e)));
     api.runsForFinding(id, cpInstanceID).then(setInvestigations).catch(() => setInvestigations([]));
+    api.findingRelatedCases(id, { cpInstanceID }).then(setRelatedCases).catch(() => setRelatedCases([]));
     // /api/iocs reads the local CP's store; finding ids are
     // CP-scoped, so federated rows can't be looked up here. Skip the
     // call when this drawer is showing a child-CP finding.
@@ -1010,6 +1016,30 @@ export function FindingDrawer({ id, cpInstanceID, onClose, onChanged }: DrawerPr
       )}
 
       <div className="flex-1 overflow-auto p-5 space-y-5 text-sm">
+        {/* Related-cases banner — surfaces active cases that score
+            above threshold against this finding via the same signals
+            as the workspace's Suggested findings card. Click opens the
+            Investigate dialog with the existing-case tab pre-selected
+            (the dialog handles already-linked memberships separately). */}
+        {relatedCases.length > 0 && (
+          <button
+            onClick={() => setInvestigateOpen(true)}
+            className="w-full text-left flex items-center gap-2 px-3 py-2 rounded-md bg-amber-50 border border-amber-200 hover:bg-amber-100"
+          >
+            <Lightbulb size={14} className="text-amber-700 shrink-0" />
+            <div className="flex-1 min-w-0">
+              <div className="text-xs font-semibold text-amber-900">
+                Looks related to {relatedCases.length} active case{relatedCases.length === 1 ? '' : 's'}
+              </div>
+              <div className="text-[11px] text-amber-800 truncate">
+                {relatedCases.slice(0, 3).map((c) => c.Title || `#${c.InvestigationID}`).join(' · ')}
+                {relatedCases.length > 3 && ` · +${relatedCases.length - 3} more`}
+              </div>
+            </div>
+            <ArrowUpRight size={12} className="text-amber-700 shrink-0" />
+          </button>
+        )}
+
         {/* Identity strip */}
         <div className="grid grid-cols-2 gap-3 text-xs">
           <DetailTile icon={Cpu} label="Agent">

@@ -60,6 +60,7 @@ import {
 } from '../api';
 import { cn } from '../lib/cn';
 import { RunAgentDialog } from '../components/RunAgentDialog';
+import { SuggestedFindingsCard } from '../components/SuggestedFindingsCard';
 
 type Resolution = 'resolved' | 'false_positive' | 'duplicate' | 'wont_fix';
 type Tab = 'overview' | 'findings' | 'runs' | 'iocs' | 'daimons' | 'orchestrations' | 'notes';
@@ -313,10 +314,13 @@ export default function InvestigationDetailPage() {
         {tab === 'overview' && (
           <OverviewPanel
             inv={inv}
+            invID={invID}
+            cpInstanceID={cpInstanceID}
             editing={editing}
             draftSummary={draftSummary}
             setDraftSummary={setDraftSummary}
             bundle={bundle}
+            onChange={reload}
           />
         )}
 
@@ -404,32 +408,50 @@ function TabButton<T extends string>({
 // ── Overview panel ──────────────────────────────────────────────────
 
 function OverviewPanel({
-  inv, editing, draftSummary, setDraftSummary, bundle,
+  inv, invID, cpInstanceID, editing, draftSummary, setDraftSummary, bundle, onChange,
 }: {
   inv: Investigation;
+  invID: number;
+  cpInstanceID?: string;
   editing: boolean;
   draftSummary: string;
   setDraftSummary: (s: string) => void;
   bundle: InvestigationDetail;
+  onChange: () => void;
 }) {
+  // Active cases get suggestions; closed/archived don't (no point
+  // proposing additions to a closed case's evidence — the operator
+  // would have to reopen first).
+  const showSuggestions = inv.Status === 'active' && bundle.findings.length > 0;
+
   return (
     <section className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-      <div className="lg:col-span-2 border border-border rounded-md bg-white p-4">
-        <h4 className="text-[11px] uppercase tracking-wide font-semibold text-ink-mute mb-2">
-          Summary
-        </h4>
-        {editing ? (
-          <textarea
-            value={draftSummary}
-            onChange={(e) => setDraftSummary(e.target.value)}
-            rows={6}
-            className="w-full px-2.5 py-1.5 rounded-md border border-border bg-white text-sm"
-            placeholder="Hypothesis, scope, working theory…"
+      <div className="lg:col-span-2 space-y-4">
+        <div className="border border-border rounded-md bg-white p-4">
+          <h4 className="text-[11px] uppercase tracking-wide font-semibold text-ink-mute mb-2">
+            Summary
+          </h4>
+          {editing ? (
+            <textarea
+              value={draftSummary}
+              onChange={(e) => setDraftSummary(e.target.value)}
+              rows={6}
+              className="w-full px-2.5 py-1.5 rounded-md border border-border bg-white text-sm"
+              placeholder="Hypothesis, scope, working theory…"
+            />
+          ) : inv.Summary ? (
+            <div className="text-sm whitespace-pre-wrap text-ink">{inv.Summary}</div>
+          ) : (
+            <div className="text-sm text-ink-mute italic">No summary yet.</div>
+          )}
+        </div>
+
+        {showSuggestions && (
+          <SuggestedFindingsCard
+            invID={invID}
+            cpInstanceID={cpInstanceID}
+            onChange={onChange}
           />
-        ) : inv.Summary ? (
-          <div className="text-sm whitespace-pre-wrap text-ink">{inv.Summary}</div>
-        ) : (
-          <div className="text-sm text-ink-mute italic">No summary yet.</div>
         )}
       </div>
 
