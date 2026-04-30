@@ -171,6 +171,11 @@ export interface Finding {
   tags?: string[];
   attributes?: Record<string, unknown>;
 
+  // Phase 22.3 — finding subtype. Drives per-subtype rendering in the
+  // drawer (e.g. "hypothesis" → HypothesisCard). Empty/missing = no
+  // special card.
+  subtype?: string;
+
   // Phase 13 — triage state. `acknowledged` (boolean) is kept for
   // backward-compat — any non-open status maps to true.
   status?: FindingStatus;

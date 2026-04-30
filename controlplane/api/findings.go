@@ -65,6 +65,12 @@ type findingJSON struct {
 	Tags            []string        `json:"tags,omitempty"`
 	Attributes      json.RawMessage `json:"attributes,omitempty"`
 
+	// Phase 22.3 — finding subtype. Identifies the structured shape of
+	// `attributes` ("hypothesis", "meeting_minutes", etc.). Empty = no
+	// special rendering. UI uses this to switch on per-subtype cards
+	// (HypothesisCard etc.) on top of the standard finding drawer.
+	Subtype string `json:"subtype,omitempty"`
+
 	// Phase 9.6 — federation source. Populated only when this row was
 	// fetched from a federated child CP. Local rows leave this nil so
 	// the UI can render a "from <CP>" chip iff non-null.
@@ -103,6 +109,7 @@ func toFindingJSON(f *db.Finding, includeRaw bool) findingJSON {
 		Path:            f.Path.String,
 		NetworkEndpoint: f.NetworkEndpoint.String,
 		CVE:             f.CVE.String,
+		Subtype:         f.Subtype,
 	}
 	if f.OperatorSeverity.Valid && f.OperatorSeverity.String != "" {
 		out.OperatorSeverity = f.OperatorSeverity.String

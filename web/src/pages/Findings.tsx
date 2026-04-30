@@ -34,6 +34,7 @@ import { ListCard } from '../components/lists/ListCard';
 import { StatusMenu } from '../components/StatusMenu';
 import { SeverityMenu, type SeverityChange } from '../components/SeverityMenu';
 import { InvestigateDialog } from '../components/InvestigateDialog';
+import { HypothesisCard, parseHypothesisAttributes } from '../components/HypothesisCard';
 import { StatusPill } from '../components/StatusPill';
 import { useInfiniteScroll } from '../lib/useInfiniteScroll';
 import { useSelection } from '../lib/useSelection';
@@ -978,6 +979,11 @@ export function FindingDrawer({ id, cpInstanceID, onClose, onChanged }: DrawerPr
   const allOccurrences = [f, ...related].sort((a, b) => b.ts - a.ts);
   const firstSeen = [...allOccurrences].sort((a, b) => a.ts - b.ts)[0];
   const isDuplicate = related.length > 0;
+  // Phase 22.3 — render the HypothesisCard above evidence when the
+  // finding is a structured hypothesis. Falls through silently if the
+  // attributes blob is missing the required fields.
+  const hypothesisAttrs =
+    f.subtype === 'hypothesis' ? parseHypothesisAttributes(f.attributes) : null;
 
   return (
     <aside className="w-[520px] shrink-0 border-l border-border bg-panel flex flex-col">
@@ -1046,6 +1052,11 @@ export function FindingDrawer({ id, cpInstanceID, onClose, onChanged }: DrawerPr
             <span className="font-mono">{fmtFull(f.ts)}</span>
           </DetailTile>
         </div>
+
+        {/* Phase 22.3 — Hypothesis subtype card. Surfaces the structured
+            claim/confidence/evidence/how-to-test payload above the
+            standard evidence block when subtype="hypothesis". */}
+        {hypothesisAttrs && <HypothesisCard attrs={hypothesisAttrs} />}
 
         {/* Resource */}
         {f.resource && (
