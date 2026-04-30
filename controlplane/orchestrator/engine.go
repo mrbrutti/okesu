@@ -83,6 +83,21 @@ type Store interface {
 	GetOrchestrationStep(runID int64, stepID string) (*StepRecord, error)
 }
 
+// FindingAgentLookup is an optional capability the ActionApplier
+// can satisfy to enable auto-lesson recording. The engine looks at
+// `update_finding_status: false_positive` and large severity-floor
+// drops (HIGH/CRITICAL → INFO/LOW) and, when the reason is
+// non-empty, records the reasoning as a lesson on the *originating*
+// agent (not the current step's agent) so the daemon learns from
+// the correction next tick.
+//
+// Returning ("", nil) means "no agent on this finding" and skips
+// auto-lesson recording silently. Returning an error logs once and
+// skips — auto-lessons are best-effort, never load-bearing.
+type FindingAgentLookup interface {
+	FindingAgent(findingID int64) (string, error)
+}
+
 // ActionApplier is the surface the engine uses to apply CP-side
 // mutations requested by the agent (status changes, tagging, etc.).
 // The concrete impl in package `api` wraps the db.Store finding
@@ -724,7 +739,18 @@ func (e *Engine) dispatchAction(runID int64, step StepSpec, a Action) error {
 		if a.FindingID == 0 || a.Status == "" {
 			return fmt.Errorf("missing finding_id/status")
 		}
-		return e.applier.UpdateFindingStatus(a.FindingID, a.Status, a.Reason, runID, stepID)
+		if err := e.applier.UpdateFindingStatus(a.FindingID, a.Status, a.Reason, runID, stepID); err != nil {
+			return err
+		}
+		// Auto-lesson hook (Phase 22.5): when an orchestration
+		// closes a finding as `false_positive` with reasoning, the
+		// reasoning is exactly the kind of corrective signal the
+		// emitting agent's daemon should see on its next tick.
+		// Best-effort — failures are logged and never propagated.
+		if a.Status == "false_positive" && a.Reason != "" {
+			e.recordAutoLesson(a.FindingID, a.Reason, runID, stepID, "false_positive")
+		}
+		return nil
 	case ActionAddFindingTag:
 		if a.FindingID == 0 || a.Tag == "" {
 			return fmt.Errorf("missing finding_id/tag")
@@ -739,7 +765,18 @@ func (e *Engine) dispatchAction(runID int64, step StepSpec, a Action) error {
 		if a.FindingID == 0 || a.Severity == "" {
 			return fmt.Errorf("missing finding_id/severity")
 		}
-		return e.applier.SetFindingSeverityOverride(a.FindingID, a.Severity, a.Reason, runID, stepID)
+		if err := e.applier.SetFindingSeverityOverride(a.FindingID, a.Severity, a.Reason, runID, stepID); err != nil {
+			return err
+		}
+		// Auto-lesson hook: a drop to INFO/LOW is the agent
+		// admitting "this was over-severe" — same corrective
+		// signal as the false_positive path. Promotions to higher
+		// severity are NOT recorded as lessons (the agent didn't
+		// underclassify; it correctly emitted what it saw).
+		if a.Reason != "" && (a.Severity == "INFO" || a.Severity == "LOW") {
+			e.recordAutoLesson(a.FindingID, a.Reason, runID, stepID, "severity_override:"+a.Severity)
+		}
+		return nil
 	case ActionLinkRunToFinding:
 		if a.FindingID == 0 {
 			return fmt.Errorf("missing finding_id")
@@ -761,6 +798,42 @@ func (e *Engine) dispatchAction(runID int64, step StepSpec, a Action) error {
 		return e.applier.EnrichIOC(a.IOCID, runID, stepID)
 	}
 	return fmt.Errorf("unhandled kind %q", a.Kind)
+}
+
+// recordAutoLesson is the engine's auto-lesson hook. Called after
+// a successful UpdateFindingStatus(false_positive) or
+// SetFindingSeverityOverride(INFO|LOW). Looks up the finding's
+// emitting agent and records the orchestration's reasoning as a
+// lesson on that agent so the daemon sees it on its next tick.
+//
+// The hook is a no-op if:
+//   - the applier doesn't implement FindingAgentLookup (legacy
+//     appliers don't need to)
+//   - the finding has no emitting agent (NULL on the row)
+//   - the lookup fails (logged once, not propagated)
+//
+// Lesson body shape: "auto: <reason> (run #N <kind>)" — short,
+// truncated by db.RecordAgentLesson at MaxAgentLessonChars.
+func (e *Engine) recordAutoLesson(findingID int64, reason string, runID int64, stepID, kind string) {
+	if e.applier == nil {
+		return
+	}
+	lookup, ok := e.applier.(FindingAgentLookup)
+	if !ok {
+		return
+	}
+	agent, err := lookup.FindingAgent(findingID)
+	if err != nil {
+		log.Printf("engine: auto-lesson lookup for finding=%d run=%d: %v", findingID, runID, err)
+		return
+	}
+	if agent == "" {
+		return
+	}
+	body := fmt.Sprintf("auto: %s (run #%d %s)", reason, runID, kind)
+	if err := e.applier.RecordAgentLesson(agent, body, runID, stepID); err != nil {
+		log.Printf("engine: auto-lesson record for agent=%s run=%d: %v", agent, runID, err)
+	}
 }
 
 // pickResult finds the orchestration_result finding in a step's
