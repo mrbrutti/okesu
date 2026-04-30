@@ -1,0 +1,15 @@
+# Parent ("global") CP. After `make oci-deploy MODE=parent`, run
+#   make oci-print MODE=parent
+# and paste the federation_outputs block into the child's
+# `.env.oci` and tfvars.
+
+mode             = "parent"
+tenancy_ocid     = ""
+user_ocid        = ""
+compartment_ocid = ""
+region           = "us-ashburn-1"
+ssh_public_key   = ""
+
+name_prefix = "okesu-parent"
+fleet_size  = 2
+secrets_dir = "~/.okesu-secrets"

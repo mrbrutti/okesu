@@ -54,3 +54,4 @@
 # OS / editor noise.
 .DS_Store
 *.swp
+.env.oci

@@ -1,0 +1,12 @@
+# Standalone CP — no federation. Copy to `standalone.tfvars` and fill in.
+
+mode             = "standalone"
+tenancy_ocid     = ""   # `oci iam tenancy get`
+user_ocid        = ""   # the user owning the API key (~/.oci/config)
+compartment_ocid = ""   # dedicated compartment recommended
+region           = "us-ashburn-1"
+ssh_public_key   = ""   # cat ~/.ssh/id_ed25519.pub
+
+name_prefix = "okesu-standalone"
+fleet_size  = 2
+secrets_dir = "~/.okesu-secrets"
