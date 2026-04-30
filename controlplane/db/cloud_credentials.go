@@ -71,7 +71,7 @@ type CloudCredentialInsert struct {
 // accept on insert. Adapters land cloud-by-cloud, but the
 // allowlist itself lives in one place so a typo doesn't silently
 // create an "amazon" row that no provisioner will pick up.
-var AllowedCloudKinds = []string{"oci", "aws", "gcp", "azure", "digitalocean"}
+var AllowedCloudKinds = []string{"oci", "aws", "gcp", "azure", "digitalocean", "minio"}
 
 // InsertCloudCredential seals the payload + persists. masterKey is
 // the same base64-decoded session HMAC bytes the auth Manager uses;
