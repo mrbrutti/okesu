@@ -77,6 +77,7 @@ const (
 	KindCreateNode                 = "create_node"
 	KindDeployDaimon               = "deploy_daimon"
 	KindCreateRun                  = "create_run"
+	KindCancelRun                  = "cancel_run"
 	KindFindingSetStatus           = "finding_set_status"
 	KindOrchestrationCreate        = "orchestration_create"
 	KindOrchestrationUpdate        = "orchestration_update"

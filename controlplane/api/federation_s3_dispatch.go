@@ -71,6 +71,15 @@ func NewS3CreateRunHandler(reg *RunRegistry, tunReg *tunnel.Registry, store *db.
 	}
 }
 
+// NewS3CancelRunHandler dispatches a `cancel_run` directive into
+// CancelRun. PathParams must include `id` (the run id).
+func NewS3CancelRunHandler(reg *RunRegistry, tunReg *tunnel.Registry, store *db.Store) s3rpc.Handler {
+	h := CancelRun(reg, tunReg, store)
+	return func(ctx context.Context, req s3rpc.Request) s3rpc.Response {
+		return runHandlerForDirective(ctx, h, req, http.MethodPost, "/api/runs/{id}/cancel", req.IssuedByUser)
+	}
+}
+
 // NewS3FindingSetStatusHandler dispatches a `finding_set_status`
 // directive into FindingSetStatus. PathParams must include `id`.
 func NewS3FindingSetStatusHandler(store *db.Store) s3rpc.Handler {
