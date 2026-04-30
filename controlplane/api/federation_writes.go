@@ -694,6 +694,24 @@ func FederationDismissSuggestedFinding(store *db.Store) http.HandlerFunc {
 	return requireFederationToken(store, DismissSuggestedFindingHandler(store))
 }
 
+// FederatedInvestigationAudit — read proxy for the case's audit
+// timeline. The audit data lives in the same tables as the case row,
+// so we forward via the same `?cp=<id>` proxy convention.
+func FederatedInvestigationAudit(store *db.Store, agg *federation.Aggregator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		path := strings.Replace(r.URL.Path, "/api/investigations/", "/api/v1/federation/investigations/", 1)
+		if handled, _ := proxyToCPByQuery(w, r, agg, path); handled {
+			return
+		}
+		InvestigationAuditHandler(store).ServeHTTP(w, r)
+	}
+}
+
+// FederationInvestigationAudit — child-side, token-authed sibling.
+func FederationInvestigationAudit(store *db.Store) http.HandlerFunc {
+	return requireFederationToken(store, InvestigationAuditHandler(store))
+}
+
 // FederatedRelatedCasesForFinding — read proxy for the Findings drawer
 // banner. Same forwarding pattern as FederatedListInvestigationsForFinding.
 func FederatedRelatedCasesForFinding(store *db.Store, agg *federation.Aggregator) http.HandlerFunc {

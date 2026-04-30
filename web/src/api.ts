@@ -430,6 +430,23 @@ export interface InvestigationFindingItem {
 
 export type LinkMethod = 'manual' | 'bulk' | 'auto-promote' | 'autolink' | 'import';
 
+// InvestigationAuditEvent — one row in the case timeline. Kinds are
+// stable enums; the `details` shape is dictated by `kind` (see
+// controlplane/db/investigation_audit.go for the wire contract).
+export interface InvestigationAuditEvent {
+  ts: string;
+  kind: 'created' | 'closed' | 'note' | 'finding_linked' | 'run_linked';
+  by: string;
+  title: string;
+  details?: {
+    body?: string;            // note kind
+    finding_id?: number;      // finding_linked
+    method?: LinkMethod;      // finding_linked
+    run_id?: number;          // run_linked
+    resolution?: string;      // closed
+  };
+}
+
 // InvestigationRunItem — narrow projection of orchestration_runs.
 // Note: this is the orchestration-managed run table, not the ad-hoc
 // runs table; investigation_runs only links to orchestration_runs.
@@ -1058,6 +1075,10 @@ export const api = {
           body: JSON.stringify({ dismissed_by: opts?.dismissedBy ?? '' }),
         },
       );
+    },
+    audit: (invID: number, cpInstanceID?: string) => {
+      const qs = cpInstanceID ? `?cp=${encodeURIComponent(cpInstanceID)}` : '';
+      return request<InvestigationAuditEvent[]>(`/api/investigations/${invID}/audit${qs}`);
     },
     bulkLinkFindings: (
       invID: number,
