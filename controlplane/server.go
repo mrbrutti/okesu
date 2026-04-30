@@ -369,12 +369,71 @@ func New(cfg Config) (*Server, error) {
 	// via the orchestrator `data:` block + the api-package data
 	// resolver — see data_resolver.go. The earlier "log in via curl
 	// using OKESU_CP_ADMIN_PASSWORD" workaround has been removed.
-	var cpLocalEnv []string
-	if cfg.FleetAnthropicAPIKey != "" {
-		cpLocalEnv = append(cpLocalEnv, "ANTHROPIC_API_KEY="+cfg.FleetAnthropicAPIKey)
+
+	// Backwards-compat seed: if the operator had set
+	// OKESU_CP_FLEET_ANTHROPIC_API_KEY / OKESU_CP_FLEET_OPENAI_API_KEY
+	// on a previous boot but never used the Settings UI, copy the env
+	// values into fleet_env exactly once so subsequent CP restarts and
+	// node deploys read from the DB. Skipped when the row already has
+	// keys or when no env vars are set.
+	if mk, err := store.MasterKeyFromMeta(); err == nil {
+		if fe, err := store.GetFleetEnv(); err == nil {
+			if !fe.HasAnthropic && !fe.HasOpenAI && (cfg.FleetAnthropicAPIKey != "" || cfg.FleetOpenAIAPIKey != "") {
+				update := db.FleetEnvUpdate{UpdatedByUserEmail: "boot:env-seed"}
+				if cfg.FleetAnthropicAPIKey != "" {
+					k := cfg.FleetAnthropicAPIKey
+					update.AnthropicAPIKey = &k
+				}
+				if cfg.FleetOpenAIAPIKey != "" {
+					k := cfg.FleetOpenAIAPIKey
+					update.OpenAIAPIKey = &k
+				}
+				if _, err := store.UpsertFleetEnv(mk, update); err != nil {
+					log.Printf("fleet_env: env-seed failed: %v", err)
+				} else {
+					log.Printf("fleet_env: seeded from OKESU_CP_FLEET_*_API_KEY env vars")
+				}
+			}
+		}
 	}
-	if cfg.FleetOpenAIAPIKey != "" {
-		cpLocalEnv = append(cpLocalEnv, "OPENAI_API_KEY="+cfg.FleetOpenAIAPIKey)
+
+	// fleetEnvExtrasProvider returns ANTHROPIC_API_KEY / OPENAI_API_KEY
+	// env strings to merge into cp-local subprocess env. Read on each
+	// dispatch so operator key rotations (via Settings → LLM Keys) land
+	// without a CP restart. Falls back to cfg env vars on transient DB
+	// errors so operator-set keys persist even during a brief DB hiccup.
+	fleetEnvExtras := func() []string {
+		var out []string
+		mk, mkErr := store.MasterKeyFromMeta()
+		if mkErr != nil {
+			// No master key yet (uninitialized CP) — fall back to env.
+			if cfg.FleetAnthropicAPIKey != "" {
+				out = append(out, "ANTHROPIC_API_KEY="+cfg.FleetAnthropicAPIKey)
+			}
+			if cfg.FleetOpenAIAPIKey != "" {
+				out = append(out, "OPENAI_API_KEY="+cfg.FleetOpenAIAPIKey)
+			}
+			return out
+		}
+		fe, err := store.GetFleetEnvWithKeys(mk)
+		if err != nil {
+			// Transient DB error — fall back to env to keep the spawn working.
+			log.Printf("fleet_env: GetFleetEnvWithKeys failed (cp-local spawn): %v", err)
+			if cfg.FleetAnthropicAPIKey != "" {
+				out = append(out, "ANTHROPIC_API_KEY="+cfg.FleetAnthropicAPIKey)
+			}
+			if cfg.FleetOpenAIAPIKey != "" {
+				out = append(out, "OPENAI_API_KEY="+cfg.FleetOpenAIAPIKey)
+			}
+			return out
+		}
+		if fe.HasAnthropic {
+			out = append(out, "ANTHROPIC_API_KEY="+fe.AnthropicAPIKey)
+		}
+		if fe.HasOpenAI {
+			out = append(out, "OPENAI_API_KEY="+fe.OpenAIAPIKey)
+		}
+		return out
 	}
 
 	// Phase 22.4: IOC enrichment service. Adapters self-skip when their
@@ -398,7 +457,7 @@ func New(cfg Config) (*Server, error) {
 
 	srv.orchestra = api.NewOrchestrationCoordinator(store, srv.runs, srv.tunReg, cfg.AgentFilesDirs, srv.fedAgg, api.CoordinatorOpts{
 		AutoDeployer:      autoDep,
-		CPLocalEnvExtras:  cpLocalEnv,
+		CPLocalEnvExtras:  fleetEnvExtras,
 		ActionPolicy:      orchestrator.Policy{AutoApprove: cfg.Policy.AutoApprove},
 		EnrichmentService: enrichmentSvc,
 	})
