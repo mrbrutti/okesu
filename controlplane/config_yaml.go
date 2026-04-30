@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -117,6 +118,19 @@ type yamlConfig struct {
 	Policy struct {
 		AutoApprove map[string]bool `yaml:"auto_approve"`
 	} `yaml:"policy"`
+
+	// Enrichment is the IOC-enrichment vendor block (Phase 22.4).
+	// API keys are pull-through references that resolveSecrets fills
+	// from ports.Secrets when left empty here. DefaultTTL is parsed
+	// as a Go duration string (e.g. "24h"); empty falls back to 24h.
+	// RatePerSecond zero falls back to 1.0.
+	Enrichment struct {
+		VirusTotalAPIKey *string  `yaml:"virustotal_api_key"`
+		AbuseIPDBAPIKey  *string  `yaml:"abuseipdb_api_key"`
+		ShodanAPIKey     *string  `yaml:"shodan_api_key"`
+		DefaultTTL       *string  `yaml:"default_ttl,omitempty"`
+		RatePerSecond    *float64 `yaml:"rate_per_second,omitempty"`
+	} `yaml:"enrichment"`
 }
 
 // mergeInto applies non-nil fields from y onto cfg. Zero pointer-deref
@@ -201,6 +215,24 @@ func (y *yamlConfig) mergeInto(cfg *Config) {
 	if y.Policy.AutoApprove != nil {
 		cfg.Policy.AutoApprove = y.Policy.AutoApprove
 	}
+
+	// Enrichment block (Phase 22.4). Pointer-typed YAML fields keep
+	// the absent-vs-zero distinction so operators can either leave
+	// keys blank (let resolveSecrets fill them) or commit them
+	// inline via "${secret:...}" refs that resolveConfigSecretRefs
+	// expands. Defaults (24h TTL / 1 RPS) live in FromEnv so an empty
+	// YAML doesn't silently rewrite an unrelated default.
+	setStr(y.Enrichment.VirusTotalAPIKey, &cfg.Enrichment.VirusTotalAPIKey)
+	setStr(y.Enrichment.AbuseIPDBAPIKey, &cfg.Enrichment.AbuseIPDBAPIKey)
+	setStr(y.Enrichment.ShodanAPIKey, &cfg.Enrichment.ShodanAPIKey)
+	if y.Enrichment.DefaultTTL != nil && *y.Enrichment.DefaultTTL != "" {
+		if d, err := time.ParseDuration(*y.Enrichment.DefaultTTL); err == nil {
+			cfg.Enrichment.DefaultTTL = d
+		}
+	}
+	if y.Enrichment.RatePerSecond != nil {
+		cfg.Enrichment.RatePerSecond = *y.Enrichment.RatePerSecond
+	}
 }
 
 // secretRefRE matches "${secret:NAME}" inside a config string. Names
@@ -247,6 +279,9 @@ func resolveConfigSecretRefs(ctx context.Context, cfg *Config, s ports.Secrets) 
 		&cfg.WebhookSecret, &cfg.AdminPassword, &cfg.SessionKey,
 		&cfg.OIDCClientSecret,
 		&cfg.ClickHousePassword, &cfg.KafkaSASLPassword, &cfg.BlobSecretKey,
+		&cfg.Enrichment.VirusTotalAPIKey,
+		&cfg.Enrichment.AbuseIPDBAPIKey,
+		&cfg.Enrichment.ShodanAPIKey,
 	} {
 		if err := expand(f); err != nil {
 			return err

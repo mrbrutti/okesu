@@ -49,6 +49,13 @@ const (
 	SecretKafkaSASLPassword   = "kafka/sasl-password"
 	SecretBlobSecretKey       = "blob/secret-key"
 	SecretDeploySSHPrivateKey = "deploy/ssh-private-key"
+
+	// Phase 22.4 — IOC enrichment vendor API keys. Empty in cfg
+	// means "go ask ports.Secrets for the canonical name"; missing
+	// from the secrets store means "this adapter stays disabled".
+	SecretEnrichmentVirusTotalAPIKey = "enrichment/virustotal-api-key"
+	SecretEnrichmentAbuseIPDBAPIKey  = "enrichment/abuseipdb-api-key"
+	SecretEnrichmentShodanAPIKey     = "enrichment/shodan-api-key"
 )
 
 // buildSecrets picks the ports.Secrets adapter from cfg.SecretsSource:
@@ -128,6 +135,12 @@ func resolveSecrets(ctx context.Context, cfg *Config, s ports.Secrets) error {
 	resolve(SecretClickHousePassword, &cfg.ClickHousePassword)
 	resolve(SecretKafkaSASLPassword, &cfg.KafkaSASLPassword)
 	resolve(SecretBlobSecretKey, &cfg.BlobSecretKey)
+
+	// Phase 22.4 — enrichment vendor keys. Optional: missing keys
+	// just mean the matching adapter is disabled at boot.
+	resolve(SecretEnrichmentVirusTotalAPIKey, &cfg.Enrichment.VirusTotalAPIKey)
+	resolve(SecretEnrichmentAbuseIPDBAPIKey, &cfg.Enrichment.AbuseIPDBAPIKey)
+	resolve(SecretEnrichmentShodanAPIKey, &cfg.Enrichment.ShodanAPIKey)
 
 	return nil
 }
