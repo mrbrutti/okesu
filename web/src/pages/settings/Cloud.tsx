@@ -12,14 +12,17 @@
 // cloud and surfaces errors as-is.
 
 import { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
-import { Cloud, Database, ExternalLink, Loader2, Pencil, Plus, RefreshCw, Trash2, X } from 'lucide-react';
+import { Cloud, Database, Loader2, Pencil, Plus, RefreshCw, Trash2, X } from 'lucide-react';
 import { api, type CloudCredential, type CloudCredentialCreateRequest, type CloudCredentialUpdateRequest, type CloudKind, type TransportConfigSummary } from '../../api';
+import AddBucketWizard from '../../components/AddBucketWizard';
+import EditBucketModal from '../../components/EditBucketModal';
+import DeleteBucketDialog from '../../components/DeleteBucketDialog';
 import { cn } from '../../lib/cn';
 
 const CLOUDS: Array<{ kind: CloudKind; label: string; provisioned: boolean }> = [
   { kind: 'oci',          label: 'Oracle Cloud (OCI)',  provisioned: true  },
   { kind: 'aws',          label: 'AWS',                  provisioned: true  },
+  { kind: 'minio',        label: 'MinIO (S3-compatible)', provisioned: true  },
   { kind: 'gcp',          label: 'Google Cloud',         provisioned: false },
   { kind: 'azure',        label: 'Microsoft Azure',      provisioned: false },
   { kind: 'digitalocean', label: 'DigitalOcean',         provisioned: false },
@@ -190,12 +193,18 @@ export default function CloudSection() {
 function BucketsSection() {
   const [items, setItems] = useState<TransportConfigSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [showAdd, setShowAdd] = useState(false);
+  const [editing, setEditing] = useState<TransportConfigSummary | null>(null);
+  const [deleting, setDeleting] = useState<TransportConfigSummary | null>(null);
 
-  useEffect(() => {
+  const reload = () => {
+    setError(null);
     api.transportConfigs()
       .then(setItems)
       .catch((e) => setError(String(e)));
-  }, []);
+  };
+
+  useEffect(() => { reload(); }, []);
 
   return (
     <section className="border border-border rounded-xl overflow-hidden bg-panel">
@@ -207,13 +216,12 @@ function BucketsSection() {
             shared with Nodes + Federation
           </span>
         </div>
-        <Link
-          to="/nodes"
+        <button
+          onClick={() => setShowAdd(true)}
           className="text-xs px-2 py-1 bg-brand-50 hover:bg-brand-100 text-brand-700 rounded inline-flex items-center gap-1"
-          title="Add a bucket via Nodes → Add Node → S3 dead-drop. Buckets serve both node and federation transports."
         >
           <Plus size={12} /> Add bucket
-        </Link>
+        </button>
       </header>
       {error && (
         <div className="px-4 py-2 text-xs text-red-700 bg-red-50 border-b border-red-200">{error}</div>
@@ -248,13 +256,18 @@ function BucketsSection() {
                     no keypair
                   </span>
                 )}
-                <Link
-                  to="/nodes"
-                  className="text-xs px-2 py-1 border border-border hover:bg-slate-50 rounded inline-flex items-center gap-1"
-                  title="Manage this bucket on the Nodes page"
+                <button
+                  onClick={() => setEditing(tc)}
+                  className="text-xs px-2 py-1 border border-border hover:bg-slate-50 rounded"
                 >
-                  <ExternalLink size={12} /> Manage
-                </Link>
+                  Edit
+                </button>
+                <button
+                  onClick={() => setDeleting(tc)}
+                  className="text-xs px-2 py-1 border border-red-200 text-red-700 hover:bg-red-50 rounded"
+                >
+                  Delete
+                </button>
               </div>
             </li>
           ))}
@@ -266,6 +279,26 @@ function BucketsSection() {
         The canonical store is at <code>/api/transport-configs</code>; create + edit happens
         through the Nodes Add flow today.
       </footer>
+      {showAdd && (
+        <AddBucketWizard
+          onClose={() => setShowAdd(false)}
+          onCreated={() => { setShowAdd(false); reload(); }}
+        />
+      )}
+      {editing && (
+        <EditBucketModal
+          bucket={editing}
+          onClose={() => setEditing(null)}
+          onUpdated={() => { setEditing(null); reload(); }}
+        />
+      )}
+      {deleting && (
+        <DeleteBucketDialog
+          bucket={deleting}
+          onClose={() => setDeleting(null)}
+          onDeleted={() => { setDeleting(null); reload(); }}
+        />
+      )}
     </section>
   );
 }
@@ -520,6 +553,15 @@ function fieldsForCloud(cloud: CloudKind): FieldSpec[] {
         { key: 'role_arn',          label: 'Role ARN (optional)', placeholder: 'arn:aws:iam::123:role/CPProvisioner',
           hint: 'When set, the CP will sts:AssumeRole into this ARN before making API calls.' },
       ];
+    case 'minio':
+      return [
+        { key: 'endpoint',          label: 'Endpoint',          required: true, placeholder: 'https://minio.example:9000',
+          hint: 'S3-compatible URL of your MinIO deployment.' },
+        { key: 'access_key_id',     label: 'Access key',        required: true, placeholder: 'admin' },
+        { key: 'secret_access_key', label: 'Secret key',        required: true, secret: true },
+        { key: 'region',            label: 'Region (optional)', placeholder: 'us-east-1',
+          hint: "Most MinIO deployments are regionless; defaults to 'us-east-1' if blank." },
+      ];
     case 'gcp':
       return [
         { key: 'service_account_json', label: 'Service account JSON', required: true, secret: true, multiline: true, rows: 10,
@@ -549,6 +591,7 @@ function defaultRegionFor(cloud: CloudKind): string {
   switch (cloud) {
     case 'oci': return 'us-ashburn-1';
     case 'aws': return 'us-east-1';
+    case 'minio': return '';
     case 'gcp': return 'us-central1';
     case 'azure': return 'eastus';
     case 'digitalocean': return 'nyc3';

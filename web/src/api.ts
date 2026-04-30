@@ -21,8 +21,12 @@ export interface EventItem {
 }
 
 export class ApiError extends Error {
-  constructor(public status: number, message: string) {
+  status: number;
+  body: string;
+  constructor(status: number, message: string, body = '') {
     super(message);
+    this.status = status;
+    this.body = body;
   }
 }
 
@@ -43,7 +47,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
   if (!res.ok) {
     const text = await res.text().catch(() => res.statusText);
-    throw new ApiError(res.status, text || res.statusText);
+    throw new ApiError(res.status, text || res.statusText, text);
   }
   if (res.status === 204) return undefined as T;
   return res.json();
@@ -1150,6 +1154,31 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(req),
     }),
+  bucketCloudProviders: () =>
+    request<BucketCloudProvider[]>('/api/buckets/cloud-providers'),
+
+  bucketsDiscover: (cloudCredentialID: number, region: string) =>
+    request<BucketInfo[]>(
+      `/api/buckets/discover?cloud_credential_id=${cloudCredentialID}&region=${encodeURIComponent(region)}`,
+    ),
+
+  bucketsProvision: (req: BucketProvisionReq) =>
+    request<TransportConfigSummary>('/api/buckets/provision', {
+      method: 'POST',
+      body: JSON.stringify(req),
+    }),
+
+  transportConfigPatch: (id: number, patch: TransportConfigPatch) =>
+    request<TransportConfigSummary>(`/api/transport-configs/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    }),
+
+  // Throws ApiError(409) on in-use conflict; the caller catches and
+  // decodes the response body via err.body for the referenced_by list.
+  transportConfigDelete: (id: number) =>
+    request<void>(`/api/transport-configs/${id}`, { method: 'DELETE' }),
+
   enrollmentPackages: () =>
     request<EnrollmentPackageSummary[]>('/api/enrollment-packages'),
   enrollmentPackageCreate: (req: EnrollmentPackageCreateReq) =>
@@ -1835,6 +1864,56 @@ export interface TransportConfigCreateReq {
   cp_id?: string;
 }
 
+// Bucket provisioning (Settings → Add Bucket wizard, post-CRUD-gap fill).
+export interface BucketCloudProvider {
+  id: number;
+  cloud: string;          // 'aws' | 'oci' | 'minio'
+  display_name: string;
+  region?: string;
+}
+
+export interface BucketInfo {
+  name: string;
+  region: string;
+  endpoint: string;
+}
+
+export interface BucketProvisionReq {
+  cloud_credential_id: number;
+  region: string;
+  bucket_name: string;
+  mode: 'discover' | 'create';
+  display_name: string;
+  generate_fleet_keys: boolean;
+  scanner_interval_ms: number;
+}
+
+export interface TransportConfigPatch {
+  name?: string;
+  scanner_interval_ms?: number;
+}
+
+// NamedRef mirrors db.NamedRef (json tags lowercase).
+export interface NamedRef {
+  id: number;
+  name: string;
+}
+
+// TransportConfigReferences mirrors db.TransportConfigReferences which
+// has no json tags — fields marshal as PascalCase.
+export interface TransportConfigReferences {
+  Nodes: NamedRef[];
+  EnrollmentPackages: NamedRef[];
+  FederationPeers: NamedRef[];
+  CPProvisions: NamedRef[];
+}
+
+// TransportConfigDeleteConflict is the body returned by DELETE on 409.
+export interface TransportConfigDeleteConflict {
+  message: string;
+  referenced_by: TransportConfigReferences;
+}
+
 export interface EnrollmentPackageSummary {
   id: number;
   display_name: string;
@@ -2135,7 +2214,7 @@ export interface FederationPeerAddReq {
 }
 
 // Phase 21.2 — cloud credentials.
-export type CloudKind = 'oci' | 'aws' | 'gcp' | 'azure' | 'digitalocean';
+export type CloudKind = 'oci' | 'aws' | 'gcp' | 'azure' | 'digitalocean' | 'minio';
 
 export interface CloudCredential {
   id: number;

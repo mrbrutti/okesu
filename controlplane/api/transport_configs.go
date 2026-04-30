@@ -26,9 +26,11 @@ import (
 	"database/sql"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 
@@ -237,7 +239,66 @@ func TransportConfigUpdate(store *db.Store) http.HandlerFunc {
 	}
 }
 
-// TransportConfigDelete — DELETE /api/transport-configs/{id}
+// transportConfigPatchReq is the wire shape for PATCH. Only fields
+// that are safe to edit post-creation appear here. Identity fields
+// (bucket, endpoint, access_key, secret_key, region,
+// cloud_credential_id) are intentionally absent — changing them
+// would silently break enrollment packages and federated peers
+// tied to the old identity. Operators who need a different bucket
+// delete + re-add. Key rotation is deferred to a dedicated wizard.
+type transportConfigPatchReq struct {
+	Name              *string `json:"name,omitempty"`
+	ScannerIntervalMs *int    `json:"scanner_interval_ms,omitempty"`
+}
+
+// TransportConfigPatch applies partial updates to a transport_config.
+// Identity fields are not in transportConfigPatchReq so attempting
+// to change them is a no-op (the JSON decoder drops them).
+func TransportConfigPatch(store *db.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+		if err != nil {
+			http.Error(w, "bad id", http.StatusBadRequest)
+			return
+		}
+		existing, err := store.GetTransportConfig(id)
+		if err != nil {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		var patch transportConfigPatchReq
+		if err := json.NewDecoder(r.Body).Decode(&patch); err != nil {
+			http.Error(w, "bad json", http.StatusBadRequest)
+			return
+		}
+		if patch.Name != nil {
+			existing.Name = strings.TrimSpace(*patch.Name)
+		}
+		if patch.ScannerIntervalMs != nil {
+			existing.ScannerIntervalMs = *patch.ScannerIntervalMs
+		}
+		if err := store.UpdateTransportConfig(existing); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(existing)
+	}
+}
+
+// transportConfigDeleteConflict is the body returned by DELETE when
+// the row is referenced. Frontend renders an actionable list with
+// deep-links to the relevant pages.
+type transportConfigDeleteConflict struct {
+	Message      string                       `json:"message"`
+	ReferencedBy db.TransportConfigReferences `json:"referenced_by"`
+}
+
+// TransportConfigDelete removes a transport_config row, refusing
+// with 409 + a referencing-resources list if any nodes or
+// enrollment_packages reference it. (federation_peers and
+// cp_provisions FKs use ON DELETE SET NULL; they're surfaced in the
+// list as info but don't block.)
 func TransportConfigDelete(store *db.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
@@ -245,7 +306,35 @@ func TransportConfigDelete(store *db.Store) http.HandlerFunc {
 			http.Error(w, "bad id", http.StatusBadRequest)
 			return
 		}
+		refs, err := store.TransportConfigReferences(id)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if refs.HasBlockers() {
+			conflict := transportConfigDeleteConflict{
+				Message:      "transport_config is referenced by nodes or enrollment_packages; remove those dependencies first",
+				ReferencedBy: refs,
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusConflict)
+			_ = json.NewEncoder(w).Encode(conflict)
+			return
+		}
 		if err := store.DeleteTransportConfig(id); err != nil {
+			if errors.Is(err, db.ErrTransportConfigInUse) {
+				// Race: refs query saw it clean but DELETE saw a new
+				// dependency. Re-fetch and surface as 409.
+				refs, _ := store.TransportConfigReferences(id)
+				conflict := transportConfigDeleteConflict{
+					Message:      "transport_config became referenced during deletion; retry after removing the new dependencies",
+					ReferencedBy: refs,
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusConflict)
+				_ = json.NewEncoder(w).Encode(conflict)
+				return
+			}
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
