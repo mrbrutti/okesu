@@ -1,9 +1,45 @@
 ---
 import Base from '../layouts/Base.astro';
+import Hero from '../components/Hero.astro';
+import ConceptCard from '../components/ConceptCard.astro';
+import FeatureGrid from '../components/FeatureGrid.astro';
+import SystemMap from '../components/diagrams/SystemMap.astro';
 ---
-<Base title="Okesu" description="Orchestrate your security team like an orchestra.">
-  <div class="max-w-page mx-auto px-6 py-16">
-    <h1 class="text-4xl font-bold">Okesu placeholder home</h1>
-    <p class="mt-3 text-ink-dim">Real home page lands in Task 5.</p>
-  </div>
+
+<Base
+  title="Okesu"
+  description="Orchestrate your security team like an orchestra. Okesu coordinates a fleet of AI agents across your hosts."
+>
+  <Hero />
+
+  <section class="max-w-page mx-auto px-6 mb-16">
+    <div class="bg-panel border border-border rounded-xl shadow-card p-6 md:p-8">
+      <SystemMap />
+    </div>
+  </section>
+
+  <section class="max-w-page mx-auto px-6 mb-4">
+    <div class="grid md:grid-cols-3 gap-4">
+      <ConceptCard
+        href="/concepts/daimons"
+        title="Daimons"
+        glyph="▦"
+        description="The long-running daemon installed on each host. Listens for run dispatches, executes agents, streams findings back."
+      />
+      <ConceptCard
+        href="/concepts/agents"
+        title="Agents"
+        glyph="✦"
+        description="Prompt-driven workers (Claude, Codex, your own). They run on the daimon, emit structured findings as JSONL."
+      />
+      <ConceptCard
+        href="/concepts/orchestrations"
+        title="Orchestrations"
+        glyph="⊞"
+        description="YAML specs that sequence agents into playbooks. Fan out across hosts, gate on approval, branch on results."
+      />
+    </div>
+  </section>
+
+  <FeatureGrid />
 </Base>
