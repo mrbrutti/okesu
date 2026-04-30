@@ -515,6 +515,7 @@ function FindingsPanel({ invID, cpInstanceID, findings, onChange }: {
                 <th className="px-3 py-2 text-left w-32">Daimon</th>
                 <th className="px-3 py-2 text-left w-28">Host</th>
                 <th className="px-3 py-2 text-left w-28">Status</th>
+                <th className="px-3 py-2 text-left w-32">Linked</th>
                 <th className="px-3 py-2 text-right w-12"></th>
               </tr>
             </thead>
@@ -527,6 +528,7 @@ function FindingsPanel({ invID, cpInstanceID, findings, onChange }: {
                   <td className="px-3 py-2 text-xs text-ink-dim">{nullStr(f.Agent) || '—'}</td>
                   <td className="px-3 py-2 text-xs text-ink-dim">{nullStr(f.Host) || '—'}</td>
                   <td className="px-3 py-2"><StatusPill v={nullStr(f.Status)} /></td>
+                  <td className="px-3 py-2"><LinkProvenanceChip method={nullStr(f.LinkMethod)} by={nullStr(f.LinkedBy)} /></td>
                   <td className="px-3 py-2 text-right">
                     <UnlinkButton onClick={async () => {
                       if (!confirm(`Unlink finding #${f.ID} from this investigation?`)) return;
@@ -879,6 +881,36 @@ function RunStatusChip({ s }: { s: string }) {
 
 function nullStr(v: { String: string; Valid: boolean }): string {
   return v && v.Valid ? v.String : '';
+}
+
+// LinkProvenanceChip — renders how/by-whom a finding was linked.
+// Distinct visual for autolink so operators can see the engine's
+// work at a glance and audit it. Manual + bulk links are operator-
+// driven; auto-promote is the "open new case from this finding"
+// shortcut. Unknown (legacy rows pre-provenance) renders neutral.
+function LinkProvenanceChip({ method, by }: { method: string; by: string }) {
+  if (!method) {
+    return <span className="text-[11px] text-ink-mute italic">—</span>;
+  }
+  const tooltip = by ? `${method} · ${by}` : method;
+  const cls =
+    method === 'autolink'     ? 'bg-blue-50    text-blue-800    border-blue-200'    :
+    method === 'bulk'         ? 'bg-emerald-50 text-emerald-800 border-emerald-200' :
+    method === 'auto-promote' ? 'bg-violet-50  text-violet-800  border-violet-200'  :
+    method === 'manual'       ? 'bg-slate-50   text-slate-700   border-slate-200'   :
+                                 'bg-slate-50   text-slate-700   border-slate-200';
+  // Compact label; full provenance lives in the tooltip.
+  const label = method === 'autolink' ? 'auto'
+              : method === 'auto-promote' ? 'promoted'
+              : method;
+  return (
+    <span
+      className={`text-[10px] px-1.5 py-0.5 rounded border font-medium uppercase tracking-wide ${cls}`}
+      title={tooltip}
+    >
+      {label}
+    </span>
+  );
 }
 
 function CloseDialog({ onClose, onPick, busy }: {

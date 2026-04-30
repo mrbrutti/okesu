@@ -294,9 +294,35 @@ func (s *Store) ListInvestigations(status string, limit int) ([]*Investigation, 
 	return out, rows.Err()
 }
 
+// LinkMethod values for investigation_findings.link_method (Phase
+// 22.6.2). Plain string constants — the column is TEXT so future
+// methods (e.g. "merge", "import-csv") can land without a schema
+// change. Match the docs in the migration file.
+const (
+	LinkMethodManual      = "manual"
+	LinkMethodBulk        = "bulk"
+	LinkMethodAutoPromote = "auto-promote"
+	LinkMethodAutoLink    = "autolink"
+	LinkMethodImport      = "import"
+)
+
 // LinkFindingToInvestigation associates a finding with a case.
 // Idempotent: re-linking the same pair is a no-op (ON CONFLICT DO
 // NOTHING) so callers don't need to dedupe.
+//
+// Convenience wrapper around LinkFindingToInvestigationWithProvenance —
+// records `link_method=manual, linked_by=NULL`. Existing callers
+// keep working without code change. New callers that know the
+// provenance (autolink, bulk, auto-promote) should use the
+// WithProvenance form instead.
+func (s *Store) LinkFindingToInvestigation(investigationID, findingID int64) error {
+	return s.LinkFindingToInvestigationWithProvenance(
+		investigationID, findingID, LinkMethodManual, "")
+}
+
+// LinkFindingToInvestigationWithProvenance is the parameterised form.
+// `method` should be one of the LinkMethod* constants; `by` is the
+// operator email (or "system:<actor>" for engine-driven links).
 //
 // Side effect: clears any prior dismissal tombstone for this pair.
 // "+ Add wins over Dismiss" is the suggested-findings UX contract —
@@ -304,12 +330,19 @@ func (s *Store) ListInvestigations(status string, limit int) ([]*Investigation, 
 // tombstone so the suggestion machinery treats the case as having
 // changed its mind. Tombstone delete is best-effort; a failure
 // shouldn't block the link.
-func (s *Store) LinkFindingToInvestigation(investigationID, findingID int64) error {
+//
+// Idempotent on the (investigation_id, finding_id) primary key.
+// Re-linking does NOT update an existing row's provenance — the
+// first link wins, which matches the audit-trail intuition (don't
+// rewrite history on a re-add).
+func (s *Store) LinkFindingToInvestigationWithProvenance(
+	investigationID, findingID int64, method, by string,
+) error {
 	if _, err := s.Exec(`
-		INSERT INTO investigation_findings (investigation_id, finding_id)
-		VALUES (?, ?)
+		INSERT INTO investigation_findings (investigation_id, finding_id, link_method, linked_by)
+		VALUES (?, ?, ?, ?)
 		ON CONFLICT (investigation_id, finding_id) DO NOTHING`,
-		investigationID, findingID); err != nil {
+		investigationID, findingID, nullableStr(method), nullableStr(by)); err != nil {
 		return err
 	}
 	_, _ = s.Exec(`
@@ -317,6 +350,15 @@ func (s *Store) LinkFindingToInvestigation(investigationID, findingID int64) err
 		WHERE investigation_id = ? AND finding_id = ?`,
 		investigationID, findingID)
 	return nil
+}
+
+// nullableStr converts "" to a NULL marker so empty strings don't
+// pollute the linked_by column.
+func nullableStr(v string) any {
+	if v == "" {
+		return nil
+	}
+	return v
 }
 
 // LinkRunToInvestigation associates an orchestration run with a case.

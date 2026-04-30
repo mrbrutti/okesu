@@ -153,7 +153,10 @@ func (s *Store) AutoLinkFindingToTopCase(findingID int64) (*AutoLinkResult, erro
 		return nil, nil
 	}
 	top := cases[0]
-	if err := s.LinkFindingToInvestigation(top.InvestigationID, findingID); err != nil {
+	if err := s.LinkFindingToInvestigationWithProvenance(
+		top.InvestigationID, findingID,
+		LinkMethodAutoLink, "system:autolink",
+	); err != nil {
 		return nil, err
 	}
 	return &AutoLinkResult{

@@ -98,10 +98,13 @@ func BulkLinkFindingsHandler(store *db.Store) http.HandlerFunc {
 			http.Error(w, "finding_ids required", http.StatusBadRequest)
 			return
 		}
+		by := actorFromRequest(r)
 		out := resp{Results: make([]item, 0, len(body.FindingIDs))}
 		for _, fid := range body.FindingIDs {
 			it := item{FindingID: fid}
-			if err := store.LinkFindingToInvestigation(invID, fid); err != nil {
+			if err := store.LinkFindingToInvestigationWithProvenance(
+				invID, fid, db.LinkMethodBulk, by,
+			); err != nil {
 				it.OK = false
 				it.Error = err.Error()
 				out.Failed++
