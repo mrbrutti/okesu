@@ -57,6 +57,7 @@ var actionClassRegistry = map[string]string{
 	ActionAddFindingTag:              ClassModify,
 	ActionRemoveFindingTag:           ClassModify,
 	ActionLinkRunToFinding:           ClassCreate,
+	ActionReflectWithLessons:         ClassCreate,
 	// Future (Phase 22.4): enrich_ioc -> ClassEnrich, link_iocs -> ClassCreate.
 }
 
