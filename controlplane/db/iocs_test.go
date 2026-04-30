@@ -107,8 +107,8 @@ func TestRecordObservation_CreatesLink(t *testing.T) {
 }
 
 func TestUpsertIOC_NameAndTags(t *testing.T) {
-	st := openTempStore(t)
-	id, _, err := st.UpsertIOC(&IOCUpsert{
+	s := openTempStore(t)
+	id, _, err := s.UpsertIOC(&IOCUpsert{
 		Kind:            "yara_rule",
 		Value:           "rule X { condition: true }",
 		NormalizedValue: "rule x { condition: true }",
@@ -122,7 +122,7 @@ func TestUpsertIOC_NameAndTags(t *testing.T) {
 	if id == 0 {
 		t.Fatalf("id should be non-zero")
 	}
-	rows, err := st.ListIOCs(IOCListFilter{Kind: "yara_rule"})
+	rows, err := s.ListIOCs(IOCListFilter{Kind: "yara_rule"})
 	if err != nil {
 		t.Fatalf("ListIOCs: %v", err)
 	}
@@ -134,6 +134,51 @@ func TestUpsertIOC_NameAndTags(t *testing.T) {
 	}
 	if rows[0].Tags != "test,phase-22.5" {
 		t.Errorf("Tags = %q, want test,phase-22.5", rows[0].Tags)
+	}
+}
+
+// Catalog reload exercises the UPDATE branch of UpsertIOC. Name+Tags
+// must round-trip the second time the same row is upserted from
+// "catalog" source — the existing pattern overwrites all metadata
+// fields unconditionally on catalog upsert (the catalog is the
+// source of truth), and the new columns must follow that precedent.
+func TestUpsertIOC_CatalogReloadUpdatesNameAndTags(t *testing.T) {
+	s := openTempStore(t)
+	id1, _, err := s.UpsertIOC(&IOCUpsert{
+		Kind: "yara_rule", Value: "rule R { condition: true }",
+		NormalizedValue: "rule r { condition: true }",
+		Source:          "catalog",
+		Name:            "old-name",
+		Tags:            "old,tags",
+	})
+	if err != nil {
+		t.Fatalf("first catalog upsert: %v", err)
+	}
+	id2, created, err := s.UpsertIOC(&IOCUpsert{
+		Kind: "yara_rule", Value: "rule R { condition: true }",
+		NormalizedValue: "rule r { condition: true }",
+		Source:          "catalog",
+		Name:            "new-name",
+		Tags:            "new,curated,tags",
+	})
+	if err != nil {
+		t.Fatalf("reload upsert: %v", err)
+	}
+	if id1 != id2 {
+		t.Errorf("expected dedup on (kind, normalized_value); got id1=%d id2=%d", id1, id2)
+	}
+	if created {
+		t.Errorf("expected created=false on second catalog upsert")
+	}
+	got, err := s.GetIOC(id1)
+	if err != nil {
+		t.Fatalf("GetIOC: %v", err)
+	}
+	if got.Name != "new-name" {
+		t.Errorf("Name = %q, want new-name (catalog reload must update)", got.Name)
+	}
+	if got.Tags != "new,curated,tags" {
+		t.Errorf("Tags = %q, want new,curated,tags (catalog reload must update)", got.Tags)
 	}
 }
 
