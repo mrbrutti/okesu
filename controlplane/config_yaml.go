@@ -74,6 +74,7 @@ type yamlConfig struct {
 	DaemonBinariesDir *string `yaml:"daemon_binaries_dir"`
 	DaimonFilesDir    *string `yaml:"daimon_files_dir"`
 	AgentFilesDirs    []string `yaml:"agent_files_dirs"`
+	IOCCatalogDirs    []string `yaml:"ioc_catalog_dirs"`
 
 	WebhookPublicURL *string `yaml:"webhook_public_url"`
 	MgmtPublicURL    *string `yaml:"mgmt_public_url"`
@@ -102,6 +103,20 @@ type yamlConfig struct {
 	KafkaSASLUsername *string  `yaml:"kafka_sasl_username"`
 	KafkaSASLPassword *string  `yaml:"kafka_sasl_password"`
 	KafkaUseTLS       *bool    `yaml:"kafka_use_tls"`
+
+	// Policy is the per-class auto-approve toggle the orchestrator
+	// consults at the step-approval gate. YAML shape:
+	//
+	//   policy:
+	//     auto_approve:
+	//       read: true
+	//       enrich: true
+	//
+	// Absent = empty map = no class auto-approved (today's behaviour).
+	// See controlplane/orchestrator/action_class.go for the class set.
+	Policy struct {
+		AutoApprove map[string]bool `yaml:"auto_approve"`
+	} `yaml:"policy"`
 }
 
 // mergeInto applies non-nil fields from y onto cfg. Zero pointer-deref
@@ -148,6 +163,7 @@ func (y *yamlConfig) mergeInto(cfg *Config) {
 	setStr(y.DaemonBinariesDir, &cfg.DaemonBinariesDir)
 	setStr(y.DaimonFilesDir, &cfg.DaimonFilesDir)
 	setStrSlice(y.AgentFilesDirs, &cfg.AgentFilesDirs)
+	setStrSlice(y.IOCCatalogDirs, &cfg.IOCCatalogDirs)
 
 	setStr(y.WebhookPublicURL, &cfg.WebhookPublicURL)
 	setStr(y.MgmtPublicURL, &cfg.MgmtPublicURL)
@@ -176,6 +192,15 @@ func (y *yamlConfig) mergeInto(cfg *Config) {
 	setStr(y.KafkaSASLUsername, &cfg.KafkaSASLUsername)
 	setStr(y.KafkaSASLPassword, &cfg.KafkaSASLPassword)
 	setBool(y.KafkaUseTLS, &cfg.KafkaUseTLS)
+
+	// Policy.AutoApprove: nil-vs-empty distinction matters so an
+	// operator who wrote `policy: { auto_approve: {} }` to clear an
+	// inherited default still ends up with an empty (non-nil) map.
+	// yaml.v3 returns nil when the key is absent; we only override
+	// the live config when the YAML supplied a value.
+	if y.Policy.AutoApprove != nil {
+		cfg.Policy.AutoApprove = y.Policy.AutoApprove
+	}
 }
 
 // secretRefRE matches "${secret:NAME}" inside a config string. Names

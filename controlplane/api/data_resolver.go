@@ -20,11 +20,14 @@ package api
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
 
 	"github.com/section9labs/okesu/controlplane/db"
+	"github.com/section9labs/okesu/controlplane/ioc/normalize"
 	"github.com/section9labs/okesu/controlplane/orchestrator"
 )
 
@@ -51,6 +54,7 @@ func NewDataResolver(store *db.Store) *DataResolver {
 	r.registerHandler("orchestration-runs.list", orchestrationRunsListQuery)
 	r.registerHandler("nodes.list", nodesListQuery)
 	r.registerHandler("agents.list", agentsListQuery)
+	r.registerHandler("iocs.lookup", iocsLookupQuery)
 	return r
 }
 
@@ -300,6 +304,65 @@ func agentsListQuery(ctx context.Context, store *db.Store, params map[string]any
 		offset = n
 	}
 	return store.ListAgents(limit, offset)
+}
+
+// iocsLookupQuery resolves an indicator against the CP's IOC catalog +
+// observation table. Used by hunt orchestrations whose first step needs
+// to confirm "is this thing a known indicator, and what does the
+// catalog say about it?" without round-tripping through the agent's
+// free-form prompt to do regex validation.
+//
+// The CP-side normalizer (normalize.NormalizeForKind) is the single
+// source of truth for the canonical form, so callers can pass the raw
+// IOC as it appeared in a finding (refanged, mixed case, etc.) and the
+// lookup will still hit a catalog row indexed under the canonical form.
+//
+// Required params:
+//
+//	kind:  "sha256" | "sha1" | "md5" | "ipv4" | "ipv6" | "domain" | "url" | "cve" | ...
+//	value: the indicator (any form — will be normalized)
+//
+// Result shape on hit:
+//
+//	{ valid: true, kind, normalized_value, attribution, severity_floor,
+//	  classification, source }
+//
+// Result shape on miss (no error — orchestrations branch on
+// {{data.<name>.valid}}):
+//
+//	{ valid: false, kind, normalized_value }
+func iocsLookupQuery(ctx context.Context, store *db.Store, params map[string]any) (any, error) {
+	_ = ctx
+	kind := paramString(params, "kind")
+	value := paramString(params, "value")
+	if kind == "" || value == "" {
+		return nil, fmt.Errorf("iocs.lookup: kind and value are both required")
+	}
+	norm, _ := normalize.NormalizeForKind(kind, value)
+	rec, err := store.LookupIOC(kind, norm)
+	if errors.Is(err, sql.ErrNoRows) {
+		// Genuine miss — orchestration's `when:` branches read valid:false.
+		return map[string]any{
+			"valid":            false,
+			"kind":             kind,
+			"normalized_value": norm,
+		}, nil
+	}
+	if err != nil {
+		// Real DB failure — surface it so the orchestration step fails
+		// loud rather than silently flagging every indicator as unknown
+		// during a transient outage.
+		return nil, fmt.Errorf("iocs.lookup: store: %w", err)
+	}
+	return map[string]any{
+		"valid":            true,
+		"kind":             rec.Kind,
+		"normalized_value": rec.NormalizedValue,
+		"attribution":      rec.Attribution,
+		"severity_floor":   rec.SeverityFloor,
+		"classification":   rec.Classification,
+		"source":           rec.Source,
+	}, nil
 }
 
 // ── param coercion helpers ────────────────────────────────────────────

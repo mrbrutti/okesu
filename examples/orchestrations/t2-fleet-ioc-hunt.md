@@ -32,18 +32,17 @@ steps:
   - id: scope
     agent: investigator
     node: "{{trigger.source_host}}"
+    data:
+      ioc:
+        query: iocs.lookup
+        params: { kind: "{{trigger.ioc_kind}}", value: "{{trigger.ioc}}" }
     prompt: |
       Confirm IOC and define hunt scope.
 
       Source finding's host: {{trigger.source_host}}
-      IOC: `{{trigger.ioc}}` (kind={{trigger.ioc_kind}})
+      IOC: `{{data.ioc.normalized_value}}` (kind={{data.ioc.kind}})
+      Catalog metadata: source={{data.ioc.source}} attribution={{data.ioc.attribution}} severity_floor={{data.ioc.severity_floor}}
       Attributes from triggering finding: {{trigger.attributes | json}}
-
-      Validate:
-        - For sha256: confirm length=64 hex
-        - For ipv4: confirm dotted-quad and not RFC-1918 unless explicit
-        - For domain: confirm DNS-shaped
-        - For ssh_pubkey: extract fingerprint via `ssh-keygen -lf` if needed
 
       Decide hunt scope:
         - target_population: one of `same_os`, `all`, `web_tier`, `db_tier`
@@ -51,8 +50,8 @@ steps:
         - max_hosts: cap parallel fan-out (default 20)
 
       Emit an orchestration_result finding with attributes:
-        valid (bool)
-        normalized_ioc (string)
+        valid (bool, copy from {{data.ioc.valid}})
+        normalized_ioc (string, copy from {{data.ioc.normalized_value}})
         target_population (string)
         explanation (string)
         max_hosts (int)

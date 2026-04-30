@@ -722,10 +722,41 @@ func buildDaemonConfig(cmd *cobra.Command, def *agent.AgentDef) (agent.DaemonCon
 				return dcfg, fmt.Errorf("invalid interval %q in agent file: %w", def.Interval, err)
 			}
 			dcfg.Interval = d
+			// Default IntervalMin = IntervalMax = interval — adaptive
+			// scheduler degenerates to a fixed interval for backward
+			// compatibility with single-`interval:` agent files.
+			dcfg.IntervalMin = d
+			dcfg.IntervalMax = d
+		}
+		if def.IntervalMin != "" {
+			d, err := time.ParseDuration(def.IntervalMin)
+			if err != nil {
+				return dcfg, fmt.Errorf("invalid interval_min %q in agent file: %w", def.IntervalMin, err)
+			}
+			dcfg.IntervalMin = d
+			// If interval_max isn't set, the scheduler stays at the floor
+			// (fixed-interval behavior). interval_min also seeds Interval
+			// so the legacy fixed-interval path keeps working if someone
+			// disables adaptive scheduling later.
+			if dcfg.IntervalMax < d {
+				dcfg.IntervalMax = d
+			}
+			if dcfg.Interval <= 0 {
+				dcfg.Interval = d
+			}
+		}
+		if def.IntervalMax != "" {
+			d, err := time.ParseDuration(def.IntervalMax)
+			if err != nil {
+				return dcfg, fmt.Errorf("invalid interval_max %q in agent file: %w", def.IntervalMax, err)
+			}
+			dcfg.IntervalMax = d
 		}
 		if def.Cron != "" {
 			dcfg.Cron = def.Cron
 			dcfg.Interval = 0
+			dcfg.IntervalMin = 0
+			dcfg.IntervalMax = 0
 		}
 		if def.Overlap != "" {
 			dcfg.Overlap = def.Overlap
@@ -764,11 +795,16 @@ func buildDaemonConfig(cmd *cobra.Command, def *agent.AgentDef) (agent.DaemonCon
 			return dcfg, fmt.Errorf("invalid --interval %q: %w", intervalStr, err)
 		}
 		dcfg.Interval = d
+		// CLI --interval forces fixed-interval behavior — pin min == max == d.
+		dcfg.IntervalMin = d
+		dcfg.IntervalMax = d
 		dcfg.Cron = ""
 	}
 	if cronStr, _ := cmd.Flags().GetString("cron"); cronStr != "" {
 		dcfg.Cron = cronStr
 		dcfg.Interval = 0
+		dcfg.IntervalMin = 0
+		dcfg.IntervalMax = 0
 	}
 
 	return dcfg, nil

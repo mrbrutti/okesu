@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/section9labs/okesu/controlplane/audit"
 	"github.com/section9labs/okesu/controlplane/auth"
 	"github.com/section9labs/okesu/controlplane/db"
+	"github.com/section9labs/okesu/controlplane/ioc/extract"
 	"github.com/section9labs/okesu/controlplane/ports"
 )
 
@@ -169,11 +171,61 @@ func FindingIngest(store *db.Store, eventStore ports.EventStore, bcast Broadcast
 		})
 		_ = audit.Emit // keep the import if the caller is via cookie auth
 
+		// Phase 22.1 Task D2 — auto-extract IOCs from finding text and link
+		// observations to the finding. Synchronous so a smoke test that
+		// asserts "after POST, IOC exists in DB" doesn't need to sleep.
+		extractAndLinkIOCs(store, findingID, &req)
+
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusAccepted)
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"event_id":   eventID,
 			"finding_id": findingID,
 		})
+	}
+}
+
+// extractAndLinkIOCs scans the finding's text fields, upserts each IOC
+// hit as source="observed", and records an observation linking it to
+// the finding. Errors are logged but do not fail the ingest — IOC
+// extraction is best-effort enrichment, not a precondition for the
+// finding being persisted.
+//
+// TODO(phase-22.x): currently synchronous so smoke tests can assert
+// "after POST, IOC exists in DB" without sleeps. A finding with N IOCs
+// adds N × (UpsertIOC + RecordIOCObservation) round-trips to the
+// request path (~1ms each on sqlite). Move to a worker queue once the
+// expected per-finding hit counts justify the indirection.
+//
+// TODO(phase-22.x): if UpsertIOC succeeds but RecordIOCObservation
+// fails, the IOC row exists with no link to the finding that surfaced
+// it. Acceptable for v1 (the IOC is still queryable by kind), but
+// worth fixing once we have the worker queue — wrap both in one
+// retry-on-failure unit.
+func extractAndLinkIOCs(store *db.Store, findingID int64, req *FindingIngestRequest) {
+	parts := []string{req.Title, req.Evidence, req.Resource, req.RecommendedAction}
+	for _, v := range req.Attributes {
+		if s, ok := v.(string); ok {
+			parts = append(parts, s)
+		}
+	}
+	text := strings.Join(parts, "\n")
+	for _, hit := range extract.Extract(text) {
+		id, _, err := store.UpsertIOC(&db.IOCUpsert{
+			Kind:            hit.Kind,
+			Value:           hit.Value,
+			NormalizedValue: hit.NormalizedValue,
+			Source:          "observed",
+		})
+		if err != nil {
+			log.Printf("ioc upsert (%s/%s): %v", hit.Kind, hit.NormalizedValue, err)
+			continue
+		}
+		if err := store.RecordIOCObservation(id, &db.IOCObservation{
+			FindingID: findingID,
+			Host:      req.Host,
+		}); err != nil {
+			log.Printf("ioc observation (id=%d, finding=%d): %v", id, findingID, err)
+		}
 	}
 }

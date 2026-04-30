@@ -14,9 +14,11 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -35,6 +37,7 @@ import (
 	"github.com/section9labs/okesu/controlplane/auth"
 	"github.com/section9labs/okesu/controlplane/db"
 	"github.com/section9labs/okesu/controlplane/federation"
+	"github.com/section9labs/okesu/controlplane/ioc/catalog"
 	"github.com/section9labs/okesu/controlplane/jobs"
 	"github.com/section9labs/okesu/controlplane/notify"
 	"github.com/section9labs/okesu/agent"
@@ -349,6 +352,7 @@ func New(cfg Config) (*Server, error) {
 	srv.orchestra = api.NewOrchestrationCoordinator(store, srv.runs, srv.tunReg, cfg.AgentFilesDirs, srv.fedAgg, api.CoordinatorOpts{
 		AutoDeployer:     autoDep,
 		CPLocalEnvExtras: cpLocalEnv,
+		ActionPolicy:     orchestrator.Policy{AutoApprove: cfg.Policy.AutoApprove},
 	})
 
 	// Wire the finding-trigger hook before the pipeline starts so we
@@ -408,6 +412,15 @@ func New(cfg Config) (*Server, error) {
 			log.Printf("daemon binaries import: %v (continuing)", err)
 		}
 	}
+
+	// Phase 22: hydrate the iocs table from on-disk YAML catalog
+	// directories. Runs synchronously (blocks startup) so an operator
+	// sees the loaded count in boot logs before traffic flows. A
+	// missing directory is not fatal — LoadDir returns empty and the
+	// CP boots with whatever the dirs that DO exist contributed. The
+	// SIGHUP handler in Run() re-runs this same path on demand so
+	// catalog edits land without a full restart.
+	loadIOCCatalogs(cfg.IOCCatalogDirs, store)
 
 	// Initialize the mgmt-plane server FIRST so srv.mgmtHTTP is set when
 	// srv.routes() captures the AboutFeatures snapshot.
@@ -571,6 +584,10 @@ func (s *Server) routes() http.Handler {
 		r.Get("/api/findings/grouped", api.FederatedFindingsGrouped(s.store, s.fedAgg))
 		r.Get("/api/findings/{id}", api.FederatedFindingDetail(s.store, s.fedAgg))
 			r.Get("/api/findings/{id}/runs", api.FederatedRunsForFinding(s.store, s.fedAgg))
+
+			// Phase 22.1 — IOC list. Filter by finding_id (drawer drill-down)
+			// or kind (e.g. all observed sha256s). Local-only for now.
+			r.Get("/api/iocs", api.ListIOCs(s.store))
 
 		// Read endpoints (continued)
 		r.Get("/api/nodes", api.FederatedNodesList(s.store, s.fedAgg))
@@ -924,6 +941,13 @@ func (s *Server) Run(ctx context.Context) error {
 	go s.sessionGC(ctx)
 	go s.notify.Run(ctx)
 	s.fedPoller.Start(ctx)
+
+	// Phase 22: SIGHUP triggers a re-scan of every IOC catalog
+	// directory. Same code path as the boot-time load — operators
+	// edit a YAML, kill -HUP <pid>, and the new entries are upserted
+	// without a full restart. Errors per dir are logged; the handler
+	// never exits so subsequent SIGHUPs after a bad reload still work.
+	go s.iocCatalogReloader(ctx)
 	// Phase D: cron-driven orchestration runs. The scheduler ticks
 	// every minute and fires due orchestrations through the same
 	// engine path as manual + finding triggers.
@@ -1075,6 +1099,51 @@ func (s *Server) ensureMgmtCert() (certPEM, keyPEM []byte, err error) {
 // CA exposes the in-memory CA so the issue-cert subcommand can sign
 // client certs.
 func (s *Server) CA() *CA { return s.ca }
+
+// iocCatalogReloader listens for SIGHUP and re-runs the catalog
+// loader against every configured directory. Lives until ctx is
+// cancelled (i.e., until CP shutdown). Stays in its own goroutine so
+// a slow reload (large catalog) doesn't block the rest of Run().
+//
+// Note: this is currently the only SIGHUP consumer in the CP. If a
+// future reload (config rotate, log file reopen, etc.) wants to also
+// listen for SIGHUP, fold those in here so signal.Notify only registers
+// one channel — multiple Notify(SIGHUP) calls will fan out the same
+// signal to every channel, but a single multiplexer keeps the logging
+// coherent.
+func (s *Server) iocCatalogReloader(ctx context.Context) {
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGHUP)
+	defer signal.Stop(sigCh)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-sigCh:
+			log.Print("ioc catalog: SIGHUP — reloading")
+			loadIOCCatalogs(s.cfg.IOCCatalogDirs, s.store)
+		}
+	}
+}
+
+// loadIOCCatalogs runs catalog.LoadAndUpsert against every configured
+// directory, logging the loaded count or the error per dir. Errors do
+// not block boot — if the operator has a typo'd YAML or a missing
+// directory, the rest of the catalog still seeds and the CP comes up.
+// Used both at boot from New() and from the SIGHUP handler in Run().
+func loadIOCCatalogs(dirs []string, store *db.Store) {
+	for _, dir := range dirs {
+		if dir == "" {
+			continue
+		}
+		n, err := catalog.LoadAndUpsert(dir, store)
+		if err != nil {
+			log.Printf("ioc catalog: %s: %v (continuing)", dir, err)
+			continue
+		}
+		log.Printf("ioc catalog: loaded %d entries from %s", n, dir)
+	}
+}
 
 // importDaemonBinaries scans dir for files named "okesu-<os>-<arch>" and
 // upserts a row in the daemon_binaries table for each. Existing rows with

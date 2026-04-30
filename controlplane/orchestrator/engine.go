@@ -235,6 +235,12 @@ type Engine struct {
 	// clear "no data resolver" error rather than silently dropping
 	// the bindings.
 	data DataResolver
+	// actionPolicy is the operator-set per-class auto-approve toggle.
+	// When every kind in a step's `actions:` allowlist falls in an
+	// auto-approved class, the engine bypasses the step-level
+	// approval gate. Zero value (empty AutoApprove) means "gate as
+	// today" — strictly additive, never relaxes existing constraints.
+	actionPolicy Policy
 }
 
 // DataResolver fetches structured CP-side data on behalf of a step's
@@ -264,6 +270,15 @@ func (e *Engine) SetActionApplier(a ActionApplier) {
 // that do then fail at dispatch with a clear error.
 func (e *Engine) SetDataResolver(d DataResolver) {
 	e.data = d
+}
+
+// SetActionPolicy installs the per-class auto-approve toggle the
+// engine consults at the step-approval gate. Called once at boot from
+// the coordinator with values lifted out of the YAML config. Safe to
+// leave unset — the zero value preserves today's "every approval-
+// required step gates" behaviour.
+func (e *Engine) SetActionPolicy(p Policy) {
+	e.actionPolicy = p
 }
 
 // Run resumes the orchestration_run identified by runID. It's
@@ -369,16 +384,25 @@ func (e *Engine) Run(ctx context.Context, runID int64) error {
 			}
 		}
 
-		// Approval gate — pause the run if not yet approved.
+		// Approval gate — pause the run if not yet approved, unless
+		// the operator-set action-class policy auto-approves every
+		// kind in the step's `actions:` allowlist. The bypass only
+		// kicks in for steps that declare a non-empty allowlist; a
+		// bare `approval: required` (no actions) always gates.
 		if step.Approval == "required" && rec.ApprovedAt == nil {
-			rec.Status = StepStatusWaitingApproval
-			// Render the prompt now so the operator sees what they're
-			// approving in the UI before clicking Approve.
-			renderedPrompt, _ := Render(step.Prompt, env)
-			rec.RenderedPrompt = renderedPrompt
-			_ = e.store.UpsertOrchestrationStep(rec)
-			_ = e.store.UpdateOrchestrationRunStatus(run.ID, RunStatusApprovalRequired, step.ID, "")
-			return nil
+			if policyBypassesGate(step, e.actionPolicy) {
+				log.Printf("orchestrator: step %q approval bypassed by action-class policy (allowlist=%v)",
+					step.ID, step.Actions)
+			} else {
+				rec.Status = StepStatusWaitingApproval
+				// Render the prompt now so the operator sees what
+				// they're approving in the UI before clicking Approve.
+				renderedPrompt, _ := Render(step.Prompt, env)
+				rec.RenderedPrompt = renderedPrompt
+				_ = e.store.UpsertOrchestrationStep(rec)
+				_ = e.store.UpdateOrchestrationRunStatus(run.ID, RunStatusApprovalRequired, step.ID, "")
+				return nil
+			}
 		}
 
 		// Resolve the step's `data:` block before render so the
@@ -395,7 +419,21 @@ func (e *Engine) Run(ctx context.Context, runID int64) error {
 			}
 			bindings := make(map[string]any, len(step.Data))
 			for name, src := range step.Data {
-				val, derr := e.data.Resolve(ctx, src.Query, src.Params)
+				// Render template strings in params before passing to the
+				// resolver so authors can write
+				//   params: { kind: "{{trigger.ioc_kind}}" }
+				// and have `{{trigger.ioc_kind}}` substituted from the
+				// trigger payload at run time, the same way prompt
+				// templates are rendered. String leaves are templated;
+				// non-string values pass through unchanged.
+				renderedParams, perr := renderParams(src.Params, env)
+				if perr != nil {
+					rec.Status = StepStatusFailed
+					rec.Error = fmt.Sprintf("data.%s (%s): render params: %v", name, src.Query, perr)
+					_ = e.store.UpsertOrchestrationStep(rec)
+					return e.haltFailed(run.ID, step.ID, rec.Error)
+				}
+				val, derr := e.data.Resolve(ctx, src.Query, renderedParams)
 				if derr != nil {
 					rec.Status = StepStatusFailed
 					rec.Error = fmt.Sprintf("data.%s (%s): %v", name, src.Query, derr)
@@ -582,6 +620,31 @@ func isTerminal(s string) bool {
 		return true
 	}
 	return false
+}
+
+// policyBypassesGate reports whether the engine's action-class
+// auto-approve policy fully covers a step's allowlist. Bypass requires:
+//
+//  1. The step declares a non-empty actions: allowlist. A bare
+//     `approval: required` step (no actions) cannot be bypassed —
+//     there's nothing for the class taxonomy to evaluate, so the
+//     operator-intent of "this step needs human eyes" wins.
+//  2. EVERY kind in the allowlist resolves to a class the policy
+//     auto-approves. A single restricted-class kind keeps the gate.
+//
+// Unknown kinds map to ClassModify via ClassFor — registering a new
+// kind without updating the registry results in continued gating
+// (safe default), not a silent auto-apply.
+func policyBypassesGate(step StepSpec, policy Policy) bool {
+	if len(step.Actions) == 0 {
+		return false
+	}
+	for _, kind := range step.Actions {
+		if !policy.AllowsClass(ClassFor(kind)) {
+			return false
+		}
+	}
+	return true
 }
 
 // applyStepActions reads the agent's `actions:` array from the
@@ -852,6 +915,38 @@ func perNodeMap(nodes []NodeDispatch) map[string]any {
 		}
 	}
 	return out
+}
+
+// renderParams walks a step's data.params map and renders any string
+// values through the prompt template engine using the same env the
+// prompt sees. Authors can therefore write
+//
+//   params: { kind: "{{trigger.ioc_kind}}", value: "{{trigger.ioc}}" }
+//
+// and the resolver receives the substituted strings.
+//
+// Non-string values (numbers, bools, nested maps/lists) pass through
+// unchanged. v1 only renders top-level string leaves; if a real
+// orchestration needs templated values inside nested structures we'll
+// extend this then. Returns a fresh map so the StepSpec's static
+// params aren't mutated across runs.
+func renderParams(params map[string]any, env map[string]any) (map[string]any, error) {
+	if len(params) == 0 {
+		return params, nil
+	}
+	out := make(map[string]any, len(params))
+	for k, v := range params {
+		if s, ok := v.(string); ok {
+			rendered, err := Render(s, env)
+			if err != nil {
+				return nil, fmt.Errorf("param %q: %w", k, err)
+			}
+			out[k] = rendered
+			continue
+		}
+		out[k] = v
+	}
+	return out, nil
 }
 
 // Spec is exported via the orchestrator package; keep import quiet.

@@ -316,6 +316,179 @@ steps:
 	}
 }
 
+// TestEngine_ApprovalGate_PolicyBypass exercises the action-class
+// auto-approve policy: a step that would normally pause for operator
+// approval is allowed to execute when every kind in its allowlist
+// falls in an auto-approved class. The dispatcher returns an
+// orchestration_result carrying a link_run_to_finding action; a fake
+// applier asserts the action was actually delivered (not just the
+// dispatch). Backwards-compat sibling test below confirms the bypass
+// requires *every* listed kind to be auto-approved.
+func TestEngine_ApprovalGate_PolicyBypass(t *testing.T) {
+	spec := mustParse(t, `---
+name: gated
+description: pauses for approval unless policy auto-approves the action class
+steps:
+  - id: contain
+    approval: required
+    actions:
+      - link_run_to_finding
+    agent: x
+    prompt: x
+---`)
+	store := newFakeStore(
+		&Orchestration{ID: 1, Spec: spec},
+		&RunRecord{ID: 1, OrchestrationID: 1, Status: RunStatusPending, TriggerKind: "manual"},
+	)
+	disp := &fakeDispatcher{
+		resultByStep: map[string]DispatchResult{
+			"contain": {
+				Status:       StepStatusCompleted,
+				RunID:        "run-contain",
+				CPInstanceID: "local",
+				HostResolved: "h1",
+				Findings: []DispatchedFinding{
+					{
+						Category: OrchestrationResultCategory,
+						Title:    "result",
+						Attributes: map[string]any{
+							"actions": []any{
+								map[string]any{
+									"kind":       "link_run_to_finding",
+									"finding_id": float64(42),
+									"reason":     "auto-linked by policy bypass",
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	applier := &fakeActionApplier{}
+	engine := NewEngine(store, disp)
+	engine.SetActionApplier(applier)
+	// Auto-approve every "create" class action; link_run_to_finding is
+	// the only kind in the step's allowlist and it's class=create.
+	engine.SetActionPolicy(Policy{AutoApprove: map[string]bool{ClassCreate: true}})
+
+	if err := engine.Run(context.Background(), 1); err != nil {
+		t.Fatal(err)
+	}
+	if store.run.Status != RunStatusCompleted {
+		t.Errorf("run.Status = %q, want %q (policy should have bypassed the gate)", store.run.Status, RunStatusCompleted)
+	}
+	if len(disp.calls) != 1 {
+		t.Errorf("step should have dispatched directly, got %d calls", len(disp.calls))
+	}
+	if store.steps["contain"].Status != StepStatusCompleted {
+		t.Errorf("contain.Status = %q, want %q", store.steps["contain"].Status, StepStatusCompleted)
+	}
+	if len(applier.linkCalls) != 1 {
+		t.Fatalf("expected exactly one LinkRunToFinding call after bypass; got %d", len(applier.linkCalls))
+	}
+	if applier.linkCalls[0].findingID != 42 {
+		t.Errorf("LinkRunToFinding finding_id = %d, want 42", applier.linkCalls[0].findingID)
+	}
+}
+
+// fakeActionApplier records every action it receives so tests can
+// assert the engine actually applied (not just dispatched) an action.
+type fakeActionApplier struct {
+	linkCalls []struct {
+		findingID int64
+		runID     int64
+		stepID    string
+		reason    string
+	}
+}
+
+func (f *fakeActionApplier) UpdateFindingStatus(int64, string, string, int64, string) error {
+	return nil
+}
+func (f *fakeActionApplier) AddFindingTag(int64, string, string, int64, string) error    { return nil }
+func (f *fakeActionApplier) RemoveFindingTag(int64, string, string, int64, string) error { return nil }
+func (f *fakeActionApplier) SetFindingSeverityOverride(int64, string, string, int64, string) error {
+	return nil
+}
+func (f *fakeActionApplier) LinkRunToFinding(findingID, runID int64, stepID, reason string) error {
+	f.linkCalls = append(f.linkCalls, struct {
+		findingID int64
+		runID     int64
+		stepID    string
+		reason    string
+	}{findingID, runID, stepID, reason})
+	return nil
+}
+func (f *fakeActionApplier) EscalateRun(int64, string, string) error { return nil }
+
+// TestEngine_ApprovalGate_PolicyMixedActionsStillGates confirms the
+// bypass requires every kind in the step's allowlist to be
+// auto-approved — a single non-auto-approved kind keeps the gate.
+func TestEngine_ApprovalGate_PolicyMixedActionsStillGates(t *testing.T) {
+	spec := mustParse(t, `---
+name: gated
+description: gate stays when allowlist mixes auto-approved + restricted classes
+steps:
+  - id: contain
+    approval: required
+    actions:
+      - link_run_to_finding
+      - update_finding_status
+    agent: x
+    prompt: x
+---`)
+	store := newFakeStore(
+		&Orchestration{ID: 1, Spec: spec},
+		&RunRecord{ID: 1, OrchestrationID: 1, Status: RunStatusPending, TriggerKind: "manual"},
+	)
+	disp := &fakeDispatcher{}
+	engine := NewEngine(store, disp)
+	// Only "create" is auto-approved. update_finding_status is class
+	// "modify", which is NOT auto-approved → gate must stay.
+	engine.SetActionPolicy(Policy{AutoApprove: map[string]bool{ClassCreate: true}})
+
+	if err := engine.Run(context.Background(), 1); err != nil {
+		t.Fatal(err)
+	}
+	if store.run.Status != RunStatusApprovalRequired {
+		t.Errorf("run.Status = %q, want %q (modify-class action keeps gate)", store.run.Status, RunStatusApprovalRequired)
+	}
+	if len(disp.calls) != 0 {
+		t.Errorf("step should NOT have dispatched, got %d calls", len(disp.calls))
+	}
+}
+
+// TestEngine_ApprovalGate_EmptyPolicy confirms backwards-compat: a
+// zero-value Policy preserves today's gate-everything behaviour.
+func TestEngine_ApprovalGate_EmptyPolicy(t *testing.T) {
+	spec := mustParse(t, `---
+name: gated
+description: empty policy keeps existing approval gate
+steps:
+  - id: contain
+    approval: required
+    actions:
+      - link_run_to_finding
+    agent: x
+    prompt: x
+---`)
+	store := newFakeStore(
+		&Orchestration{ID: 1, Spec: spec},
+		&RunRecord{ID: 1, OrchestrationID: 1, Status: RunStatusPending, TriggerKind: "manual"},
+	)
+	disp := &fakeDispatcher{}
+	engine := NewEngine(store, disp)
+	// No SetActionPolicy call → zero Policy → no class is auto-approved.
+
+	if err := engine.Run(context.Background(), 1); err != nil {
+		t.Fatal(err)
+	}
+	if store.run.Status != RunStatusApprovalRequired {
+		t.Errorf("run.Status = %q, want %q (empty policy must gate)", store.run.Status, RunStatusApprovalRequired)
+	}
+}
+
 func TestEngine_TriggerPayloadInTemplate(t *testing.T) {
 	spec := mustParse(t, `---
 name: triggered
@@ -342,4 +515,99 @@ steps:
 	if got := disp.calls[0].Prompt; !strings.Contains(got, "edr-fedora-3") || !strings.Contains(got, "42") {
 		t.Errorf("rendered prompt didn't pick up trigger context: %q", got)
 	}
+}
+
+func TestRenderParams_StringsAreTemplated(t *testing.T) {
+	env := map[string]any{
+		"trigger": map[string]any{
+			"ioc_kind": "sha256",
+			"ioc":      "deadbeef",
+		},
+	}
+	in := map[string]any{
+		"kind":  "{{trigger.ioc_kind}}",
+		"value": "{{trigger.ioc}}",
+		"limit": 50, // non-string passes through unchanged
+	}
+	got, err := renderParams(in, env)
+	if err != nil {
+		t.Fatalf("renderParams: %v", err)
+	}
+	if got["kind"] != "sha256" {
+		t.Errorf("kind = %q, want %q", got["kind"], "sha256")
+	}
+	if got["value"] != "deadbeef" {
+		t.Errorf("value = %q, want %q", got["value"], "deadbeef")
+	}
+	if got["limit"] != 50 {
+		t.Errorf("limit = %v, want 50 (non-string should pass through)", got["limit"])
+	}
+	// Original map should not be mutated.
+	if in["kind"] != "{{trigger.ioc_kind}}" {
+		t.Errorf("renderParams mutated input map: kind = %q", in["kind"])
+	}
+}
+
+// TestEngine_DataParamsRendered confirms the engine substitutes
+// {{trigger.*}} placeholders in `data:` params before calling the
+// resolver. Without this, the t2-fleet-ioc-hunt rewrite would silently
+// look up the literal string `{{trigger.ioc}}` and always miss.
+func TestEngine_DataParamsRendered(t *testing.T) {
+	spec := mustParse(t, `---
+name: data-params
+description: data params should be templated against trigger payload
+steps:
+  - id: lookup
+    agent: x
+    prompt: "ok"
+    data:
+      ioc:
+        query: iocs.lookup
+        params: { kind: "{{trigger.ioc_kind}}", value: "{{trigger.ioc}}" }
+---`)
+	store := newFakeStore(
+		&Orchestration{ID: 1, Spec: spec},
+		&RunRecord{
+			ID:              1,
+			OrchestrationID: 1,
+			Status:          RunStatusPending,
+			TriggerKind:     "finding",
+			TriggerPayload:  `{"ioc_kind":"sha256","ioc":"deadbeef"}`,
+		},
+	)
+	resolver := &recordingResolver{}
+	engine := NewEngine(store, &fakeDispatcher{})
+	engine.SetDataResolver(resolver)
+
+	if err := engine.Run(context.Background(), 1); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(resolver.calls) != 1 {
+		t.Fatalf("expected one resolver call; got %d", len(resolver.calls))
+	}
+	c := resolver.calls[0]
+	if c.query != "iocs.lookup" {
+		t.Errorf("query = %q, want iocs.lookup", c.query)
+	}
+	if c.params["kind"] != "sha256" {
+		t.Errorf("params.kind = %q, want %q (was the {{trigger.ioc_kind}} placeholder rendered?)", c.params["kind"], "sha256")
+	}
+	if c.params["value"] != "deadbeef" {
+		t.Errorf("params.value = %q, want %q (was the {{trigger.ioc}} placeholder rendered?)", c.params["value"], "deadbeef")
+	}
+}
+
+type recordingResolver struct {
+	calls []struct {
+		query  string
+		params map[string]any
+	}
+}
+
+func (r *recordingResolver) Resolve(_ context.Context, query string, params map[string]any) (any, error) {
+	r.calls = append(r.calls, struct {
+		query  string
+		params map[string]any
+	}{query, params})
+	return map[string]any{"valid": true}, nil
 }

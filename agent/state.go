@@ -23,6 +23,10 @@ type DaemonState struct {
 	ErrorCount int64 `json:"error_count"`
 	// LastTickAt is the UTC time the most recent tick started.
 	LastTickAt time.Time `json:"last_tick_at,omitempty"`
+	// CurrentInterval is the last computed adaptive-schedule interval.
+	// Persisted so backoff state survives daemon restarts; restored on
+	// LoadState. Zero means "use IntervalMin" (fresh start).
+	CurrentInterval time.Duration `json:"current_interval,omitempty"`
 }
 
 // LoadState reads state from stateDir/<name>/state.json.
@@ -124,6 +128,25 @@ func (s *DaemonState) RecordTick(stateDir, name string, hadError bool) {
 		s.ErrorCount++
 	}
 	s.LastTickAt = time.Now().UTC()
+	s.mu.Unlock()
+	_ = SaveState(stateDir, name, s)
+}
+
+// SetCurrentInterval records the adaptive scheduler's current interval
+// and persists it so backoff state survives a daemon restart. Called by
+// the daemon loop after each tick once the scheduler has been updated.
+//
+// Skip-if-unchanged: a daimon at the ceiling sees the same interval
+// every tick, and there's no need to fsync state on every one. We only
+// write when the value actually moves (during the backoff ramp-up,
+// or on reset to min after a finding/error).
+func (s *DaemonState) SetCurrentInterval(stateDir, name string, d time.Duration) {
+	s.mu.Lock()
+	if s.CurrentInterval == d {
+		s.mu.Unlock()
+		return
+	}
+	s.CurrentInterval = d
 	s.mu.Unlock()
 	_ = SaveState(stateDir, name, s)
 }

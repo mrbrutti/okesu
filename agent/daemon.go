@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -25,6 +26,14 @@ type DaemonConfig struct {
 	Collectors []CollectorDef // pre-collector commands run before each tick
 	Outputs    []OutputDef    // output sinks; defaults to stdout-only when empty
 	Mgmt       MgmtConfig          // management plane connection config
+	// IntervalMin / IntervalMax bound the adaptive scheduler. When equal
+	// (the default — set by the existing single `interval:` frontmatter
+	// field), behavior is identical to a fixed interval. When IntervalMax
+	// > IntervalMin, the inter-tick delay grows geometrically toward
+	// IntervalMax on quiet ticks and resets to IntervalMin on errors or
+	// new findings.
+	IntervalMin time.Duration
+	IntervalMax time.Duration
 	// APIPolicy is called when the AI provider API is unreachable or returns a
 	// server-side error. Nil defaults to NoopAPIPolicy. The Control Plane will
 	// supply a concrete implementation that can buffer, escalate, or switch providers.
@@ -212,9 +221,13 @@ func RunDaemon(cfg Config, dcfg DaemonConfig) error {
 		_ = os.MkdirAll(findingsDir, 0755)
 	}
 
-	nextTick, err := buildSchedule(dcfg)
+	nextTick, adaptive, err := buildSchedule(dcfg)
 	if err != nil {
 		return err
+	}
+	// Restore persisted adaptive interval so backoff state survives restarts.
+	if adaptive != nil && state.CurrentInterval > 0 {
+		adaptive.restore(state.CurrentInterval)
 	}
 
 	// tickMu is held for the duration of each tick.
@@ -272,8 +285,21 @@ func RunDaemon(cfg Config, dcfg DaemonConfig) error {
 			// Run the tick in a goroutine so the main loop can still handle signals.
 			go func(t int64, lr time.Time) {
 				defer tickMu.Unlock()
-				execTick(cfg, dcfg, hostname, t, lr, state, mgmt)
+				findings, hadError := execTick(cfg, dcfg, hostname, t, lr, state, mgmt)
 				lastRunAt = time.Now()
+				if adaptive != nil {
+					wasAtCeiling := adaptive.atCeiling()
+					adaptive.recordTick(findings > 0, hadError)
+					// Persist the new interval so backoff survives restarts.
+					// SetCurrentInterval skips the disk write when the value
+					// is unchanged (e.g., every steady-state tick at ceiling).
+					state.SetCurrentInterval(dcfg.StateDir, cfg.Name, adaptive.current)
+					// Log only on the false→true transition into ceiling so a
+					// quiet host doesn't spam journald with one line per tick.
+					if !wasAtCeiling && adaptive.atCeiling() {
+						log.Printf("daemon.scheduler.at_ceiling agent=%s interval=%s", cfg.Name, adaptive.current)
+					}
+				}
 			}(n, lastRun)
 
 		case sig := <-sigCh:
@@ -316,7 +342,11 @@ func RunDaemon(cfg Config, dcfg DaemonConfig) error {
 
 // execTick runs one complete tick: emits tick_start, runs pre-collectors,
 // renders the system prompt template, runs the agentic loop, emits tick_done.
-func execTick(cfg Config, dcfg DaemonConfig, hostname string, tickNum int64, lastRunAt time.Time, state *DaemonState, mgmt *MgmtPlane) {
+//
+// Returns the number of findings emitted this tick and whether the tick
+// ended in error. The daemon loop feeds these into the adaptive scheduler
+// so quiet ticks back off and active/erroring ticks reset to IntervalMin.
+func execTick(cfg Config, dcfg DaemonConfig, hostname string, tickNum int64, lastRunAt time.Time, state *DaemonState, mgmt *MgmtPlane) (findingsEmitted int, hadError bool) {
 	start := time.Now()
 
 	Emit(Event{
@@ -343,6 +373,7 @@ func execTick(cfg Config, dcfg DaemonConfig, hostname string, tickNum int64, las
 			Result:   "error",
 			Duration: time.Since(start).Round(time.Millisecond).String(),
 		})
+		hadError = true
 		return
 	}
 
@@ -399,7 +430,7 @@ func execTick(cfg Config, dcfg DaemonConfig, hostname string, tickNum int64, las
 		runErr = RunOpenAI(tickCfg)
 	}
 
-	hadError := runErr != nil
+	hadError = runErr != nil
 	if hadError {
 		if isAPI, code := classifyRunError(runErr); isAPI {
 			// API-level failure: emit a dedicated event so the Control Plane and
@@ -436,7 +467,7 @@ func execTick(cfg Config, dcfg DaemonConfig, hostname string, tickNum int64, las
 	if mgmt != nil {
 		known = mgmt
 	}
-	findingsEmitted := HarvestFindings(state, dcfg.StateDir, cfg.Name, hostname, tickNum, dcfg.DedupeTTL, known)
+	findingsEmitted = HarvestFindings(state, dcfg.StateDir, cfg.Name, hostname, tickNum, dcfg.DedupeTTL, known)
 	if findingsEmitted > 0 {
 		// Persist the dedup-cache updates the harvester just made so they
 		// survive a daemon restart for the rest of the TTL window.
@@ -458,6 +489,7 @@ func execTick(cfg Config, dcfg DaemonConfig, hostname string, tickNum int64, las
 		Duration: time.Since(start).Round(time.Millisecond).String(),
 		Findings: findingsEmitted,
 	})
+	return
 }
 
 // buildFallbackPrompt returns a minimal prompt when template rendering fails.
@@ -503,25 +535,41 @@ func readLastRunAt(stateDir, name string) time.Time {
 	return t
 }
 
-// buildSchedule returns a function that computes the next scheduled time after t.
-// Cron takes precedence over Interval when both are set. Falls back to 60s if neither.
-func buildSchedule(dcfg DaemonConfig) (func(time.Time) time.Time, error) {
+// buildSchedule returns the next-tick function plus an optional adaptive
+// schedule handle. Cron takes precedence over Interval when both are set.
+// Falls back to 60s if neither.
+//
+// When the caller has configured IntervalMin / IntervalMax (the adaptive
+// path), buildSchedule returns a closure that reads the *current* interval
+// from the returned *adaptiveSchedule on every call — so the daemon loop
+// just needs to call sched.recordTick(...) after each tick to drive the
+// backoff. For cron and fixed-interval modes the second return value is
+// nil and the closure is purely time-driven.
+func buildSchedule(dcfg DaemonConfig) (func(time.Time) time.Time, *adaptiveSchedule, error) {
 	if dcfg.Cron != "" {
 		parser := cron.NewParser(
 			cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow,
 		)
 		sched, err := parser.Parse(dcfg.Cron)
 		if err != nil {
-			return nil, fmt.Errorf("invalid cron expression %q: %w", dcfg.Cron, err)
+			return nil, nil, fmt.Errorf("invalid cron expression %q: %w", dcfg.Cron, err)
 		}
-		return sched.Next, nil
+		return sched.Next, nil, nil
 	}
 
-	interval := dcfg.Interval
-	if interval <= 0 {
-		interval = 60 * time.Second
+	// Fall back to fixed Interval when IntervalMin isn't set (legacy callers).
+	if dcfg.IntervalMin <= 0 {
+		interval := dcfg.Interval
+		if interval <= 0 {
+			interval = 60 * time.Second
+		}
+		return func(t time.Time) time.Time {
+			return t.Add(interval)
+		}, nil, nil
 	}
-	return func(t time.Time) time.Time {
-		return t.Add(interval)
-	}, nil
+
+	// Adaptive path. When IntervalMin == IntervalMax this still works —
+	// recordTick leaves `current` pinned to min, matching legacy fixed-interval.
+	as := newAdaptiveSchedule(dcfg)
+	return as.next, as, nil
 }
