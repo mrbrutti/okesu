@@ -23,7 +23,9 @@ resource "oci_streaming_stream_pool" "main" {
 }
 
 resource "oci_streaming_stream" "events_raw" {
-  compartment_id     = var.compartment_ocid
+  # `compartment_id` and `stream_pool_id` are mutually exclusive: a stream
+  # belongs to a stream pool (managed) OR a compartment's default pool. We
+  # use the managed pool above, so leave compartment_id unset here.
   stream_pool_id     = oci_streaming_stream_pool.main.id
   name               = "events.raw"
   partitions         = 4
