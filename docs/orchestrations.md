@@ -393,6 +393,67 @@ but it costs context, so prefer `result` for chained data flow.
 For fan-out steps, `{{stepN.result}}` aggregates per-host attributes
 under `byNode`: `{{stepN.result.byNode["web-prod-01"].sha256}}`.
 
+## Data queries (CP-side `data:` block)
+
+A step can declare structured CP-side reads via a `data:` block. The
+engine resolves each entry before the step is dispatched and binds the
+result into the prompt template as `{{data.<name>}}`. Replaces the
+older "have the agent curl /api/findings" pattern: the engine handles
+auth, audit, and persistence so the agent's prompt stays focused on
+reasoning.
+
+```yaml
+- id: classify_batch
+  agent: investigator
+  data:
+    findings:
+      query: findings.list
+      params:
+        state: queue
+        severity: [INFO, LOW]
+        limit: 50
+    summary:
+      query: findings.summary
+  prompt: |
+    Classify {{data.findings | length}} findings.
+    {{data.findings | json}}
+```
+
+Each entry has:
+
+| field    | required | meaning |
+|----------|----------|---------|
+| `query`  | yes      | Registered handler name in the form `namespace.method`. Engine validates at run time. |
+| `params` | no       | Free-form map; each handler validates its own params. Templates inside string values are rendered against the run context (trigger + previous steps) before dispatch, so e.g. `value: "{{trigger.attributes.sha256}}"` works. |
+
+### Built-in queries
+
+| query | params | returns |
+|---|---|---|
+| `findings.list`           | `state` (`queue`\|`open`\|`acked`\|`all`), `severity` (list), `agent`, `host`, `category`, `tag`, `since_ms`, `until_ms`, `limit`, `offset` | array of finding rows |
+| `findings.summary`        | none | per-CP rollup (totals + 24h trend) |
+| `findings.history`        | `finding_id` (required) | edit history for one finding |
+| `orchestration-runs.list` | `status` (list), `trigger_kind` (list), `since` (relative `30m`/`1h`/...), `since_ms`, `limit`, `offset` | array of orchestration_run rows |
+| `nodes.list`              | `limit`, `offset` | array of node rows |
+| `agents.list`             | `limit`, `offset` | array of (daemon agent, host) rows |
+| `iocs.lookup`             | `kind` (required, e.g. `sha256`/`ipv4`/`domain`/`url`/`cve`), `value` (required, any form — refanged/mixed-case ok; CP normalizes) | `{valid, kind, normalized_value, attribution?, severity_floor?, classification?, source?}` — `valid:false` on miss for `when:` branching; real DB errors fail the step |
+
+The canonical list lives in `controlplane/api/data_resolver.go` —
+adding a new query is a single `r.registerHandler("...", ...)` call
+plus a typed handler function.
+
+### Persistence + replay
+
+The engine persists each step's resolved data on the run record
+(`orchestration_steps.data_snapshot`, JSON-encoded). The runs API
+exposes it as `step.data` on the step JSON, so the run-detail UI can
+show exactly what the agent saw — even after the underlying tables
+have moved on. Useful for audit ("what input made the agent decide
+to suppress this?"), replay, and debugging weird verdicts.
+
+Cross-reference: `agents/_orchestration-data.md` for the agent-author
+view of the same protocol.
+
 ## Engine-applied actions (CP-side mutations)
 
 A step can request CP-side mutations (status changes, tagging,
@@ -452,6 +513,43 @@ engine does not abort.
 The action protocol full spec is at `agents/_orchestration-actions.md`
 — that's also the doc agents read when called from an orchestration
 step.
+
+### Action classes
+
+Each action kind is internally classified into one of:
+
+| Class | Meaning | Examples |
+|---|---|---|
+| read   | Pure read; no CP state change | (none yet) |
+| enrich | Outbound vendor call (no CP write) | (Phase 22.4: enrich_ioc) |
+| fetch  | Inbound content fetch | (none yet) |
+| create | New row inserted / link created | link_run_to_finding |
+| modify | Existing row mutated | update_finding_status, set_finding_severity_override, add_finding_tag, remove_finding_tag |
+
+CP operators can set per-class auto-approve toggles in CP settings:
+
+```yaml
+policy:
+  auto_approve:
+    read: true
+    enrich: true
+    create: false
+    modify: false
+```
+
+When a step's allowlist consists entirely of auto-approved kinds, the
+engine bypasses the operator approval gate. A mixed allowlist (e.g.
+`[link_run_to_finding (create), update_finding_status (modify)]`)
+keeps the gate as long as any kind isn't auto-approved.
+
+Default: no class is auto-approved (every gate fires). Unknown action
+kinds map to `modify` (most-restrictive). The `escalate_run` action is
+intentionally excluded from the registry — it's a soft signal, not a
+state mutation, and falls through to the `modify` default so it never
+auto-applies.
+
+Cross-reference: `agents/_orchestration-actions.md` for the agent-author
+view of the same taxonomy.
 
 ### Action authorship pattern
 

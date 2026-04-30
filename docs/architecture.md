@@ -1821,3 +1821,58 @@ UI surfaces the audit:
   (`web/src/components/FindingHistory.tsx`).
 - Run-detail expanded step shows an **Actions applied** strip — one
   green chip per action (`Orchestrations.tsx::StepActionsApplied`).
+
+## 27. IOC entity (Phase 22.1)
+
+Phase 22.1 promoted indicators of compromise from ad-hoc finding
+attributes (`finding.attributes.sha256`, etc.) to first-class CP rows
+in the `iocs` table.
+
+### Two populations
+
+- **Curated** (`source = "catalog"`) — declarative YAML files under
+  `catalog/iocs/*.yaml`, version-controlled alongside agents and
+  orchestrations. Loaded at CP boot and on `SIGHUP`. Federated parent
+  ↔ child the same way agent files are.
+- **Observed** (`source = "observed"`) — auto-extracted from the
+  text/attributes of every finding posted to `/api/findings/ingest`.
+  Hash, IPv4/v6, domain, URL, CVE, and MITRE ATT&CK identifiers are
+  pulled out via regex, normalized via `controlplane/ioc/normalize`,
+  and upserted via `(*db.Store).UpsertIOC`.
+
+### Schema
+
+Two tables (sqlite + postgres parity, migration `030_iocs.sql`):
+
+- `iocs` — keyed by `(kind, normalized_value)`; carries `severity_floor`,
+  `classification`, `confidence`, `attribution`, `observation_count`,
+  `first_seen`, `last_seen`. Catalog rows additionally carry
+  `definition_path`.
+- `ioc_observations` — links an IOC to a `findings.id` and/or
+  `orchestration_runs.id`. `ON DELETE SET NULL` on both link columns
+  so observations outlive the source records that surfaced them.
+
+### Reconciliation
+
+A catalog upsert against an existing observed row overwrites curated
+metadata (severity_floor, classification, attribution, confidence,
+notes) but preserves observation history (count, last_seen). An
+observed upsert against an existing catalog row only refreshes
+last_seen — curated metadata is never clobbered. See
+`(*db.Store).UpsertIOC` for the canonical path; the upsert is
+race-safe via `INSERT … ON CONFLICT DO NOTHING + UPDATE`.
+
+### Read path
+
+- `GET /api/iocs` — list IOCs, filterable by `kind` or `finding_id`
+  (viewer+ cookie auth).
+- `iocs.lookup` orchestration data query — used by `t2-fleet-ioc-hunt`'s
+  scope step; takes `kind` + `value`, normalizes via
+  `normalize.NormalizeForKind`, returns `{valid, kind, normalized_value,
+  attribution, severity_floor, classification, source}`. Real DB
+  errors surface as step failures; genuine misses return `valid:false`
+  for `when:` branching.
+
+Cross-reference:
+`docs/superpowers/specs/2026-04-29-threatcaddy-borrows-phasing-design.md`
+for the design.
