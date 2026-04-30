@@ -1,6 +1,7 @@
 import { Outlet, NavLink, Navigate, Routes, Route } from 'react-router-dom';
 import {
   Bell,
+  Brain,
   ClipboardList,
   Cloud,
   Database,
@@ -30,6 +31,7 @@ import DatabaseSection from './settings/Database';
 import DeploySection from './settings/Deploy';
 import DisplaySection from './settings/Display';
 import CloudSection from './settings/Cloud';
+import LLMKeysSection from './settings/LLMKeys';
 import InvestigationsSection from './settings/Investigations';
 
 interface Props {
@@ -54,6 +56,7 @@ const NAV: NavItem[] = [
   { to: 'authentication',  label: 'Authentication', icon: ShieldCheck,  adminOnly: true },
   { to: 'deploy',          label: 'Deploy',         icon: HardDrive,    adminOnly: true },
   { to: 'cloud',           label: 'Cloud',          icon: Cloud,        adminOnly: true },
+  { to: 'llm-keys',        label: 'LLM keys',       icon: Brain,        adminOnly: true },
   { to: 'database',        label: 'Database',       icon: Database,     adminOnly: true },
   { to: 'about',           label: 'About',          icon: Info },
 ];
@@ -109,6 +112,7 @@ export default function SettingsPage({ user }: Props) {
           <Route path="authentication" element={user.role === 'admin' ? <AuthenticationSection about={about} /> : <Forbidden />} />
           <Route path="deploy"         element={user.role === 'admin' ? <DeploySection /> : <Forbidden />} />
           <Route path="cloud"          element={user.role === 'admin' ? <CloudSection /> : <Forbidden />} />
+          <Route path="llm-keys"       element={user.role === 'admin' ? <LLMKeysSection /> : <Forbidden />} />
           <Route path="database"       element={user.role === 'admin' ? <DatabaseSection /> : <Forbidden />} />
           <Route path="about"          element={<AboutSection about={about} />} />
           <Route path="*"              element={<Navigate to="profile" replace />} />
