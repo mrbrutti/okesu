@@ -180,6 +180,17 @@ func New(cfg Config) (*Server, error) {
 	if tokenOp == "" {
 		// preserve existing hash
 	}
+	// Phase A.1 — when --cp-instance-id is set AND cp_meta has no
+	// row yet, seed bootstrap with that exact uuid. The federation
+	// enrollment bundle uses this so the parent can pre-register the
+	// child's bucket prefix before the child has even booted. On a
+	// re-launched CP this is a no-op: the row exists, we keep its
+	// already-issued id (CPMeta() returns it unchanged).
+	if cfg.CPInstanceID != "" {
+		if err := store.SeedCPInstanceID(cfg.CPInstanceID); err != nil {
+			return nil, fmt.Errorf("cp_meta seed instance_id: %w", err)
+		}
+	}
 	if _, err := store.UpdateCPMeta(cfg.CPRegion, cfg.CPDisplayName, "", tokenOp); err != nil {
 		return nil, fmt.Errorf("cp_meta init: %w", err)
 	}
@@ -881,31 +892,77 @@ func resolvePackageBinary(s *Server, target string) ([]byte, error) {
 // (Phase A) — writes this CP's introspect snapshot to the configured
 // bucket prefix every 30s. The parent's s3reader picks it up.
 //
-// Lookup of the transport_config + introspect-rendering closure are
-// deferred to start time so a missing config or unreachable bucket
-// is logged but doesn't crash the CP.
+// Two paths to bucket coords:
+//
+//   1. Inline (Phase A.1) — preferred when --federation-s3-publish-bucket
+//      etc. are set. Used by the enrollment bundle which bakes everything
+//      into env-vars so first boot doesn't need an existing
+//      transport_config row.
+//   2. By transport_config_id — preferred for operators with one bucket
+//      shared across nodes + federation. Reuses the existing table.
+//
+// Errors here are logged + the publisher is skipped — a missing config
+// or unreachable bucket should never crash the CP.
 func (s *Server) startFederationS3Publisher(ctx context.Context) {
-	cfg, err := s.store.GetTransportConfig(s.cfg.FederationS3PublishConfigID)
+	cfg, err := s.federationPublisherConfig(ctx)
 	if err != nil {
-		log.Printf("federation s3 publisher: transport_config %d: %v", s.cfg.FederationS3PublishConfigID, err)
+		log.Printf("federation s3 publisher: %v", err)
 		return
 	}
-	pub, err := s3publisher.New(ctx, s3publisher.Config{
-		Bucket:       cfg.Bucket,
-		Endpoint:     cfg.Endpoint, // public endpoint (the child writes from outside the VPC)
-		Region:       cfg.Region.String,
-		UseSSL:       cfg.UseSSL,
-		AccessKey:    cfg.AccessKey.String,
-		SecretKey:    cfg.SecretKey.String,
-		BucketPrefix: s.cfg.FederationS3PublishPrefix,
-	}, s.renderIntrospectJSON)
+	pub, err := s3publisher.New(ctx, *cfg, s.renderIntrospectJSON)
 	if err != nil {
 		log.Printf("federation s3 publisher: connect: %v", err)
 		return
 	}
 	go pub.Run(ctx)
-	log.Printf("federation s3 publisher: writing to %s%s every 30s",
-		cfg.Bucket+"/", s.cfg.FederationS3PublishPrefix)
+	log.Printf("federation s3 publisher: writing to %s/%s every 30s",
+		cfg.Bucket, cfg.BucketPrefix)
+}
+
+// federationPublisherConfig assembles the s3publisher.Config from
+// either inline flags (preferred when set) or a transport_config row.
+// Returns an error if neither path has all required fields.
+func (s *Server) federationPublisherConfig(ctx context.Context) (*s3publisher.Config, error) {
+	prefix := s.cfg.FederationS3PublishPrefix
+	if prefix == "" {
+		return nil, fmt.Errorf("FederationS3PublishPrefix is empty")
+	}
+
+	// Path 1: inline coords. Need bucket + endpoint + access_key +
+	// secret_key at minimum; region/use_ssl have sensible defaults.
+	if s.cfg.FederationS3PublishBucket != "" &&
+		s.cfg.FederationS3PublishEndpoint != "" &&
+		s.cfg.FederationS3PublishAccessKey != "" &&
+		s.cfg.FederationS3PublishSecretKey != "" {
+		return &s3publisher.Config{
+			Bucket:       s.cfg.FederationS3PublishBucket,
+			Endpoint:     s.cfg.FederationS3PublishEndpoint,
+			Region:       s.cfg.FederationS3PublishRegion,
+			UseSSL:       s.cfg.FederationS3PublishUseSSL,
+			AccessKey:    s.cfg.FederationS3PublishAccessKey,
+			SecretKey:    s.cfg.FederationS3PublishSecretKey,
+			BucketPrefix: prefix,
+		}, nil
+	}
+
+	// Path 2: transport_config row.
+	if s.cfg.FederationS3PublishConfigID == 0 {
+		return nil, fmt.Errorf("neither inline bucket coords nor FederationS3PublishConfigID set")
+	}
+	tc, err := s.store.GetTransportConfig(s.cfg.FederationS3PublishConfigID)
+	if err != nil {
+		return nil, fmt.Errorf("transport_config %d: %w", s.cfg.FederationS3PublishConfigID, err)
+	}
+	_ = ctx // unused — minio-go's New() takes context internally
+	return &s3publisher.Config{
+		Bucket:       tc.Bucket,
+		Endpoint:     tc.Endpoint, // public endpoint (the child writes from outside the VPC)
+		Region:       tc.Region.String,
+		UseSSL:       tc.UseSSL,
+		AccessKey:    tc.AccessKey.String,
+		SecretKey:    tc.SecretKey.String,
+		BucketPrefix: prefix,
+	}, nil
 }
 
 // renderIntrospectJSON returns the same JSON the local
@@ -1044,11 +1101,13 @@ func (s *Server) Run(ctx context.Context) error {
 	go s3reader.New(s.store, 0).Run(ctx)
 
 	// Phase A — S3 dead-drop federation: child-side publisher.
-	// When --federation-s3-publish-prefix + --federation-s3-publish-config-id
-	// are set, a goroutine writes this CP's introspect snapshot to the
-	// chosen bucket prefix every 30s so a parent CP can ingest it
-	// without inbound HTTPS connectivity.
-	if s.cfg.FederationS3PublishPrefix != "" && s.cfg.FederationS3PublishConfigID > 0 {
+	// Enabled when FederationS3PublishPrefix is set AND we have
+	// either inline bucket coords (Phase A.1 enrollment bundle path)
+	// or a transport_config_id pointing at an existing row. The
+	// helper below picks the right path; the enable check just gates
+	// the goroutine spawn.
+	if s.cfg.FederationS3PublishPrefix != "" &&
+		(s.cfg.FederationS3PublishConfigID > 0 || s.cfg.FederationS3PublishBucket != "") {
 		s.startFederationS3Publisher(ctx)
 	}
 

@@ -50,9 +50,10 @@ import (
 type BundleFormat string
 
 const (
-	BundleFormatDockerfile BundleFormat = "dockerfile-tarball"
-	BundleFormatCompose    BundleFormat = "compose-tarball"
-	BundleFormatTerraform  BundleFormat = "terraform"
+	BundleFormatDockerfile  BundleFormat = "dockerfile-tarball"
+	BundleFormatCompose     BundleFormat = "compose-tarball"
+	BundleFormatTerraform   BundleFormat = "terraform"
+	BundleFormatS3DeadDrop  BundleFormat = "s3-dead-drop"
 )
 
 // CPBundleConfig is what the parent CP needs to bake into a bundle
@@ -94,6 +95,12 @@ type cpBundleReq struct {
 	ChildPort   int    `json:"child_port,omitempty"`    // optional — defaults to 8443
 	MgmtPort    int    `json:"mgmt_port,omitempty"`     // optional — defaults to 8444
 	WithAPIKeys bool   `json:"with_api_keys,omitempty"` // include parent's Fleet API keys in the .env (off by default)
+	// TransportConfigID is required for Format == s3-dead-drop. The
+	// parent reads this transport_config to get the bucket coords
+	// it'll bake into the .env (so the child can publish), AND uses
+	// the same row_id when registering the federation_peer (so its
+	// s3reader uses the same bucket creds to read).
+	TransportConfigID int64 `json:"transport_config_id,omitempty"`
 }
 
 // CPBundleHandler issues a bootstrap token, generates a tar.gz with
@@ -165,6 +172,15 @@ func CPBundleHandler(store *db.Store, cfg CPBundleConfig, cache *BundleCache, pa
 				http.Error(w, "terraform bundle: parent has no daemon binary or image tarball — the rendered cloud-init has nothing to fetch. Configure --daemon-binary or run the parent in Docker.", http.StatusServiceUnavailable)
 				return
 			}
+		case BundleFormatS3DeadDrop:
+			if cfg.LinuxBinaryPath == "" {
+				http.Error(w, "s3-dead-drop bundle: parent has no linux daemon binary configured (--daemon-binary)", http.StatusServiceUnavailable)
+				return
+			}
+			if req.TransportConfigID == 0 {
+				http.Error(w, "s3-dead-drop bundle: transport_config_id is required (the bucket the child publishes to + the parent reads from)", http.StatusBadRequest)
+				return
+			}
 		default:
 			http.Error(w, fmt.Sprintf("unsupported format %q", req.Format), http.StatusBadRequest)
 			return
@@ -231,6 +247,8 @@ func CPBundleHandler(store *db.Store, cfg CPBundleConfig, cache *BundleCache, pa
 			err = writeComposeBundle(w, bundle, cfg.LinuxImageTarPath)
 		case BundleFormatTerraform:
 			err = writeTerraformBundle(w, bundle, req.Cloud, cfg, cache, parentBaseURL, tokenID)
+		case BundleFormatS3DeadDrop:
+			err = writeS3DeadDropBundle(w, store, bundle, req.TransportConfigID, cfg.LinuxBinaryPath)
 		}
 		if err != nil {
 			// Tarball stream may have started — best we can do is log.
