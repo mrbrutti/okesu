@@ -26,6 +26,11 @@ export default function FederationPage() {
   const [error, setError] = useState<string | null>(null);
   const [showAdd, setShowAdd] = useState(false);
   const [refreshing, setRefreshing] = useState<Set<number>>(new Set());
+  // Per-peer detail drawer. Holds the id of the peer the operator
+  // clicked on; we re-resolve to the live row each render so the
+  // drawer reflects the most recent poll state without stashing a
+  // stale snapshot.
+  const [openPeerID, setOpenPeerID] = useState<number | null>(null);
 
   // Refresh peer list every 8s — the poller writes to the DB on its
   // own 30s tick, so this just picks up whatever cached state is
@@ -140,6 +145,7 @@ export default function FederationPage() {
                     refreshing={refreshing.has(p.id)}
                     onRefresh={() => handleRefresh(p)}
                     onDelete={() => handleDelete(p)}
+                    onOpen={() => setOpenPeerID(p.id)}
                   />
                 ))}
               </ul>
@@ -163,17 +169,32 @@ export default function FederationPage() {
           }}
         />
       )}
+
+      {openPeerID !== null && peers && (() => {
+        const peer = peers.find((p) => p.id === openPeerID);
+        if (!peer) return null;
+        return (
+          <PeerDetailDrawer
+            peer={peer}
+            refreshing={refreshing.has(peer.id)}
+            onRefresh={() => handleRefresh(peer)}
+            onClose={() => setOpenPeerID(null)}
+          />
+        );
+      })()}
     </div>
   );
 }
 
 function PeerRow({
-  peer, refreshing, onRefresh, onDelete,
+  peer, refreshing, onRefresh, onDelete, onOpen,
 }: {
   peer: FederationPeer;
   refreshing: boolean;
   onRefresh: () => void;
   onDelete: () => void;
+  /** Click anywhere on the row except action buttons → drawer. */
+  onOpen: () => void;
 }) {
   const intro = peer.introspect;
   const counts = intro?.counts ?? {};
@@ -185,8 +206,21 @@ function PeerRow({
     `${Math.round(ageS / 3600)}h ago`;
   const displayName = peer.display_name || intro?.display_name || peer.url;
 
+  // Polling-vs-success split. When last_polled_at is more recent than
+  // last_seen_at by more than a poll interval (~30s), the peer is
+  // being polled but not responding — surface this as "polling, last
+  // success Xs ago" so a flapping peer is visible at a glance.
+  const polledStr = peer.last_polled_at;
+  const seenStr = peer.last_seen_at;
+  const polledMs = polledStr ? new Date(polledStr).getTime() : 0;
+  const seenMs = seenStr ? new Date(seenStr).getTime() : 0;
+  const stalePolling = polledMs > 0 && seenMs > 0 && polledMs - seenMs > 60_000;
+
   return (
-    <li className="px-4 py-3 flex items-center gap-4 hover:bg-slate-50/40">
+    <li
+      className="px-4 py-3 flex items-center gap-4 hover:bg-slate-50/40 cursor-pointer"
+      onClick={onOpen}
+    >
       <div className={cn(
         'w-10 h-10 shrink-0 rounded-lg flex items-center justify-center text-white shadow-sm',
         peer.healthy
@@ -199,6 +233,7 @@ function PeerRow({
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2 flex-wrap">
           <span className="text-sm font-medium text-ink truncate">{displayName}</span>
+          <TransportChip transport={peer.transport} />
           {intro?.region && (
             <span className="text-[10px] uppercase tracking-wide text-brand-700 bg-brand-50 ring-1 ring-brand-200 px-1.5 py-0.5 rounded">
               {intro.region}
@@ -213,6 +248,13 @@ function PeerRow({
             <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wide text-green-700 bg-green-50 ring-1 ring-green-200 px-1.5 py-0.5 rounded">
               <CheckCircle2 size={9} /> healthy
             </span>
+          ) : stalePolling ? (
+            <span
+              className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wide text-orange-700 bg-orange-50 ring-1 ring-orange-200 px-1.5 py-0.5 rounded"
+              title="Parent is polling but the peer isn't responding"
+            >
+              <AlertCircle size={9} /> flapping
+            </span>
           ) : (
             <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wide text-red-700 bg-red-50 ring-1 ring-red-200 px-1.5 py-0.5 rounded">
               <AlertCircle size={9} /> stale
@@ -220,8 +262,18 @@ function PeerRow({
           )}
         </div>
         <div className="text-xs text-ink-dim font-mono truncate flex items-center gap-2 mt-0.5">
-          <a href={peer.url} target="_blank" rel="noreferrer" className="hover:underline inline-flex items-center gap-1">
-            {peer.url} <ExternalLink size={9} />
+          <a
+            href={peer.url}
+            target="_blank"
+            rel="noreferrer"
+            onClick={(e) => e.stopPropagation()}
+            className="hover:underline inline-flex items-center gap-1"
+          >
+            {peer.transport === 's3_dead_drop' && peer.bucket_prefix
+              ? <>s3:// {peer.bucket_prefix}</>
+              : <>{peer.url}</>
+            }
+            <ExternalLink size={9} />
           </a>
           {intro?.instance_id && <span className="text-ink-mute">· id {intro.instance_id.slice(0, 8)}</span>}
           {intro?.version && <span className="text-ink-mute">· v{intro.version}</span>}
@@ -239,11 +291,19 @@ function PeerRow({
         <Stat label="findings" value={`${counts.open_findings ?? 0}`} accent={(counts.open_findings ?? 0) > 0 ? 'warn' : undefined} />
       </div>
 
-      <div className="text-[11px] text-ink-mute tabular-nums shrink-0 hidden lg:block">
-        {ageLabel}
+      <div className="text-[11px] text-ink-mute tabular-nums shrink-0 hidden lg:flex flex-col items-end">
+        <span title={`Last successful introspect: ${peer.last_seen_at ?? 'never'}`}>seen {ageLabel}</span>
+        {stalePolling && peer.last_polled_at && (
+          <span
+            className="text-orange-700"
+            title={`Parent last attempted poll: ${peer.last_polled_at}`}
+          >
+            polled {fmtAgeStr(peer.last_polled_at)}
+          </span>
+        )}
       </div>
 
-      <div className="flex items-center gap-0.5 shrink-0">
+      <div className="flex items-center gap-0.5 shrink-0" onClick={(e) => e.stopPropagation()}>
         <button
           onClick={onRefresh}
           disabled={refreshing}
@@ -262,6 +322,219 @@ function PeerRow({
       </div>
     </li>
   );
+}
+
+// TransportChip — visual marker for HTTPS-pull vs S3 dead-drop peers.
+// Same shape across the page, sized to fit alongside region/role chips.
+function TransportChip({ transport }: { transport: string }) {
+  const t = transport || 'https_pull';
+  const isS3 = t === 's3_dead_drop';
+  const cls = isS3
+    ? 'bg-amber-50 text-amber-800 ring-amber-200'
+    : 'bg-cyan-50 text-cyan-800 ring-cyan-200';
+  const label = isS3 ? 'S3' : 'HTTPS';
+  return (
+    <span
+      className={`text-[10px] uppercase tracking-wide ring-1 px-1.5 py-0.5 rounded ${cls}`}
+      title={t}
+    >
+      {label}
+    </span>
+  );
+}
+
+// PeerDetailDrawer — right-side drawer with the full picture for
+// one federation peer. Shows transport, polling timestamps,
+// introspect counts + features, federation URL/bucket details, and
+// the most recent error. Opens on row click; closes via X or the
+// dimmed backdrop.
+//
+// The peer prop is re-resolved from the parent's live list on every
+// render, so 8s-tick refreshes flow into the drawer automatically
+// without a separate subscription.
+function PeerDetailDrawer({
+  peer,
+  refreshing,
+  onRefresh,
+  onClose,
+}: {
+  peer: FederationPeer;
+  refreshing: boolean;
+  onRefresh: () => void;
+  onClose: () => void;
+}) {
+  const intro = peer.introspect;
+  const counts = intro?.counts ?? {};
+  const features = intro?.features ?? {};
+  const seenAge = peer.heartbeat_age_sec ?? 0;
+  const seenLabel =
+    !peer.last_seen_at ? 'never'
+    : seenAge < 60 ? `${seenAge}s ago`
+    : seenAge < 3600 ? `${Math.round(seenAge / 60)}m ago`
+    : `${Math.round(seenAge / 3600)}h ago`;
+  const polledLabel = peer.last_polled_at ? fmtAgeStr(peer.last_polled_at) : 'never';
+
+  const polledMs = peer.last_polled_at ? new Date(peer.last_polled_at).getTime() : 0;
+  const seenMs = peer.last_seen_at ? new Date(peer.last_seen_at).getTime() : 0;
+  const stalePolling = polledMs > 0 && seenMs > 0 && polledMs - seenMs > 60_000;
+
+  return (
+    <div
+      className="fixed inset-0 bg-black/30 z-40 flex justify-end"
+      onClick={onClose}
+    >
+      <aside
+        className="w-[520px] h-full bg-panel border-l border-border shadow-xl flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <header className="px-5 py-4 border-b border-border flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <h2 className="text-sm font-semibold truncate">
+                {peer.display_name || intro?.display_name || peer.url}
+              </h2>
+              <TransportChip transport={peer.transport} />
+              {intro?.region && (
+                <span className="text-[10px] uppercase tracking-wide text-brand-700 bg-brand-50 ring-1 ring-brand-200 px-1.5 py-0.5 rounded">
+                  {intro.region}
+                </span>
+              )}
+              {peer.healthy
+                ? <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wide text-green-700 bg-green-50 ring-1 ring-green-200 px-1.5 py-0.5 rounded"><CheckCircle2 size={9} />healthy</span>
+                : stalePolling
+                ? <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wide text-orange-700 bg-orange-50 ring-1 ring-orange-200 px-1.5 py-0.5 rounded"><AlertCircle size={9} />flapping</span>
+                : <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wide text-red-700 bg-red-50 ring-1 ring-red-200 px-1.5 py-0.5 rounded"><AlertCircle size={9} />stale</span>
+              }
+            </div>
+            {intro?.instance_id && (
+              <div className="text-[11px] text-ink-mute font-mono mt-0.5 truncate">
+                id {intro.instance_id}
+              </div>
+            )}
+          </div>
+          <div className="flex items-center gap-1 shrink-0">
+            <button
+              onClick={onRefresh}
+              disabled={refreshing}
+              title="Force refresh now"
+              className="p-1.5 text-ink-mute hover:text-brand-700 hover:bg-brand-50 rounded-md inline-flex items-center"
+            >
+              {refreshing ? <Loader2 size={13} className="animate-spin" /> : <RefreshCcw size={13} />}
+            </button>
+            <button
+              onClick={onClose}
+              className="p-1.5 text-ink-mute hover:text-ink hover:bg-slate-100 rounded-md"
+              title="Close"
+            >
+              <span className="text-base leading-none">×</span>
+            </button>
+          </div>
+        </header>
+
+        <div className="flex-1 overflow-auto p-5 space-y-4 text-sm">
+          {peer.last_error && (
+            <div className="border border-red-200 bg-red-50 rounded-md p-3 text-xs text-red-800">
+              <div className="font-semibold mb-1">Last error</div>
+              <div className="font-mono whitespace-pre-wrap break-all">{peer.last_error}</div>
+            </div>
+          )}
+
+          <DrawerCard title="Connection">
+            <DrawerKV label="Transport" mono>{peer.transport || 'https_pull'}</DrawerKV>
+            {peer.transport === 's3_dead_drop' && peer.bucket_prefix && (
+              <DrawerKV label="Bucket prefix" mono>{peer.bucket_prefix}</DrawerKV>
+            )}
+            {peer.transport_config_id && peer.transport_config_id > 0 && (
+              <DrawerKV label="Transport config" mono>#{peer.transport_config_id}</DrawerKV>
+            )}
+            <DrawerKV label="URL" mono>
+              <a href={peer.url} target="_blank" rel="noreferrer" className="hover:underline inline-flex items-center gap-1">
+                {peer.url} <ExternalLink size={9} />
+              </a>
+            </DrawerKV>
+            <DrawerKV label="Last seen">{seenLabel}</DrawerKV>
+            <DrawerKV label="Last polled">
+              <span className={stalePolling ? 'text-orange-700' : ''}>{polledLabel}</span>
+            </DrawerKV>
+            <DrawerKV label="Added">{fmtAgeStr(peer.added_at)}</DrawerKV>
+          </DrawerCard>
+
+          <DrawerCard title="Aggregated counts">
+            <DrawerKV label="Daimons">
+              {`${counts.daimons_healthy ?? 0} healthy / ${counts.daimons ?? 0} total`}
+            </DrawerKV>
+            <DrawerKV label="Nodes">{counts.nodes ?? 0}</DrawerKV>
+            <DrawerKV label="Open findings">
+              <span className={(counts.open_findings ?? 0) > 0 ? 'text-yellow-700 font-semibold' : ''}>
+                {counts.open_findings ?? 0}
+              </span>
+            </DrawerKV>
+          </DrawerCard>
+
+          {(intro?.role || intro?.version || intro?.daemon_version) && (
+            <DrawerCard title="Identity">
+              {intro?.role && <DrawerKV label="Role" mono>{intro.role}</DrawerKV>}
+              {intro?.version && <DrawerKV label="CP version" mono>{intro.version}</DrawerKV>}
+              {intro?.daemon_version && <DrawerKV label="Daemon version" mono>{intro.daemon_version}</DrawerKV>}
+              {intro?.webhook_public_url && <DrawerKV label="Webhook URL" mono>{intro.webhook_public_url}</DrawerKV>}
+              {intro?.mgmt_public_url && <DrawerKV label="Mgmt URL" mono>{intro.mgmt_public_url}</DrawerKV>}
+            </DrawerCard>
+          )}
+
+          {Object.keys(features).length > 0 && (
+            <DrawerCard title="Features">
+              <div className="flex flex-wrap gap-1.5">
+                {Object.entries(features).map(([k, v]) => (
+                  <span
+                    key={k}
+                    className={`text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded ring-1 ${
+                      v
+                        ? 'bg-emerald-50 text-emerald-800 ring-emerald-200'
+                        : 'bg-slate-50 text-slate-600 ring-slate-200'
+                    }`}
+                  >
+                    {k}{!v && ' (off)'}
+                  </span>
+                ))}
+              </div>
+            </DrawerCard>
+          )}
+        </div>
+      </aside>
+    </div>
+  );
+}
+
+function DrawerCard({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div className="border border-border rounded-md bg-white p-4">
+      <h3 className="text-[11px] uppercase tracking-wide font-semibold text-ink-mute mb-2">
+        {title}
+      </h3>
+      <div className="space-y-1.5 text-sm">{children}</div>
+    </div>
+  );
+}
+
+function DrawerKV({ label, children, mono }: { label: string; children: React.ReactNode; mono?: boolean }) {
+  return (
+    <div className="grid grid-cols-[140px_1fr] gap-2 items-baseline">
+      <div className="text-[11px] uppercase tracking-wide text-ink-mute">{label}</div>
+      <div className={`min-w-0 break-all ${mono ? 'font-mono text-xs' : 'text-sm'}`}>{children}</div>
+    </div>
+  );
+}
+
+// fmtAgeStr renders an ISO timestamp as "Ns / Nm / Nh ago". Same
+// granularity as the heartbeat-age-sec UI so the two timestamps read
+// consistently next to each other.
+function fmtAgeStr(iso: string): string {
+  const t = new Date(iso).getTime();
+  if (Number.isNaN(t)) return iso;
+  const s = Math.max(0, Math.floor((Date.now() - t) / 1000));
+  if (s < 60) return `${s}s ago`;
+  if (s < 3600) return `${Math.round(s / 60)}m ago`;
+  return `${Math.round(s / 3600)}h ago`;
 }
 
 function Stat({ label, value, accent }: { label: string; value: string; accent?: 'warn' | 'good' }) {

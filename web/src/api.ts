@@ -2298,6 +2298,15 @@ export interface FederationPeer {
   last_error?: string;
   heartbeat_age_sec?: number;
   healthy: boolean;
+  /** 'https_pull' (parent polls /api/v1/cp/introspect) or 's3_dead_drop'
+   *  (parent reads {bucket_prefix}/introspect.json). Used to chip the
+   *  transport per row + drive transport-specific drawer fields. */
+  transport: string;
+  /** S3-only: bucket-relative prefix where the child publishes its
+   *  outbound objects ('cp/<child-id>/outbound/<this-cp-id>/'). */
+  bucket_prefix?: string;
+  /** S3-only: which transport_config row supplies the bucket creds. */
+  transport_config_id?: number;
   introspect?: {
     instance_id?: string;
     region?: string;
