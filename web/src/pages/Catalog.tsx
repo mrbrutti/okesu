@@ -20,6 +20,7 @@ export default function CatalogPage() {
   const navigate = useNavigate();
   const [rows, setRows] = useState<FederatedIOCRecord[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [warning, setWarning] = useState<string | null>(null);
   const [kindFilter, setKindFilter] = useState<Set<string>>(new Set(ALL_KINDS));
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>('');
   const [query, setQuery] = useState('');
@@ -29,8 +30,12 @@ export default function CatalogPage() {
   // client-side because the API's ?kind= takes a single value.
   useEffect(() => {
     setError(null);
-    api.iocs({ source: sourceFilter || undefined, q: query || undefined })
-      .then(r => setRows(r ?? []))   // Go nil slice → JSON null; coerce to [] so the empty state renders
+    setWarning(null);
+    api.iocsWithWarning({ source: sourceFilter || undefined, q: query || undefined })
+      .then(({ rows, warning }) => {
+        setRows(rows);
+        setWarning(warning);
+      })
       .catch(e => {
         setRows([]);
         setError(String(e));
@@ -62,6 +67,11 @@ export default function CatalogPage() {
         {error && (
           <div className="text-xs text-red-700 bg-red-50 border border-red-200 px-3 py-2 rounded-md">
             {error}
+          </div>
+        )}
+        {warning && (
+          <div className="text-xs text-yellow-700 bg-yellow-50 border border-yellow-200 px-3 py-2 rounded-md">
+            Showing partial results — federated peers reported errors: {warning}
           </div>
         )}
 

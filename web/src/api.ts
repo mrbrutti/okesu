@@ -742,6 +742,30 @@ export const api = {
     return request<FederatedIOCRecord[]>(`/api/iocs${qs ? '?' + qs : ''}`);
   },
 
+  // iocsWithWarning is a variant of iocs() that surfaces the
+  // X-Okesu-Federation-Warning response header alongside the rows.
+  // Used by the Catalog page to render a yellow banner when one or
+  // more federated peers are unreachable.
+  iocsWithWarning: async (filter: { findingID?: number; kind?: string; source?: string; q?: string } = {}) => {
+    const p = new URLSearchParams();
+    if (filter.findingID) p.set('finding_id', String(filter.findingID));
+    if (filter.kind)      p.set('kind', filter.kind);
+    if (filter.source)    p.set('source', filter.source);
+    if (filter.q)         p.set('q', filter.q);
+    const qs = p.toString();
+    const res = await fetch(`/api/iocs${qs ? '?' + qs : ''}`, {
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => res.statusText);
+      throw new ApiError(res.status, text || res.statusText);
+    }
+    const rows = (await res.json()) as FederatedIOCRecord[];
+    const warning = res.headers.get('X-Okesu-Federation-Warning');
+    return { rows: rows ?? [], warning };
+  },
+
   ioc: (id: number) =>
     request<IOCRecord>(`/api/iocs/${id}`),
 
