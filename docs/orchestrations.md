@@ -504,6 +504,7 @@ DB methods — agents never get CP credentials.
 | `link_run_to_finding` | `{ finding_id, reason? }` | Record a run ↔ finding association in `finding_run_links`. Surfaces in the finding-detail "auto-handled by run #N" line. |
 | `escalate` | `{ reason, severity? }` | Soft signal — operator review requested even if the run completed cleanly. |
 | `reflect_with_lessons` | `{ lessons: [string, ...] }` | Append one or more short lessons to `agent_lessons` for the step's agent. The daemon prepends the 10 newest (200 chars each) to its system prompt on the next tick. |
+| `enrich_ioc` | `{ ioc_id }` | Run all configured vendor adapters (VirusTotal, AbuseIPDB, Shodan) against an IOC and cache results in `ioc_enrichments`. Cache TTL is 24h by default. Class: enrich. |
 
 Every applied action writes a `finding_edits` row tied to the
 orchestration run + step, so the finding-detail History panel shows
@@ -844,3 +845,9 @@ child CP. The list endpoints federate by default on the parent.
 | **C** | DAG-shaped run-detail canvas + visual authoring canvas with palette + inspector. | shipped |
 | **D** | Finding triggers, cron triggers, multi-node `nodes:` fan-out. | shipped |
 | **E** (future) | True parallel DAG execution, fan-in nodes, conditional branches with multiple downstream paths, `cp: "*"` fan-out, role/os node selectors. | planned |
+
+## Cross-fleet IOC enrichment (Phase 22.4)
+
+When you want to enrich an IOC against threat intelligence vendors, emit an `enrich_ioc` action with the IOC id from the `iocs` table. The applier fans out to VirusTotal, AbuseIPDB, and Shodan according to the IOC's kind, caches results in `ioc_enrichments` (24h TTL by default), and silently skips any adapter whose API key isn't configured.
+
+The **cross-CP IOC pattern supervisor** (`agents/cross-cp-ioc-pattern-supervisor.md`) is a daimon that ticks every 5 minutes on the parent CP. It queries `GET /api/iocs/cross-cp-patterns?min_observations=N&window_hours=H` and emits a finding for each IOC that exceeds the configured observation threshold across the fleet. Operators can tune `min_observations` and `window_hours` in the daimon's spec to control sensitivity.
