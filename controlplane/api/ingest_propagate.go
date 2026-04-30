@@ -34,12 +34,18 @@ type PropagationResult struct {
 
 // clusterWindowFor returns the dedup window for a given IOC kind. Per
 // the spec: sha256 = 24h, ipv4/domain = 1h, others = 15m.
+//
+// CVE and MITRE ATT&CK identifiers are stable references (the CVE *is*
+// the issue), so two findings citing the same CVE days apart should
+// plausibly cluster — give them a 7d window rather than the 15m default.
 func clusterWindowFor(kind string) time.Duration {
 	switch kind {
 	case "sha256", "sha1", "md5":
 		return 24 * time.Hour
 	case "ipv4", "ipv6", "domain":
 		return time.Hour
+	case "cve", "mitre":
+		return 7 * 24 * time.Hour
 	default:
 		return 15 * time.Minute
 	}

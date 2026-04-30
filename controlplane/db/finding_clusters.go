@@ -1,6 +1,8 @@
 package db
 
 import (
+	"database/sql"
+	"errors"
 	"strings"
 	"time"
 )
@@ -39,9 +41,13 @@ func (s *Store) FindClusterIDForIOCs(iocIDs []int64, window time.Duration) (stri
 
 	row := s.QueryRow(q, args...)
 	var cid string
-	if err := row.Scan(&cid); err != nil {
-		// sql.ErrNoRows is the expected miss path; return empty.
+	switch err := row.Scan(&cid); {
+	case errors.Is(err, sql.ErrNoRows):
 		return "", nil
+	case err != nil:
+		// Real DB error — surface it so the caller sees ingest-time DB
+		// trouble instead of silently minting fresh clusters.
+		return "", err
 	}
 	return cid, nil
 }
@@ -96,6 +102,12 @@ type PropagatedMetadata struct {
 // the propagation values to apply to the inserting finding. Only
 // catalog-source IOCs contribute (observed-source IOCs don't carry
 // curated metadata to propagate).
+//
+// Ordering: ORDER BY id makes "first non-empty wins" deterministic —
+// the earliest-registered catalog entry for a finding's IOC set wins
+// metadata-propagation ties, which is stable across runs and matches
+// the operator mental model "the first curated entry I added is the
+// authoritative one for matching findings."
 func (s *Store) PropagatedMetadataForIOCs(iocIDs []int64) (PropagatedMetadata, error) {
 	var out PropagatedMetadata
 	if len(iocIDs) == 0 {
@@ -112,7 +124,8 @@ func (s *Store) PropagatedMetadataForIOCs(iocIDs []int64) (PropagatedMetadata, e
 	        COALESCE(confidence,''),
 	        COALESCE(attribution,''),
 	        COALESCE(classification,'')
-	      FROM iocs WHERE id IN (` + strings.Join(placeholders, ",") + `) AND source = 'catalog'`
+	      FROM iocs WHERE id IN (` + strings.Join(placeholders, ",") + `) AND source = 'catalog'
+	      ORDER BY id`
 	rows, err := s.Query(q, args...)
 	if err != nil {
 		return out, err

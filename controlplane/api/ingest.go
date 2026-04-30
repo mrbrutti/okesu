@@ -181,6 +181,14 @@ func FindingIngest(store *db.Store, eventStore ports.EventStore, bcast Broadcast
 		// If no existing cluster matched, mint one from the finding's own id.
 		// Only mint when there were extracted IOCs — findings with no IOCs
 		// don't participate in clustering.
+		//
+		// TODO(phase-22.x): race window — between InsertFinding and this
+		// UPDATE the new finding has cluster_id=NULL, so a second finding
+		// with the same IOC arriving within the gap will mint its own
+		// cluster instead of joining ours. Worst case is split clusters
+		// that a future job could merge. To close: do InsertFinding +
+		// cluster lookup + UPDATE in a single transaction, or move the
+		// mint into InsertFinding itself.
 		if prop.ClusterID == "" && len(prop.IOCIDs) > 0 {
 			newCID := strconv.FormatInt(findingID, 10)
 			if _, err := store.Exec(`UPDATE findings SET cluster_id = ? WHERE id = ?`, newCID, findingID); err != nil {
@@ -189,6 +197,9 @@ func FindingIngest(store *db.Store, eventStore ports.EventStore, bcast Broadcast
 		}
 
 		// Link IOC observations to the finding.
+		// TODO(perf): currently synchronous (parity with Phase 22.1's
+		// extractAndLinkIOCs). Move to a background queue when
+		// observation throughput becomes a concern.
 		linkIOCObservations(store, findingID, prop.IOCIDs, req.Host)
 
 		// Broadcast — feeds notify.Worker + the live SSE stream.
