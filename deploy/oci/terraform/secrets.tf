@@ -33,3 +33,14 @@ resource "local_sensitive_file" "webhook" {
   content         = random_password.webhook.result
   file_permission = "0600"
 }
+
+resource "random_password" "clickhouse" {
+  length  = 32
+  special = false
+}
+
+resource "local_sensitive_file" "clickhouse_password" {
+  filename        = "${pathexpand(var.secrets_dir)}/clickhouse/password"
+  content         = random_password.clickhouse.result
+  file_permission = "0600"
+}

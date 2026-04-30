@@ -52,17 +52,6 @@ output "blob_access_key" {
   value       = module.objectstorage.access_key
 }
 
-# ── OKE ─────────────────────────────────────────────────────────────
-output "oke_kubeconfig_path" {
-  description = "Path to the kubeconfig Terraform fetched. Set KUBECONFIG to this."
-  value       = module.oke.kubeconfig_path
-}
-
-output "oke_cluster_id" {
-  description = "OKE cluster OCID."
-  value       = module.oke.cluster_id
-}
-
 # ── Fleet ───────────────────────────────────────────────────────────
 output "fleet_ips" {
   description = "Public IPs of the daemon VMs — feed into the CP's Add Node flow."
