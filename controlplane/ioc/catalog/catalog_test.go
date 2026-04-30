@@ -152,3 +152,122 @@ func TestLoadDir_MissingDirReturnsEmpty(t *testing.T) {
 		t.Errorf("expected empty entries; got %d", len(entries))
 	}
 }
+
+func TestLoadDir_YARARuleAutoFillsMetadata(t *testing.T) {
+	dir := t.TempDir()
+	yaml := `iocs:
+  - kind: yara_rule
+    value: |
+      rule TestRule : test apt-foo
+      {
+          meta:
+              severity = "HIGH"
+          condition:
+              true
+      }
+`
+	if err := os.WriteFile(filepath.Join(dir, "rule.yaml"), []byte(yaml), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	entries, err := LoadDir(dir)
+	if err != nil {
+		t.Fatalf("LoadDir: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry; got %d", len(entries))
+	}
+	e := entries[0]
+	if e.Name != "TestRule" {
+		t.Errorf("Name = %q, want TestRule", e.Name)
+	}
+	if e.Tags != "test,apt-foo" {
+		t.Errorf("Tags = %q, want test,apt-foo", e.Tags)
+	}
+	if e.SeverityFloor != "HIGH" {
+		t.Errorf("SeverityFloor = %q, want HIGH", e.SeverityFloor)
+	}
+}
+
+func TestLoadDir_ExplicitNameOverridesParsed(t *testing.T) {
+	dir := t.TempDir()
+	yaml := `iocs:
+  - kind: yara_rule
+    name: curator-override
+    value: |
+      rule TestRule { condition: true }
+`
+	if err := os.WriteFile(filepath.Join(dir, "rule.yaml"), []byte(yaml), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	entries, err := LoadDir(dir)
+	if err != nil {
+		t.Fatalf("LoadDir: %v", err)
+	}
+	if entries[0].Name != "curator-override" {
+		t.Errorf("Name = %q, want curator-override (explicit YAML must win)", entries[0].Name)
+	}
+}
+
+// Same precedence rule must apply to tags: an explicit `tags:` list in
+// the YAML wrapper beats whatever the rule body's `: tag1 tag2`
+// declaration says. Locks in the override path for the slice field
+// (the override guard is `len(entryTags) == 0`, so an explicit list
+// of any length must short-circuit parsing).
+func TestLoadDir_ExplicitTagsOverrideParsed(t *testing.T) {
+	dir := t.TempDir()
+	yaml := `iocs:
+  - kind: yara_rule
+    tags:
+      - curator-tag-one
+      - curator-tag-two
+    value: |
+      rule TestRule : ignored-body-tag
+      {
+          condition: true
+      }
+`
+	if err := os.WriteFile(filepath.Join(dir, "rule.yaml"), []byte(yaml), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	entries, err := LoadDir(dir)
+	if err != nil {
+		t.Fatalf("LoadDir: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry; got %d", len(entries))
+	}
+	if entries[0].Tags != "curator-tag-one,curator-tag-two" {
+		t.Errorf("Tags = %q, want curator-tag-one,curator-tag-two (explicit YAML must win)", entries[0].Tags)
+	}
+}
+
+func TestLoadDir_SigmaRuleAutoFills(t *testing.T) {
+	dir := t.TempDir()
+	yaml := `iocs:
+  - kind: sigma_rule
+    value: |
+      title: Suspicious PowerShell
+      tags:
+        - attack.execution
+        - powershell
+      level: high
+      detection:
+        condition: selection
+`
+	if err := os.WriteFile(filepath.Join(dir, "sigma.yaml"), []byte(yaml), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	entries, err := LoadDir(dir)
+	if err != nil {
+		t.Fatalf("LoadDir: %v", err)
+	}
+	if entries[0].Name != "Suspicious PowerShell" {
+		t.Errorf("Name = %q", entries[0].Name)
+	}
+	if entries[0].Tags != "attack.execution,powershell" {
+		t.Errorf("Tags = %q", entries[0].Tags)
+	}
+	if entries[0].SeverityFloor != "HIGH" {
+		t.Errorf("SeverityFloor = %q, want HIGH", entries[0].SeverityFloor)
+	}
+}

@@ -851,3 +851,31 @@ child CP. The list endpoints federate by default on the parent.
 When you want to enrich an IOC against threat intelligence vendors, emit an `enrich_ioc` action with the IOC id from the `iocs` table. The applier fans out to VirusTotal, AbuseIPDB, and Shodan according to the IOC's kind, caches results in `ioc_enrichments` (24h TTL by default), and silently skips any adapter whose API key isn't configured.
 
 The **cross-CP IOC pattern supervisor** (`agents/cross-cp-ioc-pattern-supervisor.md`) is a daimon that ticks every 5 minutes on the parent CP. It queries `GET /api/iocs/cross-cp-patterns?min_observations=N&window_hours=H` and emits a finding for each IOC that exceeds the configured observation threshold across the fleet. Operators can tune `min_observations` and `window_hours` in the daimon's spec to control sensitivity.
+
+## Catalog rule extensions (Phase 22.5)
+
+The IOC catalog now accepts two new kinds for rule-shaped artifacts:
+
+- **`yara_rule`** — the rule body lives in `value`. Header metadata is
+  auto-extracted, so a minimal YAML wrapper is just:
+
+  ```yaml
+  iocs:
+    - kind: yara_rule
+      value: |
+        rule MyRule : my-tag
+        {
+            meta: severity = "HIGH"
+            condition: true
+        }
+  ```
+
+  The `binary-analyzer` agent picks up every `yara_rule` automatically.
+  Restrict scans to a tag with `?tag=<tag>` on the rule-bundle endpoint.
+
+- **`sigma_rule`** — same wrapper shape; rule body is YAML. Storage
+  only in v1 (`GET /api/iocs?kind=sigma_rule` lists them, no automatic
+  execution).
+
+See `catalog/iocs/example-yara-mimikatz.yaml` and
+`catalog/iocs/example-sigma-suspicious-powershell.yaml` for templates.

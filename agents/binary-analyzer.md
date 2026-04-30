@@ -33,7 +33,38 @@ Tell the operator whether this binary is benign, suspicious, or malicious — wi
 - Strings in unusual encodings — UTF-16, base64, hex blobs that decode to commands
 - Anti-analysis indicators — calls to `IsDebuggerPresent`, `ptrace(PTRACE_TRACEME)`, anti-VM strings (`vmware`, `qemu`, `virtualbox`)
 
-### 3. Behavioural inference (without running it)
+### 3. Catalog YARA scan
+
+Before behavioural inference, run the curated YARA rule set against the binary so the rest of your analysis can lean on whatever the catalog already knows. The catalog is the single source of truth — do NOT pull rules from external URLs at scan time.
+
+1. Fetch the catalog bundle:
+
+   ```bash
+   curl -sf "$OKESU_CP_URL/api/catalog/yara-rules.yar" \
+       -H "Cookie: $OKESU_CP_COOKIE" \
+       -o /tmp/okesu-yara.yar
+   ```
+
+   If a runbook narrows the scope, append `?tag=<tag>` (e.g. `?tag=ransomware`) so you only scan rules in scope for the engagement.
+
+2. If `yara` is in PATH, scan:
+
+   ```bash
+   yara -r /tmp/okesu-yara.yar "$BINARY_PATH"
+   ```
+
+   Each match line is `<rule-name> <path>`. If `yara` is not installed, log it as an evidence gap and continue — do not error out.
+
+3. For every match:
+   - Cite the rule name in your evidence section.
+   - Emit an `ioc_observation` finding linked to the rule's IOC entity. Use the rule name for the `name` field; copy the matching path into `attributes.binary_path`.
+   - If the matching rule's `severity_floor` is HIGH/CRITICAL (visible in the bundle's `// catalog name:` / `// tags:` comment headers, or via `GET /api/iocs?kind=yara_rule`), raise the verdict accordingly.
+
+4. Re-run with `?tag=<family>` if your earlier static analysis pointed at a specific family (e.g. emotet) — the narrower scan is faster and the results are easier to interpret.
+
+If a rule the operator cares about is missing from the bundle, that's a curation gap to flag, not something to paper over by fetching from upstream YARA repos.
+
+### 4. Behavioural inference (without running it)
 - Network IOCs from strings — domains/IPs to flag
 - Persistence mechanisms — systemd unit names, cron syntax, registry run keys, launchd plist patterns
 - Privilege escalation — setuid bits, capabilities, sudoers manipulation
@@ -41,13 +72,13 @@ Tell the operator whether this binary is benign, suspicious, or malicious — wi
 - Data theft / staging — common archive utilities, temp paths, clipboard APIs
 - C2 fingerprints — Cobalt Strike beacon strings, Metasploit signatures, Sliver, Mythic, AsyncRAT
 
-### 4. Family attribution (when supported by evidence)
+### 5. Family attribution (when supported by evidence)
 - Match against well-known YARA rules / family indicators
 - Imphash matches, common toolkit signatures
 - Distinctive code patterns (e.g. SoulMSE memcpy XOR loop, Emotet config blob)
 - Be honest about confidence: "matches X family with high confidence" vs "shares strings with X but no code-level overlap"
 
-### 5. Detection & cleanup
+### 6. Detection & cleanup
 - Concrete IOCs other systems can hunt on: hash, file path, process name, parent/child patterns, network destinations, command-line arguments, registry keys, named pipes, mutex names
 - Rule sketches — YARA / Sigma / EDR query
 - Cleanup steps — files to remove, persistence to disable, accounts to rotate, network blocks to apply

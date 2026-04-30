@@ -46,6 +46,8 @@ type CatalogEntry struct {
 	SeverityFloor   string
 	Classification  string
 	Notes           string
+	Name            string
+	Tags            string // comma-joined, mirrors IOCUpsert.Tags shape
 }
 
 type fileShape struct {
@@ -53,13 +55,15 @@ type fileShape struct {
 }
 
 type entryShape struct {
-	Kind           string `yaml:"kind"`
-	Value          string `yaml:"value"`
-	Confidence     string `yaml:"confidence,omitempty"`
-	Attribution    string `yaml:"attribution,omitempty"`
-	SeverityFloor  string `yaml:"severity_floor,omitempty"`
-	Classification string `yaml:"classification,omitempty"`
-	Notes          string `yaml:"notes,omitempty"`
+	Kind           string   `yaml:"kind"`
+	Value          string   `yaml:"value"`
+	Confidence     string   `yaml:"confidence,omitempty"`
+	Attribution    string   `yaml:"attribution,omitempty"`
+	SeverityFloor  string   `yaml:"severity_floor,omitempty"`
+	Classification string   `yaml:"classification,omitempty"`
+	Notes          string   `yaml:"notes,omitempty"`
+	Name           string   `yaml:"name,omitempty"`
+	Tags           []string `yaml:"tags,omitempty"`
 }
 
 // validKinds is the closed set of IOC kinds the catalog recognizes.
@@ -136,6 +140,39 @@ func loadFile(path string) ([]CatalogEntry, error) {
 		if !ok {
 			return nil, fmt.Errorf("entry %d: value %q does not match kind %q's expected shape", i, e.Value, kind)
 		}
+		// Rule-shaped kinds: extract metadata from the rule body unless
+		// the YAML wrapper has already set the field explicitly. Author
+		// intent (the explicit YAML value) always wins over what we
+		// scrape — this also lets a curator override a rule's stated
+		// severity if they disagree.
+		entryName := e.Name
+		entryTags := e.Tags
+		entrySeverity := e.SeverityFloor
+		switch kind {
+		case "yara_rule":
+			pName, pTags, pSeverity := ParseYARAHeader(e.Value)
+			if entryName == "" {
+				entryName = pName
+			}
+			if len(entryTags) == 0 {
+				entryTags = pTags
+			}
+			if entrySeverity == "" {
+				entrySeverity = pSeverity
+			}
+		case "sigma_rule":
+			pName, pTags, pLevel := ParseSigmaHeader(e.Value)
+			if entryName == "" {
+				entryName = pName
+			}
+			if len(entryTags) == 0 {
+				entryTags = pTags
+			}
+			if entrySeverity == "" {
+				entrySeverity = pLevel
+			}
+		}
+
 		out = append(out, CatalogEntry{
 			Kind:            kind,
 			Value:           e.Value,
@@ -144,9 +181,11 @@ func loadFile(path string) ([]CatalogEntry, error) {
 			DefinitionPath:  path,
 			Confidence:      e.Confidence,
 			Attribution:     e.Attribution,
-			SeverityFloor:   e.SeverityFloor,
+			SeverityFloor:   entrySeverity,
 			Classification:  e.Classification,
 			Notes:           e.Notes,
+			Name:            entryName,
+			Tags:            strings.Join(entryTags, ","),
 		})
 	}
 	return out, nil
@@ -181,6 +220,8 @@ func LoadAndUpsert(dir string, store IOCStore) (int, error) {
 			SeverityFloor:   e.SeverityFloor,
 			Classification:  e.Classification,
 			Notes:           e.Notes,
+			Name:            e.Name,
+			Tags:            e.Tags,
 		}); err != nil {
 			return 0, fmt.Errorf("upsert %s/%s: %w", e.Kind, e.NormalizedValue, err)
 		}
