@@ -59,6 +59,7 @@ import {
   type Orchestration,
 } from '../api';
 import { cn } from '../lib/cn';
+import { RunAgentDialog } from '../components/RunAgentDialog';
 
 type Resolution = 'resolved' | 'false_positive' | 'duplicate' | 'wont_fix';
 type Tab = 'overview' | 'findings' | 'runs' | 'iocs' | 'daimons' | 'orchestrations' | 'notes';
@@ -88,6 +89,7 @@ export default function InvestigationDetailPage() {
   const [draftTitle, setDraftTitle] = useState('');
   const [draftSummary, setDraftSummary] = useState('');
   const [closeOpen, setCloseOpen] = useState(false);
+  const [runAgentOpen, setRunAgentOpen] = useState(false);
   const [tab, setTab] = useState<Tab>('overview');
 
   const reload = () => {
@@ -260,6 +262,15 @@ export default function InvestigationDetailPage() {
                 </button>
               </>
             )}
+            {!editing && (
+              <button
+                onClick={() => setRunAgentOpen(true)}
+                className="inline-flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-md bg-brand-500 text-white hover:bg-brand-600"
+                title="Run an agent on this case's context"
+              >
+                <Play size={12} /> Run agent
+              </button>
+            )}
             {isActive && !editing && (
               <button
                 onClick={() => setCloseOpen(true)}
@@ -335,6 +346,18 @@ export default function InvestigationDetailPage() {
           onClose={() => setCloseOpen(false)}
           onPick={(r) => closeCase(r)}
           busy={busy}
+        />
+      )}
+
+      {runAgentOpen && (
+        <RunAgentDialog
+          bundle={bundle}
+          cpInstanceID={cpInstanceID}
+          onClose={() => setRunAgentOpen(false)}
+          onLaunched={() => {
+            setRunAgentOpen(false);
+            reload();
+          }}
         />
       )}
     </div>

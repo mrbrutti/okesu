@@ -1,77 +1,204 @@
-// Investigate-this-finding dialog. Pre-fills a Run with the finding's
-// context, lets the operator pick an agent + node, and on submit kicks
-// off a one-shot run linked to the finding (runs.finding_id). The
-// resulting transcript shows up in the FindingDrawer's "Investigations"
-// section without leaving the page.
+// Investigate flow — the single entry-point on a finding's drawer.
+//
+// Replaces the previous trio of buttons:
+//   Investigate (run an agent)   → moved to the case workspace as "Run agent"
+//   Open in investigation        → "New case" tab here
+//   Add to existing              → "Existing case" tab here
+//
+// The dialog has a smart default:
+//
+//   • Finding is in 0 cases → tabs default to "New case"
+//   • Finding is in N cases → header shows the existing memberships
+//                             with deep-link buttons; tabs are still
+//                             below for "add to a different case"
+//
+// Federated findings flow through the parent's ?cp=<id> proxy paths
+// so the case + link both land on the owning child CP.
 
-import { useEffect, useMemo, useState } from 'react';
-import { Loader2, Play, Sparkles, X } from 'lucide-react';
-import { api, type AgentLibraryItem, type Finding } from '../api';
-import MarkdownEditor from './LazyMarkdownEditor';
+import { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { ArrowUpRight, ClipboardList, Loader2, Plus, Search, X } from 'lucide-react';
+import { api, type Finding, type Investigation } from '../api';
+import { cn } from '../lib/cn';
 
-const PREF_LAST_AGENT = 'okesu.invest.last_agent';
-const PREF_LAST_NODE = 'okesu.invest.last_node';
+type Mode = 'new' | 'existing';
 
 export function InvestigateDialog({
   finding,
+  cpInstanceID,
   onClose,
-  onLaunched,
+  onLinked,
 }: {
   finding: Finding;
+  cpInstanceID?: string;
   onClose: () => void;
-  onLaunched: (runID: string) => void;
+  /** Called after a successful link or create+link. Caller can refresh
+   *  the drawer's investigations panel. Navigation to the case
+   *  workspace is the dialog's own concern. */
+  onLinked: () => void;
 }) {
-  const [agents, setAgents] = useState<AgentLibraryItem[]>([]);
-  const [nodes, setNodes] = useState<string[]>([]);
-  const [agent, setAgent] = useState<string>(() => localStorage.getItem(PREF_LAST_AGENT) ?? '');
-  const [node, setNode] = useState<string>(() => localStorage.getItem(PREF_LAST_NODE) ?? '');
-  const [prompt, setPrompt] = useState('');
+  const navigate = useNavigate();
+  const [memberships, setMemberships] = useState<Investigation[] | null>(null);
+  const [mode, setMode] = useState<Mode>('new');
+  const [err, setErr] = useState<string | null>(null);
+
+  // Load existing memberships up-front. The shape of the dialog
+  // changes if the finding is already in cases — operators expect
+  // to see those first, not be asked to create a case that already
+  // exists.
+  useEffect(() => {
+    api.findingInvestigations(finding.id, cpInstanceID)
+      .then((rows) => {
+        setMemberships(rows);
+        // If the finding is in 0 cases, "New case" is the natural
+        // default. If it's already in cases, default to "existing"
+        // so the operator can pick another case from the picker
+        // rather than spawning a duplicate.
+        if (rows.length > 0) setMode('existing');
+      })
+      .catch(() => setMemberships([]));
+  }, [finding.id, cpInstanceID]);
+
+  function gotoCase(invID: number) {
+    const qs = cpInstanceID ? `?cp=${encodeURIComponent(cpInstanceID)}` : '';
+    navigate(`/investigations/${invID}${qs}`);
+    onClose();
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/30 flex items-center justify-center p-4 z-50" onClick={onClose}>
+      <div
+        className="bg-panel border border-border rounded-xl shadow-card w-full max-w-lg flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+        style={{ maxHeight: '80vh' }}
+      >
+        <header className="px-5 py-3 border-b border-border flex items-center justify-between">
+          <h2 className="text-sm font-semibold flex items-center gap-2">
+            <ClipboardList size={14} className="text-brand-500" />
+            Investigate
+          </h2>
+          <button onClick={onClose} className="p-1 text-ink-dim hover:text-ink rounded-md">
+            <X size={16} />
+          </button>
+        </header>
+
+        <div className="flex-1 overflow-auto">
+          {/* Existing memberships — surfaced first so operators don't
+              create duplicates of a case that's already tracking the
+              finding. */}
+          {memberships !== null && memberships.length > 0 && (
+            <section className="px-5 pt-4 pb-3 border-b border-border bg-violet-50/40">
+              <div className="text-[11px] uppercase tracking-wide text-violet-700 font-medium mb-2">
+                Already in {memberships.length} case{memberships.length === 1 ? '' : 's'}
+              </div>
+              <ul className="space-y-1.5">
+                {memberships.map((inv) => (
+                  <li key={inv.ID}>
+                    <button
+                      onClick={() => gotoCase(inv.ID)}
+                      className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-md text-left text-sm bg-white ring-1 ring-violet-200 hover:bg-violet-100"
+                    >
+                      <span className="font-medium truncate flex-1">{inv.Title || '(untitled)'}</span>
+                      <span className="text-[10px] uppercase tracking-wide text-violet-700 font-medium">
+                        {inv.Status}
+                      </span>
+                      <ArrowUpRight size={12} className="text-violet-700" />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
+
+          {/* Mode tabs */}
+          <nav className="px-5 pt-3 flex items-center gap-1">
+            <ModeTab active={mode === 'new'}      onClick={() => setMode('new')}      label="New case" icon={Plus} />
+            <ModeTab active={mode === 'existing'} onClick={() => setMode('existing')} label="Existing case" icon={Search} />
+          </nav>
+
+          <div className="p-5">
+            {mode === 'new' && (
+              <NewCasePanel
+                finding={finding}
+                cpInstanceID={cpInstanceID}
+                onCreated={(invID) => { onLinked(); gotoCase(invID); }}
+                setError={setErr}
+              />
+            )}
+            {mode === 'existing' && (
+              <ExistingCasePanel
+                finding={finding}
+                cpInstanceID={cpInstanceID}
+                excludeIDs={new Set((memberships ?? []).map((m) => m.ID))}
+                onLinked={(invID) => { onLinked(); gotoCase(invID); }}
+                setError={setErr}
+              />
+            )}
+            {err && (
+              <div className="mt-3 text-xs text-red-700 bg-red-50 border border-red-200 px-3 py-2 rounded-md">
+                {err}
+              </div>
+            )}
+          </div>
+        </div>
+
+        <footer className="px-5 py-3 border-t border-border flex items-center justify-end">
+          <button onClick={onClose} className="text-xs px-3 py-1.5 border border-border rounded-md">Close</button>
+        </footer>
+      </div>
+    </div>
+  );
+}
+
+// ── Tab pill ────────────────────────────────────────────────────────
+
+function ModeTab({
+  active, onClick, label, icon: Icon,
+}: {
+  active: boolean;
+  onClick: () => void;
+  label: string;
+  icon: typeof Plus;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={cn(
+        'inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border-b-2 -mb-px transition',
+        active
+          ? 'border-brand-500 text-brand-700'
+          : 'border-transparent text-ink-dim hover:text-ink',
+      )}
+    >
+      <Icon size={11} />
+      {label}
+    </button>
+  );
+}
+
+// ── New case panel ──────────────────────────────────────────────────
+
+function NewCasePanel({
+  finding, cpInstanceID, onCreated, setError,
+}: {
+  finding: Finding;
+  cpInstanceID?: string;
+  onCreated: (invID: number) => void;
+  setError: (s: string | null) => void;
+}) {
+  const [title, setTitle] = useState(finding.title || `Finding #${finding.id}`);
+  const [summary, setSummary] = useState(finding.evidence || '');
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
-  // Default prompt — synthesized from the finding so the agent has the
-  // context it needs without the operator typing anything. Editable.
-  const defaultPrompt = useMemo(() => buildDefaultPrompt(finding), [finding]);
-
-  useEffect(() => {
-    setPrompt(defaultPrompt);
-  }, [defaultPrompt]);
-
-  useEffect(() => {
-    api.agentLibrary().then(setAgents).catch(() => setAgents([]));
-    api.connectedNodes().then(setNodes).catch(() => setNodes([]));
-  }, []);
-
-  // Default node: prefer the host that emitted the finding if it's connected,
-  // else fall back to the operator's last choice or the first connected node.
-  useEffect(() => {
-    if (node) return;
-    if (!nodes.length) return;
-    const fromHost = finding.host && nodes.find((n) => n === finding.host);
-    setNode(fromHost ?? nodes[0]);
-  }, [nodes, finding.host, node]);
-
-  async function launch() {
-    if (!agent || !node || !prompt.trim()) {
-      setError('agent, node, and prompt are required');
-      return;
-    }
+  async function submit() {
+    if (!title.trim()) { setError('Title is required.'); return; }
     setBusy(true); setError(null);
     try {
-      const { run_id } = await api.createRun({
-        node,
-        agent,
-        prompt,
-        finding_id: finding.id,
-        // Phase 9.7: when investigating a federated finding, the run
-        // must be created on the CP that owns the host's tunnel — the
-        // parent has no inbound path into a child's nodes. The
-        // ForwardingCreateRun handler proxies to that child.
-        target_cp_instance_id: finding.cp_source?.instance_id,
-      });
-      localStorage.setItem(PREF_LAST_AGENT, agent);
-      localStorage.setItem(PREF_LAST_NODE, node);
-      onLaunched(run_id);
+      const inv = await api.investigations.create(
+        { title: title.trim(), summary: summary.trim(), from_finding_id: finding.id },
+        cpInstanceID,
+      );
+      onCreated(inv.ID);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -80,129 +207,149 @@ export function InvestigateDialog({
   }
 
   return (
-    <div className="fixed inset-0 bg-black/30 flex items-center justify-center p-4 z-50">
-      <div className="bg-panel border border-border rounded-xl shadow-card w-full max-w-2xl max-h-[80vh] flex flex-col">
-        <header className="px-5 py-3 border-b border-border flex items-center justify-between">
-          <h2 className="text-sm font-semibold flex items-center gap-2">
-            <Sparkles size={14} className="text-brand-500" />
-            Investigate finding
-          </h2>
-          <button onClick={onClose} className="p-1 text-ink-dim hover:text-ink rounded-md">
-            <X size={16} />
-          </button>
-        </header>
-
-        <div className="flex-1 overflow-auto p-5 space-y-3 text-sm">
-          <p className="text-xs text-ink-dim">
-            Picks an agent from the Agent Library and runs it on the chosen node
-            with the finding's context pre-filled. The transcript stays attached
-            to this finding.
-          </p>
-
-          <div className="grid grid-cols-2 gap-3">
-            <Field label="Agent">
-              <select
-                value={agent}
-                onChange={(e) => setAgent(e.target.value)}
-                className={inputCls}
-              >
-                <option value="">Select…</option>
-                {agents.map((a) => (
-                  <option key={a.name} value={a.name}>
-                    {a.name}{a.description ? ` — ${a.description.slice(0, 60)}` : ''}
-                  </option>
-                ))}
-              </select>
-              {agents.length === 0 && (
-                <p className="mt-1 text-[11px] text-ink-mute">
-                  No agents in the library — add one on the Agents page.
-                </p>
-              )}
-            </Field>
-            <Field label="Node">
-              <select
-                value={node}
-                onChange={(e) => setNode(e.target.value)}
-                className={inputCls}
-              >
-                <option value="">Select…</option>
-                {nodes.map((n) => (
-                  <option key={n} value={n}>{n}</option>
-                ))}
-              </select>
-              {nodes.length === 0 && (
-                <p className="mt-1 text-[11px] text-ink-mute">
-                  No connected nodes. Open a tunnel from <code>okesu node</code> first.
-                </p>
-              )}
-            </Field>
-          </div>
-
-          <Field label="Prompt">
-            <div className="border border-border rounded-md focus-within:ring-2 focus-within:ring-brand-500/30 overflow-hidden">
-              <MarkdownEditor
-                value={prompt}
-                onChange={setPrompt}
-                height={220}
-                showLineNumbers={false}
-                ariaLabel="Investigation prompt"
-              />
-            </div>
-          </Field>
-
-          {error && (
-            <div className="text-xs text-red-700 bg-red-50 border border-red-200 px-3 py-2 rounded-md">
-              {error}
-            </div>
-          )}
-        </div>
-
-        <footer className="px-5 py-3 border-t border-border flex items-center justify-end gap-2">
-          <button onClick={onClose} className="text-xs px-3 py-1.5 border border-border rounded-md">
-            Cancel
-          </button>
-          <button
-            onClick={launch}
-            disabled={busy || !agent || !node || !prompt.trim()}
-            className="text-xs px-3 py-1.5 bg-brand-500 hover:bg-brand-600 disabled:opacity-50 text-white rounded-md font-medium inline-flex items-center gap-1.5"
-          >
-            {busy ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} />}
-            {busy ? 'Launching…' : 'Launch investigation'}
-          </button>
-        </footer>
+    <div className="space-y-3 text-sm">
+      <p className="text-xs text-ink-dim">
+        Promotes finding <code className="font-mono">#{finding.id}</code> into a new case.
+        {cpInstanceID && (
+          <> The case will live on the federated child <code className="font-mono">{cpInstanceID}</code> alongside the finding.</>
+        )}
+      </p>
+      <div>
+        <div className="text-[11px] uppercase tracking-wide text-ink-mute font-medium mb-1">Title</div>
+        <input
+          autoFocus
+          type="text"
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          className="w-full px-2.5 py-1.5 text-sm border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500/30"
+        />
+      </div>
+      <div>
+        <div className="text-[11px] uppercase tracking-wide text-ink-mute font-medium mb-1">Summary</div>
+        <textarea
+          value={summary}
+          onChange={(e) => setSummary(e.target.value)}
+          rows={4}
+          className="w-full px-2.5 py-1.5 text-sm border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500/30"
+          placeholder="Hypothesis, scope, working theory…"
+        />
+      </div>
+      <div className="flex justify-end pt-1">
+        <button
+          onClick={submit}
+          disabled={busy || !title.trim()}
+          className="text-xs px-3 py-1.5 bg-brand-500 hover:bg-brand-600 disabled:opacity-50 text-white rounded-md font-medium inline-flex items-center gap-1.5"
+        >
+          {busy && <Loader2 size={12} className="animate-spin" />}
+          Open case
+        </button>
       </div>
     </div>
   );
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+// ── Existing case panel ─────────────────────────────────────────────
+
+function ExistingCasePanel({
+  finding, cpInstanceID, excludeIDs, onLinked, setError,
+}: {
+  finding: Finding;
+  cpInstanceID?: string;
+  excludeIDs: Set<number>;
+  onLinked: (invID: number) => void;
+  setError: (s: string | null) => void;
+}) {
+  const [items, setItems] = useState<Investigation[] | null>(null);
+  const [picked, setPicked] = useState<number | null>(null);
+  const [filter, setFilter] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    api.investigations.list('active')
+      .then((rows) => {
+        // Cross-CP linking would FK-fail; restrict the picker to
+        // cases on the same CP as the finding.
+        const matched = cpInstanceID
+          ? rows.filter((r) => r.cp_source && r.cp_source.instance_id === cpInstanceID)
+          : rows.filter((r) => !r.cp_source);
+        setItems(matched);
+      })
+      .catch((e) => setError(String(e)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cpInstanceID]);
+
+  async function submit() {
+    if (!picked) return;
+    setBusy(true); setError(null);
+    try {
+      await api.investigations.linkFinding(picked, finding.id, cpInstanceID);
+      onLinked(picked);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const filtered = (items ?? [])
+    .filter((i) => !excludeIDs.has(i.ID))
+    .filter((i) => !filter || i.Title.toLowerCase().includes(filter.toLowerCase()));
+
   return (
-    <div>
-      <div className="text-[11px] uppercase tracking-wide text-ink-mute font-medium mb-1">{label}</div>
-      {children}
+    <div className="space-y-3 text-sm">
+      <p className="text-xs text-ink-dim">
+        Pick an active case
+        {cpInstanceID
+          ? <> on <code className="font-mono">{cpInstanceID}</code> </>
+          : ' '}
+        to add this finding to. Closed and archived cases are filtered out — reopen them on the case page first if needed.
+      </p>
+      <input
+        type="text"
+        value={filter}
+        onChange={(e) => setFilter(e.target.value)}
+        placeholder="Filter by title…"
+        autoFocus
+        className="w-full px-2.5 py-1.5 text-sm border border-border rounded-md"
+      />
+      <div className="border border-border rounded-md max-h-60 overflow-auto">
+        {items === null ? (
+          <div className="p-3 text-xs text-ink-mute">Loading…</div>
+        ) : filtered.length === 0 ? (
+          <div className="p-3 text-xs text-ink-mute">
+            No matching active cases{cpInstanceID ? ` on ${cpInstanceID}` : ''}.
+          </div>
+        ) : (
+          <ul className="divide-y divide-border">
+            {filtered.map((i) => (
+              <li key={i.ID}>
+                <label className="flex items-start gap-2 px-3 py-2 cursor-pointer hover:bg-slate-50">
+                  <input
+                    type="radio"
+                    checked={picked === i.ID}
+                    onChange={() => setPicked(i.ID)}
+                    className="mt-1"
+                  />
+                  <div className="min-w-0">
+                    <div className="text-sm font-medium truncate">{i.Title || '(untitled)'}</div>
+                    <div className="text-[11px] text-ink-mute font-mono">#{i.ID}</div>
+                  </div>
+                </label>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+      <div className="flex justify-end">
+        <button
+          onClick={submit}
+          disabled={busy || !picked}
+          className="text-xs px-3 py-1.5 bg-brand-500 hover:bg-brand-600 disabled:opacity-50 text-white rounded-md font-medium inline-flex items-center gap-1.5"
+        >
+          {busy && <Loader2 size={12} className="animate-spin" />}
+          Add to case
+        </button>
+      </div>
     </div>
   );
-}
-
-const inputCls = 'w-full px-2.5 py-1.5 text-sm border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500/30 bg-white';
-
-function buildDefaultPrompt(f: Finding): string {
-  const lines: string[] = [];
-  lines.push(`Investigate the following finding:`);
-  lines.push('');
-  lines.push(`Title: ${f.title || '(untitled)'}`);
-  if (f.severity) lines.push(`Severity: ${f.severity}`);
-  if (f.agent) lines.push(`Reporting agent: ${f.agent}`);
-  if (f.host) lines.push(`Host: ${f.host}`);
-  if (f.resource) lines.push(`Resource: ${f.resource}`);
-  if (f.category) lines.push(`Category: ${f.category}`);
-  if (f.dedup_key) lines.push(`Fingerprint: ${f.dedup_key}`);
-  if (f.evidence) {
-    lines.push('');
-    lines.push('Evidence:');
-    lines.push(f.evidence);
-  }
-  lines.push('');
-  lines.push('Look at the host directly to confirm or refute. Provide a short verdict — true positive, false positive, or needs more data — and the specific evidence supporting your call.');
-  return lines.join('\n');
 }

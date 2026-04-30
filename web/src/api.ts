@@ -730,6 +730,16 @@ export const api = {
         : `/api/findings/${id}/runs`,
     ),
 
+  // Cases this finding is currently linked to. Drives the
+  // InvestigateDialog's "Already in N cases" header so the operator
+  // can deep-link instead of accidentally creating a duplicate case.
+  findingInvestigations: (id: number, cpInstanceID?: string) =>
+    request<Investigation[]>(
+      cpInstanceID
+        ? `/api/findings/${id}/investigations?cp=${encodeURIComponent(cpInstanceID)}`
+        : `/api/findings/${id}/investigations`,
+    ),
+
   // IOCs (Phase 22.1+; Catalog UI extends with source/q + per-id endpoints).
   // Without filters returns the most recent 100 by last_seen.
   iocs: (filter: { findingID?: number; kind?: string; source?: string; q?: string } = {}) => {
