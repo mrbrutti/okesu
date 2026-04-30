@@ -1,6 +1,8 @@
 package db
 
 import (
+	"database/sql"
+	"errors"
 	"testing"
 	"time"
 )
@@ -282,5 +284,64 @@ func TestUpsertIOC_ObservedDoesNotOverwriteCatalog(t *testing.T) {
 	}
 	if got.SeverityFloor != "HIGH" || got.Attribution != "apt-foo" || got.DefinitionPath == "" {
 		t.Errorf("observed upsert clobbered catalog metadata: %+v", got)
+	}
+}
+
+func TestGetIOCByKV(t *testing.T) {
+	s := openTempStore(t)
+	if _, _, err := s.UpsertIOC(&IOCUpsert{Kind: "sha256", Value: "ABC", NormalizedValue: "abc", Source: "catalog", Name: "test"}); err != nil {
+		t.Fatalf("UpsertIOC: %v", err)
+	}
+
+	got, err := s.GetIOCByKV("sha256", "abc")
+	if err != nil {
+		t.Fatalf("GetIOCByKV: %v", err)
+	}
+	if got.Name != "test" {
+		t.Errorf("Name = %q, want test", got.Name)
+	}
+
+	if _, err := s.GetIOCByKV("sha256", "missing"); !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("expected sql.ErrNoRows for missing kv; got %v", err)
+	}
+
+	// LookupIOC delegates to GetIOCByKV — same contract; lock that in
+	// so a future refactor can't quietly diverge.
+	gotL, err := s.LookupIOC("sha256", "abc")
+	if err != nil {
+		t.Fatalf("LookupIOC: %v", err)
+	}
+	if gotL.Name != "test" {
+		t.Errorf("LookupIOC Name = %q, want test", gotL.Name)
+	}
+	if _, err := s.LookupIOC("sha256", "missing"); !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("LookupIOC expected sql.ErrNoRows; got %v", err)
+	}
+}
+
+func TestListIOCObservationsByKV(t *testing.T) {
+	s := openTempStore(t)
+	iocID, _, _ := s.UpsertIOC(&IOCUpsert{Kind: "sha256", Value: "abc", NormalizedValue: "abc"})
+	eventID, err := s.InsertEvent(&Event{Ts: 0, Type: "finding", RawJSON: "{}"})
+	if err != nil {
+		t.Fatalf("InsertEvent: %v", err)
+	}
+	findingID, err := s.InsertFinding(&FindingInsert{
+		EventID: eventID, Ts: 0, Agent: "a", Host: "host-1",
+		Severity: "INFO", Title: "t", RawJSON: "{}",
+	})
+	if err != nil {
+		t.Fatalf("InsertFinding: %v", err)
+	}
+	if err := s.RecordIOCObservation(iocID, &IOCObservation{FindingID: findingID, Host: "host-1"}); err != nil {
+		t.Fatalf("RecordIOCObservation: %v", err)
+	}
+
+	got, err := s.ListIOCObservationsByKV("sha256", "abc")
+	if err != nil {
+		t.Fatalf("ListIOCObservationsByKV: %v", err)
+	}
+	if len(got) != 1 || got[0].Host != "host-1" {
+		t.Errorf("expected one observation host=host-1; got %+v", got)
 	}
 }

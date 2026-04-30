@@ -155,6 +155,28 @@ func (s *Store) GetIOC(id int64) (*IOCRecord, error) {
 	return &r, nil
 }
 
+// GetIOCByKV looks up a single IOC by (kind, normalized_value). Returns
+// sql.ErrNoRows when the row doesn't exist. Used by federation handlers
+// where row id isn't a stable cross-CP key.
+func (s *Store) GetIOCByKV(kind, normalizedValue string) (*IOCRecord, error) {
+	row := s.QueryRow(`
+		SELECT id, kind, value, normalized_value, source,
+		       COALESCE(definition_path,''), COALESCE(confidence,''),
+		       COALESCE(attribution,''), COALESCE(severity_floor,''),
+		       COALESCE(classification,''), COALESCE(notes,''),
+		       COALESCE(name,''), COALESCE(tags,''),
+		       observation_count, first_seen, last_seen
+		FROM iocs WHERE kind = ? AND normalized_value = ?`, kind, normalizedValue)
+	var r IOCRecord
+	if err := row.Scan(&r.ID, &r.Kind, &r.Value, &r.NormalizedValue, &r.Source,
+		&r.DefinitionPath, &r.Confidence, &r.Attribution, &r.SeverityFloor,
+		&r.Classification, &r.Notes, &r.Name, &r.Tags,
+		&r.ObservationCount, &r.FirstSeen, &r.LastSeen); err != nil {
+		return nil, err
+	}
+	return &r, nil
+}
+
 // RecordIOCObservation appends an observation row and bumps
 // observation_count + last_seen on the parent IOC.
 func (s *Store) RecordIOCObservation(iocID int64, obs *IOCObservation) error {
@@ -182,6 +204,33 @@ func (s *Store) ListIOCObservations(iocID int64) ([]IOCObservation, error) {
 	rows, err := s.Query(`
 		SELECT ioc_id, COALESCE(finding_id,0), COALESCE(orchestration_run_id,0), COALESCE(host,''), observed_at
 		FROM ioc_observations WHERE ioc_id = ? ORDER BY observed_at DESC`, iocID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []IOCObservation
+	for rows.Next() {
+		var o IOCObservation
+		var observedAtRaw sql.NullString
+		if err := rows.Scan(&o.IOCID, &o.FindingID, &o.OrchestrationRunID, &o.Host, &observedAtRaw); err != nil {
+			return nil, err
+		}
+		o.ObservedAt = ParseTimestamp(observedAtRaw.String)
+		out = append(out, o)
+	}
+	return out, rows.Err()
+}
+
+// ListIOCObservationsByKV returns the observation history for a given
+// (kind, normalized_value) pair. Same shape as ListIOCObservations but
+// keyed by the cross-CP-stable identifier.
+func (s *Store) ListIOCObservationsByKV(kind, normalizedValue string) ([]IOCObservation, error) {
+	rows, err := s.Query(`
+		SELECT o.ioc_id, COALESCE(o.finding_id,0), COALESCE(o.orchestration_run_id,0), COALESCE(o.host,''), o.observed_at
+		FROM ioc_observations o
+		JOIN iocs i ON i.id = o.ioc_id
+		WHERE i.kind = ? AND i.normalized_value = ?
+		ORDER BY o.observed_at DESC`, kind, normalizedValue)
 	if err != nil {
 		return nil, err
 	}
@@ -246,13 +295,12 @@ func (s *Store) ListCrossCPIOCPatterns(minObservations int, since time.Time) ([]
 }
 
 // LookupIOC fetches by (kind, normalized_value). Returns sql.ErrNoRows if absent.
+//
+// Single-query delegate to GetIOCByKV — kept for backwards compatibility
+// with callers that pre-date the federation work (both methods now share
+// the same contract).
 func (s *Store) LookupIOC(kind, normalizedValue string) (*IOCRecord, error) {
-	row := s.QueryRow(`SELECT id FROM iocs WHERE kind = ? AND normalized_value = ?`, kind, normalizedValue)
-	var id int64
-	if err := row.Scan(&id); err != nil {
-		return nil, err
-	}
-	return s.GetIOC(id)
+	return s.GetIOCByKV(kind, normalizedValue)
 }
 
 // IOCListFilter narrows ListIOCs. Zero-valued fields disable that

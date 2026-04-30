@@ -561,6 +561,12 @@ func (s *Server) routes() http.Handler {
 	r.Get("/api/v1/federation/events/stream", api.RequireFederationToken(s.store, api.EventsStream(s.bcast)))
 	r.Get("/api/v1/federation/insights/findings", api.FederationInsightsFindings(s.store))
 	r.Get("/api/v1/federation/insights/events", api.RequireFederationToken(s.store, api.InsightsEvents(s.eventStore)))
+	// Catalog IOC child-side export endpoints. Token-authed; the parent
+	// fans out to these to build merged catalog views.
+	r.Get("/api/v1/federation/iocs", api.FederationIOCs(s.store))
+	r.Get("/api/v1/federation/iocs/by-kv", api.FederationIOCByKV(s.store))
+	r.Get("/api/v1/federation/iocs/by-kv/observations", api.FederationIOCObservationsByKV(s.store))
+	r.Get("/api/v1/federation/iocs/by-kv/relationships", api.FederationIOCRelationshipsByKV(s.store))
 
 	// Phase 9.7: federation writes. Token-authed POST endpoints the
 	// parent's forwarding handlers proxy to when an operator picks a
@@ -661,9 +667,14 @@ func (s *Server) routes() http.Handler {
 		// need a verdict note + by the UI's finding-detail panel.
 		r.Get("/api/findings/{id}/investigations", api.ListInvestigationsForFindingHandler(s.store))
 
-		// Phase 22.1 — IOC list. Filter by finding_id (drawer drill-down)
-		// or kind (e.g. all observed sha256s). Local-only for now.
-		r.Get("/api/iocs", api.ListIOCs(s.store))
+		// Catalog IOC routes — federated where federation is on.
+		// Legacy id-based detail routes stay mounted unchanged for external
+		// integrations that still pass int row ids; the UI uses the by-kv
+		// variants which federate via the parent's aggregator.
+		r.Get("/api/iocs", api.FederatedListIOCs(s.store, s.fedAgg))
+		r.Get("/api/iocs/by-kv", api.FederatedGetIOCByKV(s.store, s.fedAgg))
+		r.Get("/api/iocs/by-kv/observations", api.FederatedListIOCObservationsByKV(s.store, s.fedAgg))
+		r.Get("/api/iocs/by-kv/relationships", api.FederatedListIOCRelationshipsByKV(s.store, s.fedAgg))
 		// Phase 22.4 — cross-CP IOC pattern rollup. Drives the
 		// cross-cp-ioc-pattern-supervisor daimon. Static segment must
 		// register before any future /api/iocs/{id} catch-all so chi

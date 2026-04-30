@@ -2025,6 +2025,32 @@ Sidebar entry under the `Triage` group.
 
 ---
 
+## Catalog federation
+
+Every Catalog API endpoint federates via the
+`controlplane/api/federation_reads.go` FanOut+merge pattern. The parent
+CP's `/catalog` page shows merged rows from itself plus every healthy
+child:
+
+- **List**: dedup by `(kind, normalized_value)`. For text metadata,
+  first non-empty wins iterating by ascending CP-ID with catalog-source
+  preferred over observed. `observation_count` sums; `first_seen` =
+  min, `last_seen` = max. Each merged row carries
+  `cp_sources []CPSourceRef`.
+- **Detail / observations / relationships**: fetched via
+  `(kind, normalized_value)` query params; merged by the same pattern.
+  Relationships dedup by tuple `(subject_kind, subject_value, predicate,
+  object_kind, object_value)` since per-CP int IDs aren't comparable.
+
+Child-side exports live at `/api/v1/federation/iocs*` behind
+`requireFederationToken`. The legacy id-based local routes
+(`/api/iocs/{id}`, `/{id}/observations`, `/{id}/relationships`) stay
+mounted for external integrations; the UI uses the by-kv variants.
+
+Build matrix unchanged: `CGO_ENABLED=0` everywhere.
+
+---
+
 ## Federation: parent ↔ child CPs
 
 A single tenant typically runs one **global** CP plus one or more
