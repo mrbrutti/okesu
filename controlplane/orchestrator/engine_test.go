@@ -516,3 +516,98 @@ steps:
 		t.Errorf("rendered prompt didn't pick up trigger context: %q", got)
 	}
 }
+
+func TestRenderParams_StringsAreTemplated(t *testing.T) {
+	env := map[string]any{
+		"trigger": map[string]any{
+			"ioc_kind": "sha256",
+			"ioc":      "deadbeef",
+		},
+	}
+	in := map[string]any{
+		"kind":  "{{trigger.ioc_kind}}",
+		"value": "{{trigger.ioc}}",
+		"limit": 50, // non-string passes through unchanged
+	}
+	got, err := renderParams(in, env)
+	if err != nil {
+		t.Fatalf("renderParams: %v", err)
+	}
+	if got["kind"] != "sha256" {
+		t.Errorf("kind = %q, want %q", got["kind"], "sha256")
+	}
+	if got["value"] != "deadbeef" {
+		t.Errorf("value = %q, want %q", got["value"], "deadbeef")
+	}
+	if got["limit"] != 50 {
+		t.Errorf("limit = %v, want 50 (non-string should pass through)", got["limit"])
+	}
+	// Original map should not be mutated.
+	if in["kind"] != "{{trigger.ioc_kind}}" {
+		t.Errorf("renderParams mutated input map: kind = %q", in["kind"])
+	}
+}
+
+// TestEngine_DataParamsRendered confirms the engine substitutes
+// {{trigger.*}} placeholders in `data:` params before calling the
+// resolver. Without this, the t2-fleet-ioc-hunt rewrite would silently
+// look up the literal string `{{trigger.ioc}}` and always miss.
+func TestEngine_DataParamsRendered(t *testing.T) {
+	spec := mustParse(t, `---
+name: data-params
+description: data params should be templated against trigger payload
+steps:
+  - id: lookup
+    agent: x
+    prompt: "ok"
+    data:
+      ioc:
+        query: iocs.lookup
+        params: { kind: "{{trigger.ioc_kind}}", value: "{{trigger.ioc}}" }
+---`)
+	store := newFakeStore(
+		&Orchestration{ID: 1, Spec: spec},
+		&RunRecord{
+			ID:              1,
+			OrchestrationID: 1,
+			Status:          RunStatusPending,
+			TriggerKind:     "finding",
+			TriggerPayload:  `{"ioc_kind":"sha256","ioc":"deadbeef"}`,
+		},
+	)
+	resolver := &recordingResolver{}
+	engine := NewEngine(store, &fakeDispatcher{})
+	engine.SetDataResolver(resolver)
+
+	if err := engine.Run(context.Background(), 1); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(resolver.calls) != 1 {
+		t.Fatalf("expected one resolver call; got %d", len(resolver.calls))
+	}
+	c := resolver.calls[0]
+	if c.query != "iocs.lookup" {
+		t.Errorf("query = %q, want iocs.lookup", c.query)
+	}
+	if c.params["kind"] != "sha256" {
+		t.Errorf("params.kind = %q, want %q (was the {{trigger.ioc_kind}} placeholder rendered?)", c.params["kind"], "sha256")
+	}
+	if c.params["value"] != "deadbeef" {
+		t.Errorf("params.value = %q, want %q (was the {{trigger.ioc}} placeholder rendered?)", c.params["value"], "deadbeef")
+	}
+}
+
+type recordingResolver struct {
+	calls []struct {
+		query  string
+		params map[string]any
+	}
+}
+
+func (r *recordingResolver) Resolve(_ context.Context, query string, params map[string]any) (any, error) {
+	r.calls = append(r.calls, struct {
+		query  string
+		params map[string]any
+	}{query, params})
+	return map[string]any{"valid": true}, nil
+}

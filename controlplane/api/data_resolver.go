@@ -20,6 +20,8 @@ package api
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -338,17 +340,19 @@ func iocsLookupQuery(ctx context.Context, store *db.Store, params map[string]any
 	}
 	norm, _ := normalize.NormalizeForKind(kind, value)
 	rec, err := store.LookupIOC(kind, norm)
-	if err != nil {
-		// Miss path — sql.ErrNoRows or any other read failure is reported
-		// as valid:false so a `when:` condition can branch on it. We
-		// don't distinguish "no row" from "DB error" here because the
-		// orchestration's intended behaviour is the same in both cases:
-		// treat it as an unknown indicator and let the agent decide.
+	if errors.Is(err, sql.ErrNoRows) {
+		// Genuine miss — orchestration's `when:` branches read valid:false.
 		return map[string]any{
 			"valid":            false,
 			"kind":             kind,
 			"normalized_value": norm,
 		}, nil
+	}
+	if err != nil {
+		// Real DB failure — surface it so the orchestration step fails
+		// loud rather than silently flagging every indicator as unknown
+		// during a transient outage.
+		return nil, fmt.Errorf("iocs.lookup: store: %w", err)
 	}
 	return map[string]any{
 		"valid":            true,

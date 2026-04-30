@@ -419,7 +419,21 @@ func (e *Engine) Run(ctx context.Context, runID int64) error {
 			}
 			bindings := make(map[string]any, len(step.Data))
 			for name, src := range step.Data {
-				val, derr := e.data.Resolve(ctx, src.Query, src.Params)
+				// Render template strings in params before passing to the
+				// resolver so authors can write
+				//   params: { kind: "{{trigger.ioc_kind}}" }
+				// and have `{{trigger.ioc_kind}}` substituted from the
+				// trigger payload at run time, the same way prompt
+				// templates are rendered. String leaves are templated;
+				// non-string values pass through unchanged.
+				renderedParams, perr := renderParams(src.Params, env)
+				if perr != nil {
+					rec.Status = StepStatusFailed
+					rec.Error = fmt.Sprintf("data.%s (%s): render params: %v", name, src.Query, perr)
+					_ = e.store.UpsertOrchestrationStep(rec)
+					return e.haltFailed(run.ID, step.ID, rec.Error)
+				}
+				val, derr := e.data.Resolve(ctx, src.Query, renderedParams)
 				if derr != nil {
 					rec.Status = StepStatusFailed
 					rec.Error = fmt.Sprintf("data.%s (%s): %v", name, src.Query, derr)
@@ -901,6 +915,38 @@ func perNodeMap(nodes []NodeDispatch) map[string]any {
 		}
 	}
 	return out
+}
+
+// renderParams walks a step's data.params map and renders any string
+// values through the prompt template engine using the same env the
+// prompt sees. Authors can therefore write
+//
+//   params: { kind: "{{trigger.ioc_kind}}", value: "{{trigger.ioc}}" }
+//
+// and the resolver receives the substituted strings.
+//
+// Non-string values (numbers, bools, nested maps/lists) pass through
+// unchanged. v1 only renders top-level string leaves; if a real
+// orchestration needs templated values inside nested structures we'll
+// extend this then. Returns a fresh map so the StepSpec's static
+// params aren't mutated across runs.
+func renderParams(params map[string]any, env map[string]any) (map[string]any, error) {
+	if len(params) == 0 {
+		return params, nil
+	}
+	out := make(map[string]any, len(params))
+	for k, v := range params {
+		if s, ok := v.(string); ok {
+			rendered, err := Render(s, env)
+			if err != nil {
+				return nil, fmt.Errorf("param %q: %w", k, err)
+			}
+			out[k] = rendered
+			continue
+		}
+		out[k] = v
+	}
+	return out, nil
 }
 
 // Spec is exported via the orchestrator package; keep import quiet.
