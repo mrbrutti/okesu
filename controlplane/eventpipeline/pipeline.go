@@ -83,6 +83,10 @@ type FindingProjectedEvent struct {
 	Agent      string
 	Host       string
 	Category   string
+	// Phase 22.6 — orthogonal classification (hypothesis,
+	// meeting_minutes, ...) used by orchestrations that filter on
+	// finding.subtype.
+	Subtype    string
 	DedupKey   string
 	Resource   string
 	Attributes map[string]any
@@ -213,6 +217,7 @@ func (w *Worker) Run(ctx context.Context) error {
 						Agent:      ev.Agent,
 						Host:       ev.Host,
 						Category:   fi.Category,
+						Subtype:    fi.Subtype,
 						DedupKey:   fi.DedupKey,
 						Resource:   fi.Resource,
 						Attributes: decodeAttributes(fi.Attributes),

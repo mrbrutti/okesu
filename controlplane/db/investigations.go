@@ -361,6 +361,47 @@ func (s *Store) ListRunsForInvestigation(investigationID int64) ([]int64, error)
 	return out, rows.Err()
 }
 
+// ListInvestigationsForFinding returns the cases a finding is
+// currently linked to, newest-link-first. Used by orchestrations
+// (and the UI's finding-detail panel) to answer "is this finding
+// already part of a case?". Empty slice when the finding isn't
+// in any case — explicitly returned, not nil, so JSON consumers
+// see [].
+func (s *Store) ListInvestigationsForFinding(findingID int64) ([]Investigation, error) {
+	// ORDER BY (linked_at DESC, investigation_id DESC) — sqlite's
+	// second-resolution timestamps mean two links in the same
+	// second tie on linked_at; investigation_id is monotonic so it
+	// preserves insertion order as a deterministic tie-breaker.
+	rows, err := s.Query(`
+		SELECT i.id, i.title, i.status, COALESCE(i.resolution, ''),
+		       COALESCE(i.summary, ''), COALESCE(i.created_by, ''),
+		       i.created_at, COALESCE(i.closed_at, ''), i.updated_at,
+		       COALESCE(i.external_key, '')
+		FROM investigation_findings l
+		JOIN investigations i ON i.id = l.investigation_id
+		WHERE l.finding_id = ?
+		ORDER BY l.linked_at DESC, i.id DESC`, findingID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Investigation{}
+	for rows.Next() {
+		var inv Investigation
+		var createdAt, closedAt, updatedAt sql.NullString
+		if err := rows.Scan(&inv.ID, &inv.Title, &inv.Status, &inv.Resolution,
+			&inv.Summary, &inv.CreatedBy, &createdAt, &closedAt, &updatedAt,
+			&inv.ExternalKey); err != nil {
+			return nil, err
+		}
+		inv.CreatedAt = ParseTimestamp(createdAt.String)
+		inv.ClosedAt = ParseTimestamp(closedAt.String)
+		inv.UpdatedAt = ParseTimestamp(updatedAt.String)
+		out = append(out, inv)
+	}
+	return out, rows.Err()
+}
+
 // AddInvestigationNote appends a markdown analyst note to a case and
 // bumps the case's updated_at so the case rises in the recency-sorted
 // list.

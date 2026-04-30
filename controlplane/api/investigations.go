@@ -214,6 +214,36 @@ func GetInvestigationHandler(store *db.Store) http.HandlerFunc {
 	}
 }
 
+// ListInvestigationsForFindingHandler returns the cases a finding
+// is currently linked to. Used by the t2-hypothesis-test
+// orchestration to discover which cases need a note appended after
+// the test runs, and by the UI's finding-detail panel to show case
+// membership.
+//
+// Path: /api/findings/{id}/investigations
+func ListInvestigationsForFindingHandler(store *db.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Path: /api/findings/{id}/investigations — extract the {id}.
+		segs := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/findings/"), "/")
+		if len(segs) < 2 || segs[1] != "investigations" {
+			http.Error(w, "path must be /api/findings/{id}/investigations", http.StatusBadRequest)
+			return
+		}
+		findingID, err := strconv.ParseInt(segs[0], 10, 64)
+		if err != nil {
+			http.Error(w, "bad finding id", http.StatusBadRequest)
+			return
+		}
+		invs, err := store.ListInvestigationsForFinding(findingID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(invs)
+	}
+}
+
 // UpsertInvestigationByDedupHandler is the entry point for daimons
 // that auto-open investigations. Idempotent — given the same
 // `external_key`, callers always get back the same row, so a
