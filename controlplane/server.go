@@ -747,6 +747,12 @@ func (s *Server) routes() http.Handler {
 		// Phase 22.8 PR β — node labels (read endpoint open; mutation
 		// admin-only below).
 		r.Get("/api/nodes/{id}/labels", api.ListNodeLabelsHandler(s.store))
+		// Phase 22.9 — generic labels API. Read is open (operators see
+		// labels on entities they already have access to); mutation
+		// is admin-only at the gated section below.
+		r.Get("/api/labels/{kind}/{id}", api.ListLabelsHandler(s.store))
+		r.Get("/api/labels/keys", api.LabelKeysHandler(s.store))
+		r.Get("/api/labels/values", api.LabelValuesHandler(s.store))
 		r.Get("/api/saved-searches", api.ListSavedSearchesHandler(s.store))
 		r.Post("/api/saved-searches", api.CreateSavedSearchHandler(s.store))
 		r.Patch("/api/saved-searches/{id}", api.UpdateSavedSearchHandler(s.store))
@@ -878,6 +884,10 @@ func (s *Server) routes() http.Handler {
 			// Phase 22.8 PR β — node labels mutation.
 			r.Put("/api/nodes/{id}/labels", api.SetNodeLabelHandler(s.store))
 			r.Delete("/api/nodes/{id}/labels/{key}", api.DeleteNodeLabelHandler(s.store))
+			// Phase 22.9 — generic labels mutation + selector search.
+			r.Put("/api/labels/{kind}/{id}", api.SetLabelHandler(s.store))
+			r.Delete("/api/labels/{kind}/{id}/{key}", api.DeleteLabelHandler(s.store))
+			r.Get("/api/labels/search", api.SearchLabelsHandler(s.store))
 			// Phase 22.8 PR γ — secrets + selector bindings. All
 			// admin-only — including reads, since metadata leaks
 			// "this credential exists". Plaintext is never echoed
