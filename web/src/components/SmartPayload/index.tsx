@@ -17,6 +17,7 @@ import type { PromptEntities, PromptEntityRef } from '../../api';
 import { tokenize } from './tokenize';
 import { detectEntity } from './detectors';
 import { literalHash } from './literalHash';
+import { normalizeLegacyShape } from './normalize';
 import { StructuredView } from '../StructuredView';
 import { FindingChip } from './chips/FindingChip';
 import { IOCChip } from './chips/IOCChip';
@@ -84,20 +85,49 @@ function PromptRenderer({
         if (t.kind === 'text') return <span key={i}>{t.text}</span>;
         const ref = matchRef(entities, hashes[i]);
         if (ref) return <ChipForRef key={i} entityRef={ref} cpInstanceID={cpInstanceID ?? ref.cp_instance_id} />;
-        // fallback to detector
+        // Fallback to client-side detection. Normalize first so legacy
+        // pre-projection prompts (Title-case + sql.NullString wrappers)
+        // pass the detector's lowercase contract.
         let parsed: unknown;
         try {
           parsed = JSON.parse(t.src);
         } catch {
           return <span key={i} className="font-mono text-xs">{t.src}</span>;
         }
+        parsed = normalizeLegacyShape(parsed);
+        // Arrays of entities (e.g. {{data.findings | json}}) are the
+        // common case for batch-style prompts. Iterate so each item
+        // gets its own chip; non-entity items fall back to inline JSON.
+        if (Array.isArray(parsed)) {
+          return (
+            <div key={i} className="my-1 flex flex-wrap gap-1 items-start">
+              {parsed.map((item, j) => {
+                const d = detectEntity(item);
+                if (d) {
+                  return <ChipForKind key={j} kind={d.kind} snapshot={d.snapshot} cpInstanceID={cpInstanceID} />;
+                }
+                // Non-entity item: render as a clean expandable tree
+                // instead of raw JSON.stringify. Each item gets its own
+                // mini-card so {actions: [...]} or {by_agent: [...]} from
+                // findings.summary are scannable.
+                return (
+                  <div key={j} className="bg-slate-50 border border-border rounded px-2 py-1 text-[11px]">
+                    <StructuredView value={item} />
+                  </div>
+                );
+              })}
+            </div>
+          );
+        }
         const det = detectEntity(parsed);
         if (det) return <ChipForKind key={i} kind={det.kind} snapshot={det.snapshot} cpInstanceID={cpInstanceID} />;
-        // not an entity — render as inline JSON
+        // Non-entity object: render as a structured tree, not a raw
+        // code dump. Findings summaries, action arrays, and arbitrary
+        // {{data.X | json}} payloads all land here.
         return (
-          <code key={i} className="font-mono text-xs bg-slate-50 border border-border rounded px-1 py-0.5">
-            {t.src}
-          </code>
+          <div key={i} className="my-1 bg-slate-50 border border-border rounded px-3 py-2">
+            <StructuredView value={parsed} />
+          </div>
         );
       })}
     </div>
@@ -130,6 +160,9 @@ function ChipForKind({ kind, snapshot, cpInstanceID }: { kind: string; snapshot:
 // ─── tree mode ────────────────────────────────────────────────
 
 function TreeRenderer({ value, cpInstanceID }: { value: unknown; cpInstanceID?: string }) {
+  // Normalize legacy Go-struct shapes (Title-case keys, sql.NullString
+  // wrappers) so old run results pick up chips too.
+  value = normalizeLegacyShape(value);
   const det = detectEntity(value);
   if (det) {
     return <ChipForKind kind={det.kind} snapshot={det.snapshot} cpInstanceID={cpInstanceID} />;
