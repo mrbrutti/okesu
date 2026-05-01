@@ -45,6 +45,7 @@ import (
 	"github.com/section9labs/okesu/controlplane/federation/s3reader"
 	"github.com/section9labs/okesu/controlplane/federation/s3rpc"
 	"github.com/section9labs/okesu/controlplane/ioc/catalog"
+	"github.com/section9labs/okesu/controlplane/ioc/feeds"
 	"github.com/section9labs/okesu/controlplane/jobs"
 	"github.com/section9labs/okesu/controlplane/notify"
 	"github.com/section9labs/okesu/controlplane/orchestrator"
@@ -92,8 +93,15 @@ type Server struct {
 	// Populated by RunCPProvisionWorker, drained by the bootstrap
 	// handler when the new CP completes its bootstrap exchange.
 	bundleCache *api.BundleCache
-	http        *http.Server
-	mgmtHTTP    *http.Server // mTLS-protected management plane
+	// IOC feeds (Phase 23). The scheduler is the long-lived goroutine
+	// driving refreshes; the worker is the Refresher implementation
+	// that scheduler dispatches to. Both are constructed in New() and
+	// captured here so routes() can wire them into HTTP handlers and
+	// Run() can launch the scheduler goroutine.
+	feedsScheduler *feeds.Scheduler
+	feedsWorker    *feeds.Worker
+	http           *http.Server
+	mgmtHTTP       *http.Server // mTLS-protected management plane
 }
 
 // daemonBinaryVersion reports the version of the daemon binary the CP
@@ -560,6 +568,23 @@ func New(cfg Config) (*Server, error) {
 	// catalog edits land without a full restart.
 	loadIOCCatalogs(cfg.IOCCatalogDirs, store)
 
+	// IOC feeds (Phase 23): scheduler + worker live for the lifetime
+	// of the CP. SeedRegistryDefaults is idempotent so re-running on
+	// every boot is safe. The scheduler refuses to refresh anything
+	// while cp_meta.feeds_consent_granted_at is NULL — the operator
+	// must explicitly grant consent via POST /api/feeds/consent before
+	// any feed pulls from the public internet.
+	feedsStateDir := filepath.Join(filepath.Dir(cfg.DBPath), "feeds")
+	if err := os.MkdirAll(feedsStateDir, 0o755); err != nil {
+		return nil, fmt.Errorf("feeds state dir: %w", err)
+	}
+	feedsFetcher := feeds.NewFetcher(feedsStateDir)
+	srv.feedsWorker = feeds.NewWorker(store, feedsFetcher)
+	srv.feedsScheduler = feeds.NewScheduler(store, srv.feedsWorker, time.Minute)
+	if err := feeds.SeedRegistryDefaults(store); err != nil {
+		log.Printf("feeds: seed registry: %v", err)
+	}
+
 	// Initialize the mgmt-plane server FIRST so srv.mgmtHTTP is set when
 	// srv.routes() captures the AboutFeatures snapshot.
 	if cfg.MgmtListen != "" {
@@ -821,6 +846,15 @@ func (s *Server) routes() http.Handler {
 		// IOCs into a single .yar file the binary-analyzer agent feeds to
 		// the system `yara` CLI. Optional ?tag= filter.
 		r.Get("/api/catalog/yara-rules.yar", api.YARARulesYarHandler(s.store))
+		// Phase 23 — Sigma rule bundle export. Concatenates all
+		// sigma_rule IOCs into one multi-doc YAML stream the
+		// log-sigma-hunter daimon hands to ripgrep / a sigma backend.
+		r.Get("/api/catalog/sigma-rules.yml", api.SigmaRulesYmlHandler(s.store))
+
+		// Phase 23 — IOC feeds: read-side surfaces. Mutations are
+		// admin-only and live in the admin group below.
+		r.Get("/api/feeds", api.ListFeedsHandler(s.store))
+		r.Get("/api/feeds/registry", api.ListFeedsRegistryHandler())
 
 		// Phase 22.3 — Investigations (T2 case workspace). CRUD plus
 		// notes and finding linking; viewer+ for now (no admin gate)
@@ -1027,6 +1061,14 @@ func (s *Server) routes() http.Handler {
 			}))
 			r.Post("/api/system/db/vacuum", api.DBVacuum(s.store))
 			r.Post("/api/system/db/prune-events", api.DBPruneEvents(s.store))
+
+			// Phase 23 — IOC feeds: mutations + refresh + consent.
+			r.Post("/api/feeds", api.InstallFeedHandler(s.store))
+			r.Patch("/api/feeds/{id}", api.UpdateFeedHandler(s.store))
+			r.Delete("/api/feeds/{id}", api.UninstallFeedHandler(s.store))
+			r.Post("/api/feeds/{id}/refresh", api.RefreshFeedHandler(s.feedsScheduler))
+			r.Post("/api/feeds/validate", api.ValidateFeedHandler(s.feedsWorker))
+			r.Post("/api/feeds/consent", api.SetFeedsConsentHandler(s.store))
 		})
 
 		// Mutation endpoints — operator+
@@ -1595,6 +1637,10 @@ func (s *Server) Run(ctx context.Context) error {
 	// without a full restart. Errors per dir are logged; the handler
 	// never exits so subsequent SIGHUPs after a bad reload still work.
 	go s.iocCatalogReloader(ctx)
+	// Phase 23: drive feed refreshes. The scheduler refuses to act
+	// until consent is granted; until then this goroutine is a no-op
+	// that just ticks every minute.
+	go s.feedsScheduler.Run(ctx)
 	// Phase D: cron-driven orchestration runs. The scheduler ticks
 	// every minute and fires due orchestrations through the same
 	// engine path as manual + finding triggers.
