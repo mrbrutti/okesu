@@ -72,7 +72,7 @@ This solves the additive-only limitation called out in `catalog/iocs/README.md:2
 | `subpath` | `TEXT` | for git, optional dir to walk (e.g. `rules/`) |
 | `parser` | `TEXT NOT NULL` | closed enum: `yara`, `sigma`, `urlhaus_csv`, `threatfox_csv`, `cisa_kev_json` |
 | `auth_credential_id` | `INTEGER` | FK into existing `credentials` table |
-| `refresh_interval_seconds` | `INTEGER NOT NULL` | default 86400 |
+| `refresh_interval_seconds` | `INTEGER NOT NULL DEFAULT 86400` | covers custom feeds where the operator doesn't specify; registry seeds set their own per-feed values (see registry table) |
 | `enabled` | `INTEGER NOT NULL` | bool |
 | `installed_from_registry` | `INTEGER NOT NULL` | bool — vs custom |
 | `last_refresh_at` | `TEXT` | ISO 8601 |
@@ -84,11 +84,12 @@ This solves the additive-only limitation called out in `catalog/iocs/README.md:2
 
 ### Changes to existing tables
 
-- `iocs`: add nullable `feed_id INTEGER REFERENCES ioc_feeds(id)`. Existing YAML rows leave it `NULL` and continue to work.
+- `iocs`: add nullable `feed_id INTEGER REFERENCES ioc_feeds(id) ON DELETE SET NULL`. Existing YAML rows leave it `NULL` and continue to work.
 - `iocs.source`: extends to include `feed:<slug>` values alongside `catalog` and `observed`.
-- `ioc_observations`: add nullable `orphaned_rule_label TEXT` so observations can outlive their rule rows.
+- `ioc_observations`: add nullable `orphaned_rule_label TEXT` so observations can outlive their rule rows. The existing `ioc_observations.ioc_id` FK (if present) is set to `ON DELETE SET NULL` so the reconcile flow can `UPDATE ... SET orphaned_rule_label` then `DELETE` the iocs row in either order.
+- `cp_meta` (or equivalent existing single-row config table): add `feeds_consent_granted_at TEXT NULL`. Set when the operator clicks "Allow" in the consent banner. The scheduler refuses to run any refresh while this is `NULL`.
 
-One new migration adds all three columns + the new table. No data migration required.
+One new migration adds all four columns + the new table. No data migration required.
 
 ## Backend
 
@@ -254,7 +255,7 @@ Default-disabled-until-consent on existing CPs is deliberate: an upgrade should 
 
 ## Refresh, auth, federation defaults
 
-- **Refresh cadence**: configurable per feed; default 24h for single-file, 7d for git. Per-feed "Refresh now" button. Failed refreshes preserve last-good rows.
+- **Refresh cadence**: configurable per feed. Custom feeds default to 24h (the column default). Registry-seeded feeds carry their own interval — single-file at 24h, git at 7d (see registry table). Per-feed "Refresh now" button. Failed refreshes preserve last-good rows.
 - **Auth**: `single_file` supports an `Authorization` header from `auth_credential_id`. `git` supports PAT-in-URL or an SSH key path via the same credential store. Public feeds need none.
 - **Federation**: parent feed configs mirror to children read-only, with override-locally semantics (matches `fleet_env`).
 
