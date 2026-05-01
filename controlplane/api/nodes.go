@@ -54,12 +54,41 @@ type NodesConfig struct {
 // resolvePrivateKey returns the SSH private key to use for a deploy
 // request, plus a source label for audit logs.
 //
-// Priority: per-request body > stored fallback. Returns
-// (key, "request"|"stored", nil) on success or (nil, "", err) when
-// neither a request key nor a stored fallback is available.
-func resolvePrivateKey(ctx context.Context, requestKey string, secrets ports.Secrets) ([]byte, string, error) {
+// Priority (Phase 22.8 PR γ wire-through):
+//   1. per-request body (operator pasted key for this one deploy) — explicit override
+//   2. selector-bound ssh_key secret matching the target node's labels —
+//      group-scoped default; uses the same selector grammar groups
+//      (PR β) and env_var bindings (PR γ) consume
+//   3. legacy stored fallback (deploy/ssh-private-key) — CP-wide default
+//
+// Returns (key, source, nil) on success or (nil, "", err) when no
+// option produces a key. Source labels: "request" | "binding:<name>" |
+// "stored". The label flows into the audit_log row for forensic review.
+//
+// nodeID/store may be zero/nil in callers that don't have a node row
+// yet (rare; all current call sites have one) — the selector lookup
+// is skipped in that case.
+func resolvePrivateKey(ctx context.Context, requestKey string, secrets ports.Secrets, store *db.Store, nodeID int64) ([]byte, string, error) {
 	if k := strings.TrimSpace(requestKey); k != "" {
 		return []byte(k), "request", nil
+	}
+	// Selector-bound ssh_key. Scope='node' is the deploy scope; 'any'
+	// scope also matches per the resolver's wildcard behaviour.
+	if store != nil && nodeID > 0 {
+		mk, err := store.MasterKeyFromMeta()
+		if err == nil {
+			resolved, err := store.ListSecretsForNode(nodeID, db.SecretScopeNode, db.SecretKindSSHKey)
+			if err == nil && len(resolved) > 0 {
+				// Pick the first matching binding deterministically
+				// (resolver returns rows in name order). If multiple
+				// bindings hit, the first one wins; admins can author
+				// more specific selectors to disambiguate.
+				val, err := store.GetSecretValue(resolved[0].Secret.ID, mk)
+				if err == nil && val != "" {
+					return []byte(val), "binding:" + resolved[0].Secret.Name, nil
+				}
+			}
+		}
 	}
 	if secrets == nil {
 		return nil, "", errors.New("private_key is required (no stored deploy key configured)")
@@ -505,7 +534,7 @@ func NodeUpdateBinary(store *db.Store, reg *jobs.Registry, cfg NodesConfig) http
 			http.Error(w, "bad json", http.StatusBadRequest)
 			return
 		}
-		privKey, keySource, err := resolvePrivateKey(r.Context(), req.PrivateKey, cfg.Secrets)
+		privKey, keySource, err := resolvePrivateKey(r.Context(), req.PrivateKey, cfg.Secrets, store, id)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -611,7 +640,7 @@ func NodeRollbackBinary(store *db.Store, reg *jobs.Registry, cfg NodesConfig) ht
 			http.Error(w, "bad json", http.StatusBadRequest)
 			return
 		}
-		privKey, keySource, err := resolvePrivateKey(r.Context(), req.PrivateKey, cfg.Secrets)
+		privKey, keySource, err := resolvePrivateKey(r.Context(), req.PrivateKey, cfg.Secrets, store, id)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -735,7 +764,7 @@ func NodeDeploy(store *db.Store, reg *jobs.Registry, deployer NodeDeployer, cfg 
 			http.Error(w, "agents is required", http.StatusBadRequest)
 			return
 		}
-		privKey, keySource, err := resolvePrivateKey(r.Context(), req.PrivateKey, cfg.Secrets)
+		privKey, keySource, err := resolvePrivateKey(r.Context(), req.PrivateKey, cfg.Secrets, store, id)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
