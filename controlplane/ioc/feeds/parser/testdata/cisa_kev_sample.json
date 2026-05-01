@@ -1,0 +1,7 @@
+{
+  "title": "CISA Catalog of Known Exploited Vulnerabilities",
+  "vulnerabilities": [
+    {"cveID":"CVE-2024-11111","vendorProject":"Vendor","product":"Prod","vulnerabilityName":"Buffer overflow","dateAdded":"2024-05-01","shortDescription":"x","requiredAction":"y","dueDate":"2024-05-22","knownRansomwareCampaignUse":"Known","notes":""},
+    {"cveID":"CVE-2025-22222","vendorProject":"Vendor","product":"Prod","vulnerabilityName":"Auth bypass","dateAdded":"2025-01-15","shortDescription":"x","requiredAction":"y","dueDate":"2025-02-05","knownRansomwareCampaignUse":"","notes":""}
+  ]
+}

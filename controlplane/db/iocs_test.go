@@ -3,6 +3,7 @@ package db
 import (
 	"database/sql"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -343,5 +344,79 @@ func TestListIOCObservationsByKV(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].Host != "host-1" {
 		t.Errorf("expected one observation host=host-1; got %+v", got)
+	}
+}
+
+func TestUpsertIOC_WithFeedID_ScopesAndOrphans(t *testing.T) {
+	st := openTempStore(t)
+
+	feedID, err := st.InsertFeedConfig(&FeedConfigInsert{
+		Slug: "f1", Name: "F1", Kind: "single_file",
+		URL: "https://example.com/x.yar", Parser: "yara",
+		RefreshIntervalSeconds: 86400, Enabled: true, InstalledFromRegistry: false,
+	})
+	if err != nil {
+		t.Fatalf("insert feed: %v", err)
+	}
+
+	aID, _, err := st.UpsertIOC(&IOCUpsert{
+		Kind: "sha256", Value: "deadbeef" + strings.Repeat("a", 56),
+		NormalizedValue: "deadbeef" + strings.Repeat("a", 56),
+		Source: "feed:f1", FeedID: &feedID, Name: "rule-A",
+	})
+	if err != nil {
+		t.Fatalf("upsert A: %v", err)
+	}
+	bID, _, err := st.UpsertIOC(&IOCUpsert{
+		Kind: "sha256", Value: "cafef00d" + strings.Repeat("b", 56),
+		NormalizedValue: "cafef00d" + strings.Repeat("b", 56),
+		Source: "feed:f1", FeedID: &feedID, Name: "rule-B",
+	})
+	if err != nil {
+		t.Fatalf("upsert B: %v", err)
+	}
+	if aID == 0 || bID == 0 {
+		t.Fatalf("missing ids: a=%d b=%d", aID, bID)
+	}
+
+	rows, err := st.ListIOCsByFeed(feedID)
+	if err != nil {
+		t.Fatalf("list by feed: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("expected 2 rows scoped to feed, got %d", len(rows))
+	}
+
+	// Attach an observation to A so we can confirm orphaning.
+	if err := st.RecordIOCObservation(aID, &IOCObservation{Host: "host-1"}); err != nil {
+		t.Fatalf("record observation: %v", err)
+	}
+
+	// Delete A only (simulating reconcile dropping a single rule).
+	if err := st.DeleteIOCsByFeed(feedID, "f1:", []int64{aID}); err != nil {
+		t.Fatalf("delete by feed: %v", err)
+	}
+
+	// A's row should be gone.
+	if _, err := st.GetIOC(aID); err == nil {
+		t.Fatalf("expected error after delete of A")
+	}
+	// B's row should remain.
+	if _, err := st.GetIOC(bID); err != nil {
+		t.Fatalf("expected B to remain: %v", err)
+	}
+
+	// A's observation should still exist with ioc_id NULL and orphaned_rule_label set.
+	// Use a direct SQL query because ListIOCObservations filters by ioc_id (not nullable on read).
+	var label sql.NullString
+	var nullIOC sql.NullInt64
+	if err := st.QueryRow(`SELECT ioc_id, orphaned_rule_label FROM ioc_observations WHERE host = 'host-1'`).Scan(&nullIOC, &label); err != nil {
+		t.Fatalf("query orphan obs: %v", err)
+	}
+	if nullIOC.Valid {
+		t.Fatalf("expected ioc_id NULL after orphaning, got %d", nullIOC.Int64)
+	}
+	if !label.Valid || label.String != "f1:rule-A" {
+		t.Fatalf("expected orphan label 'f1:rule-A', got %q (valid=%v)", label.String, label.Valid)
 	}
 }
