@@ -503,6 +503,13 @@ func (s *Server) routes() http.Handler {
 	r.Use(middleware.RealIP)
 	r.Use(middleware.Recoverer)
 
+	// Unauthenticated health probe — used by the Makefile oci-install
+	// target to confirm the CP is up before declaring the deploy done.
+	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	})
+
 	// Public webhook endpoint — auth via HMAC, not cookies.
 	r.Post("/api/webhooks/events", api.WebhookHandler(s.queue, s.cfg.WebhookSecret, s.bcast))
 
