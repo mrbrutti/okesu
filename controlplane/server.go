@@ -1571,6 +1571,10 @@ func (s *Server) Run(ctx context.Context) error {
 
 	go s.sessionGC(ctx)
 	go s.staleFindingsLoop(ctx)
+	// Phase 22.10 PR γ — seed orchestration specs from disk on boot
+	// (no-op when --orchestration-seed-dir is unset). Synchronous so
+	// the canonical set is in place before the engine's first tick.
+	s.seedOrchestrations()
 	go s.notify.Run(ctx)
 	s.fedPoller.Start(ctx)
 	// Phase A — S3 dead-drop federation: parent-side reader for

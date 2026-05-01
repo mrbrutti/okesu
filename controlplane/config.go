@@ -111,6 +111,15 @@ type Config struct {
 	// deploys to a node. Required to deploy.
 	DaimonFilesDir string
 
+	// OrchestrationSeedDir is an optional directory the CP scans on
+	// boot to auto-install orchestration *.md files (frontmatter +
+	// body, same format examples/orchestrations uses). Existing
+	// orchestrations with the same name are left untouched — the
+	// seed is "install if missing", never overwrite. Empty disables
+	// the seed entirely; the operator manages orchestrations via
+	// the UI in that case.
+	OrchestrationSeedDir string
+
 	// AgentFilesDirs is the list of search directories for short-form
 	// Claude/Codex agent definitions (the same .md format Claude Code +
 	// Codex use natively — small frontmatter, used for one-shot runs).
@@ -367,7 +376,8 @@ func FromEnv() Config {
 
 		DaemonBinaryPath:  os.Getenv("OKESU_CP_DAEMON_BINARY"),
 		DaemonBinariesDir: os.Getenv("OKESU_CP_DAEMON_BINARIES_DIR"),
-		DaimonFilesDir:    envAny("OKESU_CP_DAIMON_FILES_DIR", "OKESU_CP_AGENT_FILES_DIR"),
+		DaimonFilesDir:       envAny("OKESU_CP_DAIMON_FILES_DIR", "OKESU_CP_AGENT_FILES_DIR"),
+		OrchestrationSeedDir: os.Getenv("OKESU_CP_ORCHESTRATION_SEED_DIR"),
 		AgentFilesDirs:    defaultAgentSearchDirs(envSplitNonEmpty("OKESU_CP_AGENT_FILES_DIRS", ":")),
 		IOCCatalogDirs:    defaultIOCCatalogDirs(envSplitNonEmpty("OKESU_CP_IOC_CATALOG_DIRS", ":")),
 		WebhookPublicURL:  os.Getenv("OKESU_CP_WEBHOOK_PUBLIC_URL"),

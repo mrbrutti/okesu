@@ -217,6 +217,7 @@ rm -f "$RUN_DIR/cp.db" "$RUN_DIR/cp.db-"* "$RUN_DIR"/*.crt "$RUN_DIR"/*.key 2>/d
     --daemon-binary "$DAEMON_LINUX_BIN" \
     --daemon-binaries-dir "$DAEMON_BIN_DIR" \
     --daimon-files-dir "$DEMO_AGENT_FILES_DIR" \
+    --orchestration-seed-dir "$ROOT/examples/orchestrations" \
     --webhook-public-url "$WEBHOOK_PUBLIC_URL" \
     --mgmt-public-url "$MGMT_PUBLIC_URL" \
     > "$RUN_DIR/cp.log" 2>&1 &

@@ -121,6 +121,10 @@ func serveCmd() *cobra.Command {
 	// frontmatter — schedule, mgmt, outputs). What gets deployed to nodes.
 	cmd.Flags().StringVar(&cfg.DaimonFilesDir, "daimon-files-dir", cfg.DaimonFilesDir, "Directory holding *.md daimon files available to deploy")
 
+	// Orchestration seed — optional directory of orchestration *.md files
+	// the CP installs on boot if not already present.
+	cmd.Flags().StringVar(&cfg.OrchestrationSeedDir, "orchestration-seed-dir", cfg.OrchestrationSeedDir, "Optional directory of orchestration *.md files to install on boot if not already present")
+
 	// Agent library — short-form Claude/Codex agent definitions, used for
 	// one-off Runs. Repeat the flag to add more search paths; ~/.claude/agents
 	// and ~/.codex/agents are always searched in addition to these.
