@@ -889,6 +889,9 @@ func (s *Server) routes() http.Handler {
 			r.Delete("/api/labels/{kind}/{id}/{key}", api.DeleteLabelHandler(s.store))
 			r.Get("/api/labels/search", api.SearchLabelsHandler(s.store))
 			r.Get("/api/labels/all", api.ListAllLabelsHandler(s.store))
+			// Phase 22.10 PR β — on-demand stale findings GC. Hourly
+			// background sweep is wired separately (staleFindingsLoop).
+			r.Post("/api/findings/gc-stale", api.FindingsGCStaleHandler(s.store))
 			// Phase 22.8 PR γ — secrets + selector bindings. All
 			// admin-only — including reads, since metadata leaks
 			// "this credential exists". Plaintext is never echoed
@@ -1562,6 +1565,7 @@ func (s *Server) Run(ctx context.Context) error {
 	s.http.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
 
 	go s.sessionGC(ctx)
+	go s.staleFindingsLoop(ctx)
 	go s.notify.Run(ctx)
 	s.fedPoller.Start(ctx)
 	// Phase A — S3 dead-drop federation: parent-side reader for
@@ -1909,6 +1913,43 @@ func (s *Server) sessionGC(ctx context.Context) {
 			return
 		case <-t.C:
 			_ = s.store.PruneSessions()
+		}
+	}
+}
+
+// staleFindingsLoop closes "open" findings that haven't been re-emitted
+// in 24h — the agent saw it once, never came back, the row's been
+// sitting on the operator queue for nothing. Runs hourly. Closure is
+// non-destructive: status moves to 'acknowledged' with tag
+// 'auto-stale'; operators who want to reopen can do so from the drawer.
+//
+// Phase 22.10 PR β. Runs an immediate sweep on start so a freshly-
+// upgraded CP collapses the existing pile without waiting an hour.
+func (s *Server) staleFindingsLoop(ctx context.Context) {
+	const (
+		threshold     = 24 * time.Hour
+		perSweepLimit = 1000
+		tick          = 1 * time.Hour
+	)
+	sweep := func() {
+		res, err := s.store.AutoCloseStaleOpens(threshold, perSweepLimit)
+		if err != nil {
+			log.Printf("stale-findings-gc: %v", err)
+			return
+		}
+		if res.Closed > 0 {
+			log.Printf("stale-findings-gc: closed %d open finding(s) older than %s", res.Closed, threshold)
+		}
+	}
+	sweep()
+	t := time.NewTicker(tick)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			sweep()
 		}
 	}
 }

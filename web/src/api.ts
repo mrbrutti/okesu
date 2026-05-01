@@ -1674,6 +1674,17 @@ export const api = {
       { method: 'POST' },
     ),
 
+  // Phase 22.10 PR β — on-demand stale-finding GC. Closes "open"
+  // findings that haven't been re-emitted within `threshold_hours`
+  // (default 24). Same logic as the hourly background sweep; this
+  // surface lets admins kick the broom on demand for one-shot
+  // cleanup after a deploy.
+  findingsGCStale: (req: { threshold_hours?: number; limit?: number } = {}) =>
+    request<{ closed: number; scanned: number; threshold_ms: number; threshold_str: string }>(
+      '/api/findings/gc-stale',
+      { method: 'POST', body: JSON.stringify(req) },
+    ),
+
   // Phase 9 — notification channels, rules, deliveries.
   channels: () => request<Channel[]>('/api/notifications/channels'),
   createChannel: (req: ChannelCreateReq) =>
