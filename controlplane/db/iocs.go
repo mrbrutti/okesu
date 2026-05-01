@@ -338,7 +338,7 @@ func (s *Store) LookupIOC(kind, normalizedValue string) (*IOCRecord, error) {
 type IOCListFilter struct {
 	Kind      string
 	FindingID int64
-	Source    string // "catalog" | "observed" | "" (any)
+	Source    string // "catalog" | "observed" | "feed:<slug>" | "" (any) — exact match
 	Query     string // matches value, name, or tags via LIKE %q% (case-insensitive)
 	Limit     int
 }
