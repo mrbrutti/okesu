@@ -1887,6 +1887,7 @@ export interface Rule {
   min_severity: string;
   agent_substring?: string;
   host_substring?: string;
+  host_selector?: string;
   enabled: boolean;
   created_at: string;
 }
@@ -1897,6 +1898,7 @@ export interface RuleCreateReq {
   min_severity: string;
   agent_substring?: string;
   host_substring?: string;
+  host_selector?: string;
   enabled?: boolean;
 }
 
@@ -1906,6 +1908,7 @@ export interface RulePatchReq {
   min_severity?: string;
   agent_substring?: string;
   host_substring?: string;
+  host_selector?: string;
   enabled?: boolean;
 }
 

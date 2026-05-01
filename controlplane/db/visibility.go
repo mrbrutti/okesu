@@ -340,6 +340,27 @@ func (s *Store) nodeIDsByHost(hosts []string) (map[string]int64, error) {
 	return out, rows.Err()
 }
 
+// NodeLabelsForHost resolves a host string (the form findings.host /
+// runs.node_name carry) to the labels of the matching node row.
+// Used by the notification worker to evaluate host_selector at
+// delivery time. Returns an empty map (not nil) when the host
+// doesn't resolve to any known node — empty maps satisfy the
+// match-all selector but reject every key= requirement.
+func (s *Store) NodeLabelsForHost(host string) (map[string]string, error) {
+	if host == "" {
+		return map[string]string{}, nil
+	}
+	ids, err := s.nodeIDsByHost([]string{host})
+	if err != nil {
+		return nil, err
+	}
+	id, ok := ids[host]
+	if !ok {
+		return map[string]string{}, nil
+	}
+	return s.ListNodeLabels(id)
+}
+
 // scanString unwraps the any-typed value Scan handed us into a Go
 // string. NULL → "".
 func scanString(v any) string {

@@ -106,6 +106,23 @@ func (w *Worker) matches(rule db.NotificationRule, f *Finding) bool {
 			return false
 		}
 	}
+	// Phase 22.9 — K8s-style label selector against the finding's
+	// host node labels. Bad selectors fail-closed: a malformed rule
+	// shouldn't accidentally route every finding to its channel
+	// when the operator's intent was a tighter scope.
+	if rule.HostSelector != "" {
+		sel, err := db.ParseSelector(rule.HostSelector)
+		if err != nil {
+			return false
+		}
+		labels, err := w.Store.NodeLabelsForHost(f.Host)
+		if err != nil {
+			return false
+		}
+		if !sel.Matches(labels) {
+			return false
+		}
+	}
 	return true
 }
 

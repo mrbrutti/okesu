@@ -105,17 +105,21 @@ type NotificationRule struct {
 	MinSeverity    string
 	AgentSubstring sql.NullString
 	HostSubstring  sql.NullString
-	Enabled        bool
-	CreatedAt      time.Time
+	// HostSelector is the K8s-style label selector against the
+	// finding's host node labels (env=prod, role=db). Empty keeps
+	// the prior contains-only matching; non-empty tightens. Phase 22.9.
+	HostSelector string
+	Enabled      bool
+	CreatedAt    time.Time
 }
 
 func (s *Store) CreateRule(r *NotificationRule) (int64, error) {
 	res, err := s.Exec(`
-		INSERT INTO notification_rules (name, channel_id, min_severity, agent_substring, host_substring, enabled)
-		VALUES (?, ?, ?, ?, ?, ?)
+		INSERT INTO notification_rules (name, channel_id, min_severity, agent_substring, host_substring, host_selector, enabled)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
 	`, r.Name, r.ChannelID, strings.ToUpper(r.MinSeverity),
 		nullable(r.AgentSubstring.String), nullable(r.HostSubstring.String),
-		boolToInt(r.Enabled))
+		r.HostSelector, boolToInt(r.Enabled))
 	if err != nil {
 		return 0, err
 	}
@@ -126,11 +130,11 @@ func (s *Store) UpdateRule(r *NotificationRule) error {
 	_, err := s.Exec(`
 		UPDATE notification_rules
 		SET name = ?, channel_id = ?, min_severity = ?,
-		    agent_substring = ?, host_substring = ?, enabled = ?
+		    agent_substring = ?, host_substring = ?, host_selector = ?, enabled = ?
 		WHERE id = ?
 	`, r.Name, r.ChannelID, strings.ToUpper(r.MinSeverity),
 		nullable(r.AgentSubstring.String), nullable(r.HostSubstring.String),
-		boolToInt(r.Enabled), r.ID)
+		r.HostSelector, boolToInt(r.Enabled), r.ID)
 	return err
 }
 
@@ -141,7 +145,7 @@ func (s *Store) DeleteRule(id int64) error {
 
 func (s *Store) ListRules() ([]*NotificationRule, error) {
 	rows, err := s.Query(`
-		SELECT id, name, channel_id, min_severity, agent_substring, host_substring, enabled, created_at
+		SELECT id, name, channel_id, min_severity, agent_substring, host_substring, host_selector, enabled, created_at
 		FROM notification_rules ORDER BY id DESC
 	`)
 	if err != nil {
@@ -154,7 +158,7 @@ func (s *Store) ListRules() ([]*NotificationRule, error) {
 		var enabled int
 		if err := rows.Scan(
 			&r.ID, &r.Name, &r.ChannelID, &r.MinSeverity,
-			&r.AgentSubstring, &r.HostSubstring, &enabled, &r.CreatedAt,
+			&r.AgentSubstring, &r.HostSubstring, &r.HostSelector, &enabled, &r.CreatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -173,7 +177,7 @@ type EnabledRule struct {
 
 func (s *Store) EnabledRulesWithChannels() ([]*EnabledRule, error) {
 	rows, err := s.Query(`
-		SELECT r.id, r.name, r.channel_id, r.min_severity, r.agent_substring, r.host_substring, r.enabled, r.created_at,
+		SELECT r.id, r.name, r.channel_id, r.min_severity, r.agent_substring, r.host_substring, r.host_selector, r.enabled, r.created_at,
 		       c.id, c.name, c.type, c.config, c.enabled, c.created_at, c.updated_at, c.created_by_email
 		FROM notification_rules r
 		JOIN notification_channels c ON c.id = r.channel_id
@@ -189,7 +193,7 @@ func (s *Store) EnabledRulesWithChannels() ([]*EnabledRule, error) {
 		var rEnabled, cEnabled int
 		if err := rows.Scan(
 			&er.Rule.ID, &er.Rule.Name, &er.Rule.ChannelID, &er.Rule.MinSeverity,
-			&er.Rule.AgentSubstring, &er.Rule.HostSubstring, &rEnabled, &er.Rule.CreatedAt,
+			&er.Rule.AgentSubstring, &er.Rule.HostSubstring, &er.Rule.HostSelector, &rEnabled, &er.Rule.CreatedAt,
 			&er.Channel.ID, &er.Channel.Name, &er.Channel.Type, &er.Channel.Config,
 			&cEnabled, &er.Channel.CreatedAt, &er.Channel.UpdatedAt, &er.Channel.CreatedByEmail,
 		); err != nil {
