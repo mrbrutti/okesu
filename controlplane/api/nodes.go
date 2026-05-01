@@ -208,6 +208,12 @@ func toNodeJSON(n *db.Node) nodeJSON {
 
 // NodesList returns registered nodes, paginated.
 // GET /api/nodes?limit=N&offset=N
+//
+// Phase 22.8 PR β wire-through — when the caller has only scoped
+// grants (no CP-wide role), the result is filtered through
+// Store.FilterVisibleNodes. CP-wide grants short-circuit the filter
+// to "see everything", so existing admins/operators (in their
+// default-* groups) keep full visibility — no behaviour change.
 func NodesList(store *db.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
@@ -216,6 +222,33 @@ func NodesList(store *db.Store) http.HandlerFunc {
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
+		}
+		// Apply scoped-role visibility filter if a user is on the
+		// context. Synthetic actors (federation tokens, API tokens
+		// without a backing user) skip this — they keep operating on
+		// whatever the route layer already gated.
+		if u := auth.UserFromContext(r.Context()); u != nil && u.ID > 0 {
+			ids := make([]int64, len(ns))
+			for i, n := range ns {
+				ids[i] = n.ID
+			}
+			visible, err := store.FilterVisibleNodes(u.ID, "viewer", ids)
+			if err == nil {
+				keep := make(map[int64]struct{}, len(visible))
+				for _, id := range visible {
+					keep[id] = struct{}{}
+				}
+				filtered := make([]*db.Node, 0, len(visible))
+				for _, n := range ns {
+					if _, ok := keep[n.ID]; ok {
+						filtered = append(filtered, n)
+					}
+				}
+				ns = filtered
+			}
+			// On error, fall through with the unfiltered set — better
+			// to over-show than to break the page silently. The route
+			// layer's RequireRole already gated on at least viewer.
 		}
 		out := make([]nodeJSON, 0, len(ns))
 		for _, n := range ns {
