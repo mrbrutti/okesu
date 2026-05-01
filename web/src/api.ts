@@ -238,6 +238,18 @@ export interface LabelTarget {
   key?: string;
 }
 
+// SeverityCeiling is one (selector → max_severity) row that caps
+// agent-assigned severity at finding-ingest time. Lab/staging
+// nodes commonly carry a ceiling (env=staging → MEDIUM).
+export interface SeverityCeiling {
+  id: number;
+  selector: string;
+  max_severity: 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW' | 'INFO';
+  reason?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
 // LabelRow is one row of the labels table — what /api/labels/all
 // returns. Drives the Settings → Labels admin page. target_id is
 // 0 for kinds with composite-key identity (daimon = name@host); in
@@ -1684,6 +1696,21 @@ export const api = {
       '/api/findings/gc-stale',
       { method: 'POST', body: JSON.stringify(req) },
     ),
+
+  // Phase 22.10 PR γ — per-label severity ceilings. Match a node's
+  // labels via selector, cap any finding emitted on that node at
+  // max_severity. CRUD admin-only.
+  severityCeilings: () => request<SeverityCeiling[]>('/api/severity-ceilings'),
+  createSeverityCeiling: (req: { selector: string; max_severity: string; reason?: string }) =>
+    request<{ id: number }>('/api/severity-ceilings', {
+      method: 'POST', body: JSON.stringify(req),
+    }),
+  updateSeverityCeiling: (id: number, req: { max_severity: string; reason?: string }) =>
+    request<void>(`/api/severity-ceilings/${id}`, {
+      method: 'PATCH', body: JSON.stringify(req),
+    }),
+  deleteSeverityCeiling: (id: number) =>
+    request<void>(`/api/severity-ceilings/${id}`, { method: 'DELETE' }),
 
   // Phase 9 — notification channels, rules, deliveries.
   channels: () => request<Channel[]>('/api/notifications/channels'),
