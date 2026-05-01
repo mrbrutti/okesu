@@ -23,8 +23,9 @@ module "network" {
   name_prefix      = var.name_prefix
 }
 
-# ── Managed services: validates Postgres + Streaming + Cache + Object Storage ─
+# ── Managed services: only provisioned when smoke=false ─────────────
 module "db" {
+  count  = var.smoke ? 0 : 1
   source = "./modules/db"
 
   compartment_ocid = var.compartment_ocid
@@ -36,6 +37,7 @@ module "db" {
 }
 
 module "streaming" {
+  count  = var.smoke ? 0 : 1
   source = "./modules/streaming"
 
   compartment_ocid = var.compartment_ocid
@@ -46,6 +48,7 @@ module "streaming" {
 }
 
 module "cache" {
+  count  = var.smoke ? 0 : 1
   source = "./modules/cache"
 
   compartment_ocid = var.compartment_ocid
@@ -55,6 +58,7 @@ module "cache" {
 }
 
 module "objectstorage" {
+  count  = var.smoke ? 0 : 1
   source = "./modules/objectstorage"
 
   compartment_ocid = var.compartment_ocid
@@ -79,8 +83,9 @@ module "cp_vm" {
   ssh_public_key   = var.ssh_public_key
 }
 
-# ── ClickHouse VM ────────────────────────────────────────────────────
+# ── ClickHouse VM — only provisioned when smoke=false ────────────────
 module "clickhouse_vm" {
+  count  = var.smoke ? 0 : 1
   source = "./modules/clickhouse_vm"
 
   compartment_ocid    = var.compartment_ocid
@@ -95,8 +100,9 @@ module "clickhouse_vm" {
   clickhouse_password = random_password.clickhouse.result
 }
 
-# ── Fleet: 8 VMs running the daemon ─────────────────────────────────
+# ── Fleet: daemon VMs — only provisioned when smoke=false ────────────
 module "fleet" {
+  count  = var.smoke ? 0 : 1
   source = "./modules/fleet"
 
   compartment_ocid = var.compartment_ocid

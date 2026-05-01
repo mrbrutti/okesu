@@ -1,3 +1,9 @@
+variable "smoke" {
+  description = "Smoke mode — only provision network + cp_vm. CP runs with sqlite/in-process/local-filesystem defaults. Set to false for the full OCI-managed services stack (Postgres, ClickHouse VM, Cache, Streaming, Object Storage, Fleet)."
+  type        = bool
+  default     = true
+}
+
 variable "oci_auth" {
   description = "OCI provider auth mode. \"ApiKey\" for long-lived API keys, \"SecurityToken\" for `oci session authenticate` (browser SSO)."
   type        = string
@@ -42,9 +48,9 @@ variable "name_prefix" {
 }
 
 variable "fleet_size" {
-  description = "Daemon VM count. The first 2 are Always Free (E2.1.Micro); each additional is ~$0.005/hr."
+  description = "Daemon VM count. The first 2 are Always Free (E2.1.Micro); each additional is ~$0.005/hr. Defaults to 0 so smoke mode (and even non-smoke runs) opt in explicitly."
   type        = number
-  default     = 8
+  default     = 0
 }
 
 variable "ssh_public_key" {
