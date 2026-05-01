@@ -13,7 +13,7 @@ type IOCUpsert struct {
 	Kind            string
 	Value           string
 	NormalizedValue string
-	Source          string // "catalog" | "observed"; defaults to "observed" when empty
+	Source          string // "catalog" | "observed" | "feed:<slug>"; defaults to "observed" when empty
 	DefinitionPath  string
 	Confidence      string
 	Attribution     string
@@ -22,6 +22,7 @@ type IOCUpsert struct {
 	Notes           string
 	Name            string
 	Tags            string
+	FeedID          *int64 // nil for catalog/observed; set for feed-sourced rows
 }
 
 // IOCRecord is what the store reads back.
@@ -39,6 +40,7 @@ type IOCRecord struct {
 	Notes            string
 	Name             string
 	Tags             string
+	FeedID           sql.NullInt64
 	ObservationCount int64
 	FirstSeen        time.Time
 	LastSeen         time.Time
@@ -82,13 +84,13 @@ func (s *Store) UpsertIOC(in *IOCUpsert) (id int64, created bool, err error) {
 	res, err := s.Exec(`
 		INSERT INTO iocs (kind, value, normalized_value, source, definition_path,
 		                  confidence, attribution, severity_floor, classification, notes,
-		                  name, tags)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		                  name, tags, feed_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (kind, normalized_value) DO NOTHING`,
 		in.Kind, in.Value, in.NormalizedValue, source,
 		nullable(in.DefinitionPath), nullable(in.Confidence), nullable(in.Attribution),
 		nullable(in.SeverityFloor), nullable(in.Classification), nullable(in.Notes),
-		nullable(in.Name), nullable(in.Tags))
+		nullable(in.Name), nullable(in.Tags), nullableInt64Ptr(in.FeedID))
 	if err != nil {
 		return 0, false, err
 	}
@@ -98,24 +100,51 @@ func (s *Store) UpsertIOC(in *IOCUpsert) (id int64, created bool, err error) {
 	}
 	created = rowsAffected == 1
 
-	// 2. Apply metadata reconciliation on conflict. A catalog upsert
-	//    overwrites observed metadata; an observed upsert only refreshes
-	//    timestamps so curated catalog metadata is never clobbered.
+	// 2. Apply metadata reconciliation on conflict.
+	//
+	// Priority rules:
+	//   catalog  → always overrides (including catalog-on-catalog reload).
+	//   feed:*   → overrides only if the existing row is "observed"
+	//              (catalog YAML, being an explicit operator decision, wins
+	//              over any feed-sourced row).
+	//   observed → only refreshes timestamps; never clobbers curated data.
 	if !created {
-		if source == "catalog" {
+		switch {
+		case source == "catalog":
+			// Catalog is authoritative: overwrite metadata unconditionally
+			// (handles both observed→catalog and catalog-reload cases).
 			if _, err := s.Exec(`
 				UPDATE iocs
 				SET source = ?, definition_path = ?, confidence = ?, attribution = ?,
 				    severity_floor = ?, classification = ?, notes = ?,
-				    name = ?, tags = ?, updated_at = CURRENT_TIMESTAMP
+				    name = ?, tags = ?, feed_id = ?, updated_at = CURRENT_TIMESTAMP
 				WHERE kind = ? AND normalized_value = ?`,
 				source, nullable(in.DefinitionPath), nullable(in.Confidence), nullable(in.Attribution),
 				nullable(in.SeverityFloor), nullable(in.Classification), nullable(in.Notes),
-				nullable(in.Name), nullable(in.Tags),
+				nullable(in.Name), nullable(in.Tags), nullableInt64Ptr(in.FeedID),
 				in.Kind, in.NormalizedValue); err != nil {
 				return 0, false, err
 			}
-		} else {
+		case source != "observed":
+			// Feed-sourced (source = "feed:<slug>"): only override observed rows;
+			// catalog rows take precedence over feeds.
+			// A row already sourced from another feed is also left untouched
+			// (first-feed-wins emerges from the WHERE source='observed' guard —
+			// do NOT widen it without rethinking precedence).
+			if _, err := s.Exec(`
+				UPDATE iocs
+				SET source = ?, definition_path = ?, confidence = ?, attribution = ?,
+				    severity_floor = ?, classification = ?, notes = ?,
+				    name = ?, tags = ?, feed_id = ?, updated_at = CURRENT_TIMESTAMP
+				WHERE kind = ? AND normalized_value = ? AND source = 'observed'`,
+				source, nullable(in.DefinitionPath), nullable(in.Confidence), nullable(in.Attribution),
+				nullable(in.SeverityFloor), nullable(in.Classification), nullable(in.Notes),
+				nullable(in.Name), nullable(in.Tags), nullableInt64Ptr(in.FeedID),
+				in.Kind, in.NormalizedValue); err != nil {
+				return 0, false, err
+			}
+		default:
+			// source == "observed": only refresh timestamps.
 			if _, err := s.Exec(`
 				UPDATE iocs SET last_seen = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
 				WHERE kind = ? AND normalized_value = ?`,
@@ -143,13 +172,13 @@ func (s *Store) GetIOC(id int64) (*IOCRecord, error) {
 		       COALESCE(attribution,''), COALESCE(severity_floor,''),
 		       COALESCE(classification,''), COALESCE(notes,''),
 		       COALESCE(name,''), COALESCE(tags,''),
-		       observation_count, first_seen, last_seen
+		       feed_id, observation_count, first_seen, last_seen
 		FROM iocs WHERE id = ?`, id)
 	var r IOCRecord
 	if err := row.Scan(&r.ID, &r.Kind, &r.Value, &r.NormalizedValue, &r.Source,
 		&r.DefinitionPath, &r.Confidence, &r.Attribution, &r.SeverityFloor,
 		&r.Classification, &r.Notes, &r.Name, &r.Tags,
-		&r.ObservationCount, &r.FirstSeen, &r.LastSeen); err != nil {
+		&r.FeedID, &r.ObservationCount, &r.FirstSeen, &r.LastSeen); err != nil {
 		return nil, err
 	}
 	return &r, nil
@@ -165,13 +194,13 @@ func (s *Store) GetIOCByKV(kind, normalizedValue string) (*IOCRecord, error) {
 		       COALESCE(attribution,''), COALESCE(severity_floor,''),
 		       COALESCE(classification,''), COALESCE(notes,''),
 		       COALESCE(name,''), COALESCE(tags,''),
-		       observation_count, first_seen, last_seen
+		       feed_id, observation_count, first_seen, last_seen
 		FROM iocs WHERE kind = ? AND normalized_value = ?`, kind, normalizedValue)
 	var r IOCRecord
 	if err := row.Scan(&r.ID, &r.Kind, &r.Value, &r.NormalizedValue, &r.Source,
 		&r.DefinitionPath, &r.Confidence, &r.Attribution, &r.SeverityFloor,
 		&r.Classification, &r.Notes, &r.Name, &r.Tags,
-		&r.ObservationCount, &r.FirstSeen, &r.LastSeen); err != nil {
+		&r.FeedID, &r.ObservationCount, &r.FirstSeen, &r.LastSeen); err != nil {
 		return nil, err
 	}
 	return &r, nil
@@ -360,7 +389,7 @@ func (s *Store) ListIOCs(f IOCListFilter) ([]*IOCRecord, error) {
 	       COALESCE(iocs.attribution,''), COALESCE(iocs.severity_floor,''),
 	       COALESCE(iocs.classification,''), COALESCE(iocs.notes,''),
 	       COALESCE(iocs.name,''), COALESCE(iocs.tags,''),
-	       iocs.observation_count, iocs.first_seen, iocs.last_seen
+	       iocs.feed_id, iocs.observation_count, iocs.first_seen, iocs.last_seen
 	FROM iocs ` + join + where + ` ORDER BY iocs.last_seen DESC LIMIT ?`
 	args = append(args, f.Limit)
 
@@ -375,10 +404,74 @@ func (s *Store) ListIOCs(f IOCListFilter) ([]*IOCRecord, error) {
 		if err := rows.Scan(&r.ID, &r.Kind, &r.Value, &r.NormalizedValue, &r.Source,
 			&r.DefinitionPath, &r.Confidence, &r.Attribution, &r.SeverityFloor,
 			&r.Classification, &r.Notes, &r.Name, &r.Tags,
-			&r.ObservationCount, &r.FirstSeen, &r.LastSeen); err != nil {
+			&r.FeedID, &r.ObservationCount, &r.FirstSeen, &r.LastSeen); err != nil {
 			return nil, err
 		}
 		out = append(out, &r)
 	}
 	return out, rows.Err()
+}
+
+// ListIOCsByFeed returns rows produced by a given feed. Used by the
+// reconcile pass to compute the deleted set on each refresh.
+func (s *Store) ListIOCsByFeed(feedID int64) ([]IOCRecord, error) {
+	rows, err := s.Query(`
+		SELECT id, kind, value, normalized_value, source,
+		       COALESCE(definition_path, ''), COALESCE(confidence, ''),
+		       COALESCE(attribution, ''), COALESCE(severity_floor, ''),
+		       COALESCE(classification, ''), COALESCE(notes, ''),
+		       COALESCE(name, ''), COALESCE(tags, ''),
+		       feed_id, observation_count, first_seen, last_seen
+		  FROM iocs WHERE feed_id = ?`, feedID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []IOCRecord
+	for rows.Next() {
+		var r IOCRecord
+		if err := rows.Scan(&r.ID, &r.Kind, &r.Value, &r.NormalizedValue, &r.Source,
+			&r.DefinitionPath, &r.Confidence, &r.Attribution, &r.SeverityFloor,
+			&r.Classification, &r.Notes, &r.Name, &r.Tags,
+			&r.FeedID, &r.ObservationCount, &r.FirstSeen, &r.LastSeen); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// DeleteIOCsByFeed deletes every iocs row in `ids` (which the caller
+// guarantees are scoped to feedID) and writes the orphaned_rule_label
+// breadcrumb on every observation that pointed at one of them.
+//
+// labelPrefix is "<feed-slug>:" — concrete labels become
+// "<feed-slug>:<ioc.name>" so the UI can render "rule no longer in
+// catalog (was: <prefix><name>)".
+//
+// Used by reconcile-on-refresh to drop rows the feed no longer
+// produces, and by uninstall (which calls reconcile-to-empty).
+func (s *Store) DeleteIOCsByFeed(feedID int64, labelPrefix string, ids []int64) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	tx, err := s.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, id := range ids {
+		var name sql.NullString
+		if err := tx.QueryRow(`SELECT COALESCE(name, '') FROM iocs WHERE id = ? AND feed_id = ?`, id, feedID).Scan(&name); err != nil {
+			return err
+		}
+		label := labelPrefix + name.String
+		if _, err := tx.Exec(`UPDATE ioc_observations SET ioc_id = NULL, orphaned_rule_label = ? WHERE ioc_id = ?`, label, id); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`DELETE FROM iocs WHERE id = ? AND feed_id = ?`, id, feedID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
