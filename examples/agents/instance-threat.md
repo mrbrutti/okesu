@@ -1,10 +1,11 @@
 ---
 # ── Identity ────────────────────────────────────────────────────────────────
 name: instance-threat
-version: "2"
+version: "3"
 description: >
   Active exploitation detector. Monitors for IMDS abuse, container escapes,
-  privilege escalation, and cryptomining on a per-instance basis.
+  privilege escalation, cryptomining, and CVE-2026-31431 ("Copy Fail") Linux
+  kernel LPE on a per-instance basis.
 
 # ── Provider ─────────────────────────────────────────────────────────────────
 provider: claude
@@ -111,6 +112,59 @@ collectors:
       nvidia-smi --query-compute-apps=pid,name,used_memory --format=csv,noheader 2>/dev/null || echo "no GPU"
     timeout: 10s
 
+  # CVE-2026-31431 "Copy Fail" — Linux kernel LPE via algif_aead crypto
+  # template. Collects (1) running kernel version + distro for posture
+  # assessment against the affected ranges, (2) algif_aead module load
+  # state and modprobe blacklist (Ubuntu's USN-8226-1 mitigation
+  # ships kmod with algif_aead disabled), (3) running-process
+  # indicators that suggest active exploitation: AF_ALG sockets held
+  # by non-system processes, python/exploit-named binaries, recent
+  # writes to /tmp /dev/shm /home matching exploit-name patterns.
+  - name: copy_fail_indicators
+    command: >
+      echo "=== Kernel version + distro ==="
+      uname -r
+      uname -v
+      cat /etc/os-release 2>/dev/null | grep -E '^(NAME|VERSION|ID|VERSION_ID|PRETTY_NAME)='
+      echo "=== algif_aead module state ==="
+      lsmod 2>/dev/null | grep -E '^algif_aead\b' || echo "algif_aead: not loaded"
+      grep -RIE '^\s*blacklist\s+algif_aead\b' /etc/modprobe.d/ /usr/lib/modprobe.d/ /run/modprobe.d/ 2>/dev/null || echo "algif_aead blacklist: none"
+      modprobe -c 2>/dev/null | grep -E '\balgif_aead\b' | head -5 || echo "modprobe -c: algif_aead not present"
+      echo "=== Processes with AF_ALG sockets (rare for benign apps) ==="
+      for pid in $(ls /proc/ 2>/dev/null | grep -E '^[0-9]+$' | head -300); do
+        if ls -l /proc/$pid/fd 2>/dev/null | grep -q 'socket:\['; then
+          if grep -lq -E '^[0-9a-f]+\s+(38|0x26)' /proc/$pid/net/protocols 2>/dev/null; then :; fi
+        fi
+        if [ -r /proc/$pid/comm ]; then
+          if ss -nx 2>/dev/null | grep -q "^.*pid=$pid"; then :; fi
+        fi
+      done 2>/dev/null
+      ss -fa unix 2>/dev/null | head -1 >/dev/null
+      echo "(AF_ALG enumeration via /proc not portable; relying on auditd if configured below)"
+      echo "=== auditd records for AF_ALG / algif_aead (last hour) ==="
+      ausearch --start recent -k copy_fail 2>/dev/null | head -40 || echo "auditd not configured for copy_fail"
+      ausearch --start recent -sc socket 2>/dev/null | grep -E 'a0=26\b|family=alg' | head -20 || echo "no recent AF_ALG socket calls"
+      echo "=== Suspicious process cmdlines (CVE-2026-31431 exploit names) ==="
+      for pid in $(ls /proc/ 2>/dev/null | grep -E '^[0-9]+$'); do
+        cl=$(tr '\0' ' ' < /proc/$pid/cmdline 2>/dev/null)
+        if echo "$cl" | grep -qiE '\bcopy[_-]?fail\b|\bcve[_-]?2026[_-]?31431\b|\balgif[_-]?aead.*pwn|crypto.*lpe|authencesn.*exploit'; then
+          echo "MATCH pid=$pid cmd=$cl"
+        fi
+      done | head -20
+      echo "=== Recent suspicious files in /tmp /dev/shm /home (exploit-name patterns) ==="
+      find /tmp /dev/shm /home -maxdepth 4 -type f \( -name '*copy_fail*' -o -name '*copy-fail*' -o -name '*cve-2026-31431*' -o -name '*cve_2026_31431*' -o -name '*algif_aead*' \) -newer {{.LastRunFile}} -printf '%T@ %m %u %p\n' 2>/dev/null | head -20 || echo "none"
+      echo "=== Known exploit binary hash check ==="
+      KNOWN_HASH='e59d0124ff06c248546876e01fcfb1ea3cda63534940f94a9372bfcfe3bfc3f5'
+      for pid in $(ls /proc/ 2>/dev/null | grep -E '^[0-9]+$'); do
+        exe=$(readlink /proc/$pid/exe 2>/dev/null)
+        [ -z "$exe" ] && continue
+        h=$(sha256sum "$exe" 2>/dev/null | awk '{print $1}')
+        if [ "$h" = "$KNOWN_HASH" ]; then
+          echo "MATCH pid=$pid exe=$exe sha256=$h (CrowdStrike-published exploit hash)"
+        fi
+      done | head -5
+    timeout: 20s
+
 # ── Output sinks ─────────────────────────────────────────────────────────────
 outputs:
   - type: stdout
@@ -174,6 +228,56 @@ Detect active exploitation and abuse on this host across these families:
 
 5. **Secret exposure** — plaintext API keys, tokens, or credentials in
    world-readable files (env files, log files, `/proc/<pid>/environ`).
+
+6. **CVE-2026-31431 "Copy Fail"** — Linux kernel LPE via the
+   `algif_aead` crypto template (CVSS 7.8, AV:L/AC:L/PR:L). Two
+   complementary signals from the `copy_fail_indicators` collector:
+
+   **Posture (vulnerable kernel, no exploit yet seen).** The running
+   kernel version falls in any of the affected ranges below AND the
+   `algif_aead` module is not blacklisted. Emit one finding per host
+   under family `copy-fail-vulnerable-kernel`:
+
+   | Stable series      | Affected versions       |
+   |--------------------|-------------------------|
+   | 4.14 – 5.10        | < 5.10.254              |
+   | 5.11 – 5.15        | < 5.15.204              |
+   | 5.16 – 6.1         | < 6.1.170               |
+   | 6.2 – 6.6          | < 6.6.137               |
+   | 6.7 – 6.12         | < 6.12.85               |
+   | 6.13 – 6.18        | < 6.18.22               |
+   | 6.19               | < 6.19.12               |
+   | 7.0                | RC1–RC6                 |
+
+   Distro vendors backport — a vendor kernel string (e.g.
+   `5.15.0-118-generic`) in a vulnerable-numeric range may already
+   be patched. When `lookup_findings` is available, prefer it over
+   re-deriving patch state; otherwise rely on the upstream version
+   and treat backport ambiguity as `MEDIUM`.
+
+   **Active exploitation.** Any of:
+   - A running process whose cmdline matches the exploit-name
+     patterns (`copy_fail*`, `cve-2026-31431*`, `algif_aead*pwn`,
+     `crypto*lpe`, `authencesn*exploit`) — collector emits
+     `MATCH pid=… cmd=…` lines.
+   - A binary whose SHA256 equals the CrowdStrike-published hash
+     `e59d0124ff06c248546876e01fcfb1ea3cda63534940f94a9372bfcfe3bfc3f5`
+     — collector emits `MATCH pid=… sha256=…` lines.
+   - An auditd `socket(AF_ALG, ..., "aead", "authencesn(...)")` call
+     from a non-system UID (heuristic: `uid >= 1000` AND not in
+     `/etc/passwd` system users) within the tick window. Most
+     legitimate userspace doesn't touch AF_ALG; cryptsetup, dm-crypt,
+     and IPsec userland are the rare exceptions and live under
+     `root` or dedicated system UIDs.
+   - A new file matching the exploit-name patterns appearing in
+     `/tmp`, `/dev/shm`, or `/home` since the previous tick.
+
+   Emit under family `copy-fail-exploit`. CRITICAL when the binary
+   hash matches the published IOC OR a non-system uid invoked
+   `authencesn` AF_ALG. HIGH for cmdline-pattern matches without
+   AF_ALG corroboration. Do NOT emit a Copy-Fail finding from log
+   noise alone (e.g., a system-update `dpkg` line that mentions
+   `algif_aead` in a changelog).
 
 If nothing is wrong, respond with `CLEAR` and stop. Do not emit `INFO`
 findings just to "show your work".
@@ -243,6 +347,8 @@ default ports (`:443`, `:80`).
 | `secret-in-env-file`  | `path:<abs-path>`                            | `secret-in-env-file+path:/etc/okesu/agents/instance-threat.env` |
 | `secret-in-log-file`  | `path:<abs-path>`                            | `secret-in-log-file+path:/var/log/okesu/instance-threat.jsonl`  |
 | `cryptominer-process` | `binary:<abs-path>`                          | `cryptominer-process+binary:/usr/bin/xmrig`            |
+| `copy-fail-vulnerable-kernel` | `host:<hostid>` + `kver:<release>`   | `copy-fail-vulnerable-kernel+host:8036ec89f5db+kver:5.15.0-118-generic` |
+| `copy-fail-exploit`   | `binary:<abs-path>`                          | `copy-fail-exploit+binary:/tmp/.x/copy_fail_exp.py`    |
 
 **Use `binary:` (the executable path), never `pid:`, as the primary
 invariant for process-anchored findings.** PIDs change every restart;
@@ -274,6 +380,8 @@ all hash differently).
 | `secret-in-env-file`  | `Plaintext API keys in {path}`                                                        |
 | `secret-in-log-file`  | `API keys leaked into log file {path}`                                                |
 | `cryptominer-process` | `Cryptomining process {binary} running as {user}`                                     |
+| `copy-fail-vulnerable-kernel` | `Host running kernel {kver} vulnerable to CVE-2026-31431 (Copy Fail)`         |
+| `copy-fail-exploit`   | `Suspected CVE-2026-31431 (Copy Fail) exploitation by {binary}`                       |
 
 Keep titles ≤ 120 characters.
 
@@ -476,6 +584,63 @@ handshake on that channel). Do not invent a "8443+8444" combined family
   "category": "identity",
   "path": "/root/.ssh/authorized_keys",
   "tags": ["ssh-key", "persistence"]
+}
+```
+
+#### Example E — Copy Fail vulnerable kernel (posture)
+
+```json
+{
+  "severity": "HIGH",
+  "title": "Host running kernel 5.15.0-118-generic vulnerable to CVE-2026-31431 (Copy Fail)",
+  "resource": "host:8036ec89f5db, kver:5.15.0-118-generic, distro:ubuntu-22.04",
+  "evidence": [
+    "uname -r → 5.15.0-118-generic (upstream 5.15 series, fixed in <5.15.204)",
+    "/etc/os-release → Ubuntu 22.04.4 LTS",
+    "lsmod shows algif_aead loaded; no blacklist entry under /etc/modprobe.d/",
+    "Vendor advisory: https://ubuntu.com/security/CVE-2026-31431"
+  ],
+  "recommended_action": "Apply the vendor kernel update (Ubuntu USN-8226-1 or successor) and reboot. Interim mitigation: `echo 'blacklist algif_aead' > /etc/modprobe.d/copy-fail.conf && update-initramfs -u` then `rmmod algif_aead` if no current consumer holds it.",
+  "dedup_key": "copy-fail-vulnerable-kernel+host:8036ec89f5db+kver:5.15.0-118-generic",
+  "category": "config",
+  "tags": ["cve-2026-31431", "copy-fail", "linux-kernel", "lpe", "posture"],
+  "attributes": {
+    "cve": "CVE-2026-31431",
+    "cvss": 7.8,
+    "kernel_release": "5.15.0-118-generic",
+    "algif_aead_loaded": true,
+    "algif_aead_blacklisted": false
+  }
+}
+```
+
+#### Example F — Copy Fail active exploitation (CRITICAL)
+
+```json
+{
+  "severity": "CRITICAL",
+  "title": "Suspected CVE-2026-31431 (Copy Fail) exploitation by /tmp/.x/copy_fail_exp.py",
+  "resource": "binary:/tmp/.x/copy_fail_exp.py, pid:71306, user:appuser, host:8036ec89f5db",
+  "evidence": [
+    "/proc/71306/cmdline → python3 ./copy_fail_exp.py",
+    "/proc/71306/exe → /usr/bin/python3.13",
+    "Script SHA256 e59d0124ff06c248546876e01fcfb1ea3cda63534940f94a9372bfcfe3bfc3f5 (matches CrowdStrike-published IOC)",
+    "ausearch shows recent socket(AF_ALG, ...) call from uid=1001 (appuser)",
+    "Parent /usr/sbin/sshd → bash (interactive session)"
+  ],
+  "recommended_action": "Isolate the host; preserve /tmp/.x/copy_fail_exp.py and /proc/71306/{exe,maps,environ}; kill PID 71306 only after capture; rotate credentials reachable from appuser; apply kernel patch immediately.",
+  "dedup_key": "copy-fail-exploit+binary:/tmp/.x/copy_fail_exp.py",
+  "category": "process",
+  "process_pid": 71306,
+  "process_name": "python3",
+  "path": "/tmp/.x/copy_fail_exp.py",
+  "tags": ["cve-2026-31431", "copy-fail", "linux-kernel", "lpe", "active-impact"],
+  "attributes": {
+    "cve": "CVE-2026-31431",
+    "exploit_sha256": "e59d0124ff06c248546876e01fcfb1ea3cda63534940f94a9372bfcfe3bfc3f5",
+    "interpreter": "/usr/bin/python3.13",
+    "user": "appuser"
+  }
 }
 ```
 
