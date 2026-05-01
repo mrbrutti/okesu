@@ -263,6 +263,64 @@ func (s *Store) FindTargetsBySelector(kind string, sel Selector) ([]LabelTarget,
 	return out, nil
 }
 
+// ListAllLabels returns every label row, optionally filtered. The
+// admin UI uses this to render a single sortable table of every
+// (kind, target, key, value) the operator can see at a glance.
+//
+// Filters compose with AND. Pass empty strings to skip a filter.
+// Limit caps the result count — default 1000 when ≤0.
+type LabelFilter struct {
+	Kind  string
+	Key   string
+	Value string
+	Limit int
+}
+
+func (s *Store) ListAllLabels(f LabelFilter) ([]Label, error) {
+	q := `SELECT id, target_kind, target_id, target_key, key, value, source,
+	             CAST(created_at AS TEXT), CAST(updated_at AS TEXT)
+	        FROM labels`
+	clauses := []string{}
+	args := []any{}
+	if f.Kind != "" {
+		clauses = append(clauses, "target_kind = ?")
+		args = append(args, f.Kind)
+	}
+	if f.Key != "" {
+		clauses = append(clauses, "key = ?")
+		args = append(args, f.Key)
+	}
+	if f.Value != "" {
+		clauses = append(clauses, "value = ?")
+		args = append(args, f.Value)
+	}
+	if len(clauses) > 0 {
+		q += " WHERE " + strings.Join(clauses, " AND ")
+	}
+	q += " ORDER BY target_kind, key, value, target_id, target_key"
+	limit := f.Limit
+	if limit <= 0 {
+		limit = 1000
+	}
+	q += " LIMIT ?"
+	args = append(args, limit)
+	rows, err := s.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Label{}
+	for rows.Next() {
+		var l Label
+		if err := rows.Scan(&l.ID, &l.TargetKind, &l.TargetID, &l.TargetKey,
+			&l.Key, &l.Value, &l.Source, &l.CreatedAt, &l.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, l)
+	}
+	return out, rows.Err()
+}
+
 // DistinctLabelKeys returns the unique label keys present for a kind,
 // sorted. Drives autocomplete in the SelectorInput component.
 func (s *Store) DistinctLabelKeys(kind string) ([]string, error) {

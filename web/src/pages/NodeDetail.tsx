@@ -25,6 +25,7 @@ import {
 } from 'lucide-react';
 import { api, ApiError, type AboutInfo, type DaimonItem, type KnownHostItem, type NodeItem, type User } from '../api';
 import { LabelEditor } from '../components/labels/LabelEditor';
+import { LabelStrip } from '../components/labels/LabelStrip';
 import { cn } from '../lib/cn';
 import EventTimeline from '../components/EventTimeline';
 import { BinaryUpdateDialog, type BinaryAction } from '../components/BinaryUpdateDialog';
@@ -149,6 +150,7 @@ export default function NodeDetailPage() {
             <p className="text-xs text-ink-dim font-mono mt-0.5">
               {node.ssh_user}@{node.hostname}{node.ssh_port !== 22 ? ':' + node.ssh_port : ''}
             </p>
+            <LabelStrip kind="node" idOrKey={node.id} className="mt-1.5" />
           </div>
 
           <div className="hidden md:flex items-stretch gap-3">
@@ -465,7 +467,10 @@ function RuntimesCard({ node }: { node: NodeItem }) {
 // shared code path with every other entity that gets labels.
 function LabelsCard({ nodeID, isAdmin }: { nodeID: number; isAdmin: boolean }) {
   return (
-    <section className="bg-panel border border-border rounded-xl shadow-card p-5 lg:col-span-2">
+    <section
+      id="labels-card"
+      className="bg-panel border border-border rounded-xl shadow-card p-5 lg:col-span-2 transition-shadow"
+    >
       <div className="flex items-center justify-between mb-3">
         <h3 className="text-xs uppercase tracking-wide font-semibold text-ink-mute">Labels</h3>
         {!isAdmin && (

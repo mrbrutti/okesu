@@ -170,6 +170,36 @@ func SearchLabelsHandler(store *db.Store) http.HandlerFunc {
 	}
 }
 
+// ListAllLabelsHandler — GET /api/labels/all?kind=&key=&value=&limit=
+// Returns every label row matching the filters. Drives the
+// Settings → Labels admin page. Admin-only at the route layer
+// (selectors are a fingerprintable surface).
+func ListAllLabelsHandler(store *db.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		f := db.LabelFilter{
+			Kind:  q.Get("kind"),
+			Key:   q.Get("key"),
+			Value: q.Get("value"),
+		}
+		if f.Kind != "" && !allowedLabelKinds[f.Kind] {
+			http.Error(w, "unsupported kind", http.StatusBadRequest)
+			return
+		}
+		if v := q.Get("limit"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil {
+				f.Limit = n
+			}
+		}
+		rows, err := store.ListAllLabels(f)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, http.StatusOK, rows)
+	}
+}
+
 // LabelKeysHandler — GET /api/labels/keys?kind=
 // Distinct label keys for autocomplete.
 func LabelKeysHandler(store *db.Store) http.HandlerFunc {

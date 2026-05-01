@@ -59,6 +59,7 @@ import {
   type Orchestration,
 } from '../api';
 import { LabelEditor } from '../components/labels/LabelEditor';
+import { LabelStrip } from '../components/labels/LabelStrip';
 import { cn } from '../lib/cn';
 import { RunAgentDialog } from '../components/RunAgentDialog';
 import { SuggestedFindingsCard } from '../components/SuggestedFindingsCard';
@@ -238,6 +239,7 @@ export default function InvestigationDetailPage() {
             ) : (
               <h1 className="text-lg font-semibold leading-tight">{inv.Title || '(untitled)'}</h1>
             )}
+            <LabelStrip kind="investigation" idOrKey={inv.ID} className="mt-1.5" />
           </div>
           <div className="flex items-center gap-2 shrink-0">
             {!editing && (
@@ -490,7 +492,7 @@ function OverviewPanel({
           <KV label="Orchestrations"><span className="font-mono">{bundle.orchestrations.length}</span></KV>
           <KV label="Notes"><span className="font-mono">{bundle.notes.length}</span></KV>
         </div>
-        <div className="mt-4 pt-4 border-t border-border">
+        <div id="labels-card" className="mt-4 pt-4 border-t border-border transition-shadow rounded-xl">
           <div className="text-[11px] uppercase tracking-wide text-ink-mute font-medium mb-2">Labels</div>
           <LabelEditor kind="investigation" idOrKey={bundle.investigation.ID} />
         </div>

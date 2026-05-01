@@ -12,6 +12,7 @@ import {
   Plug,
   ShieldCheck,
   Sparkles,
+  Tag,
   User as UserIcon,
   Users as UsersIcon,
 } from 'lucide-react';
@@ -35,6 +36,7 @@ import LLMKeysSection from './settings/LLMKeys';
 import InvestigationsSection from './settings/Investigations';
 import GroupsSection from './settings/Groups';
 import CredentialsSection from './settings/Credentials';
+import LabelsSection from './settings/Labels';
 
 interface Props {
   user: User;
@@ -52,6 +54,7 @@ const NAV: NavItem[] = [
   { to: 'display',         label: 'Display',        icon: Eye },
   { to: 'users',           label: 'Users',          icon: UsersIcon,    adminOnly: true },
   { to: 'groups',          label: 'Groups',         icon: UsersIcon,    adminOnly: true },
+  { to: 'labels',          label: 'Labels',         icon: Tag,          adminOnly: true },
   { to: 'credentials',     label: 'Credentials',    icon: KeyRound,     adminOnly: true },
   { to: 'investigations',  label: 'Investigations', icon: Sparkles,     adminOnly: true },
   { to: 'notifications',   label: 'Notifications',  icon: Bell,         adminOnly: true },
@@ -110,6 +113,7 @@ export default function SettingsPage({ user }: Props) {
           <Route path="display"        element={<DisplaySection />} />
           <Route path="users"          element={user.role === 'admin' ? <UsersSection /> : <Forbidden />} />
           <Route path="groups"         element={user.role === 'admin' ? <GroupsSection /> : <Forbidden />} />
+          <Route path="labels"         element={user.role === 'admin' ? <LabelsSection /> : <Forbidden />} />
           <Route path="credentials"    element={user.role === 'admin' ? <CredentialsSection /> : <Forbidden />} />
           <Route path="investigations" element={user.role === 'admin' ? <InvestigationsSection /> : <Forbidden />} />
           <Route path="notifications"  element={user.role === 'admin' ? <NotificationsSection /> : <Forbidden />} />

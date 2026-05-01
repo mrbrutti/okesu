@@ -232,7 +232,7 @@ function GroupDetailPane({
       {/* Labels card — purely descriptive on groups (used to organise
           the team picker rather than for permission scoping; group
           membership itself is the access mechanism). */}
-      <div className="border border-border rounded-md bg-white p-4">
+      <div id="labels-card" className="border border-border rounded-md bg-white p-4 transition-shadow">
         <h3 className="text-[11px] uppercase tracking-wide font-semibold text-ink-mute mb-3">
           Labels
         </h3>
