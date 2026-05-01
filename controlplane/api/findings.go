@@ -71,6 +71,13 @@ type findingJSON struct {
 	// (HypothesisCard etc.) on top of the standard finding drawer.
 	Subtype string `json:"subtype,omitempty"`
 
+	// Phase 22.10 — recurrence tracking. RecurrenceCount sums every
+	// emission rolled up onto this finding via SupersedeOpenDedups
+	// (1 = first sighting, no siblings rolled up). LastSeenAt is the
+	// most recent emission timestamp.
+	RecurrenceCount int64  `json:"recurrence_count,omitempty"`
+	LastSeenAt      string `json:"last_seen_at,omitempty"`
+
 	// Phase 9.6 — federation source. Populated only when this row was
 	// fetched from a federated child CP. Local rows leave this nil so
 	// the UI can render a "from <CP>" chip iff non-null.
@@ -110,6 +117,11 @@ func toFindingJSON(f *db.Finding, includeRaw bool) findingJSON {
 		NetworkEndpoint: f.NetworkEndpoint.String,
 		CVE:             f.CVE.String,
 		Subtype:         f.Subtype,
+
+		RecurrenceCount: f.RecurrenceCount,
+	}
+	if f.LastSeenAt.Valid {
+		out.LastSeenAt = f.LastSeenAt.Time.UTC().Format(time.RFC3339)
 	}
 	if f.OperatorSeverity.Valid && f.OperatorSeverity.String != "" {
 		out.OperatorSeverity = f.OperatorSeverity.String

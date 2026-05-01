@@ -1,10 +1,13 @@
 package agent
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -337,36 +340,100 @@ func (f *findingFile) shouldDedup(state *DaemonState, ttl time.Duration) bool {
 }
 
 // fingerprint computes a stable hash for the finding that survives
-// LLM-induced volatility in dedup_key, title, and resource. Falls back to
-// the LLM's dedup_key when the structured fields aren't enough to
-// distinguish unrelated findings.
+// LLM-induced volatility in dedup_key, title, and resource.
+//
+// The previous version included the LLM's title and dedup_key as
+// fingerprint components, which fragmented the cache when the model
+// rephrased the same root cause across ticks ("OKESU_HEALTH_URLS
+// not set" → "placeholder example.com" → "probing placeholder"
+// produced three different fingerprints). With prose-drift
+// disabled the same root cause collapses to one fingerprint and
+// the CP's SupersedeOpenDedups path can roll up siblings.
 //
 // Components (all lowercased / trimmed):
 //   - severity  (CRITICAL, HIGH, …)
-//   - normalized title (volatile prefixes stripped via NormalizeFindingTitle)
+//   - category  (process|file|network|cert|cloud|identity|config|other)
 //   - normalized resource root (first key/value token only)
-//   - process_pid / path / network_endpoint when present
+//   - structured signals when present: process_pid, process_name,
+//     path, network_endpoint, cve, attributes-hash
+//
+// Title is used ONLY when no structured signal is present at all —
+// otherwise it's a noise source. The LLM's raw dedup_key is dropped
+// entirely; it has the same prose-drift problem.
 func (f *findingFile) fingerprint() string {
 	parts := []string{
 		strings.ToUpper(strings.TrimSpace(f.Severity)),
-		strings.ToLower(NormalizeFindingTitle(f.Title)),
+		strings.ToLower(strings.TrimSpace(f.Category)),
 		strings.ToLower(resourceRoot(f.Resource)),
 	}
+	structuredSignal := false
 	if f.ProcessPID > 0 {
 		parts = append(parts, "pid:"+strconv.FormatInt(f.ProcessPID, 10))
+		structuredSignal = true
+	}
+	if f.ProcessName != "" {
+		parts = append(parts, "proc:"+strings.ToLower(strings.TrimSpace(f.ProcessName)))
+		structuredSignal = true
 	}
 	if f.Path != "" {
 		parts = append(parts, "path:"+strings.ToLower(f.Path))
+		structuredSignal = true
 	}
 	if f.NetworkEndpoint != "" {
 		parts = append(parts, "ep:"+normalizeEndpoint(f.NetworkEndpoint))
+		structuredSignal = true
 	}
-	if f.DedupKey != "" {
-		// Include the LLM's dedup_key as a tiebreaker when the fingerprint
-		// would otherwise collide unrelated findings. Normalized.
-		parts = append(parts, "k:"+normalizeDedupKey(f.DedupKey))
+	if f.CVE != "" {
+		parts = append(parts, "cve:"+strings.ToLower(strings.TrimSpace(f.CVE)))
+		structuredSignal = true
+	}
+	if h := stableAttributesHash(f.Attributes); h != "" {
+		parts = append(parts, "attr:"+h)
+		structuredSignal = true
+	}
+	// Title fallback — only when we have NO structured signal, NO
+	// process/path/endpoint/cve/attributes. Without this the
+	// fingerprint would collapse "every INFO finding from sre-health
+	// on host X" into one row, which is too aggressive for findings
+	// the LLM emitted with prose only.
+	if !structuredSignal {
+		title := NormalizeFindingTitle(f.Title)
+		if title != "" {
+			parts = append(parts, "t:"+strings.ToLower(title))
+		}
 	}
 	return strings.Join(parts, "|")
+}
+
+// stableAttributesHash hashes the attributes map with sorted keys so
+// the result is independent of LLM key-ordering whim. Returns ""
+// when there are no attributes — caller treats absence as "no
+// structured signal."
+func stableAttributesHash(attrs map[string]interface{}) string {
+	if len(attrs) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(attrs))
+	for k := range attrs {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	h := sha256.New()
+	for _, k := range keys {
+		h.Write([]byte(k))
+		h.Write([]byte{0})
+		// Stringify the value deterministically. json.Marshal sorts
+		// nested map keys per spec — combined with our outer sort
+		// the output is stable regardless of LLM emission order.
+		b, err := json.Marshal(attrs[k])
+		if err != nil {
+			continue
+		}
+		h.Write(b)
+		h.Write([]byte{0})
+	}
+	sum := h.Sum(nil)
+	return hex.EncodeToString(sum[:8]) // first 16 hex chars — collision-tolerant for fleet sizes we care about
 }
 
 // resourceRoot extracts the first stable token from a "k:v[, k:v]*" resource

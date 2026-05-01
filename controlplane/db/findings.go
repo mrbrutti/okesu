@@ -66,6 +66,14 @@ type Finding struct {
 	// attributes (e.g. "hypothesis", "meeting_minutes"). Orthogonal to
 	// Category. Empty = no special rendering.
 	Subtype string
+
+	// Phase 22.10 — recurrence tracking. RecurrenceCount sums every
+	// emission rolled up onto this finding via SupersedeOpenDedups
+	// (default 1 = first sighting, no siblings rolled up). LastSeenAt
+	// is the most recent emission timestamp. Together they let the
+	// UI render "fired 24× over 6h" instead of one row per emit.
+	RecurrenceCount int64
+	LastSeenAt      sql.NullTime
 }
 
 // EffectiveSeverity returns the operator override if present, otherwise
@@ -297,7 +305,8 @@ func (s *Store) ListFindings(f FindingFilter) ([]*Finding, error) {
 	             operator_severity, severity_override_at, severity_override_by,
 	             COALESCE(cluster_id, ''), COALESCE(ioc_confidence, ''),
 	             COALESCE(ioc_attribution, ''), COALESCE(ioc_classification, ''),
-	             COALESCE(subtype, '')
+	             COALESCE(subtype, ''),
+	             COALESCE(recurrence_count, 1), last_seen_at
 	      FROM findings`
 	if len(clauses) > 0 {
 		q += " WHERE " + strings.Join(clauses, " AND ")
@@ -326,6 +335,7 @@ func (s *Store) ListFindings(f FindingFilter) ([]*Finding, error) {
 			&fr.OperatorSeverity, &fr.SeverityOverrideAt, &fr.SeverityOverrideByID,
 			&fr.ClusterID, &fr.IOCConfidence, &fr.IOCAttribution, &fr.IOCClassification,
 			&fr.Subtype,
+			&fr.RecurrenceCount, &fr.LastSeenAt,
 		); err != nil {
 			return nil, err
 		}
@@ -349,7 +359,8 @@ func (s *Store) FindingByID(id int64) (*Finding, error) {
 		       operator_severity, severity_override_at, severity_override_by,
 		       COALESCE(cluster_id, ''), COALESCE(ioc_confidence, ''),
 		       COALESCE(ioc_attribution, ''), COALESCE(ioc_classification, ''),
-		       COALESCE(subtype, '')
+		       COALESCE(subtype, ''),
+		       COALESCE(recurrence_count, 1), last_seen_at
 		FROM findings WHERE id = ?
 	`, id).Scan(
 		&fr.ID, &fr.EventID, &fr.Ts,
@@ -363,6 +374,7 @@ func (s *Store) FindingByID(id int64) (*Finding, error) {
 		&fr.OperatorSeverity, &fr.SeverityOverrideAt, &fr.SeverityOverrideByID,
 		&fr.ClusterID, &fr.IOCConfidence, &fr.IOCAttribution, &fr.IOCClassification,
 		&fr.Subtype,
+		&fr.RecurrenceCount, &fr.LastSeenAt,
 	)
 	if err != nil {
 		return nil, err
@@ -1574,7 +1586,8 @@ func (s *Store) ListActiveWarBridgeFindings(limit int) ([]*Finding, error) {
 		       operator_severity, severity_override_at, severity_override_by,
 		       COALESCE(cluster_id, ''), COALESCE(ioc_confidence, ''),
 		       COALESCE(ioc_attribution, ''), COALESCE(ioc_classification, ''),
-		       COALESCE(subtype, '')
+		       COALESCE(subtype, ''),
+		       COALESCE(recurrence_count, 1), last_seen_at
 		FROM findings
 		WHERE tags LIKE '%war-bridge%'
 		  AND status IN ('open', 'queue', 'pending')
@@ -1601,6 +1614,7 @@ func (s *Store) ListActiveWarBridgeFindings(limit int) ([]*Finding, error) {
 			&fr.OperatorSeverity, &fr.SeverityOverrideAt, &fr.SeverityOverrideByID,
 			&fr.ClusterID, &fr.IOCConfidence, &fr.IOCAttribution, &fr.IOCClassification,
 			&fr.Subtype,
+			&fr.RecurrenceCount, &fr.LastSeenAt,
 		); err != nil {
 			return nil, err
 		}
