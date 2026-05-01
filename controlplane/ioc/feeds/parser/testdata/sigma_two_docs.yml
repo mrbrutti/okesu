@@ -1,0 +1,23 @@
+title: Suspicious PowerShell Encoded Command
+id: aaaaaaaa-1111-2222-3333-444444444444
+status: experimental
+level: high
+tags:
+  - attack.execution
+  - attack.t1059.001
+detection:
+  selection:
+    EventID: 4104
+    ScriptBlockText|contains: '-EncodedCommand'
+  condition: selection
+---
+title: Detect ld.so.preload tamper
+id: bbbbbbbb-1111-2222-3333-555555555555
+status: stable
+level: medium
+tags:
+  - attack.persistence
+detection:
+  selection:
+    image|endswith: '/etc/ld.so.preload'
+  condition: selection
