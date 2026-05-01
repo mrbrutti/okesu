@@ -260,20 +260,36 @@ OCI_CP_BIN  ?= $(CP_DIR)/okesu-cp-linux-$(OCI_CP_ARCH)
 oci-install: oci-render
 	@CP_IP=$$(cd $(OCI_DIR) && terraform output -raw cp_public_ip); \
 	  echo "▶ cp-vm = $$CP_IP"; \
+	  echo "▶ waiting for cloud-init to finish (looks for /var/log/okesu-cp/cloudinit.done)"; \
 	  for i in $$(seq 1 $(OCI_SSH_RETRIES)); do \
-	    ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 $(OCI_SSH_USER)@$$CP_IP true 2>/dev/null && break; \
-	    echo "  waiting for ssh ($$i/$(OCI_SSH_RETRIES))…"; sleep 10; \
+	    if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 $(OCI_SSH_USER)@$$CP_IP \
+	         'test -f /var/log/okesu-cp/cloudinit.done' 2>/dev/null; then \
+	      echo "  cloud-init done"; break; \
+	    fi; \
+	    echo "  waiting ($$i/$(OCI_SSH_RETRIES))…"; sleep 10; \
 	  done; \
-	  echo "▶ uploading binary + config"; \
-	  scp -q -o StrictHostKeyChecking=no $(OCI_CP_BIN) $(OCI_SSH_USER)@$$CP_IP:/tmp/okesu-cp.new; \
-	  scp -q -o StrictHostKeyChecking=no dist/oci/$(OCI_MODE)/cp.yaml      $(OCI_SSH_USER)@$$CP_IP:/tmp/cp.yaml.new; \
-	  scp -q -o StrictHostKeyChecking=no dist/oci/$(OCI_MODE)/okesu-cp.env $(OCI_SSH_USER)@$$CP_IP:/tmp/okesu-cp.env.new; \
-	  scp -q -o StrictHostKeyChecking=no systemd/okesu-cp.service          $(OCI_SSH_USER)@$$CP_IP:/tmp/okesu-cp.service.new; \
+	  echo "▶ uploading binary + config (with retries)"; \
+	  scp_retry() { \
+	    src="$$1"; dest="$$2"; \
+	    for j in 1 2 3 4 5; do \
+	      scp -q -o StrictHostKeyChecking=no -o ConnectTimeout=10 -o ServerAliveInterval=5 \
+	        "$$src" "$(OCI_SSH_USER)@$$CP_IP:$$dest" && return 0; \
+	      echo "  scp $$src retry $$j/5"; sleep 5; \
+	    done; \
+	    echo "✖ scp $$src → $$dest failed after 5 retries" >&2; return 1; \
+	  }; \
+	  scp_retry $(OCI_CP_BIN) /tmp/okesu-cp.new || exit 1; \
+	  scp_retry dist/oci/$(OCI_MODE)/cp.yaml      /tmp/cp.yaml.new || exit 1; \
+	  scp_retry dist/oci/$(OCI_MODE)/okesu-cp.env /tmp/okesu-cp.env.new || exit 1; \
+	  scp_retry systemd/okesu-cp.service          /tmp/okesu-cp.service.new || exit 1; \
 	  echo "▶ uploading secrets dir"; \
 	  SECRETS_DIR=$$(grep '^secrets_dir' $(OCI_TFVARS) | sed -E 's/^.*=[[:space:]]*"([^"]+)"/\1/'); \
-	  rsync -aq --delete -e "ssh -o StrictHostKeyChecking=no" \
-	    "$$(eval echo $$SECRETS_DIR)/" \
-	    $(OCI_SSH_USER)@$$CP_IP:/tmp/secrets/; \
+	  for j in 1 2 3 4 5; do \
+	    rsync -aq --delete -e "ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10" \
+	      "$$(eval echo $$SECRETS_DIR)/" \
+	      $(OCI_SSH_USER)@$$CP_IP:/tmp/secrets/ && break; \
+	    echo "  rsync retry $$j/5"; sleep 5; \
+	  done; \
 	  echo "▶ atomically installing + reload + restart"; \
 	  ssh -o StrictHostKeyChecking=no $(OCI_SSH_USER)@$$CP_IP 'sudo bash -s' < scripts/oci-install-remote.sh; \
 	  echo "▶ waiting for /health"; \

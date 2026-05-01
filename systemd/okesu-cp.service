@@ -8,7 +8,7 @@ StartLimitBurst=5
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/okesu-cp serve
+ExecStart=/usr/local/bin/okesu-cp serve --config /etc/okesu-cp/cp.yaml --secrets-source=file:///etc/okesu-cp/secrets
 Restart=on-failure
 RestartSec=10s
 
