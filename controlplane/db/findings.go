@@ -207,6 +207,18 @@ func (s *Store) InsertFinding(f *FindingInsert) (int64, error) {
 	if rule, err := s.GetSeverityRule(fp); err == nil && rule != nil {
 		operatorSeverity = sql.NullString{String: rule.Severity, Valid: true}
 	}
+	// Phase 22.10 PR γ — per-label severity ceiling. Apply when no
+	// per-fingerprint rule already lowered the severity, and only
+	// when the ceiling is actually more restrictive than the agent's
+	// assignment. Bad-host / no-labels cases short-circuit silently
+	// inside SeverityCeilingForHost.
+	if !operatorSeverity.Valid {
+		if cap, cerr := s.SeverityCeilingForHost(f.Host); cerr == nil && cap != "" {
+			if capped := CapSeverity(f.Severity, cap); capped != "" {
+				operatorSeverity = sql.NullString{String: capped, Valid: true}
+			}
+		}
+	}
 
 	overrideAtCol := "NULL"
 	if operatorSeverity.Valid {
