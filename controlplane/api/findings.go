@@ -208,6 +208,34 @@ func FindingsList(store *db.Store) http.HandlerFunc {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+
+		// Phase 22.9 — scoped-role visibility filter. Mirrors the
+		// FilterVisibleNodes pattern: CP-wide grants short-circuit
+		// to "see everything," scoped grants restrict to findings on
+		// hosts whose labels match. Synthetic actors (federation
+		// proxies, API tokens without a backing user) skip — those
+		// gate at a higher layer.
+		if u := auth.UserFromContext(r.Context()); u != nil && u.ID > 0 {
+			ids := make([]int64, len(findings))
+			for i, fr := range findings {
+				ids[i] = fr.ID
+			}
+			visible, ferr := store.FilterVisibleFindings(u.ID, "viewer", ids)
+			if ferr == nil {
+				keep := make(map[int64]struct{}, len(visible))
+				for _, id := range visible {
+					keep[id] = struct{}{}
+				}
+				filtered := make([]*db.Finding, 0, len(visible))
+				for _, fr := range findings {
+					if _, ok := keep[fr.ID]; ok {
+						filtered = append(filtered, fr)
+					}
+				}
+				findings = filtered
+			}
+		}
+
 		out := make([]findingJSON, 0, len(findings))
 		for _, fr := range findings {
 			out = append(out, toFindingJSON(fr, false))
