@@ -232,6 +232,22 @@ export interface LabelTarget {
   key?: string;
 }
 
+// LabelRow is one row of the labels table — what /api/labels/all
+// returns. Drives the Settings → Labels admin page. target_id is
+// 0 for kinds with composite-key identity (daimon = name@host); in
+// those cases target_key carries the identity instead.
+export interface LabelRow {
+  id: number;
+  target_kind: LabelKind;
+  target_id: number;
+  target_key: string;
+  key: string;
+  value: string;
+  source: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
 export interface SeverityRule {
   fingerprint: string;
   severity: Severity;
@@ -1396,6 +1412,15 @@ export const api = {
   searchLabels: (kind: LabelKind, selector: string) => {
     const qs = new URLSearchParams({ kind, selector });
     return request<LabelTarget[]>(`/api/labels/search?${qs.toString()}`);
+  },
+  allLabels: (filter: { kind?: LabelKind; key?: string; value?: string; limit?: number } = {}) => {
+    const qs = new URLSearchParams();
+    if (filter.kind)  qs.set('kind',  filter.kind);
+    if (filter.key)   qs.set('key',   filter.key);
+    if (filter.value) qs.set('value', filter.value);
+    if (filter.limit) qs.set('limit', String(filter.limit));
+    const s = qs.toString();
+    return request<LabelRow[]>(`/api/labels/all${s ? '?' + s : ''}`);
   },
   labelKeys: (kind: LabelKind) => {
     const qs = new URLSearchParams({ kind });

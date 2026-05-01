@@ -888,6 +888,7 @@ func (s *Server) routes() http.Handler {
 			r.Put("/api/labels/{kind}/{id}", api.SetLabelHandler(s.store))
 			r.Delete("/api/labels/{kind}/{id}/{key}", api.DeleteLabelHandler(s.store))
 			r.Get("/api/labels/search", api.SearchLabelsHandler(s.store))
+			r.Get("/api/labels/all", api.ListAllLabelsHandler(s.store))
 			// Phase 22.8 PR γ — secrets + selector bindings. All
 			// admin-only — including reads, since metadata leaks
 			// "this credential exists". Plaintext is never echoed
