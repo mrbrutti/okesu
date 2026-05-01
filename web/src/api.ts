@@ -758,7 +758,9 @@ export type PromptEntityKind =
   | 'daimon'
   | 'run'
   | 'investigation'
-  | 'orchestration';
+  | 'orchestration'
+  | 'cluster'
+  | 'agent';
 
 export interface PromptEntityRef {
   cp_instance_id?: string;

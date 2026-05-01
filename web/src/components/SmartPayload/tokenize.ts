@@ -40,6 +40,50 @@ export function tokenize(input: string): Token[] {
   if (textStart < n) {
     out.push({ kind: 'text', text: input.slice(textStart, n) });
   }
+  return coalesceJSONStreams(out);
+}
+
+// coalesceJSONStreams folds runs of JSON-object tokens separated
+// only by comma-and-whitespace into a single synthetic JSON array
+// token. The agent's output_summary frequently looks like
+//   ...,{"kind":"X","finding_id":1},{"kind":"Y","finding_id":2},...
+// where the leading `[` has been truncated off the head and we
+// otherwise emit one token per object. Coalescing lets the renderer
+// recognise the homogeneous run and render it as a single table.
+//
+// Conservative: requires ≥3 consecutive JSON objects; the wrapping
+// text segments (commas and surrounding noise) are preserved as
+// separate text tokens so the operator still sees any prose context.
+function coalesceJSONStreams(tokens: Token[]): Token[] {
+  const out: Token[] = [];
+  let i = 0;
+  while (i < tokens.length) {
+    const t = tokens[i];
+    if (t.kind !== 'json' || !t.src.startsWith('{')) {
+      out.push(t);
+      i++;
+      continue;
+    }
+    // Greedy lookahead: grab every (text=just-comma-or-ws, json) pair.
+    const run: string[] = [t.src];
+    let j = i + 1;
+    while (j + 1 < tokens.length) {
+      const sep = tokens[j];
+      const nxt = tokens[j + 1];
+      if (sep.kind !== 'text') break;
+      if (!/^\s*,\s*$/.test(sep.text)) break;
+      if (nxt.kind !== 'json' || !nxt.src.startsWith('{')) break;
+      run.push(nxt.src);
+      j += 2;
+    }
+    if (run.length >= 3) {
+      out.push({ kind: 'json', src: '[' + run.join(',') + ']' });
+      i = j;
+      continue;
+    }
+    out.push(t);
+    i++;
+  }
   return out;
 }
 
