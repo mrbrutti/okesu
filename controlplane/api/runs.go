@@ -217,6 +217,10 @@ func CreateRun(reg *RunRegistry, tunReg *tunnel.Registry, store *db.Store, agent
 				// defaults. If/when we extend the pull-mode wire, plumb
 				// them through here too.
 			}
+			// Phase 22.8 PR γ wire-through — selector-bound env_var
+			// secrets matching this node's labels are decrypted and
+			// attached so the daemon's spawned process inherits them.
+			attachEnvSecrets(store, nodeID, db.SecretScopeAgentRun, &payload)
 			payloadJSON, _ := json.Marshal(payload)
 			if _, err := store.CreateNodeJob(runID, nodeID, string(agent.JobKindAgentRun), string(payloadJSON)); err != nil {
 				_ = store.FinishRun(runID, db.RunStatusFailed, -1, "enqueue job: "+err.Error())

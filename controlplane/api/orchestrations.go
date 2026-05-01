@@ -514,6 +514,13 @@ func (d *jobsDispatcher) Dispatch(ctx context.Context, req orchestrator.Dispatch
 		AgentContent: agentContent,
 		Prompt:       req.Prompt,
 	}
+	// Phase 22.8 PR γ wire-through — selector-bound env_var secrets
+	// matching this node's labels are decrypted and attached so the
+	// orchestration step's spawned agent inherits them. Use the
+	// 'daimon' scope here (orchestration steps run scheduled
+	// daimon-style work, not ad-hoc); 'any'-scope bindings still
+	// match because the resolver treats them as wildcards.
+	attachEnvSecrets(d.store, nodeID, db.SecretScopeDaimon, &payload)
 	payloadJSON, _ := json.Marshal(payload)
 	jobID, err := d.store.CreateNodeJob(runID, nodeID, string(agent.JobKindAgentRun), string(payloadJSON))
 	if err != nil {

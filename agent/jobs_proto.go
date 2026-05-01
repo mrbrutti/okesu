@@ -64,6 +64,18 @@ type JobPayload struct {
 	Effort       string `json:"effort,omitempty"`
 	MaxTurns     int    `json:"max_turns,omitempty"`
 
+	// Env is per-job environment variables merged into the spawned
+	// child's environment. Phase 22.8 PR γ wire-through: the CP
+	// resolves selector-bound env_var secrets against the target
+	// node's labels and attaches the matching values here, so a
+	// `PROD_API_KEY` secret bound to `env=prod` ends up in the
+	// daemon's process env automatically.
+	//
+	// The daemon-side merge is os.Environ() ∪ Env, with Env values
+	// winning on key collision. Backwards-compat: empty/missing Env
+	// behaves identically to today.
+	Env map[string]string `json:"env,omitempty"`
+
 	// start_tunnel fields
 	CPMgmtURL string `json:"cp_mgmt_url,omitempty"` // e.g. https://cp.example.com:8444
 	CertDir   string `json:"cert_dir,omitempty"`    // where node-tunnel certs live (defaults to /etc/okesu/node-certs)
