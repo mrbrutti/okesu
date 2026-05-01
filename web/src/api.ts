@@ -1251,6 +1251,19 @@ export const api = {
     request<void>(`/api/nodes/${id}`, { method: 'DELETE' }),
   refreshNodeMetadata: (id: number) =>
     request<NodeItem>(`/api/nodes/${id}/refresh-metadata`, { method: 'POST' }),
+
+  // Phase 22.8 PR β — node labels. Read is open to any logged-in
+  // user (labels show on node detail); set/delete are admin only.
+  nodeLabels: (id: number) =>
+    request<Record<string, string>>(`/api/nodes/${id}/labels`),
+  setNodeLabel: (id: number, key: string, value: string) =>
+    request<void>(`/api/nodes/${id}/labels`, {
+      method: 'PUT',
+      body: JSON.stringify({ key, value }),
+    }),
+  deleteNodeLabel: (id: number, key: string) =>
+    request<void>(`/api/nodes/${id}/labels/${encodeURIComponent(key)}`, { method: 'DELETE' }),
+
   setNodeAutoUpdatePaused: (id: number, paused: boolean) =>
     request<NodeItem>(`/api/nodes/${id}/auto-update`, {
       method: 'PUT',
