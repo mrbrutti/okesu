@@ -1,4 +1,10 @@
-// Node labels store. Phase 22.8 PR β.
+// Node-specific label helpers. Phase 22.8 PR β / Phase 22.9.
+//
+// Migration 051 unified node labels into the generic `labels` table;
+// these helpers remain as a thin shim so the dozens of existing call
+// sites (HasEffectiveRoleOnNode, FilterVisibleNodes, the orchestrator
+// selector resolver, the Node detail UI) stay intact. New code should
+// reach for the generic Set/DeleteLabel via target_kind = "node".
 //
 // Backs the selector grammar (selector.go) and the per-node label
 // editor on the Nodes page. Labels are admin-managed; node daemons
@@ -8,98 +14,30 @@
 package db
 
 import (
-	"errors"
 	"strings"
 )
 
-// SetNodeLabel upserts a label. Empty key is rejected; empty value
-// is allowed (rare but legitimate — `env=` semantically matches
-// only nodes that have the label at all).
+// SetNodeLabel routes through the generic labels store.
 func (s *Store) SetNodeLabel(nodeID int64, key, value string) error {
-	key = strings.TrimSpace(key)
-	if key == "" {
-		return errors.New("label key required")
-	}
-	if !validKey(key) {
-		return errors.New("invalid label key (allowed: a-z A-Z 0-9 . - _ /)")
-	}
-	if !validValue(value) {
-		return errors.New("invalid label value (allowed: a-z A-Z 0-9 . - _ /)")
-	}
-	_, err := s.Exec(`
-		INSERT INTO node_labels (node_id, key, value)
-		VALUES (?, ?, ?)
-		ON CONFLICT (node_id, key) DO UPDATE SET
-		  value = excluded.value,
-		  updated_at = CURRENT_TIMESTAMP
-	`, nodeID, key, value)
-	return err
+	return s.SetLabel(LabelKindNode, nodeID, "", key, value, "manual")
 }
 
-// DeleteNodeLabel removes one (node, key) pair. Idempotent — calling
-// twice is fine.
+// DeleteNodeLabel routes through the generic labels store.
 func (s *Store) DeleteNodeLabel(nodeID int64, key string) error {
-	_, err := s.Exec(`DELETE FROM node_labels WHERE node_id = ? AND key = ?`, nodeID, key)
-	return err
+	return s.DeleteLabel(LabelKindNode, nodeID, "", key)
 }
 
-// ListNodeLabels returns the label map for a node. Empty map (not
-// nil) when the node has no labels — JSON consumers see {} not null.
+// ListNodeLabels reads the label map for one node from the generic
+// labels store. Empty map (not nil) when no labels are set.
 func (s *Store) ListNodeLabels(nodeID int64) (map[string]string, error) {
-	rows, err := s.Query(`SELECT key, value FROM node_labels WHERE node_id = ?`, nodeID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := map[string]string{}
-	for rows.Next() {
-		var k, v string
-		if err := rows.Scan(&k, &v); err != nil {
-			return nil, err
-		}
-		out[k] = v
-	}
-	return out, rows.Err()
+	return s.ListLabels(LabelKindNode, nodeID, "")
 }
 
-// ListLabelsForNodes batches label lookups so the Nodes-list page
-// doesn't have to N+1. Returns map of node_id → label map. Missing
-// entries (nodes with no labels) are absent from the outer map.
+// ListLabelsForNodes batches the per-node lookup. Identical shape to
+// the pre-migration helper; callers (FilterVisibleNodes, the Nodes
+// list page) keep working unchanged.
 func (s *Store) ListLabelsForNodes(nodeIDs []int64) (map[int64]map[string]string, error) {
-	if len(nodeIDs) == 0 {
-		return map[int64]map[string]string{}, nil
-	}
-	// Build the IN clause manually — sqlite doesn't take []int64 as a
-	// single placeholder. We've capped fleet size in the lab at <100;
-	// production caps are well under 10k where this approach is fine.
-	placeholders := make([]string, len(nodeIDs))
-	args := make([]any, len(nodeIDs))
-	for i, id := range nodeIDs {
-		placeholders[i] = "?"
-		args[i] = id
-	}
-	q := `SELECT node_id, key, value FROM node_labels WHERE node_id IN (` +
-		strings.Join(placeholders, ",") + `)`
-	rows, err := s.Query(q, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := map[int64]map[string]string{}
-	for rows.Next() {
-		var nid int64
-		var k, v string
-		if err := rows.Scan(&nid, &k, &v); err != nil {
-			return nil, err
-		}
-		m, ok := out[nid]
-		if !ok {
-			m = map[string]string{}
-			out[nid] = m
-		}
-		m[k] = v
-	}
-	return out, rows.Err()
+	return s.ListLabelsBatchByID(LabelKindNode, nodeIDs)
 }
 
 // HasEffectiveRoleOnNode is the resource-scoped gate that PR β
@@ -119,8 +57,6 @@ func (s *Store) HasEffectiveRoleOnNode(userID, nodeID int64, needed string) (boo
 	if userID == 0 {
 		return false, nil
 	}
-	// Pull the labels first — one cheap query that's reused if the
-	// user has multiple group_roles.
 	labels, err := s.ListNodeLabels(nodeID)
 	if err != nil {
 		return false, err
@@ -144,8 +80,6 @@ func (s *Store) HasEffectiveRoleOnNode(userID, nodeID int64, needed string) (boo
 		}
 		sel, err := ParseSelector(selectorStr)
 		if err != nil {
-			// Malformed selectors don't grant access — we'd rather
-			// fail closed than implicitly broaden to "match all".
 			continue
 		}
 		if sel.Matches(labels) {
@@ -165,7 +99,6 @@ func (s *Store) FilterVisibleNodes(userID int64, role string, nodeIDs []int64) (
 	if len(nodeIDs) == 0 {
 		return nodeIDs, nil
 	}
-	// CP-wide check first.
 	row := s.QueryRow(`
 		SELECT 1 FROM user_groups ug
 		  JOIN group_roles gr ON gr.group_id = ug.group_id
@@ -177,8 +110,6 @@ func (s *Store) FilterVisibleNodes(userID int64, role string, nodeIDs []int64) (
 		return nodeIDs, nil
 	}
 
-	// Need to evaluate per-node. Pull labels for every candidate +
-	// the user's grants once, then test in memory.
 	labelsByNode, err := s.ListLabelsForNodes(nodeIDs)
 	if err != nil {
 		return nil, err
@@ -228,3 +159,45 @@ func (s *Store) FilterVisibleNodes(userID int64, role string, nodeIDs []int64) (
 	}
 	return out, nil
 }
+
+// MatchNodesBySelector returns node ids whose labels satisfy `sel`.
+// Used by orchestration steps with a `nodes_selector:` field — the
+// engine resolves the selector at run time, fans out to every match.
+//
+// Empty selector behaviour: matches every node. Callers that want
+// "no match" semantics should validate before parsing.
+func (s *Store) MatchNodesBySelector(sel Selector) ([]int64, error) {
+	if sel.IsEmpty() {
+		// Match-all: pull every node. Cap at 10k — fleets larger than
+		// that need pagination plumbed through the call sites first.
+		rows, err := s.Query(`SELECT id FROM nodes ORDER BY id LIMIT 10000`)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		var out []int64
+		for rows.Next() {
+			var id int64
+			if err := rows.Scan(&id); err != nil {
+				return nil, err
+			}
+			out = append(out, id)
+		}
+		return out, rows.Err()
+	}
+	targets, err := s.FindTargetsBySelector(LabelKindNode, sel)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]int64, 0, len(targets))
+	for _, t := range targets {
+		if t.ID > 0 {
+			out = append(out, t.ID)
+		}
+	}
+	return out, nil
+}
+
+// _ keeps the strings import alive when this file's body shrinks
+// during refactors that move helpers into labels.go.
+var _ = strings.Builder{}
