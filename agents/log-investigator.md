@@ -129,3 +129,7 @@ HH:MM:SS  source  ...
 - The causation chain is your value-add. Operators can read raw logs themselves; they hire you to draw the arrows.
 - Detection efficacy — be honest. If the daimon fleet missed the kickoff by 4 minutes, say so. That feedback lands in the daimon library as a new rule.
 - End with one line: "TLDR: <what happened, in 15 words>".
+
+## Related daimons
+
+- `log-sigma-hunter` — Sigma-rule-based hunting against the same log sources. Use this when the question is "do any of the curated Sigma detection rules match recent activity on this host?" rather than "reconstruct what happened in this window."
