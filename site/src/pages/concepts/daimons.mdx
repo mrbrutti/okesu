@@ -24,6 +24,10 @@ import OperatorView from '../../components/OperatorView.astro';
   <DispatchFlowDemo />
 </div>
 
+<div class="bg-brand-50 border border-brand-100 rounded-lg p-4 my-6 text-[13px] text-ink leading-relaxed">
+  <strong class="text-brand-700">Going deeper?</strong> This page is the introduction. For a field-by-field tour of the daimon spec — every YAML section, what each field unlocks, and what you can build with it — read <a href="/daimons" class="font-medium">the deep dive</a>.
+</div>
+
 <h2 id="what">What a daimon is</h2>
 
 <p>A <span class="term">daimon</span> is the long-running daemon Okesu installs on each host. It listens for run dispatches from the control plane, executes the agent (Claude / Codex / a custom provider), and streams findings back over the management tunnel.</p>

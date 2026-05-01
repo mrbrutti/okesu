@@ -1,0 +1,214 @@
+---
+// Recipes — six worked YAML orchestration specs lifted directly from
+// the demo control plane. Each one ships as-is in the platform; this
+// page presents them with a "what / when / what to notice" frame so a
+// reader can copy-paste and adapt.
+//
+// The YAMLs themselves live at src/data/recipes/*.yaml and are
+// imported via Astro's ?raw glob loader. Update the spec there, the
+// page reflects automatically.
+
+import Base from '../layouts/Base.astro';
+
+// Eager-load the 6 YAML strings.
+const yamlImports = import.meta.glob('../data/recipes/*.yaml', {
+  eager: true,
+  query: '?raw',
+  import: 'default',
+}) as Record<string, string>;
+
+// Map filename → content.
+const yamlByName = Object.fromEntries(
+  Object.entries(yamlImports).map(([path, content]) => {
+    const name = path.split('/').pop()!.replace(/\.yaml$/, '');
+    return [name, content];
+  })
+);
+
+// Recipe metadata. The order in this array drives the order on the
+// page and in the TOC. Each recipe's spec YAML is loaded above by name.
+interface Recipe {
+  id: string;          // anchor id (matches yaml file name)
+  title: string;       // display name
+  tier: 'T1' | 'T2' | 'T1·T2';
+  tagline: string;     // one-line "what it does"
+  whenToUse: string;   // one-sentence "when to use"
+  highlights: string[]; // 3-4 bullets on what's interesting
+}
+
+const recipes: Recipe[] = [
+  {
+    id: 'edr-critical-response',
+    title: 'EDR Critical Response',
+    tier: 'T2',
+    tagline: 'Auto-investigate HIGH/CRITICAL EDR findings, hunt the fleet, and pause for operator approval before containment.',
+    whenToUse: 'A trusted EDR daimon emits a high-severity finding and you want fast triage + cross-fleet hunt + a contain-or-rollback plan ready for human review.',
+    highlights: [
+      'Auto-fires on a finding match — no human in the loop until the approval gate at step 4.',
+      'A `when:` gate skips binary analysis when the triage step did not pinpoint a binary — keeps cheap when there\'s nothing to dissect.',
+      'Step 3 fans out across three host classes (`threat-rocky-1`, `threat-fedora-2`, `threat-debian-2`) to look for the same IOCs across the fleet in parallel.',
+      'Step 4 is `approval: required` — the run pauses until an operator clicks Approve in the dashboard.',
+    ],
+  },
+  {
+    id: 't1-finding-autotriage',
+    title: 'Finding Autotriage (T1)',
+    tier: 'T1',
+    tagline: 'Generic Tier-1 triage that runs on every new finding, attaches an evidence summary, and decides whether to escalate.',
+    whenToUse: 'You want every finding to land with a one-paragraph "what is this" pre-baked, so the human queue starts at "should I act?" instead of "what am I looking at?".',
+    highlights: [
+      'No `when:` gate — runs on everything matching the trigger filter; cheap by design.',
+      'Uses `actions:` allowlist so the agent can update finding status, set severity overrides, and add tags without an approval gate.',
+      'Demonstrates the platform\'s default action-class policy: only what\'s explicitly listed is permitted.',
+    ],
+  },
+  {
+    id: 't1-failed-login-noise-dedup',
+    title: 'Failed-Login Noise Dedup (T1)',
+    tier: 'T1',
+    tagline: 'Bundle authentication-failure noise into one incident; only escalate when a source actually authenticated successfully or hit a sensitive account.',
+    whenToUse: 'Public-internet hosts that get scanned constantly — you don\'t want each rejected SSH attempt to appear as its own finding.',
+    highlights: [
+      'A precise `trigger.filter:` keeps the orchestration from firing on findings that don\'t mention auth.',
+      'Step 1 collects the 60-minute window of failed logins and aggregates by source IP — the orchestration moves the burden of "is this brute-force or background radiation" onto the agent.',
+      'Step 2 escalates only when conditions hold (success after a streak of failures, or a sensitive account targeted).',
+    ],
+  },
+  {
+    id: 't2-fleet-ioc-hunt',
+    title: 'Fleet IOC Hunt (T2)',
+    tier: 'T2',
+    tagline: 'Fan out across every host in the fleet to hunt for a confirmed IOC, then aggregate.',
+    whenToUse: 'You\'ve confirmed a real threat on one host (via EDR Critical Response or manual analysis) and need to know "where else is this?" — fast.',
+    highlights: [
+      'Pure fan-out shape: one step, `nodes: [...]`, each host runs the same prompt with the same IOC inputs.',
+      '`continue_on_error: true` — one host\'s hunt failing (offline, daimon stale) doesn\'t kill the run; the synthesizer step accepts partial results.',
+      'The post-fan-out summarizer reads `{{stepN.byNode["host-1"].findings}}` to attribute matches per host.',
+    ],
+  },
+  {
+    id: 't2-drift-remediation',
+    title: 'Config Drift Remediation (T2)',
+    tier: 'T2',
+    tagline: 'Detect drift from baseline (file integrity, package versions, sysctl), classify, and either rollback automatically or open a case for review.',
+    whenToUse: 'You have an authoritative baseline (e.g. CIS, your own gold image) and want drift to surface as actionable findings, not noise.',
+    highlights: [
+      'Branches on the agent\'s `orchestration_result.classification` — "approved-change" closes the finding; "unknown-drift" escalates with a containment plan.',
+      'Demonstrates `{{stepN.result.field}}` binding for downstream steps to read structured payloads.',
+      'Shows how a single playbook handles both "auto-correct trivial drift" and "page a human for serious drift" — same spec, different paths.',
+    ],
+  },
+  {
+    id: 't2-cert-expiry-rotation',
+    title: 'Cert Expiry Rotation (T2)',
+    tier: 'T2',
+    tagline: 'When a TLS certificate finding lands, find every host using that cert, plan the rotation, and gate the rollout.',
+    whenToUse: 'Cert expiry findings from `sre-health` shouldn\'t live as silent tickets — this orchestrates the discovery-plan-approve-rotate cycle in hours, not weeks.',
+    highlights: [
+      'Step 1 inspects the affected cert, then step 2 fan-outs across the fleet to find every other host that ships the same cert (subject + serial match).',
+      'Step 3 drafts an ordered rotation plan; step 4 (`approval: required`) blocks until reviewed; step 5 executes against the approved hosts.',
+      'Production-shaped: every state-mutating step has an approval gate and an explicit allowlist — nothing rotates without human consent.',
+    ],
+  },
+];
+
+const tierTone = (t: Recipe['tier']) => {
+  if (t === 'T1') return 'bg-emerald-50 text-emerald-700 ring-emerald-200';
+  if (t === 'T2') return 'bg-amber-50 text-amber-700 ring-amber-200';
+  return 'bg-brand-50 text-brand-700 ring-brand-200';
+};
+---
+
+<Base
+  title="Recipes"
+  description="Six worked YAML orchestrations, lifted from a real Okesu control plane. Copy, adapt, run."
+>
+  <div class="bg-panel border-b border-border">
+    <div class="max-w-page mx-auto px-6 py-10">
+      <div class="flex items-start gap-4">
+        <div class="w-11 h-11 rounded-lg bg-brand-50 text-brand-700 flex items-center justify-center text-2xl border border-brand-100 shrink-0 font-mono">
+          ⊞
+        </div>
+        <div>
+          <h1 class="text-[28px] md:text-[32px] font-bold text-brand-700 leading-tight">Recipes</h1>
+          <p class="mt-1.5 text-sm md:text-[15px] text-ink-dim leading-relaxed max-w-2xl">
+            Six worked YAML orchestrations, lifted directly from a running Okesu control plane.
+            Each is annotated with what it does, when to reach for it, and what to notice — copy,
+            adapt, drop in your CP.
+          </p>
+          <p class="mt-2 text-xs text-ink-mute italic">
+            <span class="inline-flex items-center gap-1.5"><span class={`text-[10px] uppercase tracking-wide font-semibold px-1.5 py-0.5 rounded ring-1 ${tierTone('T1')}`}>T1</span> first-line, runs without an approval gate</span>
+            ·
+            <span class="inline-flex items-center gap-1.5"><span class={`text-[10px] uppercase tracking-wide font-semibold px-1.5 py-0.5 rounded ring-1 ${tierTone('T2')}`}>T2</span> escalation, includes a human-in-the-loop step</span>
+          </p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="max-w-page mx-auto px-6 py-8">
+    <div class="grid md:grid-cols-[220px_minmax(0,1fr)] gap-x-10">
+      {/* Sticky TOC */}
+      <aside class="hidden md:block">
+        <div class="sticky top-20">
+          <div class="text-[10px] uppercase tracking-wide text-ink-mute font-bold mb-2">On this page</div>
+          <ul class="text-xs space-y-1.5">
+            {recipes.map(r => (
+              <li>
+                <a href={`#${r.id}`} class="text-ink-dim hover:text-brand-700 transition-colors">{r.title}</a>
+              </li>
+            ))}
+          </ul>
+          <div class="mt-6 pt-4 border-t border-border">
+            <a href="/install" class="text-xs text-brand-700 font-medium hover:text-brand-600 inline-flex items-center gap-1">
+              → Install Okesu
+            </a>
+          </div>
+        </div>
+      </aside>
+
+      {/* Recipes */}
+      <article class="max-w-content space-y-12">
+        {recipes.map(r => (
+          <section id={r.id}>
+            <div class="flex items-baseline gap-3 mb-2 flex-wrap">
+              <h2 class="text-[20px] font-semibold text-ink leading-tight">{r.title}</h2>
+              <span class={`text-[10px] uppercase tracking-wide font-semibold px-1.5 py-0.5 rounded ring-1 ${tierTone(r.tier)}`}>
+                {r.tier}
+              </span>
+            </div>
+            <p class="text-[14px] text-ink-dim leading-relaxed mb-3">{r.tagline}</p>
+
+            <div class="text-[12px] text-ink-dim mb-4 bg-bg border border-border rounded-md px-3 py-2">
+              <span class="text-[10px] uppercase tracking-wide text-ink-mute font-bold mr-2">When to use</span>
+              {r.whenToUse}
+            </div>
+
+            <div class="text-[10px] uppercase tracking-wide text-ink-mute font-bold mb-2">What to notice</div>
+            <ul class="list-disc pl-5 space-y-1.5 text-[13px] text-ink leading-relaxed mb-4">
+              {r.highlights.map(h => <li set:html={h.replace(/`([^`]+)`/g, '<code class="bg-brand-50 text-brand-700 px-1 rounded text-[12px] font-mono">$1</code>')} />)}
+            </ul>
+
+            <details class="bg-[#0f172a] rounded-lg overflow-hidden">
+              <summary class="cursor-pointer select-none px-4 py-2.5 text-[11px] font-mono text-[#94a3b8] hover:text-[#e2e8f0] flex items-center justify-between">
+                <span>{r.id}.yaml</span>
+                <span class="text-[10px] text-[#64748b]">click to expand</span>
+              </summary>
+              <pre class="px-4 pb-4 text-[11px] leading-relaxed text-[#cbd5e1] overflow-x-auto"><code>{yamlByName[r.id]}</code></pre>
+            </details>
+          </section>
+        ))}
+
+        <div class="mt-12 pt-8 border-t border-border">
+          <h3 class="text-[15px] font-semibold text-ink mb-2">Roll your own</h3>
+          <p class="text-[13px] text-ink-dim leading-relaxed">
+            All six of these started life as a regular orchestration draft in the visual editor.
+            The YAML you see here is what the editor serializes on save. To build one yourself,
+            head to <strong>Automation → Orchestrations → New</strong> in the platform, drop a
+            handful of agents on the canvas, wire them together, and click Save.
+          </p>
+        </div>
+      </article>
+    </div>
+  </div>
+</Base>

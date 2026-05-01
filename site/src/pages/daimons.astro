@@ -1,0 +1,378 @@
+---
+import Base from '../layouts/Base.astro';
+import OperatorView from '../components/OperatorView.astro';
+---
+
+<Base
+  title="Daimons — the deep dive"
+  description="A field-by-field tour of Okesu's daimon spec, plus what you can build with it. Long-form."
+>
+  <div class="bg-gradient-to-b from-brand-50 via-white to-white border-b border-border">
+    <div class="max-w-page mx-auto px-6 py-12">
+      <div class="flex items-start gap-4">
+        <div class="w-12 h-12 rounded-lg bg-brand-50 text-brand-700 flex items-center justify-center text-3xl border border-brand-100 shrink-0 font-mono">
+          ▦
+        </div>
+        <div>
+          <p class="text-[10px] uppercase tracking-wide text-brand-700 font-bold mb-1">The signature concept</p>
+          <h1 class="text-[32px] md:text-[38px] font-bold text-ink leading-tight">The Daimon</h1>
+          <p class="mt-2 text-[15px] md:text-base text-ink-dim leading-relaxed max-w-2xl">
+            Most security tools ship as a service running an opaque agent runtime.
+            Okesu's daimon is a single Go binary plus a markdown file with YAML frontmatter — the markdown
+            <em>is</em> the agent. Edit the file, the daimon's behavior changes. That's the novel idea.
+            What follows is every field, every knob, and what each unlocks.
+          </p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="max-w-page mx-auto px-6 py-10">
+    <div class="grid md:grid-cols-[240px_minmax(0,1fr)] gap-x-12">
+      <aside class="hidden md:block">
+        <div class="sticky top-20">
+          <div class="text-[10px] uppercase tracking-wide text-ink-mute font-bold mb-2">On this page</div>
+          <ul class="text-xs space-y-1.5">
+            <li><a class="text-ink-dim hover:text-brand-700" href="#shape">The shape</a></li>
+            <li><a class="text-ink-dim hover:text-brand-700" href="#identity">Identity</a></li>
+            <li><a class="text-ink-dim hover:text-brand-700" href="#provider">Provider &amp; model</a></li>
+            <li><a class="text-ink-dim hover:text-brand-700" href="#schedule">Schedule</a></li>
+            <li><a class="text-ink-dim hover:text-brand-700" href="#state">State &amp; dedup</a></li>
+            <li><a class="text-ink-dim hover:text-brand-700" href="#tools">Tools &amp; RBAC</a></li>
+            <li><a class="text-ink-dim hover:text-brand-700" href="#collectors">Collectors</a></li>
+            <li><a class="text-ink-dim hover:text-brand-700" href="#prompt">The prompt body</a></li>
+            <li><a class="text-ink-dim hover:text-brand-700" href="#outputs">Outputs &amp; sinks</a></li>
+            <li><a class="text-ink-dim hover:text-brand-700" href="#mgmt">Management plane</a></li>
+            <li><a class="text-ink-dim hover:text-brand-700" href="#flexibility">What you can build</a></li>
+            <li><a class="text-ink-dim hover:text-brand-700" href="#runtime">Runtime model</a></li>
+            <li><a class="text-ink-dim hover:text-brand-700" href="#why">Why this shape</a></li>
+          </ul>
+        </div>
+      </aside>
+
+      <article class="concept-prose max-w-content">
+
+        <h2 id="shape">The shape</h2>
+
+        <p>A daimon is a markdown file. The YAML frontmatter tells the runtime <em>how</em> to drive the agent — provider, schedule, tools, collectors. The body is the system prompt the LLM sees on every run. That's the entire surface.</p>
+
+        <div class="code-block">
+<span class="cmt"># filename: edr.md</span><br/>
+<span class="cmt">---</span><br/>
+<span class="key">name</span>: edr<br/>
+<span class="key">version</span>: <span class="str">"1"</span><br/>
+<span class="key">description</span>: <span class="str">Linux EDR. Collects telemetry every 2 minutes…</span><br/>
+<br/>
+<span class="key">provider</span>: claude<br/>
+<span class="key">model</span>: claude-mythos-preview<br/>
+<span class="key">mode</span>: daemon<br/>
+<span class="key">interval</span>: 2m<br/>
+<br/>
+<span class="key">tools</span>:<br/>
+&nbsp;&nbsp;- read_file<br/>
+&nbsp;&nbsp;- bash<br/>
+<br/>
+<span class="key">collectors</span>:<br/>
+&nbsp;&nbsp;- <span class="key">name</span>: processes<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="key">command</span>: <span class="str">"ps aux | head -60"</span><br/>
+<span class="cmt">---</span><br/>
+<br/>
+You are an EDR agent. Investigate the telemetry below for anomalies…
+        </div>
+
+        <p>You don't write Go to add a daimon. You write a markdown file, drop it in the configured directory, and the binary picks it up. Same shape whether the daimon is doing endpoint detection, file integrity monitoring, certificate rotation, cost watching, or a domain-specific job nobody else needed before.</p>
+
+        <div class="bg-brand-50 border border-brand-100 rounded-lg p-4 my-6 text-[13px] text-ink leading-relaxed">
+          <strong class="text-brand-700">Note:</strong> The high-level introduction lives at <a href="/concepts/daimons">/concepts/daimons</a>. This page assumes you've read it and want depth. If a field below feels arbitrary, the concept page explains where it sits in the broader picture.
+        </div>
+
+        <h2 id="identity">Identity</h2>
+
+        <p>Three fields establish who the daimon is on the wire and in the dashboard.</p>
+
+        <div class="code-block">
+<span class="key">name</span>: edr<br/>
+<span class="key">version</span>: <span class="str">"1"</span><br/>
+<span class="key">description</span>: <span class="str">&gt;</span><br/>
+&nbsp;&nbsp;<span class="str">Linux EDR. Collects process / network / file telemetry every</span><br/>
+&nbsp;&nbsp;<span class="str">2 minutes and uses an LLM to triage anomalies into findings.</span>
+        </div>
+
+        <ul>
+          <li><span class="term">name</span> — globally unique identifier. Findings emitted by this daimon land in the CP tagged with this name; the dashboard groups by it.</li>
+          <li><span class="term">version</span> — bump when the prompt or contract changes. Lets multiple versions of the same daimon coexist during rollouts.</li>
+          <li><span class="term">description</span> — surfaced in the dashboard's daimon library and, importantly, in the orchestrator's prompt to chained agents (so step 2 of a playbook knows what step 1's daimon does).</li>
+        </ul>
+
+        <h2 id="provider">Provider &amp; model</h2>
+
+        <p>Pick the LLM and how hard you want it to think.</p>
+
+        <div class="code-block">
+<span class="key">provider</span>: claude       <span class="cmt"># claude | codex | custom</span><br/>
+<span class="key">model</span>: claude-mythos-preview<br/>
+<span class="key">effort</span>: low            <span class="cmt"># low | medium | high — reasoning depth</span><br/>
+<span class="key">maxTurns</span>: 20          <span class="cmt"># tool-call rounds before the runtime aborts</span><br/>
+<span class="key">timeout</span>: 5m           <span class="cmt"># wall-clock cap on a single tick</span>
+        </div>
+
+        <ul>
+          <li><span class="term">provider</span> — which SDK to drive. <code>claude</code> uses the Anthropic API; <code>codex</code> uses OpenAI's; <code>custom</code> hooks an in-process implementation. Same daimon spec works against any.</li>
+          <li><span class="term">model</span> — provider-specific model identifier. EDR-style ticks (cheap, frequent) want <code>claude-mythos-preview</code> or similar; deep-investigation agents lean toward larger models.</li>
+          <li><span class="term">effort</span> — for reasoning models, how long the chain of thought runs. <code>low</code> for triage, <code>medium</code> or <code>high</code> for analysis playbooks.</li>
+          <li><span class="term">maxTurns</span> — defensive cap on the tool-use loop. A tick that takes more than ~8–10 turns is usually stuck; 20 leaves headroom but bounds runaway costs.</li>
+        </ul>
+
+        <h2 id="schedule">Schedule</h2>
+
+        <p>Two execution shapes: scheduled (daemon mode) or on-demand (one-shot mode).</p>
+
+        <div class="code-block">
+<span class="key">mode</span>: daemon                  <span class="cmt"># daemon | oneshot</span><br/>
+<span class="key">interval</span>: 2m                  <span class="cmt"># or use cron: "*/5 * * * *"</span><br/>
+<span class="key">overlap</span>: skip                 <span class="cmt"># skip | queue | parallel</span>
+        </div>
+
+        <ul>
+          <li><span class="term">mode: daemon</span> — the runtime ticks the agent on the configured cadence. Used for always-on monitors (EDR, FIM, SRE health).</li>
+          <li><span class="term">mode: oneshot</span> — the daimon runs once when invoked (via <code>okesu auto</code>, <code>okesu claude</code>, or an orchestration step that dispatches it). Used for triage / response agents that are reactive, not periodic.</li>
+          <li><span class="term">interval</span> — fixed cadence, e.g. <code>2m</code>, <code>15m</code>, <code>1h</code>. Mutually exclusive with <code>cron</code>.</li>
+          <li><span class="term">cron</span> — for time-of-day or day-of-week patterns. <code>"0 9 * * 1"</code> = Mondays at 09:00.</li>
+          <li><span class="term">overlap</span> — what happens if the previous tick is still running when the next is due. <code>skip</code> drops the new tick (default for monitors), <code>queue</code> runs them serially, <code>parallel</code> runs concurrently (rare).</li>
+        </ul>
+
+        <h2 id="state">State &amp; dedup</h2>
+
+        <p>The runtime gives every daimon a writable directory and a finding-deduplication window.</p>
+
+        <div class="code-block">
+<span class="key">stateDir</span>: <span class="str">/var/lib/okesu/edr</span><br/>
+<span class="key">dedupeTtl</span>: 1h
+        </div>
+
+        <ul>
+          <li><span class="term">stateDir</span> — where the daimon keeps tick metadata. The runtime maintains a <code>last_run.txt</code> with the previous tick's timestamp so collectors can use <code>{`{{.LastRunISO}}`}</code> in their commands (see Collectors below).</li>
+          <li><span class="term">dedupeTtl</span> — when the daimon emits a finding with a <code>dedup_key</code>, identical findings inside this window are suppressed. Prevents the same noisy condition from re-emitting every tick.</li>
+        </ul>
+
+        <h2 id="tools">Tools &amp; RBAC</h2>
+
+        <p>The tool list is the agent's surface — what it can call.</p>
+
+        <div class="code-block">
+<span class="key">tools</span>:<br/>
+&nbsp;&nbsp;- read_file<br/>
+&nbsp;&nbsp;- write_file<br/>
+&nbsp;&nbsp;- list_files<br/>
+&nbsp;&nbsp;- search<br/>
+&nbsp;&nbsp;- bash<br/>
+<br/>
+<span class="key">actions</span>:<br/>
+&nbsp;&nbsp;<span class="key">rbac</span>:<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="key">allow</span>:<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;- <span class="key">tool</span>: read_file<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;- <span class="key">tool</span>: bash<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="key">reason</span>: <span class="str">"allowed but logged; targeted investigation only"</span><br/>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="key">deny</span>: []
+        </div>
+
+        <ul>
+          <li><span class="term">tools</span> — the universe of tool calls the agent <em>could</em> make. Each name maps to a Go function the daimon runtime exposes.</li>
+          <li><span class="term">actions.rbac</span> — within that universe, which calls are allowed in this daimon's runtime. Defining the surface twice (once on <code>tools</code>, once on <code>actions.rbac</code>) is intentional: <code>tools</code> is the schema the LLM sees; <code>actions.rbac</code> is the host-side gate. An entry under <code>deny</code> blocks the call even if the LLM tries.</li>
+        </ul>
+
+        <p>The default convention for monitors is <em>observe-only</em>: <code>read_file</code>, <code>list_files</code>, <code>search</code>, no <code>bash</code>. <code>bash</code> is reserved for daimons that have to inspect runtime state (process trees, kernel logs); the <code>reason</code> field documents <em>why</em> for audit logs.</p>
+
+        <h2 id="collectors">Collectors</h2>
+
+        <p>This is the part that surprises operators coming from prompt-only agent frameworks. A daimon's <code>collectors</code> array is a list of shell commands that run <em>before</em> the LLM is invoked. Their output is injected into the system prompt via Go template variables.</p>
+
+        <div class="code-block">
+<span class="key">collectors</span>:<br/>
+&nbsp;&nbsp;- <span class="key">name</span>: processes<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="key">command</span>: <span class="str">"ps aux --no-headers --sort=-%cpu | head -60"</span><br/>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="key">timeout</span>: 5s<br/>
+<br/>
+&nbsp;&nbsp;- <span class="key">name</span>: new_files<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="key">command</span>: <span class="str">"find /tmp /var/tmp -newer {`{{.LastRunFile}}`} -type f"</span><br/>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="key">timeout</span>: 10s<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="key">optional</span>: <span class="str">true</span><br/>
+<br/>
+&nbsp;&nbsp;- <span class="key">name</span>: osquery_no_disk<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="key">command</span>: <span class="str">"osqueryi --json 'SELECT pid, name FROM processes WHERE on_disk = 0'"</span><br/>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="key">timeout</span>: 10s<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="key">optional</span>: <span class="str">true</span>
+        </div>
+
+        <ul>
+          <li><span class="term">name</span> — referenced in the prompt body via <code>{`{{range .CollectorsList}}`}</code>.</li>
+          <li><span class="term">command</span> — bash command. Templated with Go template syntax — common variables include <code>{`{{.LastRunFile}}`}</code> (path to a file last-touched by the runtime, useful for <code>find -newer</code>), <code>{`{{.LastRunISO}}`}</code> (RFC3339 timestamp), <code>{`{{.HostID}}`}</code>.</li>
+          <li><span class="term">timeout</span> — per-collector cap. A slow collector doesn't block the whole tick.</li>
+          <li><span class="term">optional</span> — if true and the command fails or returns non-zero, the tick continues; that collector is marked skipped in the prompt. Useful for tools that may not be installed everywhere (osquery, jq, etc).</li>
+        </ul>
+
+        <p>Why pre-collect? Because LLM tool-calling is expensive and slow compared to a shell. Running <code>ps</code>, <code>ss</code>, <code>journalctl</code> deterministically up front, then asking the model "is anything in here suspicious?" is dramatically cheaper than letting the model issue tool calls one at a time. <em>Collectors give you cheap recall. Tools give you precise inspection.</em></p>
+
+        <h2 id="prompt">The prompt body</h2>
+
+        <p>Everything after the closing <code>---</code> of the frontmatter is the system prompt. It's a Go template with the collector outputs interpolated.</p>
+
+        <div class="code-block">
+<span class="cmt">---</span><br/>
+<span class="cmt"># (frontmatter above)</span><br/>
+<span class="cmt">---</span><br/>
+<br/>
+You are an EDR agent running on host <span class="str">**&#123;&#123;.HostID&#125;&#125;**</span> in region <span class="str">**&#123;&#123;.CloudRegion&#125;&#125;**</span>.<br/>
+<br/>
+Agent: <span class="str">&#123;&#123;.AgentName&#125;&#125;</span> | Tick: <span class="str">&#123;&#123;.Tick&#125;&#125;</span> | Time: <span class="str">&#123;&#123;.TickTime&#125;&#125;</span><br/>
+<br/>
+## Telemetry collected this tick<br/>
+<br/>
+&#123;&#123;range .CollectorsList -&#125;&#125;<br/>
+### &#123;&#123;.Name&#125;&#125; <span class="cmt">(skipped if optional and failed)</span><br/>
+```<br/>
+&#123;&#123;.Output&#125;&#125;<br/>
+```<br/>
+&#123;&#123;end&#125;&#125;<br/>
+<br/>
+## Your task<br/>
+Analyze the telemetry above. <span class="cmt">[…domain instructions, decision logic…]</span>
+        </div>
+
+        <p>The prompt is what makes the daimon a <em>daimon</em> — the structural shape (frontmatter + tools + collectors) is uniform, but the prompt is the agent's mission. Two daimons with identical frontmatter but different prompts are different agents.</p>
+
+        <h2 id="outputs">Outputs &amp; sinks</h2>
+
+        <p>Where the agent's emitted JSONL events go.</p>
+
+        <div class="code-block">
+<span class="key">outputs</span>:<br/>
+&nbsp;&nbsp;<span class="cmt"># Always-on: stream to stdout (picked up by journald)</span><br/>
+&nbsp;&nbsp;- <span class="key">type</span>: stdout<br/>
+<br/>
+&nbsp;&nbsp;<span class="cmt"># Local audit log — keeps every event including tick lifecycle</span><br/>
+&nbsp;&nbsp;- <span class="key">type</span>: file<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="key">path</span>: <span class="str">/var/log/okesu/edr.jsonl</span><br/>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="key">maxBytes</span>: 104857600   <span class="cmt"># rotate at 100 MB</span><br/>
+<br/>
+&nbsp;&nbsp;<span class="cmt"># CP webhook — high-signal events only</span><br/>
+&nbsp;&nbsp;- <span class="key">type</span>: webhook<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="key">url</span>: <span class="str">"$&#123;OKESU_WEBHOOK_URL&#125;"</span><br/>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="key">secret</span>: <span class="str">"$&#123;OKESU_WEBHOOK_SECRET&#125;"</span><br/>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="key">events</span>: [finding, action_taken, action_denied, error]<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="key">retries</span>: 3<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="key">bufferCap</span>: 512
+        </div>
+
+        <ul>
+          <li><span class="term">stdout</span> — the everything-stream. Useful in dev; in prod systemd captures it for journald.</li>
+          <li><span class="term">file</span> — local rotating audit log. Survives loss of network. Keep it on hosts that produce signal but talk to the CP intermittently.</li>
+          <li><span class="term">webhook</span> — push to the CP's ingest endpoint. The <code>events:</code> filter is intentional — only the events you care about, no tick lifecycle noise. The buffer (<code>bufferCap</code>) and retry policy (<code>retries</code>) handle CP unreachability gracefully; once it's full, oldest events drop.</li>
+        </ul>
+
+        <p>Multiple sinks are typical. <em>stdout</em> for local debugging, <em>file</em> for audit trail, <em>webhook</em> for the dashboard. None of them are mandatory — a daimon with no sinks is silent (sometimes you want that).</p>
+
+        <h2 id="mgmt">Management plane</h2>
+
+        <p>The optional management section wires the daimon into the CP's mTLS control channel.</p>
+
+        <div class="code-block">
+<span class="key">management</span>:<br/>
+&nbsp;&nbsp;<span class="key">url</span>: <span class="str">"$&#123;OKESU_MGMT_URL&#125;"</span><br/>
+&nbsp;&nbsp;<span class="key">certDir</span>: <span class="str">/etc/okesu</span>     <span class="cmt"># client.crt, client.key, ca.crt</span><br/>
+&nbsp;&nbsp;<span class="key">heartbeatSec</span>: 60<br/>
+&nbsp;&nbsp;<span class="key">pollSec</span>: 300
+        </div>
+
+        <p>Without a management section, the daimon runs autonomously and only pushes findings via the webhook sink. With it, the CP can dispatch ad-hoc orchestration steps to it, push hot config (new prompt, new tool list) without restart, and detect when the daimon goes stale (heartbeat timeout). It's optional precisely because some operators run daimons in environments where they cannot accept inbound dispatches — pure outbound is the lowest-trust shape.</p>
+
+        <h2 id="flexibility">What you can build</h2>
+
+        <p>The same eight or so frontmatter sections — identity, provider, schedule, state, tools, collectors, outputs, management — express a remarkable range of agents. Some shipped with the platform:</p>
+
+        <div class="grid md:grid-cols-2 gap-3 my-5">
+          <div class="bg-panel border border-border rounded-md p-3">
+            <div class="text-[12px] font-semibold text-ink mb-1">edr</div>
+            <p class="text-[11px] text-ink-dim leading-relaxed">Linux EDR. 2-minute ticks, 8 collectors covering processes / network / files / kernel / auth, observe-only tools, webhook + file sink.</p>
+          </div>
+          <div class="bg-panel border border-border rounded-md p-3">
+            <div class="text-[12px] font-semibold text-ink mb-1">instance-integrity</div>
+            <p class="text-[11px] text-ink-dim leading-relaxed">File integrity monitoring. Hashes critical paths, compares to baseline, emits findings on drift. Cron-scheduled (hourly).</p>
+          </div>
+          <div class="bg-panel border border-border rounded-md p-3">
+            <div class="text-[12px] font-semibold text-ink mb-1">instance-threat</div>
+            <p class="text-[11px] text-ink-dim leading-relaxed">Active-exploitation detector. IMDS abuse, container escapes, cryptomining. 5-minute ticks.</p>
+          </div>
+          <div class="bg-panel border border-border rounded-md p-3">
+            <div class="text-[12px] font-semibold text-ink mb-1">sre-health</div>
+            <p class="text-[11px] text-ink-dim leading-relaxed">Health-check side. TLS expiry, deployment frequency, recent incidents. Reads HTTP endpoints + parses certs. 10-minute ticks.</p>
+          </div>
+          <div class="bg-panel border border-border rounded-md p-3">
+            <div class="text-[12px] font-semibold text-ink mb-1">cost-watcher</div>
+            <p class="text-[11px] text-ink-dim leading-relaxed">FinOps. Hourly tick that pulls cloud-bill deltas, flags anomalies, identifies idle resources. Runs on the CP itself, not on hosts.</p>
+          </div>
+          <div class="bg-panel border border-border rounded-md p-3">
+            <div class="text-[12px] font-semibold text-ink mb-1">data-quality</div>
+            <p class="text-[11px] text-ink-dim leading-relaxed">Pipeline auditor. Row counts, null rates, schema drift, freshness against SLAs. Runs against your data warehouse, emits findings.</p>
+          </div>
+          <div class="bg-panel border border-border rounded-md p-3">
+            <div class="text-[12px] font-semibold text-ink mb-1">oci-posture</div>
+            <p class="text-[11px] text-ink-dim leading-relaxed">Cloud posture. Audits IAM, compartments, NSGs, object-storage visibility. Driven by the OCI CLI as a tool.</p>
+          </div>
+          <div class="bg-panel border border-border rounded-md p-3">
+            <div class="text-[12px] font-semibold text-ink mb-1">compliance-auditor</div>
+            <p class="text-[11px] text-ink-dim leading-relaxed">CIS / SOC2 / your-own checks. Daily cadence. Reads the same telemetry the EDR daimon collects, but applies a different framework.</p>
+          </div>
+        </div>
+
+        <p>Eight different missions, eight markdown files, one runtime. Three things change between them:</p>
+
+        <ul>
+          <li>The <strong>collectors</strong> — the cost watcher pulls bill data; the EDR pulls <code>ps aux</code>; data-quality runs SQL queries against the warehouse.</li>
+          <li>The <strong>prompt</strong> — what to investigate, what counts as a finding, the decision logic.</li>
+          <li>The <strong>cadence</strong> — EDR ticks every 2 minutes; the auditor ticks daily.</li>
+        </ul>
+
+        <p>Tools and outputs are usually shared across multiple daimons. Identity, provider/model, RBAC are usually identical for any operator using the same LLM provider. The variance lives in three places, exactly the three places where the agent's mission changes.</p>
+
+        <h2 id="runtime">Runtime model</h2>
+
+        <p>Behind the spec, the daimon binary's runtime is a small loop:</p>
+
+        <ol class="list-decimal pl-5 space-y-1.5 text-[14px] leading-relaxed text-ink mb-3">
+          <li>Tick fires (interval / cron / one-shot dispatch).</li>
+          <li>Run all collectors in parallel, gather their outputs, mark optional ones as skipped on failure.</li>
+          <li>Render the prompt body with the Go template variables filled in (collector outputs, host id, tick time, last-run time).</li>
+          <li>Send the rendered prompt to the LLM provider with the declared tools available. Loop on tool calls until the model emits its final response or <code>maxTurns</code> trips.</li>
+          <li>Parse the model's emitted JSONL events. Run them through the dedup window. Push to all configured output sinks.</li>
+          <li>Update <code>last_run.txt</code> and the <code>stateDir</code> entries. Wait for the next tick.</li>
+        </ol>
+
+        <p>That's it. There's no orchestrator inside the daimon — the daimon does one job per tick. Multi-step playbooks are an Okesu <em>orchestration</em> running at the CP level, dispatching to (possibly multiple) daimons.</p>
+
+        <h2 id="why">Why this shape</h2>
+
+        <p>Three design decisions are doing most of the work:</p>
+
+        <p><strong>Markdown plus YAML frontmatter, not a programming language.</strong> Adding a new agent or modifying an existing one is editing a file an operator can read and review without compiling anything. The barrier to "let me try this idea" is small. The risk of "I shipped a typo" is also small, because there's a schema and a parser.</p>
+
+        <p><strong>Pre-collectors, not pure tool-use.</strong> Letting the LLM drive every observation via tool calls is slow and expensive, and the latency tax compounds at the cadence a monitor needs. Pre-collecting deterministic shell output up front and asking the model to <em>analyze</em> rather than <em>investigate from scratch</em> is the difference between a 3-second tick and a 90-second one.</p>
+
+        <p><strong>The same shape for monitors and one-shots.</strong> An on-demand triage agent and an always-running EDR look identical at the spec level — just <code>mode: oneshot</code> vs <code>mode: daemon</code>. That uniformity means an orchestration step can dispatch to either kind of agent without caring which it is.</p>
+
+        <p>The point isn't that any single piece is novel. It's that the pieces fit. A markdown file with eight section headers can express a Linux EDR <em>and</em> a cost watcher <em>and</em> an FinOps auditor <em>and</em> a custom thing you needed yesterday — and the same runtime drives all of them.</p>
+
+        <div class="mt-12 pt-6 border-t border-border">
+          <h3 class="text-[15px] font-semibold text-ink mb-2">Where to next</h3>
+          <ul>
+            <li><a href="/concepts/agents">Agents</a> — agents are the on-demand cousin of daimons.</li>
+            <li><a href="/concepts/orchestrations">Orchestrations</a> — chain daimons + agents into playbooks.</li>
+            <li><a href="/recipes">Recipes</a> — six worked YAML orchestrations to copy-paste.</li>
+            <li><a href="/install">Install</a> — drop a daimon onto your first host.</li>
+          </ul>
+        </div>
+
+      </article>
+    </div>
+  </div>
+</Base>
