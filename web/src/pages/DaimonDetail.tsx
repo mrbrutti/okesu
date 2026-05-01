@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import { api, type DaimonItem } from '../api';
 import { LabelEditor } from '../components/labels/LabelEditor';
+import { LabelStrip } from '../components/labels/LabelStrip';
 import { cn } from '../lib/cn';
 import EventTimeline from '../components/EventTimeline';
 import AgentMessages from '../components/AgentMessages';
@@ -91,6 +92,7 @@ export default function DaimonDetailPage() {
             <p className="text-xs text-ink-dim font-mono mt-0.5">
               {daimon.host || 'unknown host'} · {daimon.provider || '—'} {daimon.model || ''}
             </p>
+            <LabelStrip kind="daimon" idOrKey={`${daimon.name}@${daimon.host}`} className="mt-1.5" />
           </div>
 
           {/* Quick stat tiles */}
@@ -204,9 +206,11 @@ function OverviewTab({ daimon }: { daimon: DaimonItem }) {
           <Row label="Updated" mono>{daimon.config_updated_at}</Row>
         )}
       </Card>
-      <Card title="Labels" wide>
-        <LabelEditor kind="daimon" idOrKey={daimonKey} />
-      </Card>
+      <div id="labels-card" className="lg:col-span-2 transition-shadow rounded-xl">
+        <Card title="Labels" wide>
+          <LabelEditor kind="daimon" idOrKey={daimonKey} />
+        </Card>
+      </div>
     </div>
   );
 }

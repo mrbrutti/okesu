@@ -1270,9 +1270,11 @@ export function FindingDrawer({ id, cpInstanceID, onClose, onChanged }: DrawerPr
         )}
 
         {/* Labels — generic primitive shared across every entity. */}
-        <Section icon={TagIcon} title="Labels">
-          <LabelEditor kind="finding" idOrKey={f.id} />
-        </Section>
+        <div id="labels-card" className="transition-shadow rounded-xl">
+          <Section icon={TagIcon} title="Labels">
+            <LabelEditor kind="finding" idOrKey={f.id} />
+          </Section>
+        </div>
 
         {/* Triage metadata */}
         {f.status && f.status !== 'open' && (

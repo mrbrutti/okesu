@@ -20,6 +20,7 @@ import {
 } from 'lucide-react';
 import { api, type CloudCredential, type CloudKind, type CPProvision, type CPProvisionEstimate, type DiscoveryItem, type FederationPeer, type TransportConfigSummary } from '../api';
 import { LabelEditor } from '../components/labels/LabelEditor';
+import { LabelStrip } from '../components/labels/LabelStrip';
 import { cn } from '../lib/cn';
 
 export default function FederationPage() {
@@ -412,6 +413,9 @@ function PeerDetailDrawer({
                 id {intro.instance_id}
               </div>
             )}
+            {intro?.instance_id && (
+              <LabelStrip kind="cp" idOrKey={intro.instance_id} className="mt-1.5" />
+            )}
           </div>
           <div className="flex items-center gap-1 shrink-0">
             <button
@@ -444,9 +448,11 @@ function PeerDetailDrawer({
               CP routes (alert routing, dashboards) can target by
               selector rather than per-instance UUID. */}
           {intro?.instance_id && (
-            <DrawerCard title="Labels">
-              <LabelEditor kind="cp" idOrKey={intro.instance_id} />
-            </DrawerCard>
+            <div id="labels-card" className="transition-shadow rounded-xl">
+              <DrawerCard title="Labels">
+                <LabelEditor kind="cp" idOrKey={intro.instance_id} />
+              </DrawerCard>
+            </div>
           )}
 
           <DrawerCard title="Connection">

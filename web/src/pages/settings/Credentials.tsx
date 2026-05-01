@@ -264,7 +264,7 @@ function SecretDetailPane({
         </div>
       )}
 
-      <div className="border border-border rounded-md bg-white p-4">
+      <div id="labels-card" className="border border-border rounded-md bg-white p-4 transition-shadow">
         <h3 className="text-[11px] uppercase tracking-wide font-semibold text-ink-mute mb-3">
           Labels
         </h3>
