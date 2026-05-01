@@ -736,6 +736,13 @@ func (s *Server) routes() http.Handler {
 		r.Delete("/api/users/me/sessions", api.MyRevokeOtherSessions(s.store, s.mgr))
 		// Saved searches — per-user named filter sets. Findings is the
 		// only consumer in v1 but the API is generic on `scope`.
+		// Phase 22.8 PR α — groups read endpoints. Listing groups +
+		// reading group detail is open to any authenticated user (the
+		// Settings → Profile section shows a user's effective access);
+		// mutation lives behind the admin gate above.
+		r.Get("/api/groups", api.ListGroupsHandler(s.store))
+		r.Get("/api/groups/{id}", api.GetGroupHandler(s.store))
+		r.Get("/api/users/me/groups", api.MyGroupsHandler(s.store))
 		r.Get("/api/saved-searches", api.ListSavedSearchesHandler(s.store))
 		r.Post("/api/saved-searches", api.CreateSavedSearchHandler(s.store))
 		r.Patch("/api/saved-searches/{id}", api.UpdateSavedSearchHandler(s.store))
@@ -858,12 +865,21 @@ func (s *Server) routes() http.Handler {
 
 		// Admin-only endpoints
 		r.Group(func(r chi.Router) {
-			r.Use(auth.RequireRole(auth.RoleAdmin))
+			r.Use(auth.RequireRole(s.store, auth.RoleAdmin))
 			r.Get("/api/users", api.UsersList(s.store))
 			r.Post("/api/users", api.UserCreate(s.store))
 			r.Get("/api/users/{id}", api.UserDetail(s.store))
 			r.Patch("/api/users/{id}", api.UserPatch(s.store))
 			r.Delete("/api/users/{id}", api.UserDelete(s.store))
+			// Phase 22.8 PR α — groups + scoped roles. Mutation is
+			// admin-only; reads of own groups are below the gate.
+			r.Post("/api/groups", api.CreateGroupHandler(s.store))
+			r.Patch("/api/groups/{id}", api.UpdateGroupHandler(s.store))
+			r.Delete("/api/groups/{id}", api.DeleteGroupHandler(s.store))
+			r.Post("/api/groups/{id}/roles", api.AddGroupRoleHandler(s.store))
+			r.Delete("/api/groups/{id}/roles/{roleID}", api.RemoveGroupRoleHandler(s.store))
+			r.Put("/api/groups/{id}/members/{userID}", api.AddGroupMemberHandler(s.store))
+			r.Delete("/api/groups/{id}/members/{userID}", api.RemoveGroupMemberHandler(s.store))
 			r.Get("/api/audit", api.AuditList(s.store))
 			r.Post("/api/deploy/binaries", api.BinaryUpload(s.store, s.cfg.DaemonBinariesDir))
 			r.Delete("/api/deploy/binaries/{name}", api.BinaryDelete(s.store))
@@ -985,7 +1001,7 @@ func (s *Server) routes() http.Handler {
 
 		// Mutation endpoints — operator+
 		r.Group(func(r chi.Router) {
-			r.Use(auth.RequireRole(auth.RoleOperator))
+			r.Use(auth.RequireRole(s.store, auth.RoleOperator))
 			r.Patch("/api/agents/{name}/config", api.AgentConfigUpdate(s.store))
 			r.Post("/api/findings/{id}/acknowledge", api.FindingAcknowledge(s.store))
 			r.Post("/api/findings/group/acknowledge", api.FindingsGroupAcknowledge(s.store))

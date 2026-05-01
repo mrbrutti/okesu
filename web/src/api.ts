@@ -430,6 +430,52 @@ export interface InvestigationFindingItem {
 
 export type LinkMethod = 'manual' | 'bulk' | 'auto-promote' | 'autolink' | 'import';
 
+// Group — Phase 22.8 PR α. external_id is non-empty for OIDC-bound
+// groups (the IdP-side identifier matched against the groups claim);
+// empty for local-only groups.
+export interface Group {
+  id: number;
+  name: string;
+  description: string;
+  external_id: string;
+  created_at: string;
+  updated_at: string;
+}
+
+// GroupRole — one (role, selector) tuple attached to a group. The
+// selector string is reserved for PR β's label-aware evaluator;
+// rows in PR α all carry empty selector meaning "CP-wide".
+export interface GroupRole {
+  id: number;
+  group_id: number;
+  role: 'admin' | 'operator' | 'viewer' | string;
+  selector: string;
+}
+
+// GroupDetail — what GET /api/groups/{id} returns. Members are
+// projected to {id, email, role} so password hashes never leave the
+// auth package.
+export interface GroupDetail {
+  group: Group;
+  roles: GroupRole[];
+  members: Array<{ id: number; email: string; role: string }>;
+}
+
+// MyGroups — what /api/users/me/groups returns. The Settings →
+// Profile section uses this so a user can see (but not edit) their
+// effective access. `groups[].source` distinguishes manual / oidc /
+// auto memberships so the UI can show OIDC ones as IdP-managed.
+export interface MyGroups {
+  groups: Array<{
+    group_id: number;
+    name: string;
+    description: string;
+    source: 'manual' | 'oidc' | 'auto';
+    added_at: string;
+  }>;
+  effective_roles: string[];
+}
+
 // SavedSearch — operator's named filter set. `scope='findings'` is
 // the only consumer in v1; the field stays so future surfaces (cases,
 // runs, IOCs) get the same primitive without API changes.
@@ -1019,6 +1065,33 @@ export const api = {
       method: 'DELETE',
       body: JSON.stringify({ fingerprint }),
     }),
+
+  // Phase 22.8 PR α — groups + scoped roles. Multi-membership RBAC
+  // replacing the single users.role enum. Existing role-gated paths
+  // keep working via the migration backfill (default-<role> groups).
+  // Selectors are accepted by the API but a no-op until PR β.
+  groups: {
+    list: () => request<Group[]>('/api/groups'),
+    get: (id: number) => request<GroupDetail>(`/api/groups/${id}`),
+    create: (req: { name: string; description?: string; external_id?: string }) =>
+      request<Group>('/api/groups', { method: 'POST', body: JSON.stringify(req) }),
+    update: (id: number, patch: { name: string; description: string; external_id: string }) =>
+      request<void>(`/api/groups/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+    delete: (id: number) =>
+      request<void>(`/api/groups/${id}`, { method: 'DELETE' }),
+    addRole: (id: number, role: string, selector: string = '') =>
+      request<void>(`/api/groups/${id}/roles`, {
+        method: 'POST',
+        body: JSON.stringify({ role, selector }),
+      }),
+    removeRole: (id: number, roleID: number) =>
+      request<void>(`/api/groups/${id}/roles/${roleID}`, { method: 'DELETE' }),
+    addMember: (id: number, userID: number) =>
+      request<void>(`/api/groups/${id}/members/${userID}`, { method: 'PUT' }),
+    removeMember: (id: number, userID: number) =>
+      request<void>(`/api/groups/${id}/members/${userID}`, { method: 'DELETE' }),
+    myGroups: () => request<MyGroups>('/api/users/me/groups'),
+  },
 
   // Phase 22.7 — operator-saved searches. Per-(user, scope) named
   // filter sets the Findings page persists so operators don't re-type

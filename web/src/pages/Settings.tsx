@@ -33,6 +33,7 @@ import DisplaySection from './settings/Display';
 import CloudSection from './settings/Cloud';
 import LLMKeysSection from './settings/LLMKeys';
 import InvestigationsSection from './settings/Investigations';
+import GroupsSection from './settings/Groups';
 
 interface Props {
   user: User;
@@ -49,6 +50,7 @@ const NAV: NavItem[] = [
   { to: 'profile',         label: 'Profile',        icon: UserIcon },
   { to: 'display',         label: 'Display',        icon: Eye },
   { to: 'users',           label: 'Users',          icon: UsersIcon,    adminOnly: true },
+  { to: 'groups',          label: 'Groups',         icon: UsersIcon,    adminOnly: true },
   { to: 'investigations',  label: 'Investigations', icon: Sparkles,     adminOnly: true },
   { to: 'notifications',   label: 'Notifications',  icon: Bell,         adminOnly: true },
   { to: 'integrations',    label: 'Integrations',   icon: Plug,         adminOnly: true },
@@ -105,6 +107,7 @@ export default function SettingsPage({ user }: Props) {
           <Route path="profile"        element={<ProfileSection user={user} />} />
           <Route path="display"        element={<DisplaySection />} />
           <Route path="users"          element={user.role === 'admin' ? <UsersSection /> : <Forbidden />} />
+          <Route path="groups"         element={user.role === 'admin' ? <GroupsSection /> : <Forbidden />} />
           <Route path="investigations" element={user.role === 'admin' ? <InvestigationsSection /> : <Forbidden />} />
           <Route path="notifications"  element={user.role === 'admin' ? <NotificationsSection /> : <Forbidden />} />
           <Route path="integrations"   element={user.role === 'admin' ? <IntegrationsSection /> : <Forbidden />} />
