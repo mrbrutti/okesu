@@ -21,6 +21,7 @@ import {
   Search,
   Server,
   Sparkles,
+  Tag,
   Workflow,
   X,
 } from 'lucide-react';
@@ -48,7 +49,7 @@ const CACHE_TTL_MS = 30_000;
 // `pending_gate` is special: it surfaces orchestration runs currently
 // blocked on operator approval. Always renders first when populated
 // so the operator sees their action items the instant they Cmd-K.
-type Kind = 'pending_gate' | 'finding' | 'daimon' | 'agent' | 'node' | 'orchestration';
+type Kind = 'pending_gate' | 'finding' | 'daimon' | 'agent' | 'node' | 'orchestration' | 'selector';
 
 interface BaseRow {
   kind: Kind;
@@ -234,6 +235,7 @@ export default function CommandPalette() {
       daimon: [],
       agent: [],
       node: [],
+      selector: [],
     };
     if (!q) {
       // No query ⇒ show top-N of each group by source order. Findings
@@ -244,6 +246,30 @@ export default function CommandPalette() {
       }
       return byKind;
     }
+
+    // Selector mode: `label:<sel>` or `selector:<sel>` shortcuts to a
+    // filtered list page on each kind that supports selectors. Emits
+    // synthetic rows above the fuzzy results so the operator can jump
+    // straight to "every Finding tagged env=prod" without reaching for
+    // the page-level filter bar.
+    const selectorPrefix = q.match(/^(label|selector):\s*(.+)$/i);
+    if (selectorPrefix) {
+      const sel = selectorPrefix[2].trim();
+      if (sel !== '') {
+        const enc = encodeURIComponent(sel);
+        const synth = (kind: Kind, title: string, to: string): ScoredRow => ({
+          row: { kind, key: `sel-${kind}-${sel}`, title, subtitle: sel, to },
+          score: 100_000,
+          matched: [],
+        });
+        // Findings — host_selector filter bar, lands operator on the page.
+        byKind.selector = byKind.selector ?? [];
+        byKind.selector.push(synth('selector', `Findings matching ${sel}`, `/findings?host_selector=${enc}`));
+        byKind.selector.push(synth('selector', `Nodes matching ${sel}`, `/nodes?selector=${enc}`));
+        byKind.selector.push(synth('selector', `Daimons matching ${sel}`, `/daimons?selector=${enc}`));
+      }
+    }
+
     // ID-lookup mode: `#<digits>` (or `<digits>` alone) returns every
     // row whose underlying object's id matches exactly. Useful when
     // an operator has a finding id from a chat / paged alert and just
@@ -292,7 +318,7 @@ export default function CommandPalette() {
   const flat = useMemo<ScoredRow[]>(() => {
     // Visual order: action items (gates) first, then catalog
     // (orchestrations), then the existing entity sections.
-    const order: Kind[] = ['pending_gate', 'orchestration', 'finding', 'daimon', 'agent', 'node'];
+    const order: Kind[] = ['selector', 'pending_gate', 'orchestration', 'finding', 'daimon', 'agent', 'node'];
     const out: ScoredRow[] = [];
     for (const k of order) out.push(...grouped[k].slice(0, PER_GROUP));
     return out;
@@ -554,6 +580,7 @@ function EmptyHint() {
     <div className="px-4 py-6 text-xs text-ink-mute space-y-1">
       <div>Type to search across findings, daimons, agents, nodes, and orchestrations.</div>
       <div>Tip: <code className="px-1 rounded bg-slate-100 text-ink-dim">#245</code> jumps to any item with that numeric id (finding, run, node, orchestration).</div>
+      <div>Tip: <code className="px-1 rounded bg-slate-100 text-ink-dim">label:env=prod</code> shortcuts to filtered Findings / Nodes / Daimons by label selector.</div>
       <div>Pending operator gates surface at the top automatically.</div>
     </div>
   );
@@ -589,6 +616,7 @@ function iconFor(kind: Kind) {
     case 'daimon':        return Layers;
     case 'agent':         return Sparkles;
     case 'node':          return Server;
+    case 'selector':      return Tag;
   }
 }
 
