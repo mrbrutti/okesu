@@ -54,12 +54,41 @@ type NodesConfig struct {
 // resolvePrivateKey returns the SSH private key to use for a deploy
 // request, plus a source label for audit logs.
 //
-// Priority: per-request body > stored fallback. Returns
-// (key, "request"|"stored", nil) on success or (nil, "", err) when
-// neither a request key nor a stored fallback is available.
-func resolvePrivateKey(ctx context.Context, requestKey string, secrets ports.Secrets) ([]byte, string, error) {
+// Priority (Phase 22.8 PR γ wire-through):
+//   1. per-request body (operator pasted key for this one deploy) — explicit override
+//   2. selector-bound ssh_key secret matching the target node's labels —
+//      group-scoped default; uses the same selector grammar groups
+//      (PR β) and env_var bindings (PR γ) consume
+//   3. legacy stored fallback (deploy/ssh-private-key) — CP-wide default
+//
+// Returns (key, source, nil) on success or (nil, "", err) when no
+// option produces a key. Source labels: "request" | "binding:<name>" |
+// "stored". The label flows into the audit_log row for forensic review.
+//
+// nodeID/store may be zero/nil in callers that don't have a node row
+// yet (rare; all current call sites have one) — the selector lookup
+// is skipped in that case.
+func resolvePrivateKey(ctx context.Context, requestKey string, secrets ports.Secrets, store *db.Store, nodeID int64) ([]byte, string, error) {
 	if k := strings.TrimSpace(requestKey); k != "" {
 		return []byte(k), "request", nil
+	}
+	// Selector-bound ssh_key. Scope='node' is the deploy scope; 'any'
+	// scope also matches per the resolver's wildcard behaviour.
+	if store != nil && nodeID > 0 {
+		mk, err := store.MasterKeyFromMeta()
+		if err == nil {
+			resolved, err := store.ListSecretsForNode(nodeID, db.SecretScopeNode, db.SecretKindSSHKey)
+			if err == nil && len(resolved) > 0 {
+				// Pick the first matching binding deterministically
+				// (resolver returns rows in name order). If multiple
+				// bindings hit, the first one wins; admins can author
+				// more specific selectors to disambiguate.
+				val, err := store.GetSecretValue(resolved[0].Secret.ID, mk)
+				if err == nil && val != "" {
+					return []byte(val), "binding:" + resolved[0].Secret.Name, nil
+				}
+			}
+		}
 	}
 	if secrets == nil {
 		return nil, "", errors.New("private_key is required (no stored deploy key configured)")
@@ -208,6 +237,12 @@ func toNodeJSON(n *db.Node) nodeJSON {
 
 // NodesList returns registered nodes, paginated.
 // GET /api/nodes?limit=N&offset=N
+//
+// Phase 22.8 PR β wire-through — when the caller has only scoped
+// grants (no CP-wide role), the result is filtered through
+// Store.FilterVisibleNodes. CP-wide grants short-circuit the filter
+// to "see everything", so existing admins/operators (in their
+// default-* groups) keep full visibility — no behaviour change.
 func NodesList(store *db.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
@@ -216,6 +251,33 @@ func NodesList(store *db.Store) http.HandlerFunc {
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
+		}
+		// Apply scoped-role visibility filter if a user is on the
+		// context. Synthetic actors (federation tokens, API tokens
+		// without a backing user) skip this — they keep operating on
+		// whatever the route layer already gated.
+		if u := auth.UserFromContext(r.Context()); u != nil && u.ID > 0 {
+			ids := make([]int64, len(ns))
+			for i, n := range ns {
+				ids[i] = n.ID
+			}
+			visible, err := store.FilterVisibleNodes(u.ID, "viewer", ids)
+			if err == nil {
+				keep := make(map[int64]struct{}, len(visible))
+				for _, id := range visible {
+					keep[id] = struct{}{}
+				}
+				filtered := make([]*db.Node, 0, len(visible))
+				for _, n := range ns {
+					if _, ok := keep[n.ID]; ok {
+						filtered = append(filtered, n)
+					}
+				}
+				ns = filtered
+			}
+			// On error, fall through with the unfiltered set — better
+			// to over-show than to break the page silently. The route
+			// layer's RequireRole already gated on at least viewer.
 		}
 		out := make([]nodeJSON, 0, len(ns))
 		for _, n := range ns {
@@ -472,7 +534,7 @@ func NodeUpdateBinary(store *db.Store, reg *jobs.Registry, cfg NodesConfig) http
 			http.Error(w, "bad json", http.StatusBadRequest)
 			return
 		}
-		privKey, keySource, err := resolvePrivateKey(r.Context(), req.PrivateKey, cfg.Secrets)
+		privKey, keySource, err := resolvePrivateKey(r.Context(), req.PrivateKey, cfg.Secrets, store, id)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -578,7 +640,7 @@ func NodeRollbackBinary(store *db.Store, reg *jobs.Registry, cfg NodesConfig) ht
 			http.Error(w, "bad json", http.StatusBadRequest)
 			return
 		}
-		privKey, keySource, err := resolvePrivateKey(r.Context(), req.PrivateKey, cfg.Secrets)
+		privKey, keySource, err := resolvePrivateKey(r.Context(), req.PrivateKey, cfg.Secrets, store, id)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -702,7 +764,7 @@ func NodeDeploy(store *db.Store, reg *jobs.Registry, deployer NodeDeployer, cfg 
 			http.Error(w, "agents is required", http.StatusBadRequest)
 			return
 		}
-		privKey, keySource, err := resolvePrivateKey(r.Context(), req.PrivateKey, cfg.Secrets)
+		privKey, keySource, err := resolvePrivateKey(r.Context(), req.PrivateKey, cfg.Secrets, store, id)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return

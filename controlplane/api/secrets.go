@@ -15,11 +15,13 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/section9labs/okesu/controlplane/audit"
 	"github.com/section9labs/okesu/controlplane/auth"
 	"github.com/section9labs/okesu/controlplane/db"
 )
@@ -130,6 +132,11 @@ func CreateSecretHandler(store *db.Store) http.HandlerFunc {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		audit.Emit(r, store, db.AuditEntry{
+			Action:   "secret.create",
+			Target:   fmt.Sprintf("secret:%d", sec.ID),
+			Metadata: map[string]any{"name": sec.Name, "kind": sec.Kind},
+		})
 		writeJSON(w, http.StatusCreated, toSecretJSON(*sec))
 	}
 }
@@ -181,6 +188,7 @@ func UpdateSecretHandler(store *db.Store) http.HandlerFunc {
 			}
 		}
 		// Value rotation.
+		rotated := false
 		if body.Value != nil && *body.Value != "" {
 			mk, err := store.MasterKeyFromMeta()
 			if err != nil {
@@ -191,7 +199,19 @@ func UpdateSecretHandler(store *db.Store) http.HandlerFunc {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
+			rotated = true
 		}
+		// Audit. Separate actions for rotation vs metadata patch so
+		// secret rotations are easy to grep for during compliance
+		// reviews.
+		action := "secret.update"
+		if rotated {
+			action = "secret.rotate"
+		}
+		audit.Emit(r, store, db.AuditEntry{
+			Action: action,
+			Target: fmt.Sprintf("secret:%d", id),
+		})
 		w.WriteHeader(http.StatusNoContent)
 	}
 }
@@ -208,6 +228,10 @@ func DeleteSecretHandler(store *db.Store) http.HandlerFunc {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		audit.Emit(r, store, db.AuditEntry{
+			Action: "secret.delete",
+			Target: fmt.Sprintf("secret:%d", id),
+		})
 		w.WriteHeader(http.StatusNoContent)
 	}
 }
@@ -233,6 +257,11 @@ func AddSecretBindingHandler(store *db.Store) http.HandlerFunc {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		audit.Emit(r, store, db.AuditEntry{
+			Action:   "secret.binding.add",
+			Target:   fmt.Sprintf("secret:%d", id),
+			Metadata: map[string]any{"selector": body.Selector, "scope": body.Scope},
+		})
 		w.WriteHeader(http.StatusNoContent)
 	}
 }
@@ -249,9 +278,18 @@ func RemoveSecretBindingHandler(store *db.Store) http.HandlerFunc {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		audit.Emit(r, store, db.AuditEntry{
+			Action: "secret.binding.remove",
+			Target: fmt.Sprintf("binding:%d", bid),
+		})
 		w.WriteHeader(http.StatusNoContent)
 	}
 }
+
+// _ keeps the auth import alive for tools that need user context;
+// secret handlers grab the actor through audit.Emit (which reads
+// auth.UserFromContext internally).
+var _ = auth.UserFromContext
 
 // secretIDFromChi reads the {id} URL param.
 func secretIDFromChi(r *http.Request) (int64, error) {

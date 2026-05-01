@@ -175,6 +175,19 @@ func CreateRun(reg *RunRegistry, tunReg *tunnel.Registry, store *db.Store, agent
 
 		dispatchMethod := "tunnel"
 		if conn != nil {
+			// Phase 22.8 PR γ wire-through (tunnel path) — resolve
+			// selector-bound env_var secrets matching the target
+			// node's labels and pass them through. Pull-mode does the
+			// same a few lines down; both paths now have feature
+			// parity for credential injection.
+			var nodeID int64
+			_ = store.QueryRow(`SELECT id FROM nodes WHERE name = ?`, req.Node).Scan(&nodeID)
+			tunnelEnv := map[string]string{}
+			if nodeID > 0 {
+				tmpPayload := agent.JobPayload{}
+				attachEnvSecrets(store, nodeID, db.SecretScopeAgentRun, &tmpPayload)
+				tunnelEnv = tmpPayload.Env
+			}
 			lines, exit, cleanup, err := conn.SendRun(tunnel.RunPayload{
 				RunID:        runID,
 				Provider:     req.Provider,
@@ -184,6 +197,7 @@ func CreateRun(reg *RunRegistry, tunReg *tunnel.Registry, store *db.Store, agent
 				Agent:        req.Agent,
 				AgentContent: agentContent,
 				Prompt:       req.Prompt,
+				Env:          tunnelEnv,
 			})
 			if err != nil {
 				_ = store.FinishRun(runID, db.RunStatusFailed, -1, err.Error())

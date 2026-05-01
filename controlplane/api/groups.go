@@ -13,12 +13,14 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/section9labs/okesu/controlplane/audit"
 	"github.com/section9labs/okesu/controlplane/auth"
 	"github.com/section9labs/okesu/controlplane/db"
 )
@@ -100,6 +102,11 @@ func CreateGroupHandler(store *db.Store) http.HandlerFunc {
 			return
 		}
 		g, _ := store.GetGroup(id)
+		audit.Emit(r, store, db.AuditEntry{
+			Action:   "group.create",
+			Target:   fmt.Sprintf("group:%d", id),
+			Metadata: map[string]any{"name": body.Name, "external_id": body.ExternalID},
+		})
 		writeJSON(w, http.StatusCreated, g)
 	}
 }
@@ -130,6 +137,10 @@ func UpdateGroupHandler(store *db.Store) http.HandlerFunc {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		audit.Emit(r, store, db.AuditEntry{
+			Action: "group.update",
+			Target: fmt.Sprintf("group:%d", id),
+		})
 		w.WriteHeader(http.StatusNoContent)
 	}
 }
@@ -151,6 +162,10 @@ func DeleteGroupHandler(store *db.Store) http.HandlerFunc {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		audit.Emit(r, store, db.AuditEntry{
+			Action: "group.delete",
+			Target: fmt.Sprintf("group:%d", id),
+		})
 		w.WriteHeader(http.StatusNoContent)
 	}
 }
@@ -182,6 +197,11 @@ func AddGroupRoleHandler(store *db.Store) http.HandlerFunc {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		audit.Emit(r, store, db.AuditEntry{
+			Action:   "group.role.add",
+			Target:   fmt.Sprintf("group:%d", id),
+			Metadata: map[string]any{"role": body.Role, "selector": body.Selector},
+		})
 		w.WriteHeader(http.StatusNoContent)
 	}
 }
@@ -209,6 +229,11 @@ func RemoveGroupRoleHandler(store *db.Store) http.HandlerFunc {
 			for _, gr := range roles {
 				if gr.ID == roleIDInt {
 					_ = store.RemoveGroupRole(id, gr.Role, gr.Selector)
+					audit.Emit(r, store, db.AuditEntry{
+						Action:   "group.role.remove",
+						Target:   fmt.Sprintf("group:%d", id),
+						Metadata: map[string]any{"role": gr.Role, "selector": gr.Selector},
+					})
 					w.WriteHeader(http.StatusNoContent)
 					return
 				}
@@ -225,6 +250,11 @@ func RemoveGroupRoleHandler(store *db.Store) http.HandlerFunc {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		audit.Emit(r, store, db.AuditEntry{
+			Action:   "group.role.remove",
+			Target:   fmt.Sprintf("group:%d", id),
+			Metadata: map[string]any{"role": body.Role, "selector": body.Selector},
+		})
 		w.WriteHeader(http.StatusNoContent)
 	}
 }
@@ -251,6 +281,11 @@ func AddGroupMemberHandler(store *db.Store) http.HandlerFunc {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		audit.Emit(r, store, db.AuditEntry{
+			Action:   "group.member.add",
+			Target:   fmt.Sprintf("group:%d", gid),
+			Metadata: map[string]any{"user_id": uid, "source": "manual"},
+		})
 		w.WriteHeader(http.StatusNoContent)
 	}
 }
@@ -274,6 +309,11 @@ func RemoveGroupMemberHandler(store *db.Store) http.HandlerFunc {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		audit.Emit(r, store, db.AuditEntry{
+			Action:   "group.member.remove",
+			Target:   fmt.Sprintf("group:%d", gid),
+			Metadata: map[string]any{"user_id": uid},
+		})
 		w.WriteHeader(http.StatusNoContent)
 	}
 }

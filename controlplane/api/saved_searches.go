@@ -12,14 +12,31 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/section9labs/okesu/controlplane/audit"
 	"github.com/section9labs/okesu/controlplane/auth"
 	"github.com/section9labs/okesu/controlplane/db"
 )
+
+// userInGroup returns true when the user is a member of the named
+// group. Used to gate access to group-shared saved searches.
+func userInGroup(store *db.Store, userID, groupID int64) (bool, error) {
+	groups, err := store.ListUserGroups(userID)
+	if err != nil {
+		return false, err
+	}
+	for _, g := range groups {
+		if g.GroupID == groupID {
+			return true, nil
+		}
+	}
+	return false, nil
+}
 
 // ListSavedSearchesHandler returns the user's saved searches under
 // the given scope (default: 'findings').
@@ -35,6 +52,20 @@ func ListSavedSearchesHandler(store *db.Store) http.HandlerFunc {
 		scope := r.URL.Query().Get("scope")
 		if scope == "" {
 			scope = "findings"
+		}
+		// Group-shared scopes require membership; otherwise we'd leak
+		// other groups' saved views to anyone who guessed the scope
+		// string.
+		if gid, ok := db.ParseGroupScope(scope); ok {
+			in, err := userInGroup(store, u.ID, gid)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			if !in {
+				http.Error(w, "forbidden", http.StatusForbidden)
+				return
+			}
 		}
 		out, err := store.ListSavedSearches(u.ID, scope)
 		if err != nil {
@@ -86,6 +117,18 @@ func CreateSavedSearchHandler(store *db.Store) http.HandlerFunc {
 		if cfg == "" || cfg == "null" {
 			cfg = "{}"
 		}
+		// Authorize group-shared creation up front.
+		if gid, ok := db.ParseGroupScope(body.Scope); ok {
+			in, err := userInGroup(store, u.ID, gid)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			if !in {
+				http.Error(w, "forbidden", http.StatusForbidden)
+				return
+			}
+		}
 		id, err := store.CreateSavedSearch(&db.SavedSearchInsert{
 			UserID:     u.ID,
 			Name:       body.Name,
@@ -100,6 +143,13 @@ func CreateSavedSearchHandler(store *db.Store) http.HandlerFunc {
 			}
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
+		}
+		if gid, ok := db.ParseGroupScope(body.Scope); ok {
+			audit.Emit(r, store, db.AuditEntry{
+				Action:   "saved_search.create",
+				Target:   fmt.Sprintf("group:%d", gid),
+				Metadata: map[string]any{"id": id, "name": body.Name, "scope": body.Scope},
+			})
 		}
 		// Re-list to pick up the just-inserted row's timestamps.
 		all, _ := store.ListSavedSearches(u.ID, body.Scope)
@@ -155,6 +205,31 @@ func UpdateSavedSearchHandler(store *db.Store) http.HandlerFunc {
 			}
 			patch.ConfigJSON = &s
 		}
+		// Group-shared rows: load the row to peek at its scope, gate
+		// on group membership, then delegate to UpdateSavedSearch
+		// (which already drops the per-user owner check when the
+		// scope is group-shared).
+		row, err := store.GetSavedSearch(id)
+		if err != nil {
+			if errors.Is(err, db.ErrSavedSearchNotFound) {
+				http.Error(w, "not found", http.StatusNotFound)
+				return
+			}
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		gid, isGroup := db.ParseGroupScope(row.Scope)
+		if isGroup {
+			in, err := userInGroup(store, u.ID, gid)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			if !in {
+				http.Error(w, "not found", http.StatusNotFound)
+				return
+			}
+		}
 		if err := store.UpdateSavedSearch(u.ID, id, patch); err != nil {
 			switch {
 			case errors.Is(err, db.ErrSavedSearchNotFound):
@@ -165,6 +240,13 @@ func UpdateSavedSearchHandler(store *db.Store) http.HandlerFunc {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 			}
 			return
+		}
+		if isGroup {
+			audit.Emit(r, store, db.AuditEntry{
+				Action:   "saved_search.update",
+				Target:   fmt.Sprintf("group:%d", gid),
+				Metadata: map[string]any{"id": id, "scope": row.Scope},
+			})
 		}
 		w.WriteHeader(http.StatusNoContent)
 	}
@@ -186,6 +268,34 @@ func DeleteSavedSearchHandler(store *db.Store) http.HandlerFunc {
 		if err != nil {
 			http.Error(w, "bad id", http.StatusBadRequest)
 			return
+		}
+		// For group-shared rows, drop the per-user owner check after
+		// confirming membership; otherwise fall through to the
+		// existing user_id-filtered delete.
+		row, gerr := store.GetSavedSearch(id)
+		if gerr == nil {
+			if gid, ok := db.ParseGroupScope(row.Scope); ok {
+				in, err := userInGroup(store, u.ID, gid)
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+				if !in {
+					http.Error(w, "not found", http.StatusNotFound)
+					return
+				}
+				if err := store.DeleteSavedSearchUnchecked(id); err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+				audit.Emit(r, store, db.AuditEntry{
+					Action:   "saved_search.delete",
+					Target:   fmt.Sprintf("group:%d", gid),
+					Metadata: map[string]any{"id": id, "scope": row.Scope, "name": row.Name},
+				})
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
 		}
 		if err := store.DeleteSavedSearch(u.ID, id); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
