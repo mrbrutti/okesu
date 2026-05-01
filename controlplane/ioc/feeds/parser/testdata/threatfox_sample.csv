@@ -1,0 +1,4 @@
+# first_seen_utc,ioc_id,ioc_value,ioc_type,threat_type,fk_malware,malware_alias,malware_printable,last_seen_utc,confidence_level,reference,tags,anonymous,reporter
+"2026-04-30 09:00:00","1","abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890","sha256_hash","payload","emotet","","Emotet","2026-04-30 10:00:00","75","https://example.com/r1","emotet,trojan","0","abuse.ch"
+"2026-04-30 09:30:00","2","8.8.8.8:443","ip:port","botnet_cc","cobalt_strike","","Cobalt Strike","2026-04-30 11:00:00","80","https://example.com/r2","cobalt,c2","0","abuse.ch"
+"2026-04-30 09:45:00","3","bad.example.com","domain","botnet_cc","trickbot","","TrickBot","2026-04-30 11:30:00","90","https://example.com/r3","","0","abuse.ch"
