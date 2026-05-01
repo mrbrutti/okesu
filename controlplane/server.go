@@ -743,6 +743,9 @@ func (s *Server) routes() http.Handler {
 		r.Get("/api/groups", api.ListGroupsHandler(s.store))
 		r.Get("/api/groups/{id}", api.GetGroupHandler(s.store))
 		r.Get("/api/users/me/groups", api.MyGroupsHandler(s.store))
+		// Phase 22.8 PR β — node labels (read endpoint open; mutation
+		// admin-only below).
+		r.Get("/api/nodes/{id}/labels", api.ListNodeLabelsHandler(s.store))
 		r.Get("/api/saved-searches", api.ListSavedSearchesHandler(s.store))
 		r.Post("/api/saved-searches", api.CreateSavedSearchHandler(s.store))
 		r.Patch("/api/saved-searches/{id}", api.UpdateSavedSearchHandler(s.store))
@@ -871,6 +874,9 @@ func (s *Server) routes() http.Handler {
 			r.Get("/api/users/{id}", api.UserDetail(s.store))
 			r.Patch("/api/users/{id}", api.UserPatch(s.store))
 			r.Delete("/api/users/{id}", api.UserDelete(s.store))
+			// Phase 22.8 PR β — node labels mutation.
+			r.Put("/api/nodes/{id}/labels", api.SetNodeLabelHandler(s.store))
+			r.Delete("/api/nodes/{id}/labels/{key}", api.DeleteNodeLabelHandler(s.store))
 			// Phase 22.8 PR α — groups + scoped roles. Mutation is
 			// admin-only; reads of own groups are below the gate.
 			r.Post("/api/groups", api.CreateGroupHandler(s.store))
