@@ -141,6 +141,7 @@ boot_cp() {
         --daemon-binaries-dir "$bin_dir" \
         --daimon-files-dir "$DEMO_AGENT_FILES_DIR" \
         --agent-files-dir "$ROOT/agents" \
+        --orchestration-seed-dir "$ROOT/examples/orchestrations" \
         --webhook-public-url "https://$PUBLIC_HOST:$ui_port/api/webhooks/events" \
         --mgmt-public-url "https://$PUBLIC_HOST:$mgmt_port" \
         --cp-region "$region" \
