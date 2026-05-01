@@ -341,12 +341,15 @@ func Dashboard(store *db.Store, eventStore ports.EventStore, tunReg *tunnel.Regi
 			}
 			var snap struct {
 				Counts struct {
-					Daimons        int   `json:"daimons"`
-					DaimonsHealthy int   `json:"daimons_healthy"`
-					Nodes          int   `json:"nodes"`
-					OpenFindings   int64 `json:"open_findings"`
+					Daimons          int   `json:"daimons"`
+					DaimonsHealthy   int   `json:"daimons_healthy"`
+					Nodes            int   `json:"nodes"`
+					OpenFindings     int64 `json:"open_findings"`
+					FindingsCritical int64 `json:"findings_critical"`
+					FindingsHigh     int64 `json:"findings_high"`
 				} `json:"counts"`
-				OSDistribution []osBucket `json:"os_distribution"`
+				OSDistribution []osBucket         `json:"os_distribution"`
+				TopHosts       []hostFindingCount `json:"top_hosts"`
 			}
 			if err := json.Unmarshal([]byte(p.IntrospectJSON), &snap); err != nil {
 				continue
@@ -364,6 +367,8 @@ func Dashboard(store *db.Store, eventStore ports.EventStore, tunReg *tunnel.Regi
 				out.Nodes.Heartbeating += snap.Counts.Nodes
 			}
 			out.Findings.Open += snap.Counts.OpenFindings
+			out.Findings.Critical += snap.Counts.FindingsCritical
+			out.Findings.High += snap.Counts.FindingsHigh
 			out.FleetStatus.Total += snap.Counts.Nodes
 			out.FleetStatus.Healthy += snap.Counts.Nodes // optimistic until we expose per-status counts
 			// OS distribution merge — sum counts by OS family.
@@ -380,6 +385,36 @@ func Dashboard(store *db.Store, eventStore ports.EventStore, tunReg *tunnel.Regi
 					out.OSDistribution = append(out.OSDistribution, b)
 				}
 			}
+			// Top-hosts merge — sum open/critical by host across CPs.
+			// A host name collision across CPs is unusual but harmless;
+			// we'd just add the counts (which is what an operator
+			// looking at "host fleet impact" would want anyway).
+			for _, b := range snap.TopHosts {
+				merged := false
+				for i := range out.TopHosts {
+					if out.TopHosts[i].Host == b.Host {
+						out.TopHosts[i].Open += b.Open
+						out.TopHosts[i].Critical += b.Critical
+						merged = true
+						break
+					}
+				}
+				if !merged {
+					out.TopHosts = append(out.TopHosts, b)
+				}
+			}
+		}
+		// Re-sort + cap top_hosts after the federated merge so the bar
+		// chart shows the global top-10 even when the merge introduced
+		// new contenders.
+		sort.SliceStable(out.TopHosts, func(i, j int) bool {
+			if out.TopHosts[i].Open != out.TopHosts[j].Open {
+				return out.TopHosts[i].Open > out.TopHosts[j].Open
+			}
+			return out.TopHosts[i].Host < out.TopHosts[j].Host
+		})
+		if len(out.TopHosts) > 10 {
+			out.TopHosts = out.TopHosts[:10]
 		}
 		// Re-sort OS distribution after federated merge so the chart
 		// order stays count-desc.

@@ -49,6 +49,12 @@ type IntrospectResponse struct {
 	// than its own (typically empty) local nodes.
 	OSDistribution []osBucket `json:"os_distribution"`
 
+	// TopHosts — the top-N hosts by open finding count on this CP.
+	// Parent merges across children for the federated dashboard's
+	// "top affected hosts" bar chart. Capped at 10 to keep the
+	// introspect blob small.
+	TopHosts []hostFindingCount `json:"top_hosts,omitempty"`
+
 	// Reachability — public URLs the parent can present to operators
 	// or hand to a federated client. Filled in only when the operator
 	// has set them via --webhook-public-url / --mgmt-public-url; an
@@ -61,10 +67,12 @@ type IntrospectResponse struct {
 // row-level data crosses a separate, paginated boundary so federation
 // polling stays cheap.
 type IntrospectCounts struct {
-	Daimons       int   `json:"daimons"`
-	DaimonsHealthy int  `json:"daimons_healthy"`
-	Nodes         int   `json:"nodes"`
-	OpenFindings  int64 `json:"open_findings"`
+	Daimons          int   `json:"daimons"`
+	DaimonsHealthy   int   `json:"daimons_healthy"`
+	Nodes            int   `json:"nodes"`
+	OpenFindings     int64 `json:"open_findings"`
+	FindingsCritical int64 `json:"findings_critical,omitempty"`
+	FindingsHigh     int64 `json:"findings_high,omitempty"`
 }
 
 // CPIntrospect handles GET /api/v1/cp/introspect.
@@ -142,9 +150,24 @@ func BuildIntrospectResponse(deps CPIntrospectDepsValue) IntrospectResponse {
 		}
 	}
 	nodes, _ := deps.Store.ListNodes(10_000, 0)
-	var openFindings int64
+	var openFindings, criticalFindings, highFindings int64
 	if fs, ferr := deps.Store.FindingsSummary(); ferr == nil {
 		openFindings = fs.Open
+		criticalFindings = fs.Critical
+		highFindings = fs.High
+	}
+	// Top hosts by open findings — capped at 10 to keep the wire
+	// blob small. The parent merges by host name across CPs.
+	var topHosts []hostFindingCount
+	if rows, terr := deps.Store.OpenFindingsByHost(10); terr == nil {
+		topHosts = make([]hostFindingCount, 0, len(rows))
+		for _, r := range rows {
+			topHosts = append(topHosts, hostFindingCount{
+				Host:     r.Host,
+				Open:     r.Open,
+				Critical: r.Critical,
+			})
+		}
 	}
 
 	// Per-OS counts using the same classifier the local dashboard uses.
@@ -181,12 +204,15 @@ func BuildIntrospectResponse(deps CPIntrospectDepsValue) IntrospectResponse {
 		Arch:          runtime.GOARCH,
 		Features:      deps.Features,
 		Counts: IntrospectCounts{
-			Daimons:        len(agents),
-			DaimonsHealthy: healthy,
-			Nodes:          len(nodes),
-			OpenFindings:   openFindings,
+			Daimons:          len(agents),
+			DaimonsHealthy:   healthy,
+			Nodes:            len(nodes),
+			OpenFindings:     openFindings,
+			FindingsCritical: criticalFindings,
+			FindingsHigh:     highFindings,
 		},
 		OSDistribution:   osDist,
+		TopHosts:         topHosts,
 		WebhookPublicURL: deps.WebhookURL,
 		MgmtPublicURL:    deps.MgmtURL,
 	}
