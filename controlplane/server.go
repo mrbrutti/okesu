@@ -660,6 +660,7 @@ func (s *Server) routes() http.Handler {
 	r.Get("/api/v1/federation/events/stream", api.RequireFederationToken(s.store, api.EventsStream(s.bcast)))
 	r.Get("/api/v1/federation/insights/findings", api.FederationInsightsFindings(s.store))
 	r.Get("/api/v1/federation/insights/events", api.RequireFederationToken(s.store, api.InsightsEvents(s.eventStore)))
+	r.Get("/api/v1/federation/insights/triage-outcomes", api.FederationInsightsTriageOutcomes(s.store))
 	// Catalog IOC child-side export endpoints. Token-authed; the parent
 	// fans out to these to build merged catalog views.
 	r.Get("/api/v1/federation/iocs", api.FederationIOCs(s.store))
@@ -753,7 +754,7 @@ func (s *Server) routes() http.Handler {
 		r.Get("/api/dashboard", api.Dashboard(s.store, s.eventStore, s.tunReg, s.cfg.DaimonFilesDir, s.daemonBinaryVersion))
 		r.Get("/api/insights/findings", api.FederatedInsightsFindings(s.store, s.fedAgg))
 		r.Get("/api/insights/events", api.FederatedInsightsEvents(api.InsightsEvents(s.eventStore), s.fedAgg))
-		r.Get("/api/insights/triage-outcomes", api.InsightsTriageOutcomes(s.store))
+		r.Get("/api/insights/triage-outcomes", api.FederatedInsightsTriageOutcomes(s.store, s.fedAgg))
 		r.Get("/api/insights/orchestrations-top", api.InsightsOrchestrationsTop(s.store))
 		r.Get("/api/system/about", api.AboutHandler(Version(), s.daemonBinaryVersion, api.AboutFeatures{
 			OIDC:          s.oidc != nil,

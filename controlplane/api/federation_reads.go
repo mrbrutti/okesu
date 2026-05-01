@@ -187,6 +187,29 @@ type findingsBucketWire struct {
 	By map[string]int64 `json:"by"`
 }
 
+// triageOutcomesWire mirrors triageOutcomesResp in dashboard.go; kept
+// local so we don't reach into the unexported types of that file. The
+// federation merger sums the bucket counters by ts and recomputes the
+// totals + triage_rate after the merge so a federation-only parent
+// doesn't show 0 / 0 = 0%.
+type triageOutcomesWire struct {
+	BucketMs int64                      `json:"bucket_ms"`
+	Buckets  []triageOutcomesBucketWire `json:"buckets"`
+	Totals   triageOutcomesTotalsWire   `json:"totals"`
+}
+type triageOutcomesBucketWire struct {
+	Ts           int64 `json:"ts"`
+	Incoming     int64 `json:"incoming"`
+	T0Superseded int64 `json:"t0_superseded"`
+	T1Resolved   int64 `json:"t1_resolved"`
+	T1Tagged     int64 `json:"t1_tagged"`
+}
+type triageOutcomesTotalsWire struct {
+	Incoming    int64   `json:"incoming"`
+	AutoHandled int64   `json:"auto_handled"`
+	TriageRate  float64 `json:"triage_rate"`
+}
+
 func mergeEventBuckets(a, b []eventsBucketWire) []eventsBucketWire {
 	idx := make(map[int64]int, len(a))
 	for i := range a {
@@ -195,6 +218,25 @@ func mergeEventBuckets(a, b []eventsBucketWire) []eventsBucketWire {
 	for _, r := range b {
 		if i, ok := idx[r.Ts]; ok {
 			a[i].Count += r.Count
+		} else {
+			idx[r.Ts] = len(a)
+			a = append(a, r)
+		}
+	}
+	return a
+}
+
+func mergeTriageBuckets(a, b []triageOutcomesBucketWire) []triageOutcomesBucketWire {
+	idx := make(map[int64]int, len(a))
+	for i := range a {
+		idx[a[i].Ts] = i
+	}
+	for _, r := range b {
+		if i, ok := idx[r.Ts]; ok {
+			a[i].Incoming += r.Incoming
+			a[i].T0Superseded += r.T0Superseded
+			a[i].T1Resolved += r.T1Resolved
+			a[i].T1Tagged += r.T1Tagged
 		} else {
 			idx[r.Ts] = len(a)
 			a = append(a, r)
@@ -255,6 +297,82 @@ func FederationFindingsGrouped(store *db.Store) http.HandlerFunc {
 // /api/agents URL.
 func FederationDaimons(store *db.Store) http.HandlerFunc {
 	return requireFederationToken(store, AgentsList(store))
+}
+
+// FederationInsightsTriageOutcomes handles
+// GET /api/v1/federation/insights/triage-outcomes.
+func FederationInsightsTriageOutcomes(store *db.Store) http.HandlerFunc {
+	return requireFederationToken(store, InsightsTriageOutcomes(store))
+}
+
+// FederatedInsightsTriageOutcomes wraps InsightsTriageOutcomes. Per
+// peer, sums bucket counters by ts; recomputes totals + triage_rate
+// after the merge so a federation-only parent CP renders the global
+// triage rate rather than its own (typically empty) local one.
+func FederatedInsightsTriageOutcomes(store *db.Store, agg *federation.Aggregator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		localRR := httpRecorder()
+		InsightsTriageOutcomes(store).ServeHTTP(localRR, r)
+		if localRR.code != http.StatusOK {
+			w.WriteHeader(localRR.code)
+			_, _ = w.Write(localRR.body)
+			return
+		}
+		var merged triageOutcomesWire
+		if err := json.Unmarshal(localRR.body, &merged); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+		path := "/api/v1/federation/insights/triage-outcomes"
+		if rq := r.URL.RawQuery; rq != "" {
+			path += "?" + rq
+		}
+		var mu sync.Mutex
+		results, _ := agg.FanOut(ctx, func(ctx context.Context, peer federation.Peer) error {
+			var s triageOutcomesWire
+			if err := agg.FetchJSON(ctx, peer, path, &s); err != nil {
+				return err
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			merged.Buckets = mergeTriageBuckets(merged.Buckets, s.Buckets)
+			return nil
+		})
+		if pErr := federation.AnyError(results); pErr != nil {
+			w.Header().Set("X-Okesu-Federation-Warning", pErr.Error())
+		}
+
+		// Recompute totals + triage_rate from the merged buckets so the
+		// stat tile and chart agree even when local incoming is zero.
+		var totalIncoming, totalAuto int64
+		for _, b := range merged.Buckets {
+			totalIncoming += b.Incoming
+			totalAuto += b.T0Superseded + b.T1Resolved + b.T1Tagged
+		}
+		merged.Totals.Incoming = totalIncoming
+		merged.Totals.AutoHandled = totalAuto
+		if totalIncoming > 0 {
+			merged.Totals.TriageRate = float64(totalAuto) / float64(totalIncoming)
+		} else {
+			merged.Totals.TriageRate = 0
+		}
+		if merged.Totals.TriageRate > 1.0 {
+			merged.Totals.TriageRate = 1.0
+		}
+
+		// Sort buckets by ts so the chart line-points are monotonic.
+		sort.SliceStable(merged.Buckets, func(i, j int) bool {
+			return merged.Buckets[i].Ts < merged.Buckets[j].Ts
+		})
+		if merged.Buckets == nil {
+			merged.Buckets = []triageOutcomesBucketWire{}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(merged)
+	}
 }
 
 // FederationNodes handles GET /api/v1/federation/nodes.
