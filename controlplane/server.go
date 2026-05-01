@@ -696,6 +696,11 @@ func (s *Server) routes() http.Handler {
 	// config via federation token so it can propagate keys to child
 	// fleet nodes during deploy.
 	r.Get("/api/v1/federation/fleet-env", api.FleetEnvFederation(s.store))
+	// IOC feed-config federation endpoint: child CPs mirror the parent's
+	// installed feed list so operators don't have to configure feeds on
+	// every child manually. Token-authed; one-hop only (parent returns
+	// only its own local feeds).
+	r.Get("/api/v1/federation/feeds", api.FeedsFederation(s.store))
 
 	// Phase 9.7: federation writes. Token-authed POST endpoints the
 	// parent's forwarding handlers proxy to when an operator picks a

@@ -142,16 +142,19 @@ func TestPoller_RejectsNonJSONResponse(t *testing.T) {
 }
 
 // fakeParent stands up an httptest server that imitates a parent CP
-// exposing BOTH /api/v1/cp/introspect AND /api/v1/federation/fleet-env.
-// The fleet-env response can be flipped per-test via setFleetEnv.
+// exposing /api/v1/cp/introspect, /api/v1/federation/fleet-env, and
+// /api/v1/federation/feeds. Each response can be flipped per-test via
+// setFleetEnv / setFeeds.
 type fakeParent struct {
 	*httptest.Server
 	expectToken string
 	instanceID  string
 
-	mu       *sync.Mutex
-	feStatus int
-	feBody   string
+	mu         *sync.Mutex
+	feStatus   int
+	feBody     string
+	feedStatus int
+	feedBody   string
 }
 
 func newFakeParent(t *testing.T, token, instanceID string) *fakeParent {
@@ -162,6 +165,9 @@ func newFakeParent(t *testing.T, token, instanceID string) *fakeParent {
 		mu:          &sync.Mutex{},
 		feStatus:    http.StatusOK,
 		feBody:      `{"anthropic_api_key":"sk-ant-parent","openai_api_key":"sk-openai-parent","version":3}`,
+		// Default: no feeds exposed (404) so existing fleet-env tests are unaffected.
+		feedStatus: http.StatusNotFound,
+		feedBody:   "not found",
 	}
 	c.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		got := r.Header.Get("X-Okesu-Federation-Token")
@@ -182,6 +188,14 @@ func newFakeParent(t *testing.T, token, instanceID string) *fakeParent {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(status)
 			_, _ = w.Write([]byte(body))
+		case strings.HasSuffix(r.URL.Path, "/api/v1/federation/feeds"):
+			c.mu.Lock()
+			status := c.feedStatus
+			body := c.feedBody
+			c.mu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(status)
+			_, _ = w.Write([]byte(body))
 		default:
 			http.NotFound(w, r)
 		}
@@ -194,6 +208,13 @@ func (c *fakeParent) setFleetEnv(status int, body string) {
 	defer c.mu.Unlock()
 	c.feStatus = status
 	c.feBody = body
+}
+
+func (c *fakeParent) setFeeds(status int, body string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.feedStatus = status
+	c.feedBody = body
 }
 
 // seedMasterKey writes a 32-byte zero master key into cp_meta so
@@ -382,5 +403,163 @@ func TestPoller_OnUpdateFires(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Error("onUpdate never fired")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Feeds federation tests
+// ---------------------------------------------------------------------------
+
+func TestPoller_PollOnce_AppliesFeeds_FromParent(t *testing.T) {
+	parent := newFakeParent(t, "shared-1", "cp-parent-feeds")
+	parent.setFeeds(http.StatusOK, `[
+		{"slug":"f1","name":"Feed One","kind":"single_file","url":"https://feeds.example.com/f1.yar","parser":"yara","refresh_interval_seconds":3600,"enabled":true},
+		{"slug":"f2","name":"Feed Two","kind":"single_file","url":"https://feeds.example.com/f2.yar","parser":"sigma","refresh_interval_seconds":7200,"enabled":false}
+	]`)
+	defer parent.Close()
+
+	store := openTempStore(t)
+	seedMasterKey(t, store)
+	peer, err := store.AddFederationPeer(parent.URL, "Parent", "shared-1")
+	if err != nil {
+		t.Fatalf("add peer: %v", err)
+	}
+
+	p := NewPoller(store, nil)
+	// pollOne runs the full path: introspect + fleet-env (404) + feeds mirror.
+	p.pollOne(context.Background(), peer)
+
+	all, err := store.ListFeedConfigs()
+	if err != nil {
+		t.Fatalf("ListFeedConfigs: %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("expected 2 feed configs, got %d", len(all))
+	}
+	bySlug := make(map[string]db.FeedConfig, len(all))
+	for _, fc := range all {
+		bySlug[fc.Slug] = fc
+	}
+
+	f1, ok := bySlug["f1"]
+	if !ok {
+		t.Fatal("f1 not found in child store")
+	}
+	if f1.Source != "federated_from_parent" {
+		t.Errorf("f1.Source = %q, want federated_from_parent", f1.Source)
+	}
+	if !f1.ParentCPID.Valid || f1.ParentCPID.String != "cp-parent-feeds" {
+		t.Errorf("f1.ParentCPID = %+v, want cp-parent-feeds", f1.ParentCPID)
+	}
+	if f1.Name != "Feed One" || f1.Kind != "single_file" || f1.Parser != "yara" || f1.RefreshIntervalSeconds != 3600 {
+		t.Errorf("f1 fields wrong: %+v", f1)
+	}
+	if !f1.Enabled {
+		t.Error("f1 should be enabled")
+	}
+
+	f2, ok := bySlug["f2"]
+	if !ok {
+		t.Fatal("f2 not found in child store")
+	}
+	if f2.Source != "federated_from_parent" {
+		t.Errorf("f2.Source = %q, want federated_from_parent", f2.Source)
+	}
+	if f2.Enabled {
+		t.Error("f2 should be disabled")
+	}
+
+	// Peer must still be healthy: feed mirror errors are swallowed.
+	got, _ := store.FederationPeer(peer.ID)
+	if !got.LastSeenAt.Valid {
+		t.Error("peer should be healthy after successful introspect")
+	}
+	if got.LastError != "" {
+		t.Errorf("peer LastError should be empty, got %q", got.LastError)
+	}
+}
+
+func TestPoller_PollOnce_FeedsIdempotent(t *testing.T) {
+	parent := newFakeParent(t, "shared-1", "cp-parent-feeds")
+	parent.setFeeds(http.StatusOK, `[{"slug":"f1","name":"Feed One","kind":"single_file","url":"https://feeds.example.com/f1.yar","parser":"yara","refresh_interval_seconds":3600,"enabled":true}]`)
+	defer parent.Close()
+
+	store := openTempStore(t)
+	seedMasterKey(t, store)
+	peer, _ := store.AddFederationPeer(parent.URL, "Parent", "shared-1")
+	p := NewPoller(store, nil)
+
+	// First poll inserts f1.
+	p.pollOne(context.Background(), peer)
+	all, _ := store.ListFeedConfigs()
+	if len(all) != 1 {
+		t.Fatalf("after first poll: expected 1 feed, got %d", len(all))
+	}
+
+	// Second poll must not duplicate.
+	p.pollOne(context.Background(), peer)
+	all2, _ := store.ListFeedConfigs()
+	if len(all2) != 1 {
+		t.Fatalf("after second poll: expected 1 feed, got %d", len(all2))
+	}
+}
+
+func TestPoller_PollOnce_FeedsUninstallsRemovedFeeds(t *testing.T) {
+	parent := newFakeParent(t, "shared-1", "cp-parent-feeds")
+	// First: parent has two feeds.
+	parent.setFeeds(http.StatusOK, `[
+		{"slug":"f1","name":"Feed One","kind":"single_file","url":"https://feeds.example.com/f1.yar","parser":"yara","refresh_interval_seconds":3600,"enabled":true},
+		{"slug":"f2","name":"Feed Two","kind":"single_file","url":"https://feeds.example.com/f2.yar","parser":"yara","refresh_interval_seconds":3600,"enabled":true}
+	]`)
+	defer parent.Close()
+
+	store := openTempStore(t)
+	seedMasterKey(t, store)
+	peer, _ := store.AddFederationPeer(parent.URL, "Parent", "shared-1")
+	p := NewPoller(store, nil)
+
+	// First poll: both feeds are mirrored.
+	p.pollOne(context.Background(), peer)
+	all, _ := store.ListFeedConfigs()
+	if len(all) != 2 {
+		t.Fatalf("after first poll: expected 2 feeds, got %d", len(all))
+	}
+
+	// Parent removes f2.
+	parent.setFeeds(http.StatusOK, `[{"slug":"f1","name":"Feed One","kind":"single_file","url":"https://feeds.example.com/f1.yar","parser":"yara","refresh_interval_seconds":3600,"enabled":true}]`)
+	p.pollOne(context.Background(), peer)
+
+	all2, _ := store.ListFeedConfigs()
+	if len(all2) != 1 {
+		t.Fatalf("after uninstall poll: expected 1 feed, got %d (%+v)", len(all2), all2)
+	}
+	if all2[0].Slug != "f1" {
+		t.Errorf("remaining feed should be f1, got %q", all2[0].Slug)
+	}
+}
+
+func TestPoller_PollOnce_Feeds404Tolerated(t *testing.T) {
+	// Default fakeParent returns 404 for /federation/feeds.
+	parent := newFakeParent(t, "shared-1", "cp-parent-feeds")
+	defer parent.Close()
+
+	store := openTempStore(t)
+	seedMasterKey(t, store)
+	peer, _ := store.AddFederationPeer(parent.URL, "Parent", "shared-1")
+	p := NewPoller(store, nil)
+
+	// Must not panic or mark the peer unhealthy.
+	p.pollOne(context.Background(), peer)
+
+	got, _ := store.FederationPeer(peer.ID)
+	if !got.LastSeenAt.Valid {
+		t.Error("introspect should still mark peer healthy even on feeds 404")
+	}
+	if got.LastError != "" {
+		t.Errorf("feeds 404 must not set last_error, got %q", got.LastError)
+	}
+	all, _ := store.ListFeedConfigs()
+	if len(all) != 0 {
+		t.Errorf("no feeds should be stored on 404, got %d", len(all))
 	}
 }
