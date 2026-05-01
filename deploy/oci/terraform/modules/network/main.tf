@@ -101,6 +101,26 @@ resource "oci_core_security_list" "public" {
     }
   }
 
+  # CP UI/webhook port
+  ingress_security_rules {
+    protocol = "6" # TCP
+    source   = "0.0.0.0/0"
+    tcp_options {
+      min = 8443
+      max = 8443
+    }
+  }
+
+  # CP mgmt mTLS port
+  ingress_security_rules {
+    protocol = "6" # TCP
+    source   = "0.0.0.0/0"
+    tcp_options {
+      min = 8444
+      max = 8444
+    }
+  }
+
   ingress_security_rules {
     protocol = "1" # ICMP
     source   = "0.0.0.0/0"
