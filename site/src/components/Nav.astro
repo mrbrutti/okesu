@@ -23,6 +23,10 @@ function isActive(prefix: string): boolean {
     </a>
     <div class="hidden md:flex items-center gap-5 text-sm text-ink-dim">
       <a
+        href="/tour"
+        class={`hover:text-ink transition-colors ${isActive('/tour') ? 'text-brand-700 font-medium' : ''}`}
+      >Tour</a>
+      <a
         href="/concepts/daimons"
         class={`hover:text-ink transition-colors ${isActive('/concepts') ? 'text-brand-700 font-medium' : ''}`}
       >Concepts</a>
