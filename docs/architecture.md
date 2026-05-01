@@ -2310,3 +2310,15 @@ Server side: the orchestrator captures entity refs at template render time (`con
 ```
 
 Recognised entity kinds: `finding`, `ioc`, `node`, `daimon`, `run`, `investigation`, `orchestration`. Each renders as a small chip; click on the body fires an `entity:open` custom event consumed by a single `EntityDrawerHost` mounted at the App root, which opens the existing `FindingDrawer` (other kinds navigate via the chip's `↗` link). Federated entities carry `cp_instance_id` so deep-links route to the right CP.
+
+## Investigation Overview — layered status / timeline / structure
+
+The Investigation Overview tab (`/investigations/{id}?tab=overview`) renders three stacked sections:
+
+1. **Status header** (`web/src/components/investigations/CaseStatusBar.tsx`) — five-cell row with status pill + war-room badge, severity histogram, freshness, linked-entity counts, and the editable Summary.
+
+2. **Timeline** (`web/src/components/investigations/CaseTimeline.tsx`) — horizontal Gantt band, hand-rolled SVG. Default-curated lanes (lifecycle / findings / runs / notes); opt-in lanes (iocs / daimons / audit). Audit-lane fetch is lazy via the existing `api.investigations.audit` endpoint. Lane state persists in `localStorage` keyed by `investigation:overview:lanes`. War-room cases auto-zoom to the last 1 hour.
+
+3. **Structure** (`web/src/components/investigations/CaseStructure.tsx`) — four summary cards (hosts / IOCs / daimons / runs × orchestrations) with a top-hitter line and a 3-row mini-list per card.
+
+All three sections are pure derivations of the existing `InvestigationDetail` bundle (loaded via `api.investigations.get`); no new server-side endpoints. Click affordances reuse the SmartPayload `entity:open` event bus + `EntityDrawerHost` mounted at the App root.
