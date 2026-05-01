@@ -573,6 +573,11 @@ type OrchestrationStep struct {
 	// DataSnapshot is the JSON-encoded resolved `data:` block — see
 	// migration 028. NULL/empty for steps that didn't declare data:.
 	DataSnapshot sql.NullString
+	// PromptEntities is the JSON-encoded typed side-channel the
+	// orchestrator captures at template render time. NULL for legacy
+	// steps written before migration 047 — the UI falls back to
+	// client-side shape sniffing in that case.
+	PromptEntities sql.NullString
 }
 
 // OrchestrationStepInsert is the input shape for UpsertOrchestrationStep.
@@ -597,6 +602,10 @@ type OrchestrationStepInsert struct {
 	// DataSnapshot is the JSON-encoded resolved `data:` block — see
 	// migration 028. Empty for steps without a data block.
 	DataSnapshot string
+	// PromptEntities is the JSON-encoded typed side-channel the
+	// orchestrator captures at template render time. Empty = NULL
+	// (legacy fallback path — UI shape-sniffs).
+	PromptEntities string // empty = NULL
 }
 
 // UpsertOrchestrationStep inserts or updates a step row keyed by
@@ -608,9 +617,9 @@ func (s *Store) UpsertOrchestrationStep(in OrchestrationStepInsert) error {
 		INSERT INTO orchestration_steps (
 			orchestration_run_id, step_id, step_idx, status, run_id, cp_instance_id, node_id,
 			rendered_prompt, result_json, output_summary, started_at, ended_at, error,
-			approved_at, approved_by, data_snapshot
+			approved_at, approved_by, data_snapshot, prompt_entities
 		)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (orchestration_run_id, step_id) DO UPDATE SET
 			step_idx        = excluded.step_idx,
 			status          = excluded.status,
@@ -625,13 +634,15 @@ func (s *Store) UpsertOrchestrationStep(in OrchestrationStepInsert) error {
 			error           = excluded.error,
 			approved_at     = excluded.approved_at,
 			approved_by     = excluded.approved_by,
-			data_snapshot   = excluded.data_snapshot
+			data_snapshot   = excluded.data_snapshot,
+			prompt_entities = excluded.prompt_entities
 	`,
 		in.OrchestrationRunID, in.StepID, in.StepIdx, in.Status,
 		nullable(in.RunID), nullable(in.CPInstanceID), nullableInt64(in.NodeID),
 		nullable(in.RenderedPrompt), nullable(in.ResultJSON), nullable(in.OutputSummary),
 		nullableTimePtr(in.StartedAt), nullableTimePtr(in.EndedAt), nullable(in.Error),
 		nullableTimePtr(in.ApprovedAt), nullableInt64(in.ApprovedBy), nullable(in.DataSnapshot),
+		nullable(in.PromptEntities),
 	)
 	return err
 }
@@ -640,7 +651,7 @@ func (s *Store) ListOrchestrationSteps(runID int64) ([]*OrchestrationStep, error
 	rows, err := s.Query(`
 		SELECT id, orchestration_run_id, step_id, step_idx, status, run_id, cp_instance_id, node_id,
 		       rendered_prompt, result_json, output_summary, started_at, ended_at, error,
-		       approved_at, approved_by, data_snapshot
+		       approved_at, approved_by, data_snapshot, prompt_entities
 		  FROM orchestration_steps
 		 WHERE orchestration_run_id = ?
 		 ORDER BY step_idx
@@ -664,7 +675,7 @@ func (s *Store) GetOrchestrationStep(runID int64, stepID string) (*Orchestration
 	row := s.QueryRow(`
 		SELECT id, orchestration_run_id, step_id, step_idx, status, run_id, cp_instance_id, node_id,
 		       rendered_prompt, result_json, output_summary, started_at, ended_at, error,
-		       approved_at, approved_by, data_snapshot
+		       approved_at, approved_by, data_snapshot, prompt_entities
 		  FROM orchestration_steps
 		 WHERE orchestration_run_id = ? AND step_id = ?
 	`, runID, stepID)
@@ -677,7 +688,7 @@ func scanOrchestrationStep(s orchestrationRowScanner) (*OrchestrationStep, error
 		&st.ID, &st.OrchestrationRunID, &st.StepID, &st.StepIdx, &st.Status, &st.RunID,
 		&st.CPInstanceID, &st.NodeID, &st.RenderedPrompt, &st.ResultJSON, &st.OutputSummary,
 		&st.StartedAt, &st.EndedAt, &st.Error, &st.ApprovedAt, &st.ApprovedBy,
-		&st.DataSnapshot,
+		&st.DataSnapshot, &st.PromptEntities,
 	); err != nil {
 		return nil, err
 	}

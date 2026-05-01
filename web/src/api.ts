@@ -687,6 +687,29 @@ export interface StepNodeDispatchView {
   ended_at?: string;
 }
 
+export type PromptEntityKind =
+  | 'finding'
+  | 'ioc'
+  | 'node'
+  | 'daimon'
+  | 'run'
+  | 'investigation'
+  | 'orchestration';
+
+export interface PromptEntityRef {
+  cp_instance_id?: string;
+  kind: PromptEntityKind;
+  id?: number;
+  ioc_kind?: string;
+  ioc_value?: string;
+  snapshot: Record<string, unknown>;
+  literal_hash: string;
+}
+
+export interface PromptEntities {
+  refs: PromptEntityRef[];
+}
+
 export interface OrchestrationStepView {
   step_id: string;
   step_idx: number;
@@ -694,6 +717,10 @@ export interface OrchestrationStepView {
   run_id?: string;
   cp_instance_id?: string;
   rendered_prompt?: string;
+  /** Phase 24: typed entity refs for SmartPayload's prompt-mode
+   *  rendering. Absent on legacy steps; client falls back to shape
+   *  detection in that case. */
+  prompt_entities?: PromptEntities;
   result?: Record<string, unknown>;
   output_summary?: string;
   started_at?: string;

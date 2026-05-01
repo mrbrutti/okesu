@@ -9,6 +9,7 @@
 // a known event shape, fall through as a plain "raw" segment so the
 // operator never silently loses output.
 import { CheckCircle2, Sparkles, Terminal } from 'lucide-react';
+import { SmartPayload } from './SmartPayload';
 
 type Move =
   | { kind: 'text'; text: string }
@@ -83,9 +84,9 @@ function MoveBubble({ move }: { move: Move }) {
             <code className="text-xs text-emerald-300">{name}</code>
             {move.toolID && <code className="text-[10px] text-slate-500">{move.toolID.slice(-8)}</code>}
           </div>
-          <pre className="text-xs font-mono text-slate-200 whitespace-pre-wrap break-all max-h-48 overflow-auto">
-            {formatToolInput(move.input)}
-          </pre>
+          <div className="text-xs font-mono text-slate-200 max-h-48 overflow-auto">
+            <SmartPayload value={move.input} variant="tree" />
+          </div>
         </div>
       </div>
     );
@@ -100,9 +101,11 @@ function MoveBubble({ move }: { move: Move }) {
           <div className="text-[11px] font-semibold uppercase tracking-wide text-ink-mute mb-1.5">
             tool result{move.toolID ? ` · ${move.toolID.slice(-8)}` : ''}
           </div>
-          <pre className="text-xs font-mono text-ink-dim whitespace-pre-wrap break-all max-h-48 overflow-auto">
-            {move.output || '(no output)'}
-          </pre>
+          <div className="text-xs font-mono text-ink-dim max-h-48 overflow-auto">
+            {move.output
+              ? <SmartPayload value={move.output} variant="prompt" />
+              : <span className="italic text-ink-mute">(no output)</span>}
+          </div>
         </div>
       </div>
     );
@@ -256,16 +259,6 @@ export function parseHarnessJSONL(raw: string): { moves: Move[]; footer?: Harnes
   }
   flushText();
   return { moves, footer };
-}
-
-function formatToolInput(input: unknown): string {
-  if (input == null) return '';
-  if (typeof input === 'string') return input;
-  try {
-    return JSON.stringify(input, null, 2);
-  } catch {
-    return String(input);
-  }
 }
 
 function stringField(o: unknown, key: string): string | undefined {

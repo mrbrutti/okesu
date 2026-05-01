@@ -50,7 +50,7 @@ import { SectionHeader, type SectionTone } from '../components/lists/SectionHead
 import { ListCard } from '../components/lists/ListCard';
 import { parseSpecYAMLLite } from '../lib/orchestrationSpec';
 import { HarnessOutput } from '../components/HarnessOutput';
-import { StructuredView } from '../components/StructuredView';
+import { SmartPayload } from '../components/SmartPayload';
 import { useInfiniteScroll } from '../lib/useInfiniteScroll';
 import { useSelection } from '../lib/useSelection';
 import { BulkActionBar, BulkActionButton } from '../components/BulkActionBar';
@@ -1600,14 +1600,27 @@ function RunDetail({
                 <div className="text-[10px] uppercase tracking-wide text-ink-mute font-medium mb-1">Prompt</div>
                 {looksLikeJSONL(expandedStep.rendered_prompt)
                   ? <HarnessOutput text={expandedStep.rendered_prompt} maxHeight={420} />
-                  : <pre className="text-xs font-mono bg-slate-50 border border-border rounded p-3 whitespace-pre-wrap break-words text-ink overflow-auto" style={{ maxHeight: 420 }}>{expandedStep.rendered_prompt}</pre>}
+                  : (
+                      <div className="bg-slate-50 border border-border rounded p-3 max-h-[420px] overflow-auto">
+                        <SmartPayload
+                          value={expandedStep.rendered_prompt}
+                          entities={expandedStep.prompt_entities}
+                          cpInstanceID={expandedStep.cp_instance_id}
+                          variant="prompt"
+                        />
+                      </div>
+                    )}
               </section>
             )}
             {expandedStep.result && Object.keys(expandedStep.result).length > 0 && (
               <section>
                 <div className="text-[10px] uppercase tracking-wide text-ink-mute font-medium mb-1.5">Result</div>
                 <div className="bg-slate-50 border border-border rounded p-3">
-                  <StructuredView value={expandedStep.result} />
+                  <SmartPayload
+                    value={expandedStep.result}
+                    cpInstanceID={expandedStep.cp_instance_id}
+                    variant="tree"
+                  />
                 </div>
               </section>
             )}
@@ -1639,7 +1652,7 @@ function RunDetail({
             <div className="text-[10px] uppercase tracking-wide text-ink-mute font-medium mb-1.5">
               Trigger payload
             </div>
-            <StructuredView value={run.trigger_payload} />
+            <SmartPayload value={run.trigger_payload} variant="tree" />
           </section>
         )}
       </div>

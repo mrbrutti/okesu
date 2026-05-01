@@ -19,6 +19,7 @@ import SettingsPage from './pages/Settings';
 import FederationPage from './pages/Federation';
 import DocsPage from './pages/Docs';
 import Layout from './components/Layout';
+import EntityDrawerHost from './components/EntityDrawerHost';
 
 export default function App() {
   const [user, setUser] = useState<User | null | undefined>(undefined);
@@ -44,7 +45,8 @@ export default function App() {
   }
 
   return (
-    <Routes>
+    <>
+      <Routes>
       <Route
         path="/login"
         element={user ? <Navigate to="/" replace /> : <LoginPage onLogin={setUser} />}
@@ -73,6 +75,8 @@ export default function App() {
         <Route path="/docs" element={<DocsPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
-    </Routes>
+      </Routes>
+      {user ? <EntityDrawerHost /> : null}
+    </>
   );
 }

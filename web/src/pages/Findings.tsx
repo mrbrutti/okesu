@@ -38,6 +38,7 @@ import { HypothesisCard, parseHypothesisAttributes } from '../components/Hypothe
 import { StatusPill } from '../components/StatusPill';
 import { useInfiniteScroll } from '../lib/useInfiniteScroll';
 import { useSelection } from '../lib/useSelection';
+import { SmartPayload } from '../components/SmartPayload';
 import { BulkActionBar, BulkActionButton } from '../components/BulkActionBar';
 import { CPSourceChip } from '../components/CPSourceChip';
 import FindingsKanban from '../components/FindingsKanban';
@@ -1306,9 +1307,9 @@ export function FindingDrawer({ id, cpInstanceID, onClose, onChanged }: DrawerPr
             {showRaw ? 'hide' : 'show'} JSON
           </button>
           {showRaw && f.raw && (
-            <pre className="text-[11px] font-mono bg-slate-900 text-slate-100 rounded-md p-3 overflow-auto max-h-64">
-{JSON.stringify(f.raw, null, 2)}
-            </pre>
+            <div className="text-[11px] font-mono bg-slate-50 border border-border rounded-md p-3 overflow-auto max-h-64">
+              <SmartPayload value={f.raw} variant="tree" cpInstanceID={cpInstanceID} />
+            </div>
           )}
         </Section>
       </div>

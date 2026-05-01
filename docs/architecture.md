@@ -2285,3 +2285,28 @@ Distribution channels:
 Federation (`/api/v1/federation/fleet-env` for HTTPS-federated children, S3 artifact for S3-federated children): child stores received keys with `source = "federated_from_parent"` and republishes through its own channels — transitive propagation via existing publish/pull plumbing. Children can override locally; the override switches `source` to `"local"` and the federation poller stops overwriting. A brand-new (default `source=local`, `version=0`) row is treated as "empty" — federation can seed it without operators having to flip the source flag manually.
 
 Backwards compat: `OKESU_CP_FLEET_ANTHROPIC_API_KEY` / `OKESU_CP_FLEET_OPENAI_API_KEY` env vars seed the `fleet_env` row on first boot if it's empty. Once the operator saves through Settings, the DB wins forever.
+
+## Entity-aware payload rendering (SmartPayload)
+
+The `<SmartPayload>` component (`web/src/components/SmartPayload/`) replaces raw JSON dumps in orchestration runs, agent runs, and entity attribute blocks. Two modes:
+
+- **Prompt mode** (string input). Tokenizes prose ↔ JSON; for each JSON segment, looks up the server-emitted `prompt_entities` ref by `literal_hash` and renders the matching entity chip; falls back to client-side shape detection when no ref is found.
+- **Tree mode** (object/array input). Walks the tree; subtrees that match an entity shape become chips, the rest renders via the existing `StructuredView`.
+
+Server side: the orchestrator captures entity refs at template render time (`controlplane/orchestrator/prompt_entities.go`) and persists them in a new nullable `prompt_entities` JSON column on `orchestration_steps` (migration 047). Wire shape:
+
+```json
+{
+  "refs": [
+    {
+      "cp_instance_id": "cp-child-1",
+      "kind": "finding",
+      "id": 42,
+      "snapshot": { "severity": "HIGH", "title": "...", "category": "..." },
+      "literal_hash": "abc1234567890abc"
+    }
+  ]
+}
+```
+
+Recognised entity kinds: `finding`, `ioc`, `node`, `daimon`, `run`, `investigation`, `orchestration`. Each renders as a small chip; click on the body fires an `entity:open` custom event consumed by a single `EntityDrawerHost` mounted at the App root, which opens the existing `FindingDrawer` (other kinds navigate via the chip's `↗` link). Federated entities carry `cp_instance_id` so deep-links route to the right CP.
