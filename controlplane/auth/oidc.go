@@ -212,6 +212,23 @@ func (p *OIDCProvider) CallbackHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "provision user: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+	// Phase 22.8 (PR α) — sync OIDC group memberships on every
+	// login so revocations take effect by the next session boundary.
+	// Best-effort: if the sync fails the user still gets a session
+	// (the legacy users.role still gates access), but we log the
+	// error so an admin notices.
+	if err := p.store.SyncOIDCGroupsForUser(user.ID, groups); err != nil {
+		// Don't fail the login on sync error — the legacy role still
+		// works. Surface the error in the audit metadata below.
+		_ = p.store.InsertAudit(db.AuditEntry{
+			ActorID:    user.ID,
+			ActorEmail: user.Email,
+			Action:     "auth.oidc_group_sync_failed",
+			Target:     fmt.Sprintf("user:%d", user.ID),
+			Result:     "error",
+			Metadata:   map[string]any{"error": err.Error()},
+		})
+	}
 	if err := p.mgr.Issue(w, r, user.ID); err != nil {
 		http.Error(w, "session: "+err.Error(), http.StatusInternalServerError)
 		return
