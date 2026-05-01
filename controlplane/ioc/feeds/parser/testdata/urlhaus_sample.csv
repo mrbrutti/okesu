@@ -1,0 +1,3 @@
+# id,dateadded,url,url_status,last_online,threat,tags,urlhaus_link,reporter
+"1","2026-04-29 12:00:00","http://malicious.example/x.exe","online","2026-04-30 00:00:00","malware_download","emotet,trojan","https://urlhaus.abuse.ch/url/1/","reporter1"
+"2","2026-04-29 13:00:00","https://other.example/y","offline","","malware_download","","https://urlhaus.abuse.ch/url/2/","reporter2"
