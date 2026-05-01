@@ -39,6 +39,7 @@ import GroupsSection from './settings/Groups';
 import CredentialsSection from './settings/Credentials';
 import LabelsSection from './settings/Labels';
 import FeedsSection from './settings/Feeds';
+import SeverityCeilingsSection from './settings/SeverityCeilings';
 
 interface Props {
   user: User;
@@ -57,6 +58,7 @@ const NAV: NavItem[] = [
   { to: 'users',           label: 'Users',          icon: UsersIcon,    adminOnly: true },
   { to: 'groups',          label: 'Groups',         icon: UsersIcon,    adminOnly: true },
   { to: 'labels',          label: 'Labels',         icon: Tag,          adminOnly: true },
+  { to: 'severity',        label: 'Severity rules', icon: ShieldCheck,  adminOnly: true },
   { to: 'credentials',     label: 'Credentials',    icon: KeyRound,     adminOnly: true },
   { to: 'investigations',  label: 'Investigations', icon: Sparkles,     adminOnly: true },
   { to: 'notifications',   label: 'Notifications',  icon: Bell,         adminOnly: true },
@@ -117,6 +119,7 @@ export default function SettingsPage({ user }: Props) {
           <Route path="users"          element={user.role === 'admin' ? <UsersSection /> : <Forbidden />} />
           <Route path="groups"         element={user.role === 'admin' ? <GroupsSection /> : <Forbidden />} />
           <Route path="labels"         element={user.role === 'admin' ? <LabelsSection /> : <Forbidden />} />
+          <Route path="severity"       element={user.role === 'admin' ? <SeverityCeilingsSection /> : <Forbidden />} />
           <Route path="credentials"    element={user.role === 'admin' ? <CredentialsSection /> : <Forbidden />} />
           <Route path="investigations" element={user.role === 'admin' ? <InvestigationsSection /> : <Forbidden />} />
           <Route path="notifications"  element={user.role === 'admin' ? <NotificationsSection /> : <Forbidden />} />
