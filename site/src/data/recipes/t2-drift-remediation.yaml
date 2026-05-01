@@ -1,0 +1,186 @@
+---
+name: t2-drift-remediation
+description: Tier-2 configuration-drift response. When the FIM (file integrity monitor) flags an unsanctioned change, classifies the change source (sanctioned automation vs unknown), checks for lateral spread to neighbour hosts, and pauses for operator approval before reverting.
+
+trigger:
+  on: finding
+  filter: "finding.agent == 'instance-integrity' && finding.severity in ['MEDIUM','HIGH','CRITICAL']"
+
+inputs:
+  host:
+    type: string
+    required: false
+    default: ""
+  finding_id:
+    type: int
+    required: false
+    default: 0
+
+defaults:
+  timeout: 10m
+
+steps:
+  # 1. Source attribution. A FIM alert needs context: was this an
+  #    ansible apply run, a package update from `unattended-upgrades`,
+  #    a sysadmin SSH session, or something we don't recognise?
+  - id: attribute
+    agent: investigator
+    node: "{{trigger.host}}"
+    actions:
+      - update_finding_status
+      - set_finding_severity_override
+      - add_finding_tag
+      - link_run_to_finding
+    prompt: |
+      Attribute the FIM change for finding #{{trigger.finding_id}} on {{trigger.host}}.
+
+      Pull from the finding:
+        - changed_path (file or dir that drifted)
+        - change_kind (created|modified|deleted|perms|owner)
+        - sha256_before, sha256_after (if recorded)
+        - mtime_before, mtime_after
+
+      Cross-reference:
+        1. /var/log/dpkg.log or /var/log/dnf.log for package operations
+           in the same minute window
+        2. /var/log/auth.log or journalctl for sshd accept events tied to
+           the same window
+        3. /etc/ansible/facts.d or /var/log/ansible.log for last-run id
+        4. /var/log/cloud-init-output.log for image-bake activity
+
+      Decide:
+        - source: one of `package_manager` | `ansible` | `cloud_init` | `human_ssh` | `unknown`
+        - sanctioned: bool — true when source is package_manager / ansible / cloud_init
+        - actor: string — username or automation identifier when known
+        - confidence: low|medium|high
+
+      Emit an orchestration_result finding with attributes:
+        source, sanctioned, actor, confidence,
+        change_summary (string, ≤200 chars)
+
+  # 2. Lateral check. If the change was unsanctioned, check whether
+  #    the same path drifted on neighbour hosts in the last 24h —
+  #    detects mass-config-poisoning attempts.
+  - id: lateral
+    when: "{{attribute.result.sanctioned == false}}"
+    agent: threat-hunter
+    nodes:
+      - threat-rocky-1
+      - threat-fedora-1
+      - threat-debian-1
+      - edr-rocky-1
+      - edr-fedora-1
+      - edr-debian-1
+      - fim-rocky-1
+      - fim-fedora-1
+      - sre-rocky-1
+      - sre-fedora-1
+      - mixed-east-1
+      - mixed-west-1
+    timeout: 6m
+    actions:
+      - update_finding_status
+      - set_finding_severity_override
+      - add_finding_tag
+      - link_run_to_finding
+    continue_on_error: true
+    prompt: |
+      Look for the same drift on this host.
+
+      Reference change:
+        path: {{trigger.attributes.changed_path}}
+        sha256_after: {{trigger.attributes.sha256_after}}
+        first observed on: {{trigger.host}}
+
+      Check:
+        - Does the file exist at the same path on this host?
+        - Does its sha256 match the after-hash from the source host?
+        - When was it last modified?
+        - Are there matching entries in this host's local FIM state DB
+          (/var/lib/okesu/instance-integrity/state)?
+
+      Emit an orchestration_result finding with attributes:
+        present (bool)
+        sha256_matches (bool)
+        modified_at (string — RFC3339)
+        likely_lateral (bool — present + matches + modified within last 24h)
+
+  # 3. Build the remediation plan. Operator gate enforced.
+  - id: plan
+    when: "{{attribute.result.sanctioned == false}}"
+    agent: incident-responder
+    timeout: 4m
+    actions:
+      - update_finding_status
+      - set_finding_severity_override
+      - add_finding_tag
+      - link_run_to_finding
+    prompt: |
+      Plan remediation for the unsanctioned drift.
+
+      Source attribution: {{attribute.result | json}}
+      Lateral spread:     {{lateral.byNode | json}}
+
+      Lateral hits ({{lateral.findings | length}}): {{lateral.findings | json}}
+
+      Build a plan covering:
+        1. Revert: restore the original file from the FIM's pre-change state
+           (FIM keeps the prior bytes when sha256_before is recorded).
+        2. Account hygiene: rotate any credential plausibly tied to the
+           unauthorised actor (SSH keys, sudoers, app secrets).
+        3. Spread cleanup: same revert procedure on each lateral hit.
+        4. Forensics: what to capture before reverting (stat output,
+           xattrs, timestamps, parent-process tree if still running).
+
+      Emit an orchestration_result finding with attributes:
+        revert_targets (array of {host: string, path: string})
+        forensics_capture (array of strings — commands to run pre-revert)
+        cred_rotation_needed (array of strings — keys/secrets to rotate)
+        risk_assessment (string — what could go wrong if revert breaks something)
+
+  # 4. Operator-gated execution. The plan above is read-only;
+  #    only approval moves us into making changes on the fleet.
+  - id: revert
+    approval: required
+    when: "{{attribute.result.sanctioned == false}}"
+    agent: incident-responder
+    timeout: 15m
+    actions:
+      - update_finding_status
+      - add_finding_tag
+      - link_run_to_finding
+    prompt: |
+      Execute the approved revert plan.
+
+      Plan: {{plan.result | json}}
+
+      Procedure per target:
+        1. Run forensics_capture commands; save output under
+           /var/lib/okesu/incidents/{{trigger.finding_id}}/<host>/
+        2. Restore the file from the FIM pre-change state (use the
+           sha256_before to verify the restored bytes are correct).
+        3. Reload any service that reads the file (systemctl reload <svc>).
+        4. Re-trigger an immediate FIM tick on the host to confirm the
+           revert closed the finding.
+
+      Skip credential rotation in this orchestration — that's a
+      separate, deliberately operator-driven flow.
+
+      Emit an orchestration_result finding with attributes:
+        reverted_hosts (array of string)
+        failed_hosts (array of string)
+        forensics_paths (array of string)
+        operator_summary (string)
+        actions (array)
+
+      Actions to request on finding #{{trigger.finding_id}}:
+        - if reverted_hosts contains the source host AND failed_hosts is empty:
+            update_finding_status → resolved
+              (reason: "drift reverted; FIM re-tick confirmed clean")
+            add_finding_tag → auto-reverted
+            link_run_to_finding
+        - if any failed_hosts:
+            add_finding_tag → revert-partial
+            link_run_to_finding
+            (do not change status — the operator owns the partial-failure call)
+---
