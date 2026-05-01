@@ -2,9 +2,11 @@ package api
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -98,5 +100,52 @@ func TestOrchestrationRunDetail_HydratesPerNode(t *testing.T) {
 	}
 	if pn[1].Host != "h2" || pn[1].Status != "failed" || pn[1].Error != "timeout" {
 		t.Errorf("h2 = %+v", pn[1])
+	}
+}
+
+// TestOrchestrationStepView_PromptEntitiesWireShape verifies that the
+// JSON-encoded prompt_entities side-channel from the DB is surfaced
+// on the wire as a structured object (not a re-escaped string), so
+// the browser can consume it directly without a nested JSON.parse.
+func TestOrchestrationStepView_PromptEntitiesWireShape(t *testing.T) {
+	run := &db.OrchestrationRun{
+		ID:          1,
+		Status:      "running",
+		TriggerKind: "manual",
+		StartedAt:   time.Now().UTC(),
+	}
+	st := &db.OrchestrationStep{
+		StepID:         "triage",
+		Status:         "running",
+		PromptEntities: sql.NullString{String: `{"refs":[{"kind":"finding","id":42,"snapshot":{"severity":"HIGH"},"literal_hash":"abc1234567890abc"}]}`, Valid: true},
+	}
+	out := toOrchestrationRunJSON(run, []*db.OrchestrationStep{st}, nil)
+	b, err := json.Marshal(out)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(b), `"prompt_entities":{"refs":`) {
+		t.Errorf("missing prompt_entities in wire shape: %s", b)
+	}
+}
+
+// TestOrchestrationStepView_PromptEntitiesOmittedWhenNull verifies
+// that omitempty on json.RawMessage correctly suppresses the field
+// when the DB column is NULL.
+func TestOrchestrationStepView_PromptEntitiesOmittedWhenNull(t *testing.T) {
+	run := &db.OrchestrationRun{
+		ID:          1,
+		Status:      "running",
+		TriggerKind: "manual",
+		StartedAt:   time.Now().UTC(),
+	}
+	st := &db.OrchestrationStep{StepID: "triage", Status: "running"}
+	out := toOrchestrationRunJSON(run, []*db.OrchestrationStep{st}, nil)
+	b, err := json.Marshal(out)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(b), `"prompt_entities"`) {
+		t.Errorf("prompt_entities should be omitted when null: %s", b)
 	}
 }

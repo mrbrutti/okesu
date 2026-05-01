@@ -1937,12 +1937,18 @@ type orchestrationStepJSON struct {
 	RunID          string         `json:"run_id,omitempty"`
 	CPInstanceID   string         `json:"cp_instance_id,omitempty"`
 	RenderedPrompt string         `json:"rendered_prompt,omitempty"`
-	Result         map[string]any `json:"result,omitempty"`
-	OutputSummary  string         `json:"output_summary,omitempty"`
-	StartedAt      string         `json:"started_at,omitempty"`
-	EndedAt        string         `json:"ended_at,omitempty"`
-	Error          string         `json:"error,omitempty"`
-	ApprovedAt     string         `json:"approved_at,omitempty"`
+	// PromptEntities is the typed entity-ref side-channel the engine
+	// captures at render time. JSON-encoded as a string at the DB
+	// level; the API decodes once via json.RawMessage so the browser
+	// receives the structured object directly without a nested
+	// JSON.parse step.
+	PromptEntities json.RawMessage `json:"prompt_entities,omitempty"`
+	Result         map[string]any  `json:"result,omitempty"`
+	OutputSummary  string          `json:"output_summary,omitempty"`
+	StartedAt      string          `json:"started_at,omitempty"`
+	EndedAt        string          `json:"ended_at,omitempty"`
+	Error          string          `json:"error,omitempty"`
+	ApprovedAt     string          `json:"approved_at,omitempty"`
 	// Data is the resolved snapshot of the step's `data:` block,
 	// captured at dispatch. The UI surfaces this on the step-detail
 	// panel so operators can see exactly what input the agent saw.
@@ -1991,6 +1997,9 @@ func toOrchestrationRunJSON(
 			RenderedPrompt: st.RenderedPrompt.String,
 			OutputSummary:  st.OutputSummary.String,
 			Error:          st.Error.String,
+		}
+		if st.PromptEntities.Valid && st.PromptEntities.String != "" {
+			s.PromptEntities = json.RawMessage(st.PromptEntities.String)
 		}
 		if st.StartedAt.Valid {
 			s.StartedAt = st.StartedAt.Time.UTC().Format(time.RFC3339)
