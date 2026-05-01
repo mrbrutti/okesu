@@ -10,7 +10,7 @@ import (
 
 // ListIOCs returns IOCs filtered by:
 //   - kind         (sha256|ipv4|domain|yara_rule|sigma_rule|...)
-//   - source       (catalog|observed)
+//   - source       (catalog|observed|feed:<slug>) — exact match on the source column
 //   - q            (LIKE %q% against value, name, or tags; case-insensitive)
 //   - finding_id   (joins ioc_observations to filter to a single finding)
 //

@@ -33,7 +33,18 @@ Sigma is a separate gap. Sigma rules are stored but no daimon consumes them, and
 - Per-rule disable/exclude UI (rule-level mute is a follow-up).
 - Row-level license compliance tracking (registry shows feed licenses; rule-level provenance not enforced).
 
-These are tracked as GitHub issues from rollout step 9.
+These are tracked as GitHub issues filed at implementation time:
+- [#101](https://github.com/mrbrutti/okesu/issues/101) archive (zip/tarball) feed kind
+- [#102](https://github.com/mrbrutti/okesu/issues/102) provider adapters (OTX/MISP/VT)
+- [#103](https://github.com/mrbrutti/okesu/issues/103) zircolite-based strict Sigma daimon
+- [#104](https://github.com/mrbrutti/okesu/issues/104) parent CP pushes fetched bytes to children
+- [#105](https://github.com/mrbrutti/okesu/issues/105) per-feed branch/tag pinning for git feeds
+- [#106](https://github.com/mrbrutti/okesu/issues/106) webhook-driven refresh
+- [#107](https://github.com/mrbrutti/okesu/issues/107) per-rule mute UI
+- [#108](https://github.com/mrbrutti/okesu/issues/108) row-level license tracking
+- [#109](https://github.com/mrbrutti/okesu/issues/109) custom-feed add form in Settings → Feeds
+- [#110](https://github.com/mrbrutti/okesu/issues/110) orphaned-rule label rendering in activity views
+- [#111](https://github.com/mrbrutti/okesu/issues/111) override-locally action on federated feeds
 
 ## Architecture
 

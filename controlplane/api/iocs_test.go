@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/section9labs/okesu/controlplane/db"
@@ -147,5 +148,53 @@ func TestListIOCs_QueryParam(t *testing.T) {
 	}
 	if len(rows) != 1 || rows[0].NormalizedValue != "abc" {
 		t.Errorf("?q=RANSOM expected one match by tag; got %+v", rows)
+	}
+}
+
+func TestIOCs_SourceFilter_FeedSlug(t *testing.T) {
+	st := newTestStore(t)
+	feedID, err := st.InsertFeedConfig(&db.FeedConfigInsert{
+		Slug: "f1", Name: "F1", Kind: "single_file", URL: "x", Parser: "yara",
+		RefreshIntervalSeconds: 86400, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Two IOCs: one feed-sourced, one observed.
+	if _, _, err := st.UpsertIOC(&db.IOCUpsert{
+		Kind:            "sha256",
+		Value:           "a" + strings.Repeat("b", 63),
+		NormalizedValue: "a" + strings.Repeat("b", 63),
+		Source:          "feed:f1",
+		FeedID:          &feedID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.UpsertIOC(&db.IOCUpsert{
+		Kind:            "sha256",
+		Value:           "c" + strings.Repeat("d", 63),
+		NormalizedValue: "c" + strings.Repeat("d", 63),
+		Source:          "observed",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("GET", "/api/iocs?source=feed:f1", nil)
+	ListIOCs(st)(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%s", w.Code, w.Body.String())
+	}
+
+	var got []db.IOCRecord
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected single feed:f1 row, got %d", len(got))
+	}
+	if got[0].Source != "feed:f1" {
+		t.Fatalf("expected source=feed:f1, got %q", got[0].Source)
 	}
 }

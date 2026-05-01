@@ -127,7 +127,7 @@ function OverviewTab({ ioc }: { ioc: FederatedIOCRecord }) {
   return (
     <div className="space-y-4 max-w-4xl">
       <Section label="Identity">
-        <KV k="Source" v={ioc.Source} />
+        <SourceRow source={ioc.Source} />
         <KV k="Normalized" v={ioc.NormalizedValue} mono />
         {ioc.DefinitionPath && <KV k="Definition" v={ioc.DefinitionPath} mono />}
       </Section>
@@ -162,6 +162,28 @@ function OverviewTab({ ioc }: { ioc: FederatedIOCRecord }) {
       )}
     </div>
   );
+}
+
+// SourceRow renders the IOC source as a key-value row, with a pill +
+// link when the source is feed-derived. Catalog/observed sources
+// fall through to the plain KV display.
+function SourceRow({ source }: { source: string }) {
+  if (source.startsWith('feed:') && source.length > 'feed:'.length) {
+    const slug = source.slice('feed:'.length);
+    return (
+      <div className="flex justify-between gap-3 text-[11px] mb-1 last:mb-0">
+        <span className="text-ink-mute">Source</span>
+        <a
+          href={`/settings/feeds#${slug}`}
+          className="px-1.5 py-0.5 rounded bg-brand-50 text-brand-700 ring-1 ring-brand-100 font-mono hover:bg-brand-100 transition-colors"
+          title={`Jump to Settings → Feeds for ${slug}`}
+        >
+          feed:{slug}
+        </a>
+      </div>
+    );
+  }
+  return <KV k="Source" v={source} />;
 }
 
 function ObservationsTab({ rows }: { rows: FederatedIOCObservation[] | null }) {

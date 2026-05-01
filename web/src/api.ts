@@ -1819,6 +1819,33 @@ export const api = {
   fleetEnvRevertToParent: () =>
     request<FleetEnvSummary>('/api/fleet-env/revert-to-parent', { method: 'POST' }),
 
+  // Phase 23 — IOC Feeds. List + registry are viewer-readable;
+  // mutation, refresh, validate, and consent are admin-only on the
+  // backend.
+  feeds: () => request<FeedConfig[]>('/api/feeds'),
+  feedsRegistry: () => request<FeedRegistryDef[]>('/api/feeds/registry'),
+  feedInstall: (req: FeedInstallRequest) =>
+    request<FeedInstallResponse>('/api/feeds', {
+      method: 'POST',
+      body: JSON.stringify(req),
+    }),
+  feedUpdate: (id: number, patch: FeedConfigPatch) =>
+    request<void>(`/api/feeds/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    }),
+  feedUninstall: (id: number) =>
+    request<void>(`/api/feeds/${id}`, { method: 'DELETE' }),
+  feedRefresh: (id: number) =>
+    request<void>(`/api/feeds/${id}/refresh`, { method: 'POST' }),
+  feedValidate: (spec: FeedConfigInsert) =>
+    request<FeedValidateResponse>('/api/feeds/validate', {
+      method: 'POST',
+      body: JSON.stringify(spec),
+    }),
+  feedsConsent: () =>
+    request<FeedsConsentResponse>('/api/feeds/consent', { method: 'POST' }),
+
   // Phase 21.3 — managed CP provisioning. The registry is empty in
   // 21.3a (the framework PR); per-cloud impls register against it in
   // 21.3b (OCI), 21.3c (AWS), etc. Until then cpProvisionersList()
@@ -2790,4 +2817,99 @@ export interface CPProvisionBudgetExceeded {
   projected_monthly_usd: number;
   new_monthly_usd: number;
   unknown_active_count: number;
+}
+
+// Phase 23 — IOC Feeds (Settings → Feeds + Catalog → Feeds tab).
+
+// FeedConfig is the read shape returned by GET /api/feeds.
+// Wire shape uses Go's default-casing (CamelCase field names) since
+// db.FeedConfig has no JSON struct tags.
+export interface FeedConfig {
+  ID: number;
+  Slug: string;
+  Name: string;
+  Kind: 'single_file' | 'git';
+  URL: string;
+  Subpath: string;
+  Parser: 'yara' | 'sigma' | 'urlhaus_csv' | 'threatfox_csv' | 'cisa_kev_json';
+  AuthCredentialID: { Int64: number; Valid: boolean };
+  RefreshIntervalSeconds: number;
+  Enabled: boolean;
+  InstalledFromRegistry: boolean;
+  LastRefreshAt: { Time: string; Valid: boolean };
+  LastRefreshStatus: string; // "" | "ok" | "error"
+  LastRefreshError: string;
+  LastRefreshEntryCount: number;
+  CreatedAt: string;
+  UpdatedAt: string;
+  Source: 'local' | 'federated_from_parent';
+  ParentCPID: { String: string; Valid: boolean };
+}
+
+// FeedRegistryDef is the read shape returned by GET /api/feeds/registry.
+// Mirrors feeds.FeedDef in Go (no JSON tags → CamelCase).
+export interface FeedRegistryDef {
+  Slug: string;
+  Name: string;
+  Kind: 'single_file' | 'git';
+  URL: string;
+  Subpath: string;
+  Parser: string;
+  License: string;
+  Description: string;
+  DefaultIntervalSeconds: number;
+  DefaultInstalled: boolean;
+}
+
+// FeedInstallRequest is the POST /api/feeds body. Exactly one of
+// from_registry_slug or custom must be set.
+export interface FeedInstallRequest {
+  from_registry_slug?: string;
+  custom?: FeedConfigInsert;
+}
+
+// FeedConfigInsert mirrors db.FeedConfigInsert. The Go struct uses
+// CamelCase field names (no JSON tags). Source defaults to "local"
+// when omitted.
+export interface FeedConfigInsert {
+  Slug: string;
+  Name: string;
+  Kind: 'single_file' | 'git';
+  URL: string;
+  Subpath?: string;
+  Parser: 'yara' | 'sigma' | 'urlhaus_csv' | 'threatfox_csv' | 'cisa_kev_json';
+  AuthCredentialID?: number;
+  RefreshIntervalSeconds: number;
+  Enabled: boolean;
+  InstalledFromRegistry?: boolean;
+  Source?: 'local' | 'federated_from_parent';
+  ParentCPID?: string;
+}
+
+// FeedConfigPatch mirrors db.FeedConfigPatch. All fields optional.
+// AuthCredentialID is wire-shaped as a Go sql.NullInt64 to support
+// "set", "clear", and "leave alone" — pass `{Int64: id, Valid: true}`
+// to set, `{Int64: 0, Valid: false}` to clear, or omit the key to
+// leave alone.
+export interface FeedConfigPatch {
+  Name?: string;
+  URL?: string;
+  Subpath?: string;
+  Parser?: string;
+  AuthCredentialID?: { Int64: number; Valid: boolean };
+  RefreshIntervalSeconds?: number;
+  Enabled?: boolean;
+}
+
+export interface FeedInstallResponse {
+  id: number;
+  slug: string;
+}
+
+export interface FeedValidateResponse {
+  entry_count: number;
+}
+
+export interface FeedsConsentResponse {
+  granted_at: string;
 }

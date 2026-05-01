@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/section9labs/okesu/controlplane/db"
+	iocfeeds "github.com/section9labs/okesu/controlplane/ioc/feeds"
 )
 
 // PollInterval controls how often each peer is polled. Chosen to be
@@ -155,6 +156,10 @@ func (p *Poller) pollOne(ctx context.Context, peer *db.FederationPeer) {
 	// on. Parents that don't expose fleet-env (older builds) just 404
 	// and we skip.
 	p.fetchAndApplyFleetEnv(ctx, peer, body)
+	// Best-effort feed-config mirror. Same posture as fleet-env: errors
+	// here MUST NOT downgrade peer health. Older parents that don't
+	// expose /api/v1/federation/feeds just 404 and we skip.
+	p.fetchAndApplyFeeds(ctx, peer, body)
 }
 
 // fetchAndApplyFleetEnv runs the second GET against the peer's
@@ -302,4 +307,99 @@ func (p *Poller) fetchIntrospect(ctx context.Context, baseURL, token string) (st
 		return "", errors.New("response missing instance_id (wrong URL?)")
 	}
 	return string(body), nil
+}
+
+// fetchAndApplyFeeds GETs the parent's federation/feeds list and
+// reconciles our local ioc_feeds via SetFeedConfigsFromFederation.
+// Errors are logged and swallowed — the peer's introspect already
+// succeeded. Federated rows that the parent has uninstalled are
+// returned as a toUninstall list and removed via the same
+// reconcile-then-delete flow as the manual UninstallFeedHandler.
+func (p *Poller) fetchAndApplyFeeds(ctx context.Context, peer *db.FederationPeer, introspectBody string) {
+	var probe struct {
+		InstanceID string `json:"instance_id"`
+	}
+	if err := json.Unmarshal([]byte(introspectBody), &probe); err != nil || probe.InstanceID == "" {
+		return // defensive parse only; introspect already validated
+	}
+	feeds, err := p.fetchFeedConfigs(ctx, peer.URL, peer.Token)
+	if err != nil {
+		log.Printf("federation poller: feeds fetch peer=%d: %v", peer.ID, err)
+		return
+	}
+	inserted, updated, toUninstall, err := p.store.SetFeedConfigsFromFederation(probe.InstanceID, feeds)
+	if err != nil {
+		log.Printf("federation poller: feeds apply parent=%s: %v", probe.InstanceID, err)
+		return
+	}
+	for _, id := range toUninstall {
+		fc, err := p.store.GetFeedConfig(id)
+		if err != nil {
+			continue
+		}
+		// Reconcile-to-empty drops feed-scoped iocs rows + orphans
+		// observations. Same path the UninstallFeedHandler uses.
+		if _, err := iocfeeds.Reconcile(p.store, fc.ID, fc.Slug, nil); err != nil {
+			log.Printf("federation poller: reconcile-empty %s: %v", fc.Slug, err)
+			continue
+		}
+		if err := p.store.DeleteFeedConfig(fc.ID); err != nil {
+			log.Printf("federation poller: delete %s: %v", fc.Slug, err)
+		}
+	}
+	if inserted+updated+len(toUninstall) > 0 {
+		log.Printf("federation poller: feeds applied parent=%s ins=%d upd=%d unins=%d",
+			probe.InstanceID, inserted, updated, len(toUninstall))
+	}
+}
+
+// fetchFeedConfigs GETs {baseURL}/api/v1/federation/feeds and parses
+// the JSON array response. Reuses the same TLS config + token header
+// as fetchIntrospect.
+func (p *Poller) fetchFeedConfigs(ctx context.Context, baseURL, token string) ([]db.FederationFeedConfig, error) {
+	url := strings.TrimRight(baseURL, "/") + "/api/v1/federation/feeds"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("X-Okesu-Federation-Token", token)
+	req.Header.Set("Accept", "application/json")
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("dial: %w", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
+	if err != nil {
+		return nil, fmt.Errorf("read body: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		snippet := strings.TrimSpace(string(body))
+		if len(snippet) > 120 {
+			snippet = snippet[:120] + "…"
+		}
+		return nil, fmt.Errorf("HTTP %d %s: %s", resp.StatusCode, http.StatusText(resp.StatusCode), snippet)
+	}
+	var wire []struct {
+		Slug                   string `json:"slug"`
+		Name                   string `json:"name"`
+		Kind                   string `json:"kind"`
+		URL                    string `json:"url"`
+		Subpath                string `json:"subpath"`
+		Parser                 string `json:"parser"`
+		RefreshIntervalSeconds int    `json:"refresh_interval_seconds"`
+		Enabled                bool   `json:"enabled"`
+	}
+	if err := json.Unmarshal(body, &wire); err != nil {
+		return nil, fmt.Errorf("invalid JSON response: %w", err)
+	}
+	out := make([]db.FederationFeedConfig, 0, len(wire))
+	for _, f := range wire {
+		out = append(out, db.FederationFeedConfig{
+			Slug: f.Slug, Name: f.Name, Kind: f.Kind,
+			URL: f.URL, Subpath: f.Subpath, Parser: f.Parser,
+			RefreshIntervalSeconds: f.RefreshIntervalSeconds, Enabled: f.Enabled,
+		})
+	}
+	return out, nil
 }
