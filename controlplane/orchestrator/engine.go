@@ -81,6 +81,13 @@ type Store interface {
 	ListOrchestrationSteps(runID int64) ([]*StepRecord, error)
 	UpsertOrchestrationStep(step *StepRecord) error
 	GetOrchestrationStep(runID int64, stepID string) (*StepRecord, error)
+
+	// MatchNodesBySelector returns the names of nodes whose labels
+	// satisfy a K8s-style selector (env=prod, role=db, …). Used by
+	// steps that declare nodes_selector: instead of an explicit
+	// node:/nodes: list. Empty selector returns no nodes — callers
+	// should validate before parsing.
+	MatchNodesBySelector(selector string) ([]string, error)
 }
 
 // FindingAgentLookup is an optional capability the ActionApplier
@@ -516,15 +523,40 @@ func (e *Engine) Run(ctx context.Context, runID int64) error {
 			}
 		}
 
-		// Resolve node target(s). EffectiveNodes returns either the
-		// single `node:` value or the `nodes:` array; an empty result
-		// means "local-only step" (no remote dispatch). When the spec
-		// declared a target but the template rendered to empty (most
-		// commonly: `node: "{{trigger.host}}"` on a manual run with no
-		// finding context), we fail the step with a clear message
-		// rather than letting it fall through to the dispatcher's
-		// generic "local-only not supported" error.
+		// Resolve node target(s). Three forms are supported:
+		//   1. node: "host"            (single target)
+		//   2. nodes: ["a", "b", ...]  (explicit fan-out list)
+		//   3. nodes_selector: "env=prod, role=db"
+		//      (declarative — engine resolves matching nodes here)
+		//
+		// EffectiveNodes returns the static targets from forms 1+2.
+		// When form 3 is set, we resolve it via the store and append.
+		// An empty result means "local-only step" (no remote
+		// dispatch). When the spec declared a target but the
+		// template rendered to empty (most commonly: `node:
+		// "{{trigger.host}}"` on a manual run with no finding
+		// context), we fail the step with a clear message rather
+		// than letting it fall through to the dispatcher's generic
+		// "local-only not supported" error.
 		rawTargets := step.EffectiveNodes()
+		hadSelector := step.NodesSelector != ""
+		if hadSelector {
+			rendered, rerr := Render(step.NodesSelector, env)
+			if rerr != nil {
+				rec.Status = StepStatusFailed
+				rec.Error = "render nodes_selector: " + rerr.Error()
+				_ = e.store.UpsertOrchestrationStep(rec)
+				return e.haltFailed(run.ID, step.ID, rec.Error)
+			}
+			matches, merr := e.store.MatchNodesBySelector(rendered)
+			if merr != nil {
+				rec.Status = StepStatusFailed
+				rec.Error = "match nodes_selector: " + merr.Error()
+				_ = e.store.UpsertOrchestrationStep(rec)
+				return e.haltFailed(run.ID, step.ID, rec.Error)
+			}
+			rawTargets = append(rawTargets, matches...)
+		}
 		targets := make([]string, 0, len(rawTargets))
 		for _, t := range rawTargets {
 			r, terr := Render(t, env)

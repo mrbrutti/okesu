@@ -240,6 +240,7 @@ type ruleJSON struct {
 	MinSeverity    string `json:"min_severity"`
 	AgentSubstring string `json:"agent_substring,omitempty"`
 	HostSubstring  string `json:"host_substring,omitempty"`
+	HostSelector   string `json:"host_selector,omitempty"`
 	Enabled        bool   `json:"enabled"`
 	CreatedAt      string `json:"created_at"`
 }
@@ -252,6 +253,7 @@ func toRuleJSON(r *db.NotificationRule) ruleJSON {
 		MinSeverity:    r.MinSeverity,
 		AgentSubstring: r.AgentSubstring.String,
 		HostSubstring:  r.HostSubstring.String,
+		HostSelector:   r.HostSelector,
 		Enabled:        r.Enabled,
 		CreatedAt:      r.CreatedAt.UTC().Format(time.RFC3339),
 	}
@@ -279,6 +281,7 @@ type ruleCreateReq struct {
 	MinSeverity    string `json:"min_severity"`
 	AgentSubstring string `json:"agent_substring"`
 	HostSubstring  string `json:"host_substring"`
+	HostSelector   string `json:"host_selector"`
 	Enabled        *bool  `json:"enabled"`
 }
 
@@ -303,6 +306,7 @@ func RuleCreate(store *db.Store) http.HandlerFunc {
 			MinSeverity:    req.MinSeverity,
 			AgentSubstring: sql.NullString{String: req.AgentSubstring, Valid: req.AgentSubstring != ""},
 			HostSubstring:  sql.NullString{String: req.HostSubstring, Valid: req.HostSubstring != ""},
+			HostSelector:   req.HostSelector,
 			Enabled:        enabled,
 		}
 		id, err := store.CreateRule(ruleRow)
@@ -341,6 +345,7 @@ type rulePatchReq struct {
 	MinSeverity    *string `json:"min_severity,omitempty"`
 	AgentSubstring *string `json:"agent_substring,omitempty"`
 	HostSubstring  *string `json:"host_substring,omitempty"`
+	HostSelector   *string `json:"host_selector,omitempty"`
 	Enabled        *bool   `json:"enabled,omitempty"`
 }
 
@@ -387,6 +392,9 @@ func RulePatch(store *db.Store) http.HandlerFunc {
 		}
 		if req.HostSubstring != nil {
 			cur.HostSubstring = sql.NullString{String: *req.HostSubstring, Valid: *req.HostSubstring != ""}
+		}
+		if req.HostSelector != nil {
+			cur.HostSelector = *req.HostSelector
 		}
 		if req.Enabled != nil {
 			cur.Enabled = *req.Enabled

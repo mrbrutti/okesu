@@ -19,6 +19,7 @@ import {
   X,
 } from 'lucide-react';
 import { api, type CloudCredential, type CloudKind, type CPProvision, type CPProvisionEstimate, type DiscoveryItem, type FederationPeer, type TransportConfigSummary } from '../api';
+import { LabelEditor } from '../components/labels/LabelEditor';
 import { cn } from '../lib/cn';
 
 export default function FederationPage() {
@@ -437,6 +438,15 @@ function PeerDetailDrawer({
               <div className="font-semibold mb-1">Last error</div>
               <div className="font-mono whitespace-pre-wrap break-all">{peer.last_error}</div>
             </div>
+          )}
+
+          {/* Labels — admins tag peers with region/env/class so other
+              CP routes (alert routing, dashboards) can target by
+              selector rather than per-instance UUID. */}
+          {intro?.instance_id && (
+            <DrawerCard title="Labels">
+              <LabelEditor kind="cp" idOrKey={intro.instance_id} />
+            </DrawerCard>
           )}
 
           <DrawerCard title="Connection">

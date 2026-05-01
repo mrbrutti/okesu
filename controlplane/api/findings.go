@@ -203,11 +203,94 @@ func FindingsList(store *db.Store) http.HandlerFunc {
 			f.OnlyQueue = true
 		}
 
+		// Phase 22.9 — host_selector query filter. Resolves a label
+		// selector against node labels at request time; only findings
+		// on matching hosts pass through. Distinct from the user-
+		// scoped visibility filter below: this is operator-driven
+		// search, not RBAC.
+		var hostFilter map[string]struct{}
+		if rawSel := q.Get("host_selector"); rawSel != "" {
+			sel, perr := db.ParseSelector(rawSel)
+			if perr != nil {
+				http.Error(w, "bad host_selector: "+perr.Error(), http.StatusBadRequest)
+				return
+			}
+			ids, merr := store.MatchNodesBySelector(sel)
+			if merr != nil {
+				http.Error(w, merr.Error(), http.StatusInternalServerError)
+				return
+			}
+			// Resolve matched node ids → host name strings the
+			// findings.host column actually carries (daemon_hostname
+			// preferred, falls back to hostname / name).
+			nodes, _ := store.ListNodes(10_000, 0)
+			want := make(map[int64]struct{}, len(ids))
+			for _, id := range ids {
+				want[id] = struct{}{}
+			}
+			hostFilter = make(map[string]struct{}, len(ids))
+			for _, n := range nodes {
+				if _, ok := want[n.ID]; !ok {
+					continue
+				}
+				if n.DaemonHostname.Valid && n.DaemonHostname.String != "" {
+					hostFilter[n.DaemonHostname.String] = struct{}{}
+				}
+				if n.Hostname != "" {
+					hostFilter[n.Hostname] = struct{}{}
+				}
+				if n.Name != "" {
+					hostFilter[n.Name] = struct{}{}
+				}
+			}
+		}
+
 		findings, err := store.ListFindings(f)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+
+		if hostFilter != nil {
+			filtered := make([]*db.Finding, 0, len(findings))
+			for _, fr := range findings {
+				if !fr.Host.Valid {
+					continue
+				}
+				if _, ok := hostFilter[fr.Host.String]; ok {
+					filtered = append(filtered, fr)
+				}
+			}
+			findings = filtered
+		}
+
+		// Phase 22.9 — scoped-role visibility filter. Mirrors the
+		// FilterVisibleNodes pattern: CP-wide grants short-circuit
+		// to "see everything," scoped grants restrict to findings on
+		// hosts whose labels match. Synthetic actors (federation
+		// proxies, API tokens without a backing user) skip — those
+		// gate at a higher layer.
+		if u := auth.UserFromContext(r.Context()); u != nil && u.ID > 0 {
+			ids := make([]int64, len(findings))
+			for i, fr := range findings {
+				ids[i] = fr.ID
+			}
+			visible, ferr := store.FilterVisibleFindings(u.ID, "viewer", ids)
+			if ferr == nil {
+				keep := make(map[int64]struct{}, len(visible))
+				for _, id := range visible {
+					keep[id] = struct{}{}
+				}
+				filtered := make([]*db.Finding, 0, len(visible))
+				for _, fr := range findings {
+					if _, ok := keep[fr.ID]; ok {
+						filtered = append(filtered, fr)
+					}
+				}
+				findings = filtered
+			}
+		}
+
 		out := make([]findingJSON, 0, len(findings))
 		for _, fr := range findings {
 			out = append(out, toFindingJSON(fr, false))

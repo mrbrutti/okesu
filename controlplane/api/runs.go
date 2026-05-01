@@ -503,6 +503,32 @@ func RunsList(store *db.Store) http.HandlerFunc {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+
+		// Phase 22.9 — scoped-role visibility filter, run flavour.
+		// Same model as FilterVisibleNodes / FilterVisibleFindings:
+		// CP-wide grants short-circuit, scoped grants restrict to
+		// runs whose host's labels match.
+		if u := auth.UserFromContext(r.Context()); u != nil && u.ID > 0 {
+			ids := make([]string, len(rows))
+			for i, row := range rows {
+				ids[i] = row.ID
+			}
+			visible, ferr := store.FilterVisibleRuns(u.ID, "viewer", ids)
+			if ferr == nil {
+				keep := make(map[string]struct{}, len(visible))
+				for _, id := range visible {
+					keep[id] = struct{}{}
+				}
+				filtered := make([]*db.Run, 0, len(visible))
+				for _, row := range rows {
+					if _, ok := keep[row.ID]; ok {
+						filtered = append(filtered, row)
+					}
+				}
+				rows = filtered
+			}
+		}
+
 		out := make([]runListItem, 0, len(rows))
 		for _, row := range rows {
 			out = append(out, projectRun(row, true))

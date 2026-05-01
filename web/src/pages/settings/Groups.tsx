@@ -20,6 +20,7 @@ import {
   X,
 } from 'lucide-react';
 import { ApiError, api, type Group, type GroupDetail, type User } from '../../api';
+import { LabelEditor } from '../../components/labels/LabelEditor';
 
 export default function GroupsSection() {
   const [groups, setGroups] = useState<Group[] | null>(null);
@@ -227,6 +228,16 @@ function GroupDetailPane({
           {error}
         </div>
       )}
+
+      {/* Labels card — purely descriptive on groups (used to organise
+          the team picker rather than for permission scoping; group
+          membership itself is the access mechanism). */}
+      <div className="border border-border rounded-md bg-white p-4">
+        <h3 className="text-[11px] uppercase tracking-wide font-semibold text-ink-mute mb-3">
+          Labels
+        </h3>
+        <LabelEditor kind="group" idOrKey={groupID} />
+      </div>
 
       {/* Roles card */}
       <div className="border border-border rounded-md bg-white p-4">

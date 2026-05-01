@@ -80,6 +80,14 @@ type StepSpec struct {
 	// flat `findings` list, so chained templates can read either the
 	// combined view or per-node details.
 	Nodes  []string       `yaml:"nodes,omitempty"`
+	// NodesSelector is the declarative alternative to Nodes — the
+	// engine resolves the selector against current node labels at
+	// run time, fans out to every match. Same fan-out semantics as
+	// Nodes; usage like `nodes_selector: env=prod, role=database`
+	// removes the need to hand-maintain a host list. Empty when
+	// not used. Mutually exclusive with Node and Nodes (the engine
+	// rejects multi-target combinations at validation time).
+	NodesSelector string `yaml:"nodes_selector,omitempty"`
 	CP     string         `yaml:"cp,omitempty"`
 	Prompt string         `yaml:"prompt"`
 	Inputs map[string]any `yaml:"inputs,omitempty"`

@@ -14,6 +14,7 @@ import {
   Tag,
 } from 'lucide-react';
 import { api, type DaimonItem } from '../api';
+import { LabelEditor } from '../components/labels/LabelEditor';
 import { cn } from '../lib/cn';
 import EventTimeline from '../components/EventTimeline';
 import AgentMessages from '../components/AgentMessages';
@@ -178,6 +179,8 @@ function Stat({ label, value, icon: Icon }: { label: string; value: string; icon
 }
 
 function OverviewTab({ daimon }: { daimon: DaimonItem }) {
+  // Identity for the generic labels API: composite "name@host" key.
+  const daimonKey = `${daimon.name}@${daimon.host}`;
   return (
     <div className="p-6 grid grid-cols-1 lg:grid-cols-2 gap-4">
       <Card title="Identity">
@@ -200,6 +203,9 @@ function OverviewTab({ daimon }: { daimon: DaimonItem }) {
         {daimon.config_updated_at && (
           <Row label="Updated" mono>{daimon.config_updated_at}</Row>
         )}
+      </Card>
+      <Card title="Labels" wide>
+        <LabelEditor kind="daimon" idOrKey={daimonKey} />
       </Card>
     </div>
   );

@@ -13,6 +13,7 @@ import {
   X,
 } from 'lucide-react';
 import { api, ApiError, type Channel, type Delivery, type Rule } from '../../api';
+import { SelectorInput } from '../../components/labels/SelectorInput';
 import { cn } from '../../lib/cn';
 
 const SEVERITIES = ['INFO', 'LOW', 'MEDIUM', 'HIGH', 'CRITICAL'] as const;
@@ -625,6 +626,7 @@ function RuleModal({
   const [minSev, setMinSev] = useState(existing?.min_severity ?? 'HIGH');
   const [agent, setAgent] = useState(existing?.agent_substring ?? '');
   const [host, setHost] = useState(existing?.host_substring ?? '');
+  const [hostSelector, setHostSelector] = useState(existing?.host_selector ?? '');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -636,12 +638,14 @@ function RuleModal({
         await api.patchRule(existing.id, {
           name, channel_id: channelID, min_severity: minSev,
           agent_substring: agent, host_substring: host,
+          host_selector: hostSelector,
         });
       } else {
         await api.createRule({
           name, channel_id: channelID, min_severity: minSev,
           agent_substring: agent || undefined,
           host_substring: host || undefined,
+          host_selector: hostSelector || undefined,
         });
       }
       onSaved();
@@ -678,6 +682,14 @@ function RuleModal({
           </Field>
           <Field label="Host contains (optional)">
             <input value={host} onChange={(e) => setHost(e.target.value)} className={inputCls} placeholder="e.g. prod-" />
+          </Field>
+          <Field label="Host label selector (optional)">
+            <SelectorInput
+              kind="node"
+              value={hostSelector}
+              onChange={setHostSelector}
+              placeholder="env=prod, role=db"
+            />
           </Field>
           {error && <Notice tone="err">{error}</Notice>}
         </div>

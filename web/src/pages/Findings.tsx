@@ -21,10 +21,13 @@ import {
   ShieldAlert,
   Sparkles,
   Tag,
+  Tag as TagIcon,
   ThumbsDown,
   X,
 } from 'lucide-react';
-import { api, type Finding, type FindingGroup, type FindingsSummary, type FindingStatus, type IOCRecord, type RelatedCase, type RunListItem, type SavedSearch, type FindingsFilterConfig } from '../api';
+import { api, type Finding, type FindingGroup, type FindingsSummary, type FindingStatus, type IOCRecord, type MyGroups, type RelatedCase, type RunListItem, type SavedSearch, type FindingsFilterConfig } from '../api';
+import { LabelEditor } from '../components/labels/LabelEditor';
+import { SelectorInput } from '../components/labels/SelectorInput';
 import { FindingHistory, History as HistoryIcon } from '../components/FindingHistory';
 import { cn } from '../lib/cn';
 import { useIOCDisplayPrefs } from '../lib/preferences';
@@ -76,6 +79,10 @@ export default function FindingsPage() {
   const [agentFilter, setAgentFilter] = useState('');
   const [hostFilter, setHostFilter] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('');
+  // Phase 22.9 — label-selector filter on the host node (env=prod,
+  // role=db). Server resolves the selector to a set of host strings
+  // and filters findings by that set.
+  const [hostSelector, setHostSelector] = useState('');
   // ?id=N opens the detail drawer for finding N — used as a
   // deep-link target by Cmd-K and external bookmarks. Two-way bound:
   // closing the drawer drops the param so the URL stays canonical.
@@ -109,21 +116,52 @@ export default function FindingsPage() {
   // Saved searches (operator-named filter sets). Loaded once on
   // mount; the default-tagged search is applied on first render
   // when no filters are already set via URL params.
+  //
+  // Phase 22.9 — group-default rollup. After loading the per-user
+  // searches, we also fan out to the operator's groups and pull
+  // any group-shared scope searches (`findings:group:N`). The
+  // default-application step considers per-user defaults first,
+  // then falls back to the first group-default found.
   const [savedSearches, setSavedSearches] = useState<SavedSearch[]>([]);
+  const [groupSavedSearches, setGroupSavedSearches] = useState<SavedSearch[]>([]);
   const [defaultApplied, setDefaultApplied] = useState(false);
   const refreshSearches = () => {
     api.savedSearches.list('findings').then(setSavedSearches).catch(() => { /* ignore */ });
+    // Pull group-shared findings scopes after we know the operator's groups.
+    api.groups.myGroups()
+      .then((mg: MyGroups) => {
+        const gs = mg.groups ?? [];
+        if (gs.length === 0) {
+          setGroupSavedSearches([]);
+          return;
+        }
+        Promise.all(
+          gs.map((g) =>
+            api.savedSearches.list(`findings:group:${g.group_id}`).catch(() => [] as SavedSearch[]),
+          ),
+        ).then((lists) => {
+          const merged = ([] as SavedSearch[]).concat(...lists);
+          setGroupSavedSearches(merged);
+        });
+      })
+      .catch(() => setGroupSavedSearches([]));
   };
   useEffect(() => { refreshSearches(); }, []);
   // Apply the default search once after the list lands. Skip if any
   // filter is already set (URL deep-link or operator already
   // changed something) so we don't clobber an explicit intent.
   useEffect(() => {
-    if (defaultApplied || savedSearches.length === 0) return;
-    const def = savedSearches.find((s) => s.is_default);
+    if (defaultApplied) return;
+    if (savedSearches.length === 0 && groupSavedSearches.length === 0) return;
+    // Per-user defaults beat group defaults — the operator's own
+    // pin is the strongest signal of intent.
+    let def = savedSearches.find((s) => s.is_default);
+    if (!def) {
+      def = groupSavedSearches.find((s) => s.is_default);
+    }
     if (!def) { setDefaultApplied(true); return; }
     const hasExistingFilters =
-      state !== 'queue' || selectedSevs.length > 0 || agentFilter || hostFilter || categoryFilter;
+      state !== 'queue' || selectedSevs.length > 0 || agentFilter || hostFilter || categoryFilter || hostSelector;
     if (!hasExistingFilters) {
       try {
         const cfg: FindingsFilterConfig = JSON.parse(def.config_json);
@@ -134,7 +172,7 @@ export default function FindingsPage() {
     }
     setDefaultApplied(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [savedSearches]);
+  }, [savedSearches, groupSavedSearches]);
 
   // Snapshot of the current filter set, used to label the active
   // saved search and as the payload for "Save current".
@@ -145,7 +183,8 @@ export default function FindingsPage() {
     agent: agentFilter || undefined,
     host: hostFilter || undefined,
     category: categoryFilter || undefined,
-  }), [view, state, selectedSevs, agentFilter, hostFilter, categoryFilter]);
+    host_selector: hostSelector || undefined,
+  }), [view, state, selectedSevs, agentFilter, hostFilter, categoryFilter, hostSelector]);
 
   // Active saved-search id: the one whose config_json deep-equals
   // the current filter set. Stringify-compare is cheap (the configs
@@ -167,6 +206,7 @@ export default function FindingsPage() {
     setAgentFilter(cfg.agent ?? '');
     setHostFilter(cfg.host ?? '');
     setCategoryFilter(cfg.category ?? '');
+    setHostSelector(cfg.host_selector ?? '');
   }
 
   const refresh = useMemo(() => () => {
@@ -176,6 +216,7 @@ export default function FindingsPage() {
       agent: agentFilter || undefined,
       host: hostFilter || undefined,
       category: categoryFilter || undefined,
+      host_selector: hostSelector || undefined,
       limit: PAGE_SIZE,
     })
       .then((list) => {
@@ -190,12 +231,13 @@ export default function FindingsPage() {
       agent: agentFilter || undefined,
       host: hostFilter || undefined,
       category: categoryFilter || undefined,
+      host_selector: hostSelector || undefined,
       limit: 200,
     })
       .then(setGroups)
       .catch(() => { /* ignore — show empty */ });
     api.findingsSummary().then(setSummary).catch(() => { /* ignore */ });
-  }, [state, selectedSevs, agentFilter, hostFilter, categoryFilter]);
+  }, [state, selectedSevs, agentFilter, hostFilter, categoryFilter, hostSelector]);
 
   useEffect(() => {
     refresh();
@@ -401,6 +443,13 @@ export default function FindingsPage() {
           value={hostFilter}
           onChange={(e) => setHostFilter(e.target.value)}
           className="px-2.5 py-1 text-xs border border-border rounded-md w-40 focus:outline-none focus:ring-2 focus:ring-brand-500/30"
+        />
+        <SelectorInput
+          kind="node"
+          value={hostSelector}
+          onChange={setHostSelector}
+          placeholder="host labels — env=prod, role=db"
+          className="w-64"
         />
         {categoryFilter && (
           <button
@@ -1219,6 +1268,11 @@ export function FindingDrawer({ id, cpInstanceID, onClose, onChanged }: DrawerPr
             </ul>
           </Section>
         )}
+
+        {/* Labels — generic primitive shared across every entity. */}
+        <Section icon={TagIcon} title="Labels">
+          <LabelEditor kind="finding" idOrKey={f.id} />
+        </Section>
 
         {/* Triage metadata */}
         {f.status && f.status !== 'open' && (

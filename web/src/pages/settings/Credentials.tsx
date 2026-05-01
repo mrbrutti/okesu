@@ -29,6 +29,7 @@ import {
   type SecretKind,
   type SecretScope,
 } from '../../api';
+import { LabelEditor } from '../../components/labels/LabelEditor';
 
 const KIND_LABELS: Record<SecretKind, string> = {
   env_var: 'ENV var',
@@ -262,6 +263,13 @@ function SecretDetailPane({
           {error}
         </div>
       )}
+
+      <div className="border border-border rounded-md bg-white p-4">
+        <h3 className="text-[11px] uppercase tracking-wide font-semibold text-ink-mute mb-3">
+          Labels
+        </h3>
+        <LabelEditor kind="secret" idOrKey={secretID} />
+      </div>
 
       <div className="border border-border rounded-md bg-white p-4">
         <h3 className="text-[11px] uppercase tracking-wide font-semibold text-ink-mute mb-3">

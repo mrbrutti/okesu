@@ -152,6 +152,46 @@ func (a *orchestratorStoreAdapter) GetOrchestrationStep(runID int64, stepID stri
 	return dbStepToEngine(r), nil
 }
 
+// MatchNodesBySelector resolves a step's nodes_selector: against the
+// labels store, returns the node names. Used by the engine when
+// fanning a step out to every match. Empty selector returns nil
+// (callers handle "no targets" — usually a config error caught at
+// the engine layer).
+func (a *orchestratorStoreAdapter) MatchNodesBySelector(selector string) ([]string, error) {
+	sel, err := db.ParseSelector(selector)
+	if err != nil {
+		return nil, fmt.Errorf("parse selector %q: %w", selector, err)
+	}
+	if sel.IsEmpty() {
+		return nil, nil
+	}
+	ids, err := a.store.MatchNodesBySelector(sel)
+	if err != nil {
+		return nil, err
+	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	// Translate ids → names. ListNodes is the cheapest path that
+	// returns the name field; bound by the same 10k cap as the
+	// MatchNodesBySelector helper itself.
+	nodes, err := a.store.ListNodes(10_000, 0)
+	if err != nil {
+		return nil, err
+	}
+	want := make(map[int64]struct{}, len(ids))
+	for _, id := range ids {
+		want[id] = struct{}{}
+	}
+	out := make([]string, 0, len(ids))
+	for _, n := range nodes {
+		if _, ok := want[n.ID]; ok {
+			out = append(out, n.Name)
+		}
+	}
+	return out, nil
+}
+
 func dbStepToEngine(r *db.OrchestrationStep) *orchestrator.StepRecord {
 	rec := &orchestrator.StepRecord{
 		OrchestrationRunID: r.OrchestrationRunID,
