@@ -204,6 +204,34 @@ export type Severity = 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW' | 'INFO';
 
 export const ALL_SEVERITIES: Severity[] = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO'];
 
+// Phase 22.9 — generic labels. Mirrors the LabelKind* constants in
+// controlplane/db/labels.go. Adding a new kind needs (1) the const
+// here, (2) the const + allowedLabelKinds entry on the server, and
+// (3) the wiring on the per-entity detail page.
+export type LabelKind =
+  | 'node'
+  | 'daimon'
+  | 'finding'
+  | 'investigation'
+  | 'run'
+  | 'orchestration'
+  | 'cp'
+  | 'secret'
+  | 'group';
+
+export const ALL_LABEL_KINDS: LabelKind[] = [
+  'node', 'daimon', 'finding', 'investigation', 'run',
+  'orchestration', 'cp', 'secret', 'group',
+];
+
+// LabelTarget is what /api/labels/search returns — identity of one
+// entity that matched the selector.
+export interface LabelTarget {
+  kind: LabelKind;
+  id?: number;
+  key?: string;
+}
+
 export interface SeverityRule {
   fingerprint: string;
   severity: Severity;
@@ -1342,6 +1370,34 @@ export const api = {
     }),
   deleteNodeLabel: (id: number, key: string) =>
     request<void>(`/api/nodes/${id}/labels/${encodeURIComponent(key)}`, { method: 'DELETE' }),
+
+  // Phase 22.9 — generic labels API. Same shape as the per-node
+  // helpers above, parameterised by entity kind. id_or_key is
+  // either a numeric id (most kinds) or a string composite key
+  // (daimon = "name@host"; federation peer = instance UUID).
+  labels: (kind: LabelKind, idOrKey: string | number) =>
+    request<Record<string, string>>(`/api/labels/${kind}/${encodeURIComponent(String(idOrKey))}`),
+  setLabel: (kind: LabelKind, idOrKey: string | number, key: string, value: string) =>
+    request<void>(`/api/labels/${kind}/${encodeURIComponent(String(idOrKey))}`, {
+      method: 'PUT',
+      body: JSON.stringify({ key, value }),
+    }),
+  deleteLabel: (kind: LabelKind, idOrKey: string | number, key: string) =>
+    request<void>(`/api/labels/${kind}/${encodeURIComponent(String(idOrKey))}/${encodeURIComponent(key)}`, {
+      method: 'DELETE',
+    }),
+  searchLabels: (kind: LabelKind, selector: string) => {
+    const qs = new URLSearchParams({ kind, selector });
+    return request<LabelTarget[]>(`/api/labels/search?${qs.toString()}`);
+  },
+  labelKeys: (kind: LabelKind) => {
+    const qs = new URLSearchParams({ kind });
+    return request<string[]>(`/api/labels/keys?${qs.toString()}`);
+  },
+  labelValues: (kind: LabelKind, key: string) => {
+    const qs = new URLSearchParams({ kind, key });
+    return request<string[]>(`/api/labels/values?${qs.toString()}`);
+  },
 
   setNodeAutoUpdatePaused: (id: number, paused: boolean) =>
     request<NodeItem>(`/api/nodes/${id}/auto-update`, {
