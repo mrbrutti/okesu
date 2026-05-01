@@ -2322,3 +2322,11 @@ The Investigation Overview tab (`/investigations/{id}?tab=overview`) renders thr
 3. **Structure** (`web/src/components/investigations/CaseStructure.tsx`) — four summary cards (hosts / IOCs / daimons / runs × orchestrations) with a top-hitter line and a 3-row mini-list per card.
 
 All three sections are pure derivations of the existing `InvestigationDetail` bundle (loaded via `api.investigations.get`); no new server-side endpoints. Click affordances reuse the SmartPayload `entity:open` event bus + `EntityDrawerHost` mounted at the App root.
+
+## Investigation Overview — timeline collision avoidance + portal'd tooltip
+
+Building on the layered Investigation Overview, the timeline component (`web/src/components/investigations/CaseTimeline.tsx`) clusters overlapping point events into `+N` glyphs and replaces SVG `<title>` hover tooltips with a portal'd styled `<div>`.
+
+The clustering algorithm (`web/src/components/investigations/timeline/cluster.ts`) is a pure function that buckets point events on `(lane, x-bucket)` with a default 12px bucket width and 4-event threshold. Bars (runs / IOCs) skip clustering — their duration is the visual signal. Cluster click opens a popover (controlled `<Tooltip>`) listing each event with row-level click-through to the matching detail drawer.
+
+The shared `<Tooltip>` component (`web/src/components/Tooltip.tsx`) is portal'd to `document.body` so it never gets clipped by SVG viewport or parent `overflow:hidden`. Two modes — uncontrolled hover/focus (replacing SVG `<title>` with instant `delay=0` appearance + styled rendering) and controlled (used as the cluster popover with outside-click + Escape dismissal). Reusable beyond the timeline.
