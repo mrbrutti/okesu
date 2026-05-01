@@ -58,3 +58,5 @@ dist/oci/*/env.injected
 .DS_Store
 *.swp
 .env.oci
+/deploy/oci/terraform/*.tfvars
+!/deploy/oci/terraform/*.tfvars.example
