@@ -19,13 +19,8 @@ import { detectEntity } from './detectors';
 import { literalHash } from './literalHash';
 import { normalizeLegacyShape } from './normalize';
 import { StructuredView } from '../StructuredView';
-import { FindingChip } from './chips/FindingChip';
-import { IOCChip } from './chips/IOCChip';
-import { NodeChip } from './chips/NodeChip';
-import { DaimonChip } from './chips/DaimonChip';
-import { RunChip } from './chips/RunChip';
-import { InvestigationChip } from './chips/InvestigationChip';
-import { OrchestrationChip } from './chips/OrchestrationChip';
+import { ChipForKind } from './chipForKind';
+import { DataTable, isHomogeneousObjectArray } from './DataTable';
 
 interface Props {
   value: unknown;
@@ -99,6 +94,16 @@ function PromptRenderer({
         // common case for batch-style prompts. Iterate so each item
         // gets its own chip; non-entity items fall back to inline JSON.
         if (Array.isArray(parsed)) {
+          // Homogeneous array of records → table. Catches the common
+          // 50-action / 50-finding cases and gives the operator a
+          // sortable, scannable view instead of a wall of cards.
+          if (isHomogeneousObjectArray(parsed)) {
+            return (
+              <div key={i} className="my-2">
+                <DataTable rows={parsed as Record<string, unknown>[]} cpInstanceID={cpInstanceID} />
+              </div>
+            );
+          }
           return (
             <div key={i} className="my-1 flex flex-wrap gap-1 items-start">
               {parsed.map((item, j) => {
@@ -144,19 +149,6 @@ function ChipForRef({ entityRef, cpInstanceID }: { entityRef: PromptEntityRef; c
   return <ChipForKind kind={entityRef.kind} snapshot={entityRef.snapshot} cpInstanceID={cpInstanceID} />;
 }
 
-function ChipForKind({ kind, snapshot, cpInstanceID }: { kind: string; snapshot: Record<string, unknown>; cpInstanceID?: string }) {
-  switch (kind) {
-    case 'finding':       return <FindingChip       snapshot={snapshot} cpInstanceID={cpInstanceID} />;
-    case 'ioc':           return <IOCChip           snapshot={snapshot} cpInstanceID={cpInstanceID} />;
-    case 'node':          return <NodeChip          snapshot={snapshot} cpInstanceID={cpInstanceID} />;
-    case 'daimon':        return <DaimonChip        snapshot={snapshot} cpInstanceID={cpInstanceID} />;
-    case 'run':           return <RunChip           snapshot={snapshot} cpInstanceID={cpInstanceID} />;
-    case 'investigation': return <InvestigationChip snapshot={snapshot} cpInstanceID={cpInstanceID} />;
-    case 'orchestration': return <OrchestrationChip snapshot={snapshot} cpInstanceID={cpInstanceID} />;
-    default:              return null;
-  }
-}
-
 // ─── tree mode ────────────────────────────────────────────────
 
 function TreeRenderer({ value, cpInstanceID }: { value: unknown; cpInstanceID?: string }) {
@@ -168,6 +160,10 @@ function TreeRenderer({ value, cpInstanceID }: { value: unknown; cpInstanceID?: 
     return <ChipForKind kind={det.kind} snapshot={det.snapshot} cpInstanceID={cpInstanceID} />;
   }
   if (Array.isArray(value)) {
+    // Homogeneous array of records → table.
+    if (isHomogeneousObjectArray(value)) {
+      return <DataTable rows={value as Record<string, unknown>[]} cpInstanceID={cpInstanceID} />;
+    }
     return (
       <div className="flex flex-wrap gap-1">
         {value.map((item, i) => {

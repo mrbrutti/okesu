@@ -37,6 +37,23 @@ export function HarnessOutput({ text, maxHeight = 480 }: { text: string; maxHeig
   const overflowClass = maxHeight == null ? '' : 'overflow-auto';
 
   if (moves.length === 0) {
+    // The text isn't JSONL — the common case is the agent's
+    // output_summary tail, which is the trailing slice of a fat
+    // JSON literal (the actions array, a finding payload, etc.).
+    // Route through SmartPayload's prompt mode so the embedded
+    // arrays render as a table and embedded entity refs chip
+    // through. Pure prose with no JSON falls back to the raw <pre>
+    // — SmartPayload renders it identically in that case.
+    if (looksLikeContainsJSON(text)) {
+      return (
+        <div
+          className={`bg-slate-50 border border-border rounded p-3 ${overflowClass}`}
+          style={containerStyle}
+        >
+          <SmartPayload value={text} variant="prompt" />
+        </div>
+      );
+    }
     return (
       <pre
         className={`text-[11px] font-mono bg-slate-50 border border-border rounded p-2 whitespace-pre-wrap break-words ${overflowClass}`}
@@ -259,6 +276,25 @@ export function parseHarnessJSONL(raw: string): { moves: Move[]; footer?: Harnes
   }
   flushText();
   return { moves, footer };
+}
+
+// looksLikeContainsJSON returns true when the text contains a
+// runnable JSON object/array literal somewhere inside. Used by the
+// HarnessOutput fallback to decide between rendering as a raw <pre>
+// (unstructured prose) and routing through SmartPayload (which
+// tokenizes mixed prose+JSON intelligently).
+//
+// The check is cheap: scan for a `{"` or `[{` opener and at least
+// one closer, with a tail trim so a one-line truncated output_summary
+// like `..."finding_id":5687,"status":"false_positive"...` still
+// triggers SmartPayload rather than getting dumped as a wall of text.
+function looksLikeContainsJSON(text: string): boolean {
+  if (!text) return false;
+  if (text.includes('{"') || text.includes('[{')) return true;
+  // Truncated tails often start mid-string; treat any text with a
+  // colon-quote-letter pattern as "probably JSON-ish."
+  if (/":\s*[\["]/.test(text)) return true;
+  return false;
 }
 
 function stringField(o: unknown, key: string): string | undefined {
