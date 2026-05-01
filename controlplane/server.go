@@ -877,6 +877,18 @@ func (s *Server) routes() http.Handler {
 			// Phase 22.8 PR β — node labels mutation.
 			r.Put("/api/nodes/{id}/labels", api.SetNodeLabelHandler(s.store))
 			r.Delete("/api/nodes/{id}/labels/{key}", api.DeleteNodeLabelHandler(s.store))
+			// Phase 22.8 PR γ — secrets + selector bindings. All
+			// admin-only — including reads, since metadata leaks
+			// "this credential exists". Plaintext is never echoed
+			// over the wire; consumers (deploy, agent_run) read it
+			// directly via the store.
+			r.Get("/api/secrets", api.ListSecretsHandler(s.store))
+			r.Post("/api/secrets", api.CreateSecretHandler(s.store))
+			r.Get("/api/secrets/{id}", api.GetSecretHandler(s.store))
+			r.Patch("/api/secrets/{id}", api.UpdateSecretHandler(s.store))
+			r.Delete("/api/secrets/{id}", api.DeleteSecretHandler(s.store))
+			r.Post("/api/secrets/{id}/bindings", api.AddSecretBindingHandler(s.store))
+			r.Delete("/api/secrets/{id}/bindings/{bindingID}", api.RemoveSecretBindingHandler(s.store))
 			// Phase 22.8 PR α — groups + scoped roles. Mutation is
 			// admin-only; reads of own groups are below the gate.
 			r.Post("/api/groups", api.CreateGroupHandler(s.store))

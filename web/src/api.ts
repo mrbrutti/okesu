@@ -430,6 +430,36 @@ export interface InvestigationFindingItem {
 
 export type LinkMethod = 'manual' | 'bulk' | 'auto-promote' | 'autolink' | 'import';
 
+// Secret — Phase 22.8 PR γ. Credential metadata; the value never
+// crosses the wire. Bindings (in SecretDetail) tie the secret to a
+// label selector + scope so the right credential applies on the
+// right node automatically.
+export type SecretKind = 'env_var' | 'ssh_key' | 'api_key';
+export type SecretScope = 'node' | 'daimon' | 'agent_run' | 'any';
+
+export interface Secret {
+  id: number;
+  name: string;
+  kind: SecretKind | string;
+  description: string;
+  owner_group_id?: number;
+  created_at: string;
+  created_by_email?: string;
+}
+
+export interface SecretBinding {
+  id: number;
+  secret_id: number;
+  selector: string;
+  scope: SecretScope | string;
+  created_at: string;
+}
+
+export interface SecretDetail {
+  secret: Secret;
+  bindings: SecretBinding[];
+}
+
 // Group — Phase 22.8 PR α. external_id is non-empty for OIDC-bound
 // groups (the IdP-side identifier matched against the groups claim);
 // empty for local-only groups.
@@ -1092,6 +1122,28 @@ export const api = {
       method: 'DELETE',
       body: JSON.stringify({ fingerprint }),
     }),
+
+  // Phase 22.8 PR γ — credential bindings. All admin-only. Plaintext
+  // never crosses the wire; consumers read it directly inside the CP
+  // process. The `value` field is write-only (used on POST and on
+  // PATCH for rotation; never returned).
+  secrets: {
+    list: () => request<Secret[]>('/api/secrets'),
+    get: (id: number) => request<SecretDetail>(`/api/secrets/${id}`),
+    create: (req: { name: string; kind: SecretKind; description?: string; value: string; owner_group_id?: number }) =>
+      request<Secret>('/api/secrets', { method: 'POST', body: JSON.stringify(req) }),
+    update: (id: number, patch: { description?: string; owner_group_id?: number; value?: string }) =>
+      request<void>(`/api/secrets/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+    delete: (id: number) =>
+      request<void>(`/api/secrets/${id}`, { method: 'DELETE' }),
+    addBinding: (id: number, selector: string, scope: SecretScope) =>
+      request<void>(`/api/secrets/${id}/bindings`, {
+        method: 'POST',
+        body: JSON.stringify({ selector, scope }),
+      }),
+    removeBinding: (id: number, bindingID: number) =>
+      request<void>(`/api/secrets/${id}/bindings/${bindingID}`, { method: 'DELETE' }),
+  },
 
   // Phase 22.8 PR α — groups + scoped roles. Multi-membership RBAC
   // replacing the single users.role enum. Existing role-gated paths
