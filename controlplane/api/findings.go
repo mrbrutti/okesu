@@ -312,6 +312,49 @@ func FindingsList(store *db.Store) http.HandlerFunc {
 	}
 }
 
+// FindingsGCStaleHandler — POST /api/findings/gc-stale
+//
+// Admin-only. Triggers an immediate stale-findings GC sweep
+// (normally run hourly in the background). Body accepts an
+// optional {"threshold_hours": N} (default 24). Returns the
+// summary {closed, scanned, threshold_ms}.
+//
+// Useful for one-shot cleanup of an existing pile after a deploy
+// or after operators triage a noisy fingerprint they want
+// retroactively flushed off the queue.
+func FindingsGCStaleHandler(store *db.Store) http.HandlerFunc {
+	type req struct {
+		ThresholdHours int `json:"threshold_hours"`
+		Limit          int `json:"limit"`
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		var body req
+		if r.ContentLength > 0 {
+			_ = json.NewDecoder(r.Body).Decode(&body)
+		}
+		threshold := time.Duration(body.ThresholdHours) * time.Hour
+		if threshold <= 0 {
+			threshold = 24 * time.Hour
+		}
+		limit := body.Limit
+		if limit <= 0 {
+			limit = 5000
+		}
+		res, err := store.AutoCloseStaleOpens(threshold, limit)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"closed":         res.Closed,
+			"scanned":        res.Scanned,
+			"threshold_ms":   int64(res.Threshold / time.Millisecond),
+			"threshold_str":  res.Threshold.String(),
+		})
+	}
+}
+
 // RenderFederationFindings produces the JSON the federation S3
 // publisher writes to findings.json on each tick. Same wire shape
 // FindingsList emits at default filters: open findings only,

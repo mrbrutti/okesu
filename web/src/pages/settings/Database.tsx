@@ -12,8 +12,9 @@ import { cn } from '../../lib/cn';
 export default function DatabaseSection() {
   const [data, setData] = useState<DBStatsResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState<'vacuum' | 'prune' | null>(null);
+  const [busy, setBusy] = useState<'vacuum' | 'prune' | 'gc-stale' | null>(null);
   const [pruneDays, setPruneDays] = useState(30);
+  const [staleHours, setStaleHours] = useState(24);
   const [lastResult, setLastResult] = useState<string | null>(null);
 
   const refresh = () => {
@@ -32,6 +33,19 @@ export default function DatabaseSection() {
       const r = await api.dbVacuum();
       setLastResult(`Vacuum done in ${r.duration_ms} ms.`);
       refresh();
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : String(e));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function gcStale() {
+    if (!confirm(`Auto-close every "open" finding that hasn't been re-emitted in ${staleHours} hour(s) and only fired once? They land in 'acknowledged' with tag 'auto-stale' — operators can reopen from the drawer.`)) return;
+    setBusy('gc-stale'); setError(null); setLastResult(null);
+    try {
+      const r = await api.findingsGCStale({ threshold_hours: staleHours, limit: 5000 });
+      setLastResult(`Closed ${r.closed} stale open finding(s) (scanned ${r.scanned}, threshold ${r.threshold_str}).`);
     } catch (e) {
       setError(e instanceof ApiError ? e.message : String(e));
     } finally {
@@ -134,6 +148,27 @@ export default function DatabaseSection() {
               {busy === 'prune' ? <Loader2 size={11} className="animate-spin" /> : <Trash2 size={11} />}
               Prune now
             </button>
+          </div>
+
+          <div className="flex items-center gap-3 flex-wrap">
+            <span className="text-sm font-medium">Close stale open findings</span>
+            <input
+              type="number"
+              min={1}
+              value={staleHours}
+              onChange={(e) => setStaleHours(Number(e.target.value))}
+              className="w-20 px-2.5 py-1.5 text-sm border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500/30 bg-white"
+            />
+            <span className="text-sm">hours since last emit</span>
+            <button
+              onClick={gcStale}
+              disabled={busy !== null || staleHours <= 0}
+              className="text-xs px-3 py-1.5 border border-border rounded-md hover:bg-slate-50 inline-flex items-center gap-1.5 disabled:opacity-50"
+            >
+              {busy === 'gc-stale' ? <Loader2 size={11} className="animate-spin" /> : <Trash2 size={11} />}
+              GC stale opens
+            </button>
+            <span className="text-xs text-ink-mute">Same hourly background sweep, but on demand. Targets one-fire-then-quiet rows; recurring noise is left alone.</span>
           </div>
 
           <div className="flex items-center gap-3 flex-wrap">
