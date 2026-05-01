@@ -129,3 +129,92 @@ describe('CaseTimeline (D2 events)', () => {
     expect(events[0]).toMatchObject({ kind: 'finding', identityKey: '7' });
   });
 });
+
+describe('CaseTimeline (clusters + tooltip)', () => {
+  it('renders one cluster glyph for 5 findings inside the same x-bucket', () => {
+    // 5 findings at very close timestamps so they fall into the same
+    // 12px bucket regardless of zoom.
+    const baseTs = Date.parse('2026-04-30T12:00:00Z');
+    const b = bundle({
+      findings: Array.from({ length: 5 }, (_, i) => ({
+        ID: i + 1,
+        Ts: baseTs + i * 1000, // 1s apart — well within one bucket at any reasonable zoom
+        Agent: { String: 'a', Valid: true },
+        Host: { String: 'h', Valid: true },
+        Severity: { String: i === 0 ? 'CRITICAL' : 'LOW', Valid: true },
+        Title: { String: `f${i}`, Valid: true },
+        Status: { String: 'open', Valid: true },
+        Tags: { String: '', Valid: false },
+        Subtype: { String: '', Valid: false },
+        LinkedAt: '',
+        LinkMethod: { String: '', Valid: false },
+        LinkedBy: { String: '', Valid: false },
+      })),
+    });
+    render(<MemoryRouter><CaseTimeline bundle={b} /></MemoryRouter>);
+    // The cluster glyph carries an aria-label identifying it as a cluster.
+    expect(screen.getByLabelText(/Cluster of 5 findings/i)).toBeTruthy();
+    // No individual finding dot labels should be present.
+    expect(screen.queryByLabelText(/Finding #1/)).toBeNull();
+  });
+
+  it('clicking a cluster glyph opens the popover with one row per finding', () => {
+    const baseTs = Date.parse('2026-04-30T12:00:00Z');
+    const b = bundle({
+      findings: Array.from({ length: 4 }, (_, i) => ({
+        ID: i + 10,
+        Ts: baseTs + i * 1000,
+        Agent: { String: 'a', Valid: true },
+        Host: { String: 'h', Valid: true },
+        Severity: { String: 'HIGH', Valid: true },
+        Title: { String: `f${i + 10}`, Valid: true },
+        Status: { String: 'open', Valid: true },
+        Tags: { String: '', Valid: false },
+        Subtype: { String: '', Valid: false },
+        LinkedAt: '',
+        LinkMethod: { String: '', Valid: false },
+        LinkedBy: { String: '', Valid: false },
+      })),
+    });
+    render(<MemoryRouter><CaseTimeline bundle={b} /></MemoryRouter>);
+    fireEvent.click(screen.getByLabelText(/Cluster of 4 findings/i));
+    // Popover content shows each finding's title.
+    expect(screen.getByText(/f10/)).toBeTruthy();
+    expect(screen.getByText(/f13/)).toBeTruthy();
+  });
+
+  it('clicking a row inside the cluster popover fires entity:open and closes the popover', () => {
+    const baseTs = Date.parse('2026-04-30T12:00:00Z');
+    const b = bundle({
+      findings: Array.from({ length: 4 }, (_, i) => ({
+        ID: i + 20,
+        Ts: baseTs + i * 1000,
+        Agent: { String: 'a', Valid: true },
+        Host: { String: 'h', Valid: true },
+        Severity: { String: 'LOW', Valid: true },
+        Title: { String: `g${i + 20}`, Valid: true },
+        Status: { String: 'open', Valid: true },
+        Tags: { String: '', Valid: false },
+        Subtype: { String: '', Valid: false },
+        LinkedAt: '',
+        LinkMethod: { String: '', Valid: false },
+        LinkedBy: { String: '', Valid: false },
+      })),
+    });
+    const events: { kind: string; identityKey: string }[] = [];
+    const handler = (e: Event) => {
+      events.push((e as CustomEvent<{ kind: string; identityKey: string }>).detail);
+    };
+    window.addEventListener('entity:open', handler);
+    try {
+      render(<MemoryRouter><CaseTimeline bundle={b} /></MemoryRouter>);
+      fireEvent.click(screen.getByLabelText(/Cluster of 4 findings/i));
+      fireEvent.click(screen.getByText(/g22/));
+      expect(events[0]).toMatchObject({ kind: 'finding', identityKey: '22' });
+      // Popover closed: g22 no longer findable.
+      expect(screen.queryByText(/g22/)).toBeNull();
+    } finally {
+      window.removeEventListener('entity:open', handler);
+    }
+  });
+});

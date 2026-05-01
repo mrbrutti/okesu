@@ -10,8 +10,10 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { InvestigationDetail, InvestigationAuditEvent } from '../../api';
 import { api } from '../../api';
 import { buildEvents } from './timeline/buildEvents';
-import { ALL_LANES, DEFAULT_LANES_ON, type TimelineLane } from './timeline/types';
+import { ALL_LANES, DEFAULT_LANES_ON, type TimelineLane, type TimelineEvent } from './timeline/types';
 import { autoFitRange, presetRange, tToX, type Preset, type Range } from './timeline/scale';
+import { Tooltip } from '../Tooltip';
+import { clusterEvents, type ClusterOrEvent } from './timeline/cluster';
 
 interface Props {
   bundle: InvestigationDetail;
@@ -147,6 +149,146 @@ const RUN_FILL: Record<string, string> = {
   running:   '#3b82f6',
 };
 
+const SEV_RANK: Record<string, number> = { CRITICAL: 5, HIGH: 4, MEDIUM: 3, LOW: 2, INFO: 1 };
+
+function highestSeverityColor(events: TimelineEvent[]): string {
+  let bestRank = 0;
+  let best: string = SEV_FILL.INFO;
+  for (const e of events) {
+    if (e.kind !== 'finding') continue;
+    const r = SEV_RANK[e.severity] ?? 0;
+    if (r > bestRank) {
+      bestRank = r;
+      best = SEV_FILL[e.severity] ?? SEV_FILL.INFO;
+    }
+  }
+  return best;
+}
+
+function tooltipFor(e: TimelineEvent): React.ReactNode {
+  switch (e.kind) {
+    case 'finding':
+      return (
+        <div className="space-y-0.5">
+          <div className="flex items-center gap-1">
+            <span className={`inline-block px-1 py-0.5 text-[10px] uppercase font-medium rounded ring-1 ${sevTone(e.severity)}`}>{e.severity}</span>
+            <span className="font-mono">Finding #{e.id}</span>
+          </div>
+          <div className="font-medium">{e.title}</div>
+          <div className="text-ink-mute">{e.agent} on {e.host}</div>
+          <div className="text-ink-mute italic text-[10px]">Click to open drawer</div>
+        </div>
+      );
+    case 'run': {
+      const dur = formatDuration(e.startTs, e.endTs, e.running);
+      return (
+        <div className="space-y-0.5">
+          <div className="flex items-center gap-1">
+            <span className={`inline-block px-1 py-0.5 text-[10px] uppercase font-medium rounded ring-1 ${runTone(e.status)}`}>{e.status}</span>
+            <span className="font-mono">Run #{e.id}</span>
+          </div>
+          <div className="font-medium">{e.orchestrationName}</div>
+          <div className="text-ink-mute">{dur}</div>
+        </div>
+      );
+    }
+    case 'note':
+      return (
+        <div className="space-y-0.5">
+          <div className="text-ink-mute text-[10px]">{e.author}</div>
+          <div className="font-mono whitespace-pre-wrap line-clamp-4">{e.body}</div>
+        </div>
+      );
+    case 'ioc': {
+      const display = e.value.length > 32 ? `…${e.value.slice(-4)}` : e.value;
+      return (
+        <div className="space-y-0.5">
+          <div className="font-mono">{e.iocKind}:{display}</div>
+        </div>
+      );
+    }
+    case 'daimon':
+      return <div className="font-mono">{e.agent} → Finding #{e.findingID}</div>;
+    case 'audit':
+      return (
+        <div className="space-y-0.5">
+          <div className="text-ink-mute text-[10px]">{e.by}</div>
+          <div>{e.auditKind}: {e.title}</div>
+        </div>
+      );
+    case 'lifecycle':
+      return <div>{e.title}</div>;
+  }
+}
+
+function sevTone(sev: string): string {
+  if (sev === 'CRITICAL') return 'text-red-700 bg-red-50 ring-red-200';
+  if (sev === 'HIGH') return 'text-orange-700 bg-orange-50 ring-orange-200';
+  if (sev === 'MEDIUM') return 'text-amber-700 bg-amber-50 ring-amber-200';
+  if (sev === 'LOW') return 'text-blue-700 bg-blue-50 ring-blue-200';
+  return 'text-slate-700 bg-slate-50 ring-slate-200';
+}
+
+function runTone(status: string): string {
+  if (status === 'completed') return 'text-emerald-700 bg-emerald-50 ring-emerald-200';
+  if (status === 'failed') return 'text-red-700 bg-red-50 ring-red-200';
+  if (status === 'cancelled') return 'text-slate-700 bg-slate-50 ring-slate-200';
+  return 'text-blue-700 bg-blue-50 ring-blue-200';
+}
+
+function formatDuration(startTs: number, endTs: number, running: boolean): string {
+  if (running) return 'in progress';
+  const ms = Math.max(0, endTs - startTs);
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ${s % 60}s`;
+  const h = Math.floor(m / 60);
+  return `${h}h ${m % 60}m`;
+}
+
+function ClusterList({ events, onPick, cpInstanceID }: {
+  events: TimelineEvent[];
+  onPick: () => void;
+  cpInstanceID?: string;
+}) {
+  function fire(kind: string, identityKey: string) {
+    window.dispatchEvent(new CustomEvent('entity:open', { detail: { kind, identityKey, cpInstanceID } }));
+    onPick();
+  }
+  return (
+    <ul className="divide-y divide-border min-w-[16rem]">
+      {events.map((e, i) => {
+        const { kind, key, label } = clusterRowDetails(e);
+        const clickable = kind !== null;
+        return (
+          <li key={i} className="py-1.5">
+            <button
+              type="button"
+              onClick={clickable ? () => fire(kind!, key!) : undefined}
+              disabled={!clickable}
+              className={`w-full text-left ${clickable ? 'hover:bg-slate-50 cursor-pointer' : 'cursor-default'} px-1`}
+            >
+              {label}
+            </button>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+function clusterRowDetails(e: TimelineEvent): { kind: string | null; key: string | null; label: React.ReactNode } {
+  switch (e.kind) {
+    case 'finding': return { kind: 'finding', key: String(e.id), label: tooltipFor(e) };
+    case 'note':    return { kind: null, key: null, label: tooltipFor(e) };
+    case 'audit':   return { kind: null, key: null, label: tooltipFor(e) };
+    case 'lifecycle': return { kind: null, key: null, label: tooltipFor(e) };
+    case 'daimon':  return { kind: 'finding', key: String(e.findingID), label: tooltipFor(e) };
+    default:        return { kind: null, key: null, label: tooltipFor(e) };
+  }
+}
+
 function EventsLayer({ events, visibleLanes, range, laneLabelWidth, drawableWidth, cpInstanceID }: {
   events: ReturnType<typeof buildEvents>;
   visibleLanes: TimelineLane[];
@@ -159,146 +301,185 @@ function EventsLayer({ events, visibleLanes, range, laneLabelWidth, drawableWidt
   const x = (t: number) => laneLabelWidth + tToX(t, range.tMin, range.tMax, drawableWidth);
   const yMid = (l: TimelineLane) => laneIndex(l) * LANE_HEIGHT + LANE_HEIGHT / 2;
 
+  const clustered = useMemo(
+    () => clusterEvents(events, visibleLanes, (t) => tToX(t, range.tMin, range.tMax, drawableWidth)),
+    [events, visibleLanes, range, drawableWidth],
+  );
+
+  const [openCluster, setOpenCluster] = useState<ClusterOrEvent | null>(null);
+
+  // Close orphaned popover when re-clustering produces a different
+  // set of cluster objects.
+  useEffect(() => {
+    if (openCluster && !clustered.includes(openCluster)) setOpenCluster(null);
+  }, [clustered, openCluster]);
+
   function fire(kind: string, identityKey: string) {
     window.dispatchEvent(new CustomEvent('entity:open', { detail: { kind, identityKey, cpInstanceID } }));
   }
 
   return (
     <g>
-      {events.map((e, i) => {
-        switch (e.kind) {
-          case 'lifecycle':
-            if (laneIndex('lifecycle') < 0) return null;
-            return (
-              <text
-                key={i}
-                x={x(e.ts)}
-                y={yMid('lifecycle') + 4}
-                fontSize="14"
-                textAnchor="middle"
-                aria-label={e.title}
-              >
-                {e.marker === 'created' ? '⊕' : '⊗'}
-              </text>
-            );
-          case 'finding':
-            if (laneIndex('findings') < 0) return null;
-            return (
-              <circle
-                key={i}
-                cx={x(e.ts)}
-                cy={yMid('findings')}
-                r={5}
-                fill={SEV_FILL[e.severity] ?? SEV_FILL.INFO}
-                role="button"
-                aria-label={`Finding #${e.id}: ${e.severity} ${e.title} on ${e.host}`}
-                tabIndex={0}
-                style={{ cursor: 'pointer' }}
-                onClick={() => fire('finding', String(e.id))}
-                onKeyDown={(ev) => { if (ev.key === 'Enter' || ev.key === ' ') fire('finding', String(e.id)); }}
-              >
-                <title>{`Finding #${e.id} ${e.severity} — ${e.title} (${e.agent} on ${e.host})`}</title>
-              </circle>
-            );
-          case 'run': {
-            if (laneIndex('runs') < 0) return null;
-            const x0 = x(e.startTs);
-            const x1 = x(e.endTs);
-            const w = Math.max(2, x1 - x0);
-            return (
-              <rect
-                key={i}
-                x={x0}
-                y={yMid('runs') - 6}
-                width={w}
-                height={12}
-                rx={2}
-                fill={RUN_FILL[e.status] ?? RUN_FILL.cancelled}
-                role="button"
-                aria-label={`Run #${e.id}: ${e.status} (${e.orchestrationName})`}
-                tabIndex={0}
-                style={{ cursor: 'pointer', opacity: e.running ? 0.85 : 1 }}
-                onClick={() => fire('run', String(e.id))}
-                onKeyDown={(ev) => { if (ev.key === 'Enter' || ev.key === ' ') fire('run', String(e.id)); }}
-              >
-                <title>{`Run #${e.id} ${e.status} — ${e.orchestrationName}${e.running ? ' (running)' : ''}`}</title>
-              </rect>
-            );
-          }
-          case 'note':
-            if (laneIndex('notes') < 0) return null;
-            return (
-              <text
-                key={i}
-                x={x(e.ts)}
-                y={yMid('notes') + 4}
-                fontSize="12"
-                textAnchor="middle"
-                aria-label={`Note by ${e.author}`}
-              >
-                ✎<title>{`${e.author}: ${e.body.slice(0, 80)}`}</title>
-              </text>
-            );
-          case 'ioc': {
-            if (laneIndex('iocs') < 0) return null;
-            const x0 = x(e.startTs);
-            const x1 = x(e.endTs);
-            return (
-              <rect
-                key={i}
-                x={x0}
-                y={yMid('iocs') - 2}
-                width={Math.max(2, x1 - x0)}
-                height={4}
-                fill="#a855f7"
-                role="button"
-                aria-label={`IOC ${e.iocKind}:${e.value.slice(-4)}`}
-                tabIndex={0}
-                style={{ cursor: 'pointer' }}
-                onClick={() => fire('ioc', `${e.iocKind}:${e.value}`)}
-                onKeyDown={(ev) => { if (ev.key === 'Enter' || ev.key === ' ') fire('ioc', `${e.iocKind}:${e.value}`); }}
-              >
-                <title>{`IOC ${e.iocKind}:${e.value}`}</title>
-              </rect>
-            );
-          }
-          case 'daimon':
-            if (laneIndex('daimons') < 0) return null;
-            return (
-              <rect
-                key={i}
-                x={x(e.ts) - 2}
-                y={yMid('daimons') - 2}
-                width={4}
-                height={4}
-                fill="#6366f1"
-                role="button"
-                aria-label={`Daimon ${e.agent}`}
-                tabIndex={0}
-                style={{ cursor: 'pointer' }}
-                onClick={() => fire('finding', String(e.findingID))}
-              >
-                <title>{`${e.agent} fired finding #${e.findingID}`}</title>
-              </rect>
-            );
-          case 'audit':
-            if (laneIndex('audit') < 0) return null;
-            return (
-              <text
-                key={i}
-                x={x(e.ts)}
-                y={yMid('audit') + 4}
-                fontSize="11"
-                textAnchor="middle"
-                fill="#64748b"
-                aria-label={`Audit ${e.auditKind} by ${e.by}`}
-              >
-                ↗<title>{`${e.auditKind} by ${e.by}: ${e.title}`}</title>
-              </text>
-            );
-        }
-      })}
+      {clustered.map((c, i) => c.kind === 'single'
+        ? renderSingle(c.event, i, { x, yMid, laneIndex, fire })
+        : renderCluster(c, i, { yMid, openCluster, setOpenCluster, cpInstanceID }))}
     </g>
+  );
+}
+
+function renderSingle(
+  e: TimelineEvent,
+  i: number,
+  ctx: {
+    x: (t: number) => number;
+    yMid: (l: TimelineLane) => number;
+    laneIndex: (l: TimelineLane) => number;
+    fire: (kind: string, identityKey: string) => void;
+  },
+): React.ReactNode {
+  const { x, yMid, laneIndex, fire } = ctx;
+  switch (e.kind) {
+    case 'lifecycle': {
+      if (laneIndex('lifecycle') < 0) return null;
+      return (
+        <Tooltip key={i} content={tooltipFor(e)}>
+          <text x={x(e.ts)} y={yMid('lifecycle') + 4} fontSize="14" textAnchor="middle" aria-label={e.title}>
+            {e.marker === 'created' ? '⊕' : '⊗'}
+          </text>
+        </Tooltip>
+      );
+    }
+    case 'finding': {
+      if (laneIndex('findings') < 0) return null;
+      return (
+        <Tooltip key={i} content={tooltipFor(e)}>
+          <circle
+            cx={x(e.ts)} cy={yMid('findings')} r={5}
+            fill={SEV_FILL[e.severity] ?? SEV_FILL.INFO}
+            role="button"
+            aria-label={`Finding #${e.id}: ${e.severity} ${e.title} on ${e.host}`}
+            tabIndex={0}
+            style={{ cursor: 'pointer' }}
+            onClick={() => fire('finding', String(e.id))}
+            onKeyDown={(ev) => { if (ev.key === 'Enter' || ev.key === ' ') fire('finding', String(e.id)); }}
+          />
+        </Tooltip>
+      );
+    }
+    case 'run': {
+      if (laneIndex('runs') < 0) return null;
+      const x0 = x(e.startTs);
+      const x1 = x(e.endTs);
+      const w = Math.max(2, x1 - x0);
+      return (
+        <Tooltip key={i} content={tooltipFor(e)}>
+          <rect
+            x={x0} y={yMid('runs') - 6} width={w} height={12} rx={2}
+            fill={RUN_FILL[e.status] ?? RUN_FILL.cancelled}
+            role="button"
+            aria-label={`Run #${e.id}: ${e.status} (${e.orchestrationName})`}
+            tabIndex={0}
+            style={{ cursor: 'pointer', opacity: e.running ? 0.85 : 1 }}
+            onClick={() => fire('run', String(e.id))}
+            onKeyDown={(ev) => { if (ev.key === 'Enter' || ev.key === ' ') fire('run', String(e.id)); }}
+          />
+        </Tooltip>
+      );
+    }
+    case 'note': {
+      if (laneIndex('notes') < 0) return null;
+      return (
+        <Tooltip key={i} content={tooltipFor(e)}>
+          <text x={x(e.ts)} y={yMid('notes') + 4} fontSize="12" textAnchor="middle" aria-label={`Note by ${e.author}`}>
+            ✎
+          </text>
+        </Tooltip>
+      );
+    }
+    case 'ioc': {
+      if (laneIndex('iocs') < 0) return null;
+      const x0 = x(e.startTs);
+      const x1 = x(e.endTs);
+      return (
+        <Tooltip key={i} content={tooltipFor(e)}>
+          <rect
+            x={x0} y={yMid('iocs') - 2} width={Math.max(2, x1 - x0)} height={4}
+            fill="#a855f7"
+            role="button"
+            aria-label={`IOC ${e.iocKind}:${e.value.slice(-4)}`}
+            tabIndex={0}
+            style={{ cursor: 'pointer' }}
+            onClick={() => fire('ioc', `${e.iocKind}:${e.value}`)}
+            onKeyDown={(ev) => { if (ev.key === 'Enter' || ev.key === ' ') fire('ioc', `${e.iocKind}:${e.value}`); }}
+          />
+        </Tooltip>
+      );
+    }
+    case 'daimon': {
+      if (laneIndex('daimons') < 0) return null;
+      return (
+        <Tooltip key={i} content={tooltipFor(e)}>
+          <rect
+            x={x(e.ts) - 2} y={yMid('daimons') - 2} width={4} height={4}
+            fill="#6366f1"
+            role="button"
+            aria-label={`Daimon ${e.agent}`}
+            tabIndex={0}
+            style={{ cursor: 'pointer' }}
+            onClick={() => fire('finding', String(e.findingID))}
+          />
+        </Tooltip>
+      );
+    }
+    case 'audit': {
+      if (laneIndex('audit') < 0) return null;
+      return (
+        <Tooltip key={i} content={tooltipFor(e)}>
+          <text x={x(e.ts)} y={yMid('audit') + 4} fontSize="11" textAnchor="middle" fill="#64748b" aria-label={`Audit ${e.auditKind} by ${e.by}`}>
+            ↗
+          </text>
+        </Tooltip>
+      );
+    }
+  }
+}
+
+function renderCluster(
+  c: { kind: 'cluster'; lane: TimelineLane; events: TimelineEvent[]; cx: number },
+  i: number,
+  ctx: {
+    yMid: (l: TimelineLane) => number;
+    openCluster: ClusterOrEvent | null;
+    setOpenCluster: (c: ClusterOrEvent | null) => void;
+    cpInstanceID?: string;
+  },
+): React.ReactNode {
+  const { yMid, openCluster, setOpenCluster, cpInstanceID } = ctx;
+  const isOpen = openCluster === c;
+  const cy = yMid(c.lane);
+  const fill = c.lane === 'findings' ? highestSeverityColor(c.events) : '#475569';
+  const r = 9;
+  return (
+    <Tooltip
+      key={i}
+      open={isOpen}
+      onOpenChange={(o) => setOpenCluster(o ? c : null)}
+      content={<ClusterList events={c.events} onPick={() => setOpenCluster(null)} cpInstanceID={cpInstanceID} />}
+    >
+      <g
+        role="button"
+        aria-label={`Cluster of ${c.events.length} ${c.lane}`}
+        tabIndex={0}
+        style={{ cursor: 'pointer' }}
+        onClick={() => setOpenCluster(c)}
+        onKeyDown={(ev) => { if (ev.key === 'Enter' || ev.key === ' ') setOpenCluster(c); }}
+      >
+        <circle cx={c.cx} cy={cy} r={r} fill={fill} />
+        <text x={c.cx} y={cy + 3} fontSize="9" textAnchor="middle" fill="white" fontWeight="bold" pointerEvents="none">
+          +{c.events.length}
+        </text>
+      </g>
+    </Tooltip>
   );
 }
 
