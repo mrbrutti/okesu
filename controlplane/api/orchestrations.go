@@ -140,6 +140,7 @@ func (a *orchestratorStoreAdapter) UpsertOrchestrationStep(rec *orchestrator.Ste
 		ApprovedAt:         rec.ApprovedAt,
 		ApprovedBy:         rec.ApprovedByUserID,
 		DataSnapshot:       rec.DataSnapshot,
+		PromptEntities:     rec.PromptEntities,
 	})
 }
 
@@ -166,6 +167,7 @@ func dbStepToEngine(r *db.OrchestrationStep) *orchestrator.StepRecord {
 		Error:              r.Error.String,
 		ApprovedByUserID:   r.ApprovedBy.Int64,
 		DataSnapshot:       r.DataSnapshot.String,
+		PromptEntities:     r.PromptEntities.String,
 	}
 	if r.StartedAt.Valid {
 		t := r.StartedAt.Time

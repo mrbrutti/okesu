@@ -154,7 +154,13 @@ type StepRecord struct {
 	CPInstanceID       string
 	NodeID             int64
 	RenderedPrompt     string
-	ResultJSON         string
+	// PromptEntities is the JSON-encoded typed entity-ref side-channel
+	// the engine captures at template render time. Empty when the step
+	// has no recognised entity refs in its prompt; persisted as NULL on
+	// the orchestration_steps row in that case so the UI knows to fall
+	// back to client-side shape sniffing.
+	PromptEntities string
+	ResultJSON     string
 	OutputSummary      string
 	StartedAt          *time.Time
 	EndedAt            *time.Time
@@ -442,6 +448,11 @@ func (e *Engine) Run(ctx context.Context, runID int64) error {
 				// they're approving in the UI before clicking Approve.
 				renderedPrompt, _ := Render(step.Prompt, env)
 				rec.RenderedPrompt = renderedPrompt
+				if pe, perr := BuildPromptEntities(step.Prompt, env, cpInstanceForStep(orch, &step)); perr == nil && pe != nil {
+					if b, jerr := json.Marshal(pe); jerr == nil {
+						rec.PromptEntities = string(b)
+					}
+				}
 				_ = e.store.UpsertOrchestrationStep(rec)
 				_ = e.store.UpdateOrchestrationRunStatus(run.ID, RunStatusApprovalRequired, step.ID, "")
 				return nil
@@ -498,6 +509,11 @@ func (e *Engine) Run(ctx context.Context, runID int64) error {
 			rec.Error = "render prompt: " + err.Error()
 			_ = e.store.UpsertOrchestrationStep(rec)
 			return e.haltFailed(run.ID, step.ID, rec.Error)
+		}
+		if pe, perr := BuildPromptEntities(step.Prompt, env, cpInstanceForStep(orch, &step)); perr == nil && pe != nil {
+			if b, jerr := json.Marshal(pe); jerr == nil {
+				rec.PromptEntities = string(b)
+			}
 		}
 
 		// Resolve node target(s). EffectiveNodes returns either the
@@ -1092,6 +1108,19 @@ func renderParams(params map[string]any, env map[string]any) (map[string]any, er
 		out[k] = v
 	}
 	return out, nil
+}
+
+// cpInstanceForStep returns the CP instance ID this step's entities
+// belong to. Steps that select a child CP via `cp:` (or via the
+// orchestration default) return that peer's ID; local steps return
+// "" so the wire shape's omitempty drops the field. Used by
+// BuildPromptEntities to tag refs so the UI can route deep links
+// across federation.
+func cpInstanceForStep(orch *Orchestration, step *StepSpec) string {
+	if step != nil && orch != nil && orch.Spec != nil {
+		return orch.Spec.EffectiveCP(step)
+	}
+	return ""
 }
 
 // Spec is exported via the orchestrator package; keep import quiet.
