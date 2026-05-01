@@ -1,6 +1,8 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { render, screen, cleanup } from '@testing-library/react';
+import { render, screen, cleanup, waitFor } from '@testing-library/react';
 import { SmartPayload } from './index';
+import { literalHash } from './literalHash';
+import type { PromptEntities } from '../../api';
 
 afterEach(cleanup);
 
@@ -46,5 +48,28 @@ describe('SmartPayload', () => {
     render(<SmartPayload value={{ id: 9, severity: 'HIGH', title: 'auto', category: 'k' }} />);
     expect(screen.getByText(/auto/)).toBeTruthy();
     expect(screen.getByText('HIGH')).toBeTruthy();
+  });
+
+  it('prompt mode: hash-matches a server-emitted ref over the heuristic', async () => {
+    // Server-emitted snapshot title differs from what the
+    // detector would produce — proves the ref is what's being
+    // rendered, not the detector fallback.
+    const findingJSON = '{"id":42,"severity":"LOW","title":"DetectorFallback","category":"x"}';
+    const hash = await literalHash(findingJSON);
+    const entities: PromptEntities = {
+      refs: [{
+        kind: 'finding',
+        id: 42,
+        snapshot: { id: 42, severity: 'LOW', title: 'FromServer', category: 'x' },
+        literal_hash: hash,
+      }],
+    };
+    render(<SmartPayload value={`see ${findingJSON}`} entities={entities} variant="prompt" />);
+    // Hash compute is async — wait for the server-snapshot title
+    // to appear (and confirm the detector-fallback title does NOT).
+    await waitFor(() => {
+      expect(screen.getByText(/FromServer/)).toBeTruthy();
+    });
+    expect(screen.queryByText(/DetectorFallback/)).toBeNull();
   });
 });
