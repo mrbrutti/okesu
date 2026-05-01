@@ -1,0 +1,175 @@
+---
+import Base from '../layouts/Base.astro';
+import OperatorView from '../components/OperatorView.astro';
+---
+
+<Base
+  title="A 10-minute tour"
+  description="From an unsuspecting daimon tick to a triaged, contained, closed finding — what Okesu actually feels like in the operator's seat."
+>
+  <div class="bg-gradient-to-b from-brand-50 via-white to-white border-b border-border">
+    <div class="max-w-page mx-auto px-6 py-12 text-center">
+      <p class="text-[10px] uppercase tracking-wide text-brand-700 font-bold mb-2">A 10-minute tour</p>
+      <h1 class="text-[32px] md:text-[40px] font-bold text-ink leading-tight max-w-3xl mx-auto">
+        From a finding to a closed investigation, in seven screens.
+      </h1>
+      <p class="mt-4 text-[15px] md:text-base text-ink-dim leading-relaxed max-w-2xl mx-auto">
+        Every screenshot below is the live platform — captured from a federated demo stack,
+        not a marketing render. Follow the same path on your CP after <a href="/install" class="text-brand-700 font-medium hover:underline">installing</a>.
+      </p>
+    </div>
+  </div>
+
+  <article class="max-w-content mx-auto px-6 py-16 space-y-20">
+
+    {/* ── 1 ─────────────────────────────────────────────────────── */}
+    <section>
+      <div class="flex items-baseline gap-3 mb-3">
+        <span class="text-[28px] font-bold text-brand-700 leading-none">01</span>
+        <h2 class="text-[22px] font-semibold text-ink leading-tight">The dashboard at a glance</h2>
+      </div>
+      <p class="text-[14px] text-ink-dim leading-relaxed mb-5">
+        You walk in and the CP shows you the state of the fleet. Federated CPs at the
+        top (this one aggregates 2/2 children), counts of daimons heartbeating, finding
+        queues stratified by severity, and chart strips for events / severity / automation
+        runs over the last 24 hours.
+      </p>
+      <OperatorView
+        src="dashboard"
+        alt="Okesu Control Plane dashboard — federated daimon counts, finding charts, automation runs by status."
+        url="okesu / Dashboard"
+        caption="The dashboard at a glance — federated, refreshes every 15 seconds."
+      />
+    </section>
+
+    {/* ── 2 ─────────────────────────────────────────────────────── */}
+    <section>
+      <div class="flex items-baseline gap-3 mb-3">
+        <span class="text-[28px] font-bold text-brand-700 leading-none">02</span>
+        <h2 class="text-[22px] font-semibold text-ink leading-tight">A finding lands</h2>
+      </div>
+      <p class="text-[14px] text-ink-dim leading-relaxed mb-5">
+        Your <code class="bg-brand-50 text-brand-700 px-1 rounded text-[13px]">sre-health</code> daimons across the fleet detect a connection-failed pattern hitting your public health endpoints. They emit one finding each. The Findings page bundles them by severity and clusters by IOC; you see <strong>761 CRITICAL</strong> open across 9,381 total. The first row is what fired most recently.
+      </p>
+      <OperatorView
+        src="tour-findings-arrived"
+        alt="Findings page — severity-stratified counts, per-category and per-agent breakdowns, paginated finding list."
+        url="okesu / Findings"
+        caption="Findings emitted by daimons across the fleet."
+      />
+    </section>
+
+    {/* ── 3 ─────────────────────────────────────────────────────── */}
+    <section>
+      <div class="flex items-baseline gap-3 mb-3">
+        <span class="text-[28px] font-bold text-brand-700 leading-none">03</span>
+        <h2 class="text-[22px] font-semibold text-ink leading-tight">Reach for a playbook</h2>
+      </div>
+      <p class="text-[14px] text-ink-dim leading-relaxed mb-5">
+        You don't triage by hand. The Orchestrations library is the catalog of playbooks
+        already authored on this CP — drift remediation, login-noise dedup, fleet IOC hunts,
+        cert rotations, the EDR critical-response we walked through on the
+        <a href="/recipes" class="text-brand-700 font-medium hover:underline">recipes page</a>. Each one
+        has its trigger filter visible at the top; many fire automatically when a matching
+        finding lands.
+      </p>
+      <OperatorView
+        src="tour-orchestrations-library"
+        alt="Orchestrations library — list of authored playbooks with auto-trigger filters and Run buttons."
+        url="okesu / Orchestrations / Library"
+        caption="The playbook library — auto-trigger filters at the top, manual Run buttons on the right."
+      />
+    </section>
+
+    {/* ── 4 ─────────────────────────────────────────────────────── */}
+    <section>
+      <div class="flex items-baseline gap-3 mb-3">
+        <span class="text-[28px] font-bold text-brand-700 leading-none">04</span>
+        <h2 class="text-[22px] font-semibold text-ink leading-tight">The spec, visualised</h2>
+      </div>
+      <p class="text-[14px] text-ink-dim leading-relaxed mb-5">
+        Click into <code class="bg-brand-50 text-brand-700 px-1 rounded text-[13px]">edr-critical-response</code> and the editor renders the YAML spec as a directed graph. Agents on the left palette; the DAG in the middle. Notice the third step has a brand-purple border and reads <strong>FAN-OUT · 3 HOSTS</strong> — that's the engine telling you it'll dispatch on three hosts in parallel. The fourth step reads <strong>GATED</strong> in amber — the run will pause there until you approve it.
+      </p>
+      <OperatorView
+        src="orchestration-editor"
+        alt="Orchestration editor — agent palette on the left, DAG in the middle including a fan-out step and an approval-gated step."
+        url="okesu / Orchestrations / edr-critical-response"
+        caption="The spec, made visible. Drag to add agents; the YAML and the canvas stay in lockstep."
+      />
+    </section>
+
+    {/* ── 5 ─────────────────────────────────────────────────────── */}
+    <section>
+      <div class="flex items-baseline gap-3 mb-3">
+        <span class="text-[28px] font-bold text-brand-700 leading-none">05</span>
+        <h2 class="text-[22px] font-semibold text-ink leading-tight">Watch it run</h2>
+      </div>
+      <p class="text-[14px] text-ink-dim leading-relaxed mb-5">
+        Click <strong>Run</strong>. The CP dispatches step 1 immediately and the run-detail page lights up. The blue pulsing ring on <strong>triage</strong> is the platform's signal that <em>this step is happening right now</em>; the others sit pending. As each step settles you see the stripe color shift — slate (pending) to blue (running) to green (done) or red (failed). When a fan-out step kicks off, its card grows a per-host dot strip that fills in left-to-right as each host returns.
+      </p>
+      <OperatorView
+        src="tour-run-detail"
+        alt="Run detail — a four-step orchestration DAG mid-execution. The first step pulses blue (running); the others wait pending."
+        url="okesu / Orchestrations / Runs / Run #3831"
+        caption="A run in progress. Triage running, the rest queued. Refreshes every 2.5 seconds."
+      />
+    </section>
+
+    {/* ── 6 ─────────────────────────────────────────────────────── */}
+    <section>
+      <div class="flex items-baseline gap-3 mb-3">
+        <span class="text-[28px] font-bold text-brand-700 leading-none">06</span>
+        <h2 class="text-[22px] font-semibold text-ink leading-tight">The case file</h2>
+      </div>
+      <p class="text-[14px] text-ink-dim leading-relaxed mb-5">
+        When a finding gets serious enough — operator-confirmed, escalation-tagged, or matched
+        by a cross-CP IOC supervisor — the platform creates an <strong>investigation</strong>.
+        It's the case file that links the finding, the runs that worked it, the IOCs that match,
+        the daimons reporting in, and your notes. One closed loop. Every action taken on
+        the case lands on the Audit tab so the response is replayable.
+      </p>
+      <OperatorView
+        src="tour-investigation-detail"
+        alt="Investigation detail — header with status, six tabs (Overview, Findings, Runs, IOCs, Daimons, Orchestrations, Notes, Audit), summary, and identity panel."
+        url="okesu / Investigations / #1"
+        caption="The case file shape: tabs across the top, identity + linked entities on the right."
+      />
+    </section>
+
+    {/* ── close ────────────────────────────────────────────────── */}
+    <section class="border-t border-border pt-12">
+      <h3 class="text-[18px] font-semibold text-ink mb-3">That was the loop.</h3>
+      <p class="text-[14px] text-ink leading-relaxed mb-4">
+        Daimon emits a finding. CP routes it. Orchestration triages it. Investigation files it.
+        Daimons keep ticking; the same loop runs the next time something interesting happens.
+      </p>
+      <p class="text-[14px] text-ink-dim leading-relaxed mb-6">
+        What you saw is what ships. There's nothing demo-only above — the daimons,
+        the orchestrations, the investigation page are all in the platform's defaults; the
+        screenshots came from a CP started fifteen minutes before this page was written.
+      </p>
+
+      <div class="flex flex-wrap gap-3">
+        <a
+          href="/install"
+          class="inline-flex items-center gap-1.5 bg-brand-700 hover:bg-brand-600 text-white text-sm font-semibold px-4 py-2.5 rounded-md shadow-sm transition-colors"
+        >
+          Install Okesu →
+        </a>
+        <a
+          href="/recipes"
+          class="inline-flex items-center gap-1.5 bg-white hover:bg-slate-50 text-ink text-sm font-medium px-4 py-2.5 rounded-md border border-border transition-colors"
+        >
+          Browse the recipes
+        </a>
+        <a
+          href="/daimons"
+          class="inline-flex items-center gap-1.5 bg-white hover:bg-slate-50 text-ink text-sm font-medium px-4 py-2.5 rounded-md border border-border transition-colors"
+        >
+          The daimon deep dive
+        </a>
+      </div>
+    </section>
+
+  </article>
+</Base>
