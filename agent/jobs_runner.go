@@ -231,6 +231,17 @@ func (r *JobsRunner) runAgentJob(ctx context.Context, j Job, logf func(string, .
 	args = append(args, j.Payload.Prompt)
 
 	cmd := exec.CommandContext(ctx, r.cfg.OkesuBinary, args...)
+	// Phase 22.8 PR γ wire-through: merge per-job env from the CP
+	// (resolved from selector-bound env_var secrets) into the
+	// inherited environment. Job env wins on key collision so the
+	// CP can override host defaults without the daemon caring how.
+	if len(j.Payload.Env) > 0 {
+		env := append([]string{}, os.Environ()...)
+		for k, v := range j.Payload.Env {
+			env = append(env, k+"="+v)
+		}
+		cmd.Env = env
+	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		_ = r.postExit(ctx, j.ID, JobExit{ExitCode: -1, Error: "stdout pipe: " + err.Error()})
