@@ -25,7 +25,7 @@ import {
   ThumbsDown,
   X,
 } from 'lucide-react';
-import { api, type Finding, type FindingGroup, type FindingsSummary, type FindingStatus, type IOCRecord, type RelatedCase, type RunListItem, type SavedSearch, type FindingsFilterConfig } from '../api';
+import { api, type Finding, type FindingGroup, type FindingsSummary, type FindingStatus, type IOCRecord, type MyGroups, type RelatedCase, type RunListItem, type SavedSearch, type FindingsFilterConfig } from '../api';
 import { LabelEditor } from '../components/labels/LabelEditor';
 import { SelectorInput } from '../components/labels/SelectorInput';
 import { FindingHistory, History as HistoryIcon } from '../components/FindingHistory';
@@ -116,21 +116,52 @@ export default function FindingsPage() {
   // Saved searches (operator-named filter sets). Loaded once on
   // mount; the default-tagged search is applied on first render
   // when no filters are already set via URL params.
+  //
+  // Phase 22.9 — group-default rollup. After loading the per-user
+  // searches, we also fan out to the operator's groups and pull
+  // any group-shared scope searches (`findings:group:N`). The
+  // default-application step considers per-user defaults first,
+  // then falls back to the first group-default found.
   const [savedSearches, setSavedSearches] = useState<SavedSearch[]>([]);
+  const [groupSavedSearches, setGroupSavedSearches] = useState<SavedSearch[]>([]);
   const [defaultApplied, setDefaultApplied] = useState(false);
   const refreshSearches = () => {
     api.savedSearches.list('findings').then(setSavedSearches).catch(() => { /* ignore */ });
+    // Pull group-shared findings scopes after we know the operator's groups.
+    api.groups.myGroups()
+      .then((mg: MyGroups) => {
+        const gs = mg.groups ?? [];
+        if (gs.length === 0) {
+          setGroupSavedSearches([]);
+          return;
+        }
+        Promise.all(
+          gs.map((g) =>
+            api.savedSearches.list(`findings:group:${g.group_id}`).catch(() => [] as SavedSearch[]),
+          ),
+        ).then((lists) => {
+          const merged = ([] as SavedSearch[]).concat(...lists);
+          setGroupSavedSearches(merged);
+        });
+      })
+      .catch(() => setGroupSavedSearches([]));
   };
   useEffect(() => { refreshSearches(); }, []);
   // Apply the default search once after the list lands. Skip if any
   // filter is already set (URL deep-link or operator already
   // changed something) so we don't clobber an explicit intent.
   useEffect(() => {
-    if (defaultApplied || savedSearches.length === 0) return;
-    const def = savedSearches.find((s) => s.is_default);
+    if (defaultApplied) return;
+    if (savedSearches.length === 0 && groupSavedSearches.length === 0) return;
+    // Per-user defaults beat group defaults — the operator's own
+    // pin is the strongest signal of intent.
+    let def = savedSearches.find((s) => s.is_default);
+    if (!def) {
+      def = groupSavedSearches.find((s) => s.is_default);
+    }
     if (!def) { setDefaultApplied(true); return; }
     const hasExistingFilters =
-      state !== 'queue' || selectedSevs.length > 0 || agentFilter || hostFilter || categoryFilter;
+      state !== 'queue' || selectedSevs.length > 0 || agentFilter || hostFilter || categoryFilter || hostSelector;
     if (!hasExistingFilters) {
       try {
         const cfg: FindingsFilterConfig = JSON.parse(def.config_json);
@@ -141,7 +172,7 @@ export default function FindingsPage() {
     }
     setDefaultApplied(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [savedSearches]);
+  }, [savedSearches, groupSavedSearches]);
 
   // Snapshot of the current filter set, used to label the active
   // saved search and as the payload for "Save current".
