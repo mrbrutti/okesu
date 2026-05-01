@@ -326,6 +326,10 @@ export interface FindingsFilter {
   until?: number;        // unix ms
   limit?: number;
   offset?: number;
+  /** Phase 22.9 — K8s-style label selector against the finding's
+   *  host node labels (e.g. "env=prod, role=db"). Resolved to the
+   *  matching set of host strings server-side. */
+  host_selector?: string;
 }
 
 // IOCRecord mirrors controlplane/db.IOCRecord. JSON encoder uses Go's
@@ -560,6 +564,8 @@ export interface FindingsFilterConfig {
   agent?: string;
   host?: string;
   category?: string;
+  /** Phase 22.9 — K8s-style selector against host node labels. */
+  host_selector?: string;
 }
 
 // InvestigationAuditEvent — one row in the case timeline. Kinds are
@@ -1059,6 +1065,7 @@ export const api = {
     if (filter.until)    p.set('until', String(filter.until));
     if (filter.limit)    p.set('limit', String(filter.limit));
     if (filter.offset)   p.set('offset', String(filter.offset));
+    if (filter.host_selector) p.set('host_selector', filter.host_selector);
     const qs = p.toString();
     return request<Finding[]>(`/api/findings${qs ? '?' + qs : ''}`);
   },

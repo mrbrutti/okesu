@@ -27,6 +27,7 @@ import {
 } from 'lucide-react';
 import { api, type Finding, type FindingGroup, type FindingsSummary, type FindingStatus, type IOCRecord, type RelatedCase, type RunListItem, type SavedSearch, type FindingsFilterConfig } from '../api';
 import { LabelEditor } from '../components/labels/LabelEditor';
+import { SelectorInput } from '../components/labels/SelectorInput';
 import { FindingHistory, History as HistoryIcon } from '../components/FindingHistory';
 import { cn } from '../lib/cn';
 import { useIOCDisplayPrefs } from '../lib/preferences';
@@ -78,6 +79,10 @@ export default function FindingsPage() {
   const [agentFilter, setAgentFilter] = useState('');
   const [hostFilter, setHostFilter] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('');
+  // Phase 22.9 — label-selector filter on the host node (env=prod,
+  // role=db). Server resolves the selector to a set of host strings
+  // and filters findings by that set.
+  const [hostSelector, setHostSelector] = useState('');
   // ?id=N opens the detail drawer for finding N — used as a
   // deep-link target by Cmd-K and external bookmarks. Two-way bound:
   // closing the drawer drops the param so the URL stays canonical.
@@ -147,7 +152,8 @@ export default function FindingsPage() {
     agent: agentFilter || undefined,
     host: hostFilter || undefined,
     category: categoryFilter || undefined,
-  }), [view, state, selectedSevs, agentFilter, hostFilter, categoryFilter]);
+    host_selector: hostSelector || undefined,
+  }), [view, state, selectedSevs, agentFilter, hostFilter, categoryFilter, hostSelector]);
 
   // Active saved-search id: the one whose config_json deep-equals
   // the current filter set. Stringify-compare is cheap (the configs
@@ -169,6 +175,7 @@ export default function FindingsPage() {
     setAgentFilter(cfg.agent ?? '');
     setHostFilter(cfg.host ?? '');
     setCategoryFilter(cfg.category ?? '');
+    setHostSelector(cfg.host_selector ?? '');
   }
 
   const refresh = useMemo(() => () => {
@@ -178,6 +185,7 @@ export default function FindingsPage() {
       agent: agentFilter || undefined,
       host: hostFilter || undefined,
       category: categoryFilter || undefined,
+      host_selector: hostSelector || undefined,
       limit: PAGE_SIZE,
     })
       .then((list) => {
@@ -192,12 +200,13 @@ export default function FindingsPage() {
       agent: agentFilter || undefined,
       host: hostFilter || undefined,
       category: categoryFilter || undefined,
+      host_selector: hostSelector || undefined,
       limit: 200,
     })
       .then(setGroups)
       .catch(() => { /* ignore — show empty */ });
     api.findingsSummary().then(setSummary).catch(() => { /* ignore */ });
-  }, [state, selectedSevs, agentFilter, hostFilter, categoryFilter]);
+  }, [state, selectedSevs, agentFilter, hostFilter, categoryFilter, hostSelector]);
 
   useEffect(() => {
     refresh();
@@ -403,6 +412,13 @@ export default function FindingsPage() {
           value={hostFilter}
           onChange={(e) => setHostFilter(e.target.value)}
           className="px-2.5 py-1 text-xs border border-border rounded-md w-40 focus:outline-none focus:ring-2 focus:ring-brand-500/30"
+        />
+        <SelectorInput
+          kind="node"
+          value={hostSelector}
+          onChange={setHostSelector}
+          placeholder="host labels — env=prod, role=db"
+          className="w-64"
         />
         {categoryFilter && (
           <button
