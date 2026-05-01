@@ -10,6 +10,7 @@ import {
   Info,
   KeyRound,
   Plug,
+  Rss,
   ShieldCheck,
   Sparkles,
   Tag,
@@ -37,6 +38,7 @@ import InvestigationsSection from './settings/Investigations';
 import GroupsSection from './settings/Groups';
 import CredentialsSection from './settings/Credentials';
 import LabelsSection from './settings/Labels';
+import FeedsSection from './settings/Feeds';
 
 interface Props {
   user: User;
@@ -59,6 +61,7 @@ const NAV: NavItem[] = [
   { to: 'investigations',  label: 'Investigations', icon: Sparkles,     adminOnly: true },
   { to: 'notifications',   label: 'Notifications',  icon: Bell,         adminOnly: true },
   { to: 'integrations',    label: 'Integrations',   icon: Plug,         adminOnly: true },
+  { to: 'feeds',           label: 'Feeds',          icon: Rss,          adminOnly: true },
   { to: 'audit',           label: 'Audit log',      icon: ClipboardList, adminOnly: true },
   { to: 'authentication',  label: 'Authentication', icon: ShieldCheck,  adminOnly: true },
   { to: 'deploy',          label: 'Deploy',         icon: HardDrive,    adminOnly: true },
@@ -118,6 +121,7 @@ export default function SettingsPage({ user }: Props) {
           <Route path="investigations" element={user.role === 'admin' ? <InvestigationsSection /> : <Forbidden />} />
           <Route path="notifications"  element={user.role === 'admin' ? <NotificationsSection /> : <Forbidden />} />
           <Route path="integrations"   element={user.role === 'admin' ? <IntegrationsSection /> : <Forbidden />} />
+          <Route path="feeds"          element={user.role === 'admin' ? <FeedsSection /> : <Forbidden />} />
           <Route path="audit"          element={user.role === 'admin' ? <AuditLogSection /> : <Forbidden />} />
           <Route path="authentication" element={user.role === 'admin' ? <AuthenticationSection about={about} /> : <Forbidden />} />
           <Route path="deploy"         element={user.role === 'admin' ? <DeploySection /> : <Forbidden />} />
