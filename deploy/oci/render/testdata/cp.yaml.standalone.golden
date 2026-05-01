@@ -3,14 +3,12 @@
 
 listen: ":8443"
 mgmt_listen: ":8444"
-
 db: "postgres://okesu@db.adb.us-ashburn-1.oraclecloud.com:5432/cpdb?sslmode=require"
 
 admin_email: "admin@example.com"
 admin_password: "${secret:cp/admin-password}"
 session_key:    "${secret:cp/session-key}"
 webhook_secret: "${secret:cp/webhook-secret}"
-
 events_store: "clickhouse"
 clickhouse_addrs:
   - "10.0.1.42:9000"
@@ -18,16 +16,13 @@ clickhouse_database: "okesu_events"
 clickhouse_username: "default"
 clickhouse_password: "${secret:clickhouse/password}"
 clickhouse_secure:   false
-
 queue: "kafka"
 kafka_brokers:
   - "streampool-x.streaming.us-ashburn-1.oci.oraclecloud.com:9092"
 kafka_sasl_username: "ocid1.tenancy/ocid1.user/ocid1.streampool"
 kafka_sasl_password: "${secret:kafka/sasl-password}"
 kafka_use_tls:       true
-
 pubsub_url: "redis://:${secret:redis/auth-token}@redis-x.us-ashburn-1.oci.oraclecloud.com:6379/0"
-
 blob_url:        "ns.compat.objectstorage.us-ashburn-1.oraclecloud.com"
 blob_access_key: "AKID-EXAMPLE"
 blob_secret_key: "${secret:blob/secret-key}"

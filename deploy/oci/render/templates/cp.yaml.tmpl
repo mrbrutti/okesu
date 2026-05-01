@@ -4,34 +4,49 @@
 listen: ":8443"
 mgmt_listen: ":8444"
 
-db: "{{ tfval .TerraformOut "db_dsn" }}"
+{{- $db := tfvalOr .TerraformOut "db_dsn" "" }}
+{{- if $db }}
+db: "{{ $db }}"
+{{- end }}
 
 admin_email: "{{ envOr .OperatorEnv "ADMIN_EMAIL" "admin@example.com" }}"
 admin_password: "${secret:cp/admin-password}"
 session_key:    "${secret:cp/session-key}"
 webhook_secret: "${secret:cp/webhook-secret}"
 
+{{- $chIP := tfvalOr .TerraformOut "ch_private_ip" "" }}
+{{- if $chIP }}
 events_store: "clickhouse"
 clickhouse_addrs:
-  - "{{ tfval .TerraformOut "ch_private_ip" }}:9000"
+  - "{{ $chIP }}:9000"
 clickhouse_database: "okesu_events"
 clickhouse_username: "default"
 clickhouse_password: "${secret:clickhouse/password}"
 clickhouse_secure:   false
+{{- end }}
 
+{{- $brokers := tfvalOr .TerraformOut "kafka_brokers" "" }}
+{{- if $brokers }}
 queue: "kafka"
 kafka_brokers:
-  - "{{ tfval .TerraformOut "kafka_brokers" }}"
-kafka_sasl_username: "{{ tfval .TerraformOut "kafka_username" }}"
+  - "{{ $brokers }}"
+kafka_sasl_username: "{{ tfvalOr .TerraformOut "kafka_username" "" }}"
 kafka_sasl_password: "${secret:kafka/sasl-password}"
 kafka_use_tls:       true
+{{- end }}
 
-pubsub_url: "redis://:${secret:redis/auth-token}@{{ tfval .TerraformOut "redis_host" }}:{{ tfval .TerraformOut "redis_port" }}/0"
+{{- $redisHost := tfvalOr .TerraformOut "redis_host" "" }}
+{{- if $redisHost }}
+pubsub_url: "redis://:${secret:redis/auth-token}@{{ $redisHost }}:{{ tfvalOr .TerraformOut "redis_port" "6379" }}/0"
+{{- end }}
 
-blob_url:        "{{ tfval .TerraformOut "blob_endpoint" }}"
-blob_access_key: "{{ tfval .TerraformOut "blob_access_key" }}"
+{{- $blobEndpoint := tfvalOr .TerraformOut "blob_endpoint" "" }}
+{{- if $blobEndpoint }}
+blob_url:        "{{ $blobEndpoint }}"
+blob_access_key: "{{ tfvalOr .TerraformOut "blob_access_key" "" }}"
 blob_secret_key: "${secret:blob/secret-key}"
-blob_bucket:     "{{ tfval .TerraformOut "blob_bucket" }}"
-blob_region:     "{{ tfval .TerraformOut "blob_region" }}"
+blob_bucket:     "{{ tfvalOr .TerraformOut "blob_bucket" "" }}"
+blob_region:     "{{ tfvalOr .TerraformOut "blob_region" "" }}"
+{{- end }}
 
 event_ttl_days: 30

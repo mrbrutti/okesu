@@ -75,6 +75,29 @@ func TestRenderCPYAML_Child(t *testing.T) {
 	assertGolden(t, "cp.yaml.standalone", got)
 }
 
+// TestRenderCPYAML_Smoke verifies that smoke mode (all non-essential
+// TerraformOut fields null) renders only the minimal mandatory stanzas
+// and omits db, clickhouse, kafka, pubsub, and blob blocks.
+func TestRenderCPYAML_Smoke(t *testing.T) {
+	got, err := RenderCPYAML(loadInputs(t, "smoke"))
+	if err != nil {
+		t.Fatalf("RenderCPYAML: %v", err)
+	}
+	assertGolden(t, "cp.yaml.smoke", got)
+}
+
+// TestValidateCPYAML_Smoke ensures the smoke-mode minimal cp.yaml
+// passes through the CP's real config loader without errors.
+func TestValidateCPYAML_Smoke(t *testing.T) {
+	body, err := RenderCPYAML(loadInputs(t, "smoke"))
+	if err != nil {
+		t.Fatalf("RenderCPYAML: %v", err)
+	}
+	if err := ValidateCPYAML(body); err != nil {
+		t.Fatalf("ValidateCPYAML(smoke): %v\n--- yaml\n%s", err, body)
+	}
+}
+
 func TestRenderEnvFile(t *testing.T) {
 	cases := []struct {
 		name string

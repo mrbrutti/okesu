@@ -53,6 +53,39 @@ var funcs = template.FuncMap{
 		}
 		return v, nil
 	},
+	// tfvalOr extracts .value like tfval but returns fallback (instead of an
+	// error) when the key is absent OR when the wrapped value is nil/null.
+	// Used by cp.yaml.tmpl to make non-essential blocks conditional: in smoke
+	// mode the terraform outputs for db, kafka, redis, blob, and clickhouse
+	// are all null, and we want those YAML stanzas omitted rather than errored.
+	// Handles string and JSON number (float64) values; returns fallback for
+	// any other type or nil.
+	"tfvalOr": func(m map[string]any, key string, fallback string) string {
+		raw, ok := m[key]
+		if !ok {
+			return fallback
+		}
+		shape, ok := raw.(map[string]any)
+		if !ok {
+			return fallback
+		}
+		v, ok := shape["value"]
+		if !ok || v == nil {
+			return fallback
+		}
+		switch tv := v.(type) {
+		case string:
+			return tv
+		case float64:
+			// JSON numbers decode as float64; format integers cleanly.
+			if tv == float64(int64(tv)) {
+				return fmt.Sprintf("%d", int64(tv))
+			}
+			return fmt.Sprintf("%g", tv)
+		default:
+			return fallback
+		}
+	},
 	// envOr returns m[key] or fallback when m[key] is empty.
 	"envOr": func(m map[string]string, key, fallback string) string {
 		if v, ok := m[key]; ok && v != "" {

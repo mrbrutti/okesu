@@ -1,0 +1,18 @@
+{
+  "Mode": "standalone",
+  "TerraformOut": {
+    "db_dsn":          { "value": null },
+    "kafka_brokers":   { "value": null },
+    "kafka_username":  { "value": null },
+    "redis_host":      { "value": null },
+    "redis_port":      { "value": 6379 },
+    "blob_endpoint":   { "value": null },
+    "blob_bucket":     { "value": null },
+    "blob_access_key": { "value": null },
+    "blob_region":     { "value": "us-ashburn-1" },
+    "ch_private_ip":   { "value": null }
+  },
+  "OperatorEnv": {
+    "ADMIN_EMAIL": "admin@example.com"
+  }
+}

@@ -1,0 +1,12 @@
+# Rendered by deploy/oci/render — do not edit by hand.
+# Inputs: terraform output -json + .env.oci
+
+listen: ":8443"
+mgmt_listen: ":8444"
+
+admin_email: "admin@example.com"
+admin_password: "${secret:cp/admin-password}"
+session_key:    "${secret:cp/session-key}"
+webhook_secret: "${secret:cp/webhook-secret}"
+
+event_ttl_days: 30
