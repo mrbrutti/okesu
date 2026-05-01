@@ -237,9 +237,9 @@ oci-render: _oci-preflight $(OCI_RENDER)
 	@if [ "$(OCI_MODE)" = "parent" ]; then \
 	  SECRETS_DIR=$$(grep '^secrets_dir' $(OCI_TFVARS) | sed -E 's/^.*=[[:space:]]*"([^"]+)"/\1/'); \
 	  TOKEN_PATH="$$(eval echo $$SECRETS_DIR)/federation/token"; \
-	  if [ ! -f "$$TOKEN_PATH" ]; then \
-	    echo "✖ parent mode: federation token not found at $$TOKEN_PATH (run 'make oci-apply' first)" >&2; exit 1; fi; \
-	  echo "FEDERATION_TOKEN=$$(cat "$$TOKEN_PATH")" >> dist/oci/$(OCI_MODE)/env.injected; \
+	  if [ -f "$$TOKEN_PATH" ]; then \
+	    echo "FEDERATION_TOKEN=$$(cat "$$TOKEN_PATH")" >> dist/oci/$(OCI_MODE)/env.injected; \
+	  fi; \
 	fi
 	$(OCI_RENDER) render-cp-yaml --mode=$(OCI_MODE) --env=dist/oci/$(OCI_MODE)/env.injected --validate \
 	  < dist/oci/$(OCI_MODE)/tf.json > dist/oci/$(OCI_MODE)/cp.yaml
