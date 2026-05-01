@@ -88,7 +88,13 @@ func (p *BucketProvisioner) EnsureBucket(ctx context.Context, credsRaw []byte, n
 	}
 	namespace := safeStrPtr(ns.Value)
 
-	// Idempotency: HEAD first; create on 404.
+	// Idempotency: HEAD first; create on 404. Errors other than 404
+	// (e.g. permission gaps where the user can CreateBucket but not
+	// GetBucket) fall through to the create path; if that 409s with
+	// BucketAlreadyExists, we re-probe and surface a clearer error
+	// distinguishing "bucket exists, you can use it" from "bucket
+	// exists in your tenancy but your IAM user can't see it" — OCI's
+	// own 409 message conflates the two.
 	if _, headErr := client.GetBucket(ctx, objectstorage.GetBucketRequest{
 		NamespaceName: ns.Value,
 		BucketName:    common.String(name),
@@ -100,20 +106,63 @@ func (p *BucketProvisioner) EnsureBucket(ctx context.Context, credsRaw []byte, n
 		}, nil
 	}
 
-	if _, err := client.CreateBucket(ctx, objectstorage.CreateBucketRequest{
+	_, createErr := client.CreateBucket(ctx, objectstorage.CreateBucketRequest{
 		NamespaceName: ns.Value,
 		CreateBucketDetails: objectstorage.CreateBucketDetails{
 			Name:          common.String(name),
 			CompartmentId: common.String(creds.TenancyOCID),
 		},
-	}); err != nil {
-		return nil, fmt.Errorf("oci: create bucket %q: %w", name, err)
+	})
+	if createErr == nil {
+		return &cpprovision.BucketInfo{
+			Name:     name,
+			Region:   region,
+			Endpoint: ociS3Endpoint(namespace, region),
+		}, nil
 	}
-	return &cpprovision.BucketInfo{
-		Name:     name,
-		Region:   region,
-		Endpoint: ociS3Endpoint(namespace, region),
-	}, nil
+
+	// 409 BucketAlreadyExists is OCI's deliberately ambiguous "either
+	// the bucket exists or you're not authorized" response. Re-probe
+	// with GetBucket: if that now succeeds, treat the create as
+	// idempotently satisfied. If the probe still fails, the operator
+	// has an IAM gap — give them the policy needed to fix it.
+	if se, ok := common.IsServiceError(createErr); ok &&
+		se.GetHTTPStatusCode() == 409 &&
+		se.GetCode() == "BucketAlreadyExists" {
+		if _, headErr := client.GetBucket(ctx, objectstorage.GetBucketRequest{
+			NamespaceName: ns.Value,
+			BucketName:    common.String(name),
+		}); headErr == nil {
+			return &cpprovision.BucketInfo{
+				Name:     name,
+				Region:   region,
+				Endpoint: ociS3Endpoint(namespace, region),
+			}, nil
+		}
+		return nil, fmt.Errorf(
+			"oci: bucket %q already exists in tenancy namespace %q but your IAM user cannot read it. "+
+				"Either grant `inspect buckets` (and ideally `read buckets`) on the compartment that owns the bucket, "+
+				"or pick a different bucket name. OCI bucket names are unique per-tenancy regardless of compartment. "+
+				"Original error: %w",
+			name, namespace, createErr,
+		)
+	}
+
+	// 401/403/404 from CreateBucket itself = IAM permission gap on
+	// `manage buckets` in the target compartment.
+	if se, ok := common.IsServiceError(createErr); ok {
+		switch se.GetHTTPStatusCode() {
+		case 401, 403, 404:
+			return nil, fmt.Errorf(
+				"oci: cannot create bucket %q — IAM user lacks `manage buckets` in the target compartment. "+
+					"Required policy: `allow group <your-group> to manage buckets in compartment <name>`. "+
+					"Original error: %w",
+				name, createErr,
+			)
+		}
+	}
+
+	return nil, fmt.Errorf("oci: create bucket %q: %w", name, createErr)
 }
 
 func (p *BucketProvisioner) BucketAccessKeys(ctx context.Context, credsRaw []byte) (string, string, error) {
