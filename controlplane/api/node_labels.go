@@ -9,11 +9,13 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/section9labs/okesu/controlplane/audit"
 	"github.com/section9labs/okesu/controlplane/db"
 )
 
@@ -60,6 +62,11 @@ func SetNodeLabelHandler(store *db.Store) http.HandlerFunc {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		audit.Emit(r, store, db.AuditEntry{
+			Action:   "node.label.set",
+			Target:   fmt.Sprintf("node:%d", id),
+			Metadata: map[string]any{"key": body.Key, "value": body.Value},
+		})
 		w.WriteHeader(http.StatusNoContent)
 	}
 }
@@ -82,6 +89,11 @@ func DeleteNodeLabelHandler(store *db.Store) http.HandlerFunc {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		audit.Emit(r, store, db.AuditEntry{
+			Action:   "node.label.delete",
+			Target:   fmt.Sprintf("node:%d", id),
+			Metadata: map[string]any{"key": key},
+		})
 		w.WriteHeader(http.StatusNoContent)
 	}
 }
