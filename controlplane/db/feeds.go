@@ -25,6 +25,8 @@ type FeedConfig struct {
 	LastRefreshStatus      string
 	LastRefreshError       string
 	LastRefreshEntryCount  int
+	Source                 string         // "local" | "federated_from_parent"
+	ParentCPID             sql.NullString // populated only when Source = federated_from_parent
 	CreatedAt              time.Time
 	UpdatedAt              time.Time
 }
@@ -42,6 +44,8 @@ type FeedConfigInsert struct {
 	RefreshIntervalSeconds int
 	Enabled                bool
 	InstalledFromRegistry  bool
+	Source                 string // optional; "local" if empty. Federation poller sets "federated_from_parent".
+	ParentCPID             string // optional; required when Source = "federated_from_parent"
 }
 
 // FeedConfigPatch is the partial-update shape for UpdateFeedConfig. Nil
@@ -66,15 +70,21 @@ func (s *Store) InsertFeedConfig(in *FeedConfigInsert) (int64, error) {
 	if in.RefreshIntervalSeconds <= 0 {
 		in.RefreshIntervalSeconds = 86400
 	}
+	source := in.Source
+	if source == "" {
+		source = "local"
+	}
 	res, err := s.Exec(`
 		INSERT INTO ioc_feeds
 		  (slug, name, kind, url, subpath, parser, auth_credential_id,
 		   refresh_interval_seconds, enabled, installed_from_registry,
+		   source, parent_cp_id,
 		   created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
 		in.Slug, in.Name, in.Kind, in.URL, nullable(in.Subpath), in.Parser,
 		nullableInt64Ptr(in.AuthCredentialID),
-		in.RefreshIntervalSeconds, boolToInt(in.Enabled), boolToInt(in.InstalledFromRegistry))
+		in.RefreshIntervalSeconds, boolToInt(in.Enabled), boolToInt(in.InstalledFromRegistry),
+		source, nullable(in.ParentCPID))
 	if err != nil {
 		return 0, err
 	}
@@ -209,6 +219,7 @@ const feedSelectCols = `
 	enabled, installed_from_registry,
 	last_refresh_at, COALESCE(last_refresh_status, ''),
 	COALESCE(last_refresh_error, ''), COALESCE(last_refresh_entry_count, 0),
+	COALESCE(source, 'local'), parent_cp_id,
 	created_at, updated_at`
 
 func scanFeedConfig(r rowScanner) (*FeedConfig, error) {
@@ -220,6 +231,7 @@ func scanFeedConfig(r rowScanner) (*FeedConfig, error) {
 		&enabledInt, &fromRegInt,
 		&fc.LastRefreshAt, &fc.LastRefreshStatus,
 		&fc.LastRefreshError, &fc.LastRefreshEntryCount,
+		&fc.Source, &fc.ParentCPID,
 		&fc.CreatedAt, &fc.UpdatedAt,
 	); err != nil {
 		return nil, err
@@ -236,4 +248,137 @@ func nullableInt64Ptr(p *int64) any {
 		return nil
 	}
 	return *p
+}
+
+// FederationFeedConfig is the wire shape the parent CP exposes via
+// /api/v1/federation/feeds. Mirrors the parent's FeedConfig minus
+// secret-bearing fields (auth_credential_id is not federated; child
+// CPs that need auth must configure their own credential and override
+// locally).
+type FederationFeedConfig struct {
+	Slug                   string
+	Name                   string
+	Kind                   string
+	URL                    string
+	Subpath                string
+	Parser                 string
+	RefreshIntervalSeconds int
+	Enabled                bool
+}
+
+// SetFeedConfigsFromFederation reconciles the local ioc_feeds table
+// against the parent's authoritative list. For each parent feed:
+//   - If the local slug is absent → insert with source = "federated_from_parent".
+//   - If present AND source = "federated_from_parent" → update fields
+//     in place (config drift); leaves last_refresh_* alone since the
+//     child runs its own refreshes.
+//   - If present AND source = "local" → leave alone (operator's
+//     override takes precedence).
+//
+// For each local row with source = "federated_from_parent" whose slug
+// is NOT in the parent's list, the feed ID is returned in toUninstall.
+// The caller (federation poller) is responsible for calling
+// feeds.Reconcile + DeleteFeedConfig for each entry in toUninstall —
+// the same path used by UninstallFeedHandler.
+//
+// Returns counts: inserted, updated, and the list of feed IDs the
+// caller must uninstall via the normal Reconcile-then-DeleteFeedConfig
+// flow.
+func (s *Store) SetFeedConfigsFromFederation(parentCPID string, parent []FederationFeedConfig) (inserted, updated int, toUninstall []int64, err error) {
+	tx, txErr := s.Begin()
+	if txErr != nil {
+		return 0, 0, nil, txErr
+	}
+	defer tx.Rollback()
+
+	// Build lookup map for the parent's feed set.
+	parentBySlug := make(map[string]FederationFeedConfig, len(parent))
+	for _, pf := range parent {
+		parentBySlug[pf.Slug] = pf
+	}
+
+	// Query existing local rows: slug, id, source.
+	rows, queryErr := tx.Query(`SELECT slug, id, source FROM ioc_feeds`)
+	if queryErr != nil {
+		return 0, 0, nil, queryErr
+	}
+	type localRow struct {
+		id     int64
+		source string
+	}
+	localSlugs := make(map[string]localRow)
+	federatedSlugs := make(map[string]localRow)
+	for rows.Next() {
+		var slug, src string
+		var id int64
+		if scanErr := rows.Scan(&slug, &id, &src); scanErr != nil {
+			rows.Close()
+			return 0, 0, nil, scanErr
+		}
+		lr := localRow{id: id, source: src}
+		localSlugs[slug] = lr
+		if src == "federated_from_parent" {
+			federatedSlugs[slug] = lr
+		}
+	}
+	rows.Close()
+	if rowsErr := rows.Err(); rowsErr != nil {
+		return 0, 0, nil, rowsErr
+	}
+
+	// Reconcile parent feeds against local state.
+	for _, pf := range parent {
+		lr, exists := localSlugs[pf.Slug]
+		if !exists {
+			// Insert new federated row.
+			interval := pf.RefreshIntervalSeconds
+			if interval <= 0 {
+				interval = 86400
+			}
+			_, insErr := tx.Exec(`
+				INSERT INTO ioc_feeds
+				  (slug, name, kind, url, subpath, parser,
+				   refresh_interval_seconds, enabled,
+				   source, parent_cp_id,
+				   created_at, updated_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'federated_from_parent', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+				pf.Slug, pf.Name, pf.Kind, pf.URL, nullable(pf.Subpath), pf.Parser,
+				interval, boolToInt(pf.Enabled), parentCPID)
+			if insErr != nil {
+				return 0, 0, nil, insErr
+			}
+			inserted++
+		} else if lr.source == "federated_from_parent" {
+			// Update config columns; leave last_refresh_* alone.
+			interval := pf.RefreshIntervalSeconds
+			if interval <= 0 {
+				interval = 86400
+			}
+			_, updErr := tx.Exec(`
+				UPDATE ioc_feeds SET
+					name = ?, kind = ?, url = ?, subpath = ?, parser = ?,
+					refresh_interval_seconds = ?, enabled = ?,
+					parent_cp_id = ?, updated_at = CURRENT_TIMESTAMP
+				WHERE slug = ? AND source = 'federated_from_parent'`,
+				pf.Name, pf.Kind, pf.URL, nullable(pf.Subpath), pf.Parser,
+				interval, boolToInt(pf.Enabled), parentCPID, pf.Slug)
+			if updErr != nil {
+				return 0, 0, nil, updErr
+			}
+			updated++
+		}
+		// else: source = "local" — operator override; leave untouched.
+	}
+
+	// Build toUninstall: federated rows not in the parent's list.
+	for slug, lr := range federatedSlugs {
+		if _, inParent := parentBySlug[slug]; !inParent {
+			toUninstall = append(toUninstall, lr.id)
+		}
+	}
+
+	if commitErr := tx.Commit(); commitErr != nil {
+		return 0, 0, nil, commitErr
+	}
+	return inserted, updated, toUninstall, nil
 }
