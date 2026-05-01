@@ -29,6 +29,7 @@ func newFakeStore(orch *Orchestration, run *RunRecord) *fakeStore {
 
 func (f *fakeStore) GetOrchestration(_ int64) (*Orchestration, error) { return f.orch, nil }
 func (f *fakeStore) GetOrchestrationRun(_ int64) (*RunRecord, error)  { return f.run, nil }
+func (f *fakeStore) MatchNodesBySelector(_ string) ([]string, error)   { return nil, nil }
 
 func (f *fakeStore) UpdateOrchestrationRunStatus(_ int64, status string, currentStepID, errMsg string) error {
 	f.mu.Lock()
