@@ -169,7 +169,11 @@ func findingsListQuery(ctx context.Context, store *db.Store, params map[string]a
 	default:
 		return nil, fmt.Errorf("state must be queue|open|acked|all, got %q", params["state"])
 	}
-	return store.ListFindings(f)
+	rows, err := store.ListFindings(f)
+	if err != nil {
+		return nil, err
+	}
+	return projectFindings(rows), nil
 }
 
 // findingsSummaryQuery is the per-CP rollup the dashboard already
@@ -247,7 +251,11 @@ func orchestrationRunsListQuery(ctx context.Context, store *db.Store, params map
 		}
 		f.Offset = n
 	}
-	return store.ListOrchestrationRunsFiltered(f)
+	rows, err := store.ListOrchestrationRunsFiltered(f)
+	if err != nil {
+		return nil, err
+	}
+	return projectRuns(rows), nil
 }
 
 // nodesListQuery returns the nodes registered on this CP.
@@ -274,7 +282,11 @@ func nodesListQuery(ctx context.Context, store *db.Store, params map[string]any)
 		}
 		offset = n
 	}
-	return store.ListNodes(limit, offset)
+	rows, err := store.ListNodes(limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	return projectNodes(rows), nil
 }
 
 // agentsListQuery returns the registered daemon agents (one row per
@@ -303,7 +315,11 @@ func agentsListQuery(ctx context.Context, store *db.Store, params map[string]any
 		}
 		offset = n
 	}
-	return store.ListAgents(limit, offset)
+	rows, err := store.ListAgents(limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	return projectAgents(rows), nil
 }
 
 // iocsLookupQuery resolves an indicator against the CP's IOC catalog +

@@ -570,6 +570,21 @@ func applyMigrations(db *sql.DB, dialect Dialect) error {
 			return fmt.Errorf("record migration %03d: %w", version, err)
 		}
 	}
+
+	// Self-heal for DBs caught in the migration-049 renumber window:
+	// my original 049 (secrets_and_bindings) and the upstream 049
+	// (prompt_entities) collided during a rebase. DBs that ran the
+	// pre-rename order have schema_migrations.version=50 but never got
+	// the prompt_entities ALTER, so the orchestration run-detail
+	// SELECT errors out and the UI canvas hides itself. Targeted +
+	// idempotent — no-op for DBs where 049 ran cleanly.
+	if dialect == DialectSQLite &&
+		tableExists(db, "orchestration_steps") &&
+		!columnExists(db, "orchestration_steps", "prompt_entities") {
+		if _, err := db.Exec(`ALTER TABLE orchestration_steps ADD COLUMN prompt_entities TEXT`); err != nil {
+			return fmt.Errorf("heal prompt_entities column: %w", err)
+		}
+	}
 	return nil
 }
 
