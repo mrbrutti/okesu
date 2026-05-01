@@ -89,3 +89,43 @@ describe('CaseTimeline (D1 skeleton)', () => {
     expect(stored).toContain('iocs');
   });
 });
+
+describe('CaseTimeline (D2 events)', () => {
+  it('renders one finding dot per finding event with an aria-label including severity', () => {
+    const b = bundle({
+      findings: [
+        { ID: 1, Ts: Date.parse('2026-04-30T11:00:00Z'), Agent: { String: 'a', Valid: true }, Host: { String: 'h', Valid: true }, Severity: { String: 'CRITICAL', Valid: true }, Title: { String: 'crit', Valid: true }, Status: { String: 'open', Valid: true }, Tags: { String: '', Valid: false }, Subtype: { String: '', Valid: false }, LinkedAt: '', LinkMethod: { String: '', Valid: false }, LinkedBy: { String: '', Valid: false } },
+      ],
+    });
+    render(<MemoryRouter><CaseTimeline bundle={b} /></MemoryRouter>);
+    expect(screen.getByLabelText(/Finding #1.*CRITICAL/i)).toBeTruthy();
+  });
+
+  it('renders a run bar spanning startTs..endTs with status tone', () => {
+    const b = bundle({
+      runs: [
+        { ID: 5, OrchestrationID: 100, OrchestrationName: { String: 'tri', Valid: true }, Status: 'completed', TriggerKind: 'auto', StartedAt: '2026-04-30T11:00:00Z', EndedAt: { String: '2026-04-30T11:30:00Z', Valid: true }, CurrentStepID: { String: '', Valid: false }, Error: { String: '', Valid: false }, LinkedAt: '' },
+      ],
+    });
+    render(<MemoryRouter><CaseTimeline bundle={b} /></MemoryRouter>);
+    expect(screen.getByLabelText(/Run #5.*completed/i)).toBeTruthy();
+  });
+
+  it('clicking a finding dot fires entity:open event for the drawer', () => {
+    const b = bundle({
+      findings: [
+        { ID: 7, Ts: Date.parse('2026-04-30T11:00:00Z'), Agent: { String: 'a', Valid: true }, Host: { String: 'h', Valid: true }, Severity: { String: 'HIGH', Valid: true }, Title: { String: 't', Valid: true }, Status: { String: 'open', Valid: true }, Tags: { String: '', Valid: false }, Subtype: { String: '', Valid: false }, LinkedAt: '', LinkMethod: { String: '', Valid: false }, LinkedBy: { String: '', Valid: false } },
+      ],
+    });
+    const events: { kind: string; identityKey: string }[] = [];
+    const handler = (e: Event) => {
+      const ce = e as CustomEvent<{ kind: string; identityKey: string }>;
+      events.push(ce.detail);
+    };
+    window.addEventListener('entity:open', handler);
+    render(<MemoryRouter><CaseTimeline bundle={b} /></MemoryRouter>);
+    fireEvent.click(screen.getByLabelText(/Finding #7/));
+    window.removeEventListener('entity:open', handler);
+    expect(events[0]).toMatchObject({ kind: 'finding', identityKey: '7' });
+  });
+});

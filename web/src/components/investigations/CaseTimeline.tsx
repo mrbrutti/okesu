@@ -11,7 +11,7 @@ import type { InvestigationDetail, InvestigationAuditEvent } from '../../api';
 import { api } from '../../api';
 import { buildEvents } from './timeline/buildEvents';
 import { ALL_LANES, DEFAULT_LANES_ON, type TimelineLane } from './timeline/types';
-import { autoFitRange, presetRange, type Preset, type Range } from './timeline/scale';
+import { autoFitRange, presetRange, tToX, type Preset, type Range } from './timeline/scale';
 
 interface Props {
   bundle: InvestigationDetail;
@@ -132,8 +132,22 @@ export function CaseTimeline({ bundle, cpInstanceID }: Props) {
   );
 }
 
-// Stub for phase D2 — replaced with a real implementation there.
-function EventsLayer(_props: {
+const SEV_FILL: Record<string, string> = {
+  CRITICAL: '#dc2626',
+  HIGH:     '#ea580c',
+  MEDIUM:   '#f59e0b',
+  LOW:      '#3b82f6',
+  INFO:     '#94a3b8',
+};
+
+const RUN_FILL: Record<string, string> = {
+  completed: '#10b981',
+  failed:    '#ef4444',
+  cancelled: '#94a3b8',
+  running:   '#3b82f6',
+};
+
+function EventsLayer({ events, visibleLanes, range, laneLabelWidth, drawableWidth, cpInstanceID }: {
   events: ReturnType<typeof buildEvents>;
   visibleLanes: TimelineLane[];
   range: Range;
@@ -141,7 +155,151 @@ function EventsLayer(_props: {
   drawableWidth: number;
   cpInstanceID?: string;
 }) {
-  return null;
+  const laneIndex = (l: TimelineLane) => visibleLanes.indexOf(l);
+  const x = (t: number) => laneLabelWidth + tToX(t, range.tMin, range.tMax, drawableWidth);
+  const yMid = (l: TimelineLane) => laneIndex(l) * LANE_HEIGHT + LANE_HEIGHT / 2;
+
+  function fire(kind: string, identityKey: string) {
+    window.dispatchEvent(new CustomEvent('entity:open', { detail: { kind, identityKey, cpInstanceID } }));
+  }
+
+  return (
+    <g>
+      {events.map((e, i) => {
+        switch (e.kind) {
+          case 'lifecycle':
+            if (laneIndex('lifecycle') < 0) return null;
+            return (
+              <text
+                key={i}
+                x={x(e.ts)}
+                y={yMid('lifecycle') + 4}
+                fontSize="14"
+                textAnchor="middle"
+                aria-label={e.title}
+              >
+                {e.marker === 'created' ? '⊕' : '⊗'}
+              </text>
+            );
+          case 'finding':
+            if (laneIndex('findings') < 0) return null;
+            return (
+              <circle
+                key={i}
+                cx={x(e.ts)}
+                cy={yMid('findings')}
+                r={5}
+                fill={SEV_FILL[e.severity] ?? SEV_FILL.INFO}
+                role="button"
+                aria-label={`Finding #${e.id}: ${e.severity} ${e.title} on ${e.host}`}
+                tabIndex={0}
+                style={{ cursor: 'pointer' }}
+                onClick={() => fire('finding', String(e.id))}
+                onKeyDown={(ev) => { if (ev.key === 'Enter' || ev.key === ' ') fire('finding', String(e.id)); }}
+              >
+                <title>{`Finding #${e.id} ${e.severity} — ${e.title} (${e.agent} on ${e.host})`}</title>
+              </circle>
+            );
+          case 'run': {
+            if (laneIndex('runs') < 0) return null;
+            const x0 = x(e.startTs);
+            const x1 = x(e.endTs);
+            const w = Math.max(2, x1 - x0);
+            return (
+              <rect
+                key={i}
+                x={x0}
+                y={yMid('runs') - 6}
+                width={w}
+                height={12}
+                rx={2}
+                fill={RUN_FILL[e.status] ?? RUN_FILL.cancelled}
+                role="button"
+                aria-label={`Run #${e.id}: ${e.status} (${e.orchestrationName})`}
+                tabIndex={0}
+                style={{ cursor: 'pointer', opacity: e.running ? 0.85 : 1 }}
+                onClick={() => fire('run', String(e.id))}
+                onKeyDown={(ev) => { if (ev.key === 'Enter' || ev.key === ' ') fire('run', String(e.id)); }}
+              >
+                <title>{`Run #${e.id} ${e.status} — ${e.orchestrationName}${e.running ? ' (running)' : ''}`}</title>
+              </rect>
+            );
+          }
+          case 'note':
+            if (laneIndex('notes') < 0) return null;
+            return (
+              <text
+                key={i}
+                x={x(e.ts)}
+                y={yMid('notes') + 4}
+                fontSize="12"
+                textAnchor="middle"
+                aria-label={`Note by ${e.author}`}
+              >
+                ✎<title>{`${e.author}: ${e.body.slice(0, 80)}`}</title>
+              </text>
+            );
+          case 'ioc': {
+            if (laneIndex('iocs') < 0) return null;
+            const x0 = x(e.startTs);
+            const x1 = x(e.endTs);
+            return (
+              <rect
+                key={i}
+                x={x0}
+                y={yMid('iocs') - 2}
+                width={Math.max(2, x1 - x0)}
+                height={4}
+                fill="#a855f7"
+                role="button"
+                aria-label={`IOC ${e.iocKind}:${e.value.slice(-4)}`}
+                tabIndex={0}
+                style={{ cursor: 'pointer' }}
+                onClick={() => fire('ioc', `${e.iocKind}:${e.value}`)}
+                onKeyDown={(ev) => { if (ev.key === 'Enter' || ev.key === ' ') fire('ioc', `${e.iocKind}:${e.value}`); }}
+              >
+                <title>{`IOC ${e.iocKind}:${e.value}`}</title>
+              </rect>
+            );
+          }
+          case 'daimon':
+            if (laneIndex('daimons') < 0) return null;
+            return (
+              <rect
+                key={i}
+                x={x(e.ts) - 2}
+                y={yMid('daimons') - 2}
+                width={4}
+                height={4}
+                fill="#6366f1"
+                role="button"
+                aria-label={`Daimon ${e.agent}`}
+                tabIndex={0}
+                style={{ cursor: 'pointer' }}
+                onClick={() => fire('finding', String(e.findingID))}
+              >
+                <title>{`${e.agent} fired finding #${e.findingID}`}</title>
+              </rect>
+            );
+          case 'audit':
+            if (laneIndex('audit') < 0) return null;
+            return (
+              <text
+                key={i}
+                x={x(e.ts)}
+                y={yMid('audit') + 4}
+                fontSize="11"
+                textAnchor="middle"
+                fill="#64748b"
+                aria-label={`Audit ${e.auditKind} by ${e.by}`}
+              >
+                ↗<title>{`${e.auditKind} by ${e.by}: ${e.title}`}</title>
+              </text>
+            );
+        }
+      })}
+    </g>
+  );
 }
 
 function loadLanes(): TimelineLane[] {
