@@ -209,7 +209,8 @@ func (s *Store) SetFleetEnvFromFederation(masterKey []byte, parentCPID, anthropi
 
 	var currentSource string
 	var currentVersion int64
-	if err := tx.QueryRow(`SELECT source, version FROM fleet_env WHERE id = 1`).Scan(&currentSource, &currentVersion); err != nil {
+	var currentUpdatedBy sql.NullString
+	if err := tx.QueryRow(`SELECT source, version, updated_by_user_email FROM fleet_env WHERE id = 1`).Scan(&currentSource, &currentVersion, &currentUpdatedBy); err != nil {
 		return 0, false, err
 	}
 	// Operator-set local values are not overridden by federation. The
@@ -218,11 +219,25 @@ func (s *Store) SetFleetEnvFromFederation(masterKey []byte, parentCPID, anthropi
 	// updates when source=federated OR row is empty). Once the
 	// operator types a key in Settings, version > 0 and this guard
 	// keeps their value untouched.
-	if currentSource == "local" && currentVersion > 0 {
+	//
+	// Exception: a row that's still on the boot-env seed
+	// (updated_by_user_email = "boot:env-seed") is treated as
+	// not-yet-pinned even though version > 0. The CP started with
+	// environment-supplied keys but the operator hasn't actually said
+	// "use this." Federation pushes win in that case so a parent's
+	// update propagates to fresh children without manual
+	// override-flipping. Once an operator explicitly PUTs from the UI
+	// (updated_by = a real email), the guard locks back in.
+	bootSeeded := currentUpdatedBy.Valid && currentUpdatedBy.String == "boot:env-seed"
+	if !bootSeeded && currentSource == "local" && currentVersion > 0 {
 		return currentVersion, false, nil
 	}
-	// Only update if the parent's version is newer than ours.
-	if parentVersion <= currentVersion {
+	// Version-monotonicity skip — but only when comparing against a
+	// row from the SAME provenance. A boot-seeded row's version=1
+	// shouldn't block a parent push at version=4; that's the bug the
+	// boot-seed exception fixes. After the first apply, the row's
+	// source flips to federated_from_parent and this guard kicks in.
+	if !bootSeeded && parentVersion <= currentVersion {
 		return currentVersion, false, nil
 	}
 

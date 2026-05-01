@@ -73,8 +73,9 @@ type Server struct {
 	runs       *api.RunRegistry
 	orchestra  *api.OrchestrationCoordinator // Phase A orchestrator
 	notify     *notify.Worker
-	fedPoller  *federation.Poller     // Phase 9 parent-side federation
-	fedAgg     *federation.Aggregator // Phase 9.6 federated reads
+	fedPoller      *federation.Poller       // Phase 9 parent-side federation
+	fedAgg         *federation.Aggregator   // Phase 9.6 federated reads
+	fleetEnvPusher *federation.FleetEnvPusher // Phase 22.10 follow-up: parent → child fleet-env push
 	// fedFindingFanout polls child CPs for newly-projected findings
 	// and routes them through the local orchestration coordinator's
 	// OnFinding hook. See controlplane/api/federation_finding_fanout.go.
@@ -344,6 +345,13 @@ func New(cfg Config) (*Server, error) {
 	// chance to fail-stop.
 	srv.fedPoller = federation.NewPoller(store, nil)
 	srv.fedAgg = federation.NewAggregator(store)
+	srv.fleetEnvPusher = federation.NewFleetEnvPusher(store, srv.fedPoller.HTTPClient(), func() string {
+		meta, err := store.CPMeta()
+		if err != nil || meta == nil {
+			return ""
+		}
+		return meta.InstanceID
+	})
 
 	// Optional fleet auto-deployer: when --fleet-ssh-key-path is
 	// set, the orchestrator can install the jobs runtime
@@ -696,6 +704,11 @@ func (s *Server) routes() http.Handler {
 	// config via federation token so it can propagate keys to child
 	// fleet nodes during deploy.
 	r.Get("/api/v1/federation/fleet-env", api.FleetEnvFederation(s.store))
+	// Phase 22.10 follow-up — parent → child fleet-env push. Child
+	// CPs accept this from any caller bearing the federation token,
+	// applying via SetFleetEnvFromFederation (same idempotent guard
+	// the pull poller uses).
+	r.Post("/api/v1/federation/fleet-env", api.RequireFederationToken(s.store, api.FleetEnvFederationPush(s.store)))
 	// IOC feed-config federation endpoint: child CPs mirror the parent's
 	// installed feed list so operators don't have to configure feeds on
 	// every child manually. Token-authed; one-hop only (parent returns
@@ -1006,9 +1019,26 @@ func (s *Server) routes() http.Handler {
 			// update; override-local / revert-to-parent flip the source flag
 			// for federated children.
 			r.Get("/api/fleet-env", api.FleetEnvGet(s.store))
-			r.Put("/api/fleet-env", api.FleetEnvPut(s.store, nil))
-			r.Post("/api/fleet-env/override-local", api.FleetEnvOverrideLocal(s.store, nil))
-			r.Post("/api/fleet-env/revert-to-parent", api.FleetEnvRevertToParent(s.store, nil))
+			// onChange pushes the new fleet-env to every registered
+			// federation peer. Best-effort — failures are logged but
+			// don't fail the operator's PUT.
+			fleetEnvOnChange := func(version int64) {
+				go func() {
+					ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+					defer cancel()
+					n, err := s.fleetEnvPusher.PushNow(ctx)
+					if err != nil {
+						log.Printf("fleet-env-push v%d: %v", version, err)
+						return
+					}
+					if n > 0 {
+						log.Printf("fleet-env-push v%d: delivered to %d peer(s)", version, n)
+					}
+				}()
+			}
+			r.Put("/api/fleet-env", api.FleetEnvPut(s.store, fleetEnvOnChange))
+			r.Post("/api/fleet-env/override-local", api.FleetEnvOverrideLocal(s.store, fleetEnvOnChange))
+			r.Post("/api/fleet-env/revert-to-parent", api.FleetEnvRevertToParent(s.store, fleetEnvOnChange))
 
 			// Phase 9.5: federation peers — admin-only because adding a
 			// peer means storing a credential for an outbound CP.
