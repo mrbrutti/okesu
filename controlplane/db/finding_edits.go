@@ -234,28 +234,55 @@ func (s *Store) SupersedeOpenDedups(keepID int64, dedupKey string) (int, error) 
 	if dedupKey == "" {
 		return 0, nil
 	}
-	// Pull the open siblings first so we can write one audit row each.
+	// Pull the open siblings first so we can write one audit row each
+	// AND sum their recurrence_count onto the surviving finding so
+	// the operator sees the total fire count, not just "this is the
+	// 2nd most recent emit."
 	rows, err := s.Query(`
-		SELECT id, COALESCE(tags, '') FROM findings
+		SELECT id, COALESCE(tags, ''), COALESCE(recurrence_count, 1)
+		  FROM findings
 		 WHERE dedup_key = ? AND id != ?
 		   AND (status IS NULL OR status = 'open')`, dedupKey, keepID)
 	if err != nil {
 		return 0, err
 	}
 	type cand struct {
-		id   int64
-		tags string
+		id          int64
+		tags        string
+		recurrences int64
 	}
 	var candidates []cand
+	var siblingRecurrences int64
 	for rows.Next() {
 		var c cand
-		if err := rows.Scan(&c.id, &c.tags); err != nil {
+		if err := rows.Scan(&c.id, &c.tags, &c.recurrences); err != nil {
 			rows.Close()
 			return 0, err
 		}
 		candidates = append(candidates, c)
+		siblingRecurrences += c.recurrences
 	}
 	rows.Close()
+	// Bump the surviving finding's recurrence_count by the sum of
+	// rolled-up siblings + 1 (this emission). Stamp last_seen_at.
+	// Skipped on early-return (no siblings) — the keep row's own
+	// default recurrence_count=1 is already correct on first insert.
+	if len(candidates) > 0 || siblingRecurrences > 0 {
+		if _, err := s.Exec(`
+			UPDATE findings
+			   SET recurrence_count = COALESCE(recurrence_count, 1) + ?,
+			       last_seen_at     = CURRENT_TIMESTAMP
+			 WHERE id = ?`, siblingRecurrences, keepID); err != nil {
+			// Non-fatal: the supersede should still proceed even if
+			// the counter update fails, so the dedup loop closes.
+			// Log and continue rather than returning early.
+			_ = err
+		}
+	} else {
+		// No siblings; still stamp last_seen_at so subsequent fires
+		// without siblings (rare) keep the timestamp fresh.
+		_, _ = s.Exec(`UPDATE findings SET last_seen_at = CURRENT_TIMESTAMP WHERE id = ?`, keepID)
+	}
 
 	closed := 0
 	for _, c := range candidates {

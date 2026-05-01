@@ -180,6 +180,12 @@ export interface Finding {
   // special card.
   subtype?: string;
 
+  // Phase 22.10 — recurrence tracking. recurrence_count sums every
+  // emission rolled up onto this finding (1 = first sighting). Used
+  // by the UI to render a "fired N×" chip next to repeated noise.
+  recurrence_count?: number;
+  last_seen_at?: string;
+
   // Phase 13 — triage state. `acknowledged` (boolean) is kept for
   // backward-compat — any non-open status maps to true.
   status?: FindingStatus;

@@ -64,6 +64,9 @@ import { cn } from '../lib/cn';
 import { RunAgentDialog } from '../components/RunAgentDialog';
 import { SuggestedFindingsCard } from '../components/SuggestedFindingsCard';
 import { InvestigationAuditPanel } from '../components/InvestigationAuditPanel';
+import { CaseStatusBar } from '../components/investigations/CaseStatusBar';
+import { CaseTimeline } from '../components/investigations/CaseTimeline';
+import { CaseStructure } from '../components/investigations/CaseStructure';
 
 type Resolution = 'resolved' | 'false_positive' | 'duplicate' | 'wont_fix';
 type Tab = 'overview' | 'findings' | 'runs' | 'iocs' | 'daimons' | 'orchestrations' | 'notes' | 'audit';
@@ -322,6 +325,7 @@ export default function InvestigationDetailPage() {
             invID={invID}
             cpInstanceID={cpInstanceID}
             editing={editing}
+            setEditing={setEditing}
             draftSummary={draftSummary}
             setDraftSummary={setDraftSummary}
             bundle={bundle}
@@ -417,12 +421,13 @@ function TabButton<T extends string>({
 // ── Overview panel ──────────────────────────────────────────────────
 
 function OverviewPanel({
-  inv, invID, cpInstanceID, editing, draftSummary, setDraftSummary, bundle, onChange,
+  inv, invID, cpInstanceID, editing, setEditing, draftSummary, setDraftSummary, bundle, onChange,
 }: {
   inv: Investigation;
   invID: number;
   cpInstanceID?: string;
   editing: boolean;
+  setEditing: (v: boolean) => void;
   draftSummary: string;
   setDraftSummary: (s: string) => void;
   bundle: InvestigationDetail;
@@ -438,64 +443,30 @@ function OverviewPanel({
   const isActive = inv.Status === 'active';
 
   return (
-    <section className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-      <div className="lg:col-span-2 space-y-4">
-        <div className="border border-border rounded-md bg-white p-4">
-          <h4 className="text-[11px] uppercase tracking-wide font-semibold text-ink-mute mb-2">
-            Summary
-          </h4>
-          {editing ? (
-            <textarea
-              value={draftSummary}
-              onChange={(e) => setDraftSummary(e.target.value)}
-              rows={6}
-              className="w-full px-2.5 py-1.5 rounded-md border border-border bg-white text-sm"
-              placeholder="Hypothesis, scope, working theory…"
-            />
-          ) : inv.Summary ? (
-            <div className="text-sm whitespace-pre-wrap text-ink">{inv.Summary}</div>
-          ) : (
-            <div className="text-sm text-ink-mute italic">No summary yet.</div>
-          )}
-        </div>
+    <section className="space-y-4">
+      <CaseStatusBar
+        bundle={bundle}
+        cpInstanceID={cpInstanceID}
+        editing={editing}
+        draftSummary={draftSummary}
+        setDraftSummary={setDraftSummary}
+        onEditToggle={() => setEditing(true)}
+      />
+      <CaseTimeline bundle={bundle} cpInstanceID={cpInstanceID} />
+      <CaseStructure bundle={bundle} cpInstanceID={cpInstanceID} />
 
-        {showSuggestions && (
-          <SuggestedFindingsCard
-            invID={invID}
-            cpInstanceID={cpInstanceID}
-            onChange={onChange}
-            readOnly={!isActive}
-          />
-        )}
-      </div>
+      {showSuggestions && (
+        <SuggestedFindingsCard
+          invID={invID}
+          cpInstanceID={cpInstanceID}
+          onChange={onChange}
+          readOnly={!isActive}
+        />
+      )}
 
-      <div className="space-y-3">
-        <div className="border border-border rounded-md bg-white p-4 text-xs space-y-1.5">
-          <h4 className="text-[11px] uppercase tracking-wide font-semibold text-ink-mute mb-2">
-            Identity
-          </h4>
-          <KV label="ID"><code className="font-mono">#{inv.ID}</code></KV>
-          <KV label="Created"><span className="font-mono text-ink-dim">{fmtDate(inv.CreatedAt)}</span></KV>
-          <KV label="Updated"><span className="font-mono text-ink-dim">{fmtDate(inv.UpdatedAt)}</span></KV>
-          {inv.CreatedBy && <KV label="Created by"><code className="font-mono">{inv.CreatedBy}</code></KV>}
-          {!isZeroTime(inv.ClosedAt) && <KV label="Closed"><span className="font-mono text-ink-dim">{fmtDate(inv.ClosedAt)}</span></KV>}
-        </div>
-
-        <div className="border border-border rounded-md bg-white p-4 text-xs space-y-1.5">
-          <h4 className="text-[11px] uppercase tracking-wide font-semibold text-ink-mute mb-2">
-            Linked entities
-          </h4>
-          <KV label="Findings"><span className="font-mono">{bundle.findings.length}</span></KV>
-          <KV label="Runs"><span className="font-mono">{bundle.runs.length}</span></KV>
-          <KV label="IOCs"><span className="font-mono">{bundle.iocs.length}</span></KV>
-          <KV label="Daimons"><span className="font-mono">{bundle.daimons.length}</span></KV>
-          <KV label="Orchestrations"><span className="font-mono">{bundle.orchestrations.length}</span></KV>
-          <KV label="Notes"><span className="font-mono">{bundle.notes.length}</span></KV>
-        </div>
-        <div id="labels-card" className="mt-4 pt-4 border-t border-border transition-shadow rounded-xl">
-          <div className="text-[11px] uppercase tracking-wide text-ink-mute font-medium mb-2">Labels</div>
-          <LabelEditor kind="investigation" idOrKey={bundle.investigation.ID} />
-        </div>
+      <div id="labels-card" className="border border-border rounded-md bg-white p-4">
+        <div className="text-[11px] uppercase tracking-wide text-ink-mute font-medium mb-2">Labels</div>
+        <LabelEditor kind="investigation" idOrKey={bundle.investigation.ID} />
       </div>
     </section>
   );
@@ -999,15 +970,6 @@ function ResolutionChip({ res }: { res: Investigation['Resolution'] }) {
     <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded ring-1 ring-slate-200 bg-slate-50 text-ink-dim">
       {res}
     </span>
-  );
-}
-
-function KV({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div className="grid grid-cols-[110px_1fr] gap-2">
-      <dt className="text-ink-mute">{label}</dt>
-      <dd className="text-ink truncate">{children}</dd>
-    </div>
   );
 }
 
