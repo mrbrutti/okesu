@@ -892,6 +892,11 @@ func (s *Server) routes() http.Handler {
 			// Phase 22.10 PR β — on-demand stale findings GC. Hourly
 			// background sweep is wired separately (staleFindingsLoop).
 			r.Post("/api/findings/gc-stale", api.FindingsGCStaleHandler(s.store))
+			// Phase 22.10 PR γ — per-label severity ceilings.
+			r.Get("/api/severity-ceilings", api.ListSeverityCeilingsHandler(s.store))
+			r.Post("/api/severity-ceilings", api.CreateSeverityCeilingHandler(s.store))
+			r.Patch("/api/severity-ceilings/{id}", api.UpdateSeverityCeilingHandler(s.store))
+			r.Delete("/api/severity-ceilings/{id}", api.DeleteSeverityCeilingHandler(s.store))
 			// Phase 22.8 PR γ — secrets + selector bindings. All
 			// admin-only — including reads, since metadata leaks
 			// "this credential exists". Plaintext is never echoed
