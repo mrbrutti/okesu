@@ -9,6 +9,7 @@ import {
   Play,
   Plus,
   Server,
+  Tag,
   Trash2,
   Upload,
   Wifi,
@@ -51,6 +52,7 @@ export default function NodesPage() {
   const [hasMore, setHasMore] = useState(true);
   const sel = useSelection<string>();
   const [bulkUpdate, setBulkUpdate] = useState<NodeItem[] | null>(null);
+  const [bulkLabel, setBulkLabel] = useState<NodeItem[] | null>(null);
   const [bulkBusy, setBulkBusy] = useState<null | 'delete'>(null);
 
   // Refresh the first page; merge by id so already-loaded older pages stay
@@ -184,6 +186,18 @@ export default function NodesPage() {
         <BulkActionBar count={sel.count} onClear={sel.clear}>
           <BulkActionButton
             tone="neutral"
+            icon={Tag}
+            label="Add label"
+            disabled={!!bulkBusy}
+            title={`Apply a label to ${sel.count} node${sel.count === 1 ? '' : 's'}`}
+            onClick={() => {
+              const ids = new Set(sel.all);
+              const targets = (nodes ?? []).filter((n) => ids.has(String(n.id)));
+              setBulkLabel(targets);
+            }}
+          />
+          <BulkActionButton
+            tone="neutral"
             icon={Upload}
             label="Update binary"
             disabled={!!bulkBusy}
@@ -243,6 +257,140 @@ export default function NodesPage() {
           onDone={() => { setBulkUpdate(null); sel.clear(); refresh(); }}
         />
       )}
+      {bulkLabel && bulkLabel.length > 0 && (
+        <BulkLabelDialog
+          nodes={bulkLabel}
+          onClose={() => setBulkLabel(null)}
+          onDone={() => { setBulkLabel(null); sel.clear(); refresh(); }}
+        />
+      )}
+    </div>
+  );
+}
+
+// BulkLabelDialog — apply a key=value label to N selected nodes via
+// per-node /api/labels/node/{id} PUT calls. Dispatches in parallel
+// and surfaces per-node failures so a partial deploy is visible.
+function BulkLabelDialog({
+  nodes,
+  onClose,
+  onDone,
+}: {
+  nodes: NodeItem[];
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const [key, setKey] = useState('');
+  const [value, setValue] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [results, setResults] = useState<{ ok: number; failed: { id: number; name: string; err: string }[] } | null>(null);
+
+  async function submit() {
+    const k = key.trim();
+    if (!k) return;
+    setBusy(true); setResults(null);
+    const settled = await Promise.allSettled(
+      nodes.map((n) => api.setLabel('node', n.id, k, value.trim())),
+    );
+    const failed: { id: number; name: string; err: string }[] = [];
+    let ok = 0;
+    settled.forEach((s, i) => {
+      if (s.status === 'fulfilled') {
+        ok++;
+      } else {
+        failed.push({
+          id: nodes[i].id,
+          name: nodes[i].name,
+          err: s.reason instanceof Error ? s.reason.message : String(s.reason),
+        });
+      }
+    });
+    setResults({ ok, failed });
+    setBusy(false);
+    if (failed.length === 0) {
+      // Auto-close on full success after a brief flash so the user sees the count.
+      setTimeout(onDone, 600);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/30 z-50 flex items-center justify-center p-4" onClick={onClose}>
+      <div
+        className="bg-panel border border-border rounded-xl shadow-card w-full max-w-md"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <header className="px-5 py-3 border-b border-border flex items-center justify-between">
+          <h3 className="text-sm font-semibold flex items-center gap-2">
+            <Tag size={14} className="text-brand-500" />
+            Add label to {nodes.length} node{nodes.length === 1 ? '' : 's'}
+          </h3>
+          <button onClick={onClose} className="p-1 text-ink-mute hover:text-ink rounded-md"><X size={14} /></button>
+        </header>
+        <div className="p-5 space-y-3 text-sm">
+          <p className="text-[11px] text-ink-mute">
+            Existing values under the same key are overwritten on each node.
+          </p>
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <div className="text-[10px] uppercase tracking-wide text-ink-mute font-medium mb-1">Key</div>
+              <input
+                type="text"
+                autoFocus
+                value={key}
+                onChange={(e) => setKey(e.target.value)}
+                placeholder="e.g. env"
+                className="w-full px-2.5 py-1.5 text-sm border border-border rounded-md font-mono"
+              />
+            </div>
+            <div>
+              <div className="text-[10px] uppercase tracking-wide text-ink-mute font-medium mb-1">Value</div>
+              <input
+                type="text"
+                value={value}
+                onChange={(e) => setValue(e.target.value)}
+                placeholder="e.g. prod"
+                onKeyDown={(e) => { if (e.key === 'Enter') submit(); }}
+                className="w-full px-2.5 py-1.5 text-sm border border-border rounded-md font-mono"
+              />
+            </div>
+          </div>
+          <details className="text-[11px] text-ink-mute">
+            <summary className="cursor-pointer hover:text-ink">Targets ({nodes.length})</summary>
+            <ul className="mt-1 max-h-32 overflow-auto pl-4 list-disc font-mono text-[11px]">
+              {nodes.map((n) => <li key={n.id}>{n.name}</li>)}
+            </ul>
+          </details>
+          {results && (
+            <div className="text-xs space-y-1">
+              <div className="text-green-700">✓ {results.ok} applied</div>
+              {results.failed.length > 0 && (
+                <div className="text-red-700">
+                  ✗ {results.failed.length} failed:
+                  <ul className="mt-0.5 pl-4 list-disc text-[11px]">
+                    {results.failed.slice(0, 5).map((f) => (
+                      <li key={f.id}>{f.name}: {f.err}</li>
+                    ))}
+                    {results.failed.length > 5 && <li>+{results.failed.length - 5} more</li>}
+                  </ul>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+        <footer className="px-5 py-3 border-t border-border flex justify-end gap-2">
+          <button onClick={onClose} className="text-xs px-3 py-1.5 border border-border rounded-md">
+            {results ? 'Close' : 'Cancel'}
+          </button>
+          <button
+            onClick={submit}
+            disabled={busy || !key.trim()}
+            className="text-xs px-3 py-1.5 bg-brand-600 text-white rounded-md font-medium hover:bg-brand-700 disabled:opacity-50 inline-flex items-center gap-1"
+          >
+            <Tag size={12} />
+            {busy ? 'Applying…' : 'Apply'}
+          </button>
+        </footer>
+      </div>
     </div>
   );
 }
