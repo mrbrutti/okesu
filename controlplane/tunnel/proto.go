@@ -75,8 +75,10 @@ type HelloPayload struct {
 // The Node executes `okesu <Provider> [--agent <Agent>] [--model <Model>] [--effort <Effort>] [--max-turns <N>] <Prompt>`
 // and streams JSONL output back as LogLines, then emits an Exit.
 //
-// Empty Provider defaults to "auto". API keys are NOT carried in this payload —
-// the node uses its own environment (see `okesu node --env-file`).
+// Empty Provider defaults to "auto". The Env field (Phase 22.8 PR γ
+// wire-through) carries selector-bound env_var secrets the CP
+// resolves at dispatch time — fleet-wide LLM keys still flow via
+// the node's own --env-file, but per-node credentials now ride here.
 type RunPayload struct {
 	RunID    string `json:"run_id"`
 	Provider string `json:"provider,omitempty"` // claude|codex|auto
@@ -93,6 +95,11 @@ type RunPayload struct {
 	// local search paths" (legacy behaviour).
 	AgentContent string `json:"agent_content,omitempty"`
 	Prompt       string `json:"prompt"`
+	// Env carries per-job environment variables resolved by the CP
+	// from selector-bound env_var secrets matching the target node's
+	// labels. The tunnel client merges them on top of os.Environ(),
+	// with Env winning on key collision. Empty/missing for old CPs.
+	Env map[string]string `json:"env,omitempty"`
 }
 
 // CancelPayload — CP asks the Node to terminate an in-flight run.

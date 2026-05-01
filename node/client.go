@@ -256,7 +256,16 @@ func startRun(cfg Config, p tunnel.RunPayload, send func(*tunnel.Frame) error) *
 		args = append(args, p.Prompt)
 
 		cmd := exec.CommandContext(ctx, cfg.SelfPath, args...)
-		cmd.Env = os.Environ()
+		// Phase 22.8 PR γ wire-through — merge per-job env from the
+		// CP (selector-bound env_var secrets) on top of inherited
+		// environment. Env values win on key collision so per-node
+		// credentials override host defaults without the node caring
+		// how. Empty/missing Env preserves legacy behaviour.
+		env := os.Environ()
+		for k, v := range p.Env {
+			env = append(env, k+"="+v)
+		}
+		cmd.Env = env
 		stdout, err := cmd.StdoutPipe()
 		if err != nil {
 			_ = send(&tunnel.Frame{Type: tunnel.MsgExit, Exit: &tunnel.ExitPayload{
