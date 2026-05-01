@@ -1133,6 +1133,7 @@ export function FindingDrawer({ id, cpInstanceID, onClose, onChanged }: DrawerPr
           )}>
             {f.title || '(untitled)'}
           </h2>
+          <RecurrenceChip count={f.recurrence_count} lastSeen={f.last_seen_at} />
         </div>
         <button onClick={onClose} className="p-1 text-ink-dim hover:text-ink hover:bg-slate-100 rounded-md shrink-0">
           <X size={16} />
@@ -1411,6 +1412,33 @@ export function FindingDrawer({ id, cpInstanceID, onClose, onChanged }: DrawerPr
 }
 
 // ── helpers ─────────────────────────────────────────────────────────────────
+
+// RecurrenceChip — surfaces "fired N× since first seen at …" when
+// SupersedeOpenDedups has rolled siblings into this finding. Hidden
+// for first-time singletons (recurrence_count ≤ 1) so we don't show
+// a "1×" chip on every finding.
+function RecurrenceChip({ count, lastSeen }: { count?: number; lastSeen?: string }) {
+  const n = count ?? 1;
+  if (n <= 1) return null;
+  const ts = lastSeen ? new Date(lastSeen).getTime() : 0;
+  const ageSec = ts > 0 ? Math.max(0, Math.round((Date.now() - ts) / 1000)) : null;
+  const ageStr =
+    ageSec === null ? null
+    : ageSec < 60 ? `${ageSec}s ago`
+    : ageSec < 3600 ? `${Math.round(ageSec / 60)}m ago`
+    : ageSec < 86400 ? `${Math.round(ageSec / 3600)}h ago`
+    : `${Math.round(ageSec / 86400)}d ago`;
+  return (
+    <span
+      className="inline-flex items-center gap-1 text-[11px] font-medium text-amber-800 bg-amber-50 ring-1 ring-amber-200 px-1.5 py-0.5 rounded"
+      title={`Same dedup_key has fired ${n} times${lastSeen ? `, last at ${lastSeen}` : ''}`}
+    >
+      <Repeat size={10} />
+      {n}×
+      {ageStr && <span className="text-amber-700">· {ageStr}</span>}
+    </span>
+  );
+}
 
 function Section({ icon: Icon, title, count, children }: {
   icon: typeof Check;
