@@ -79,6 +79,17 @@ func NewPoller(store *db.Store, onUpdate func(peerID int64)) *Poller {
 
 // Start runs the poll loop until ctx is done. Safe to call once per
 // process; calling twice replaces the running loop.
+// HTTPClient exposes the configured TLS-skipping outbound client so
+// sibling helpers (e.g. FleetEnvPusher) can reuse the same connection
+// pool + TLS posture the poller already speaks. Returns nil when
+// the Poller is nil — callers should fall back to a default client.
+func (p *Poller) HTTPClient() *http.Client {
+	if p == nil {
+		return nil
+	}
+	return p.client
+}
+
 func (p *Poller) Start(ctx context.Context) {
 	p.mu.Lock()
 	if p.cancel != nil {
