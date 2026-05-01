@@ -21,10 +21,12 @@ import {
   ShieldAlert,
   Sparkles,
   Tag,
+  Tag as TagIcon,
   ThumbsDown,
   X,
 } from 'lucide-react';
 import { api, type Finding, type FindingGroup, type FindingsSummary, type FindingStatus, type IOCRecord, type RelatedCase, type RunListItem, type SavedSearch, type FindingsFilterConfig } from '../api';
+import { LabelEditor } from '../components/labels/LabelEditor';
 import { FindingHistory, History as HistoryIcon } from '../components/FindingHistory';
 import { cn } from '../lib/cn';
 import { useIOCDisplayPrefs } from '../lib/preferences';
@@ -1219,6 +1221,11 @@ export function FindingDrawer({ id, cpInstanceID, onClose, onChanged }: DrawerPr
             </ul>
           </Section>
         )}
+
+        {/* Labels — generic primitive shared across every entity. */}
+        <Section icon={TagIcon} title="Labels">
+          <LabelEditor kind="finding" idOrKey={f.id} />
+        </Section>
 
         {/* Triage metadata */}
         {f.status && f.status !== 'open' && (

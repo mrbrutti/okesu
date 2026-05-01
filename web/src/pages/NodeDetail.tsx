@@ -24,6 +24,7 @@ import {
   WifiOff,
 } from 'lucide-react';
 import { api, ApiError, type AboutInfo, type DaimonItem, type KnownHostItem, type NodeItem, type User } from '../api';
+import { LabelEditor } from '../components/labels/LabelEditor';
 import { cn } from '../lib/cn';
 import EventTimeline from '../components/EventTimeline';
 import { BinaryUpdateDialog, type BinaryAction } from '../components/BinaryUpdateDialog';
@@ -458,46 +459,11 @@ function RuntimesCard({ node }: { node: NodeItem }) {
 // non-admins see the chips read-only. Selectors authored against
 // these labels (group_roles.selector, credential_bindings.selector)
 // drive PR β + PR γ scoping.
+//
+// The previous bespoke implementation has been replaced by the
+// generic LabelEditor primitive (kind="node"). Same UX, fewer lines,
+// shared code path with every other entity that gets labels.
 function LabelsCard({ nodeID, isAdmin }: { nodeID: number; isAdmin: boolean }) {
-  const [labels, setLabels] = useState<Record<string, string> | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [draftKey, setDraftKey] = useState('');
-  const [draftValue, setDraftValue] = useState('');
-
-  function refresh() {
-    setError(null);
-    api.nodeLabels(nodeID).then(setLabels).catch((e) => setError(String(e)));
-  }
-  useEffect(() => { refresh(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [nodeID]);
-
-  async function add() {
-    const k = draftKey.trim();
-    if (!k) return;
-    setBusy(true); setError(null);
-    try {
-      await api.setNodeLabel(nodeID, k, draftValue.trim());
-      setDraftKey(''); setDraftValue('');
-      refresh();
-    } catch (e) {
-      setError(e instanceof ApiError ? e.message : String(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function remove(key: string) {
-    setBusy(true); setError(null);
-    try {
-      await api.deleteNodeLabel(nodeID, key);
-      refresh();
-    } catch (e) {
-      setError(e instanceof ApiError ? e.message : String(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-
   return (
     <section className="bg-panel border border-border rounded-xl shadow-card p-5 lg:col-span-2">
       <div className="flex items-center justify-between mb-3">
@@ -506,65 +472,7 @@ function LabelsCard({ nodeID, isAdmin }: { nodeID: number; isAdmin: boolean }) {
           <span className="text-[11px] text-ink-mute italic">read-only</span>
         )}
       </div>
-      {error && (
-        <div className="text-xs text-red-700 bg-red-50 border border-red-200 px-2 py-1 rounded mb-2">
-          {error}
-        </div>
-      )}
-      {labels === null ? (
-        <p className="text-xs text-ink-mute">Loading…</p>
-      ) : Object.keys(labels).length === 0 ? (
-        <p className="text-xs text-ink-mute italic mb-2">
-          No labels yet. Labels drive scoped permissions (e.g. <code className="bg-slate-100 px-1 rounded">env=prod</code>).
-        </p>
-      ) : (
-        <div className="flex flex-wrap gap-1.5 mb-3">
-          {Object.entries(labels).sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => (
-            <span
-              key={k}
-              className="inline-flex items-center gap-1 text-xs bg-slate-100 text-slate-800 px-2 py-0.5 rounded"
-            >
-              <code className="font-mono">{k}{v ? '=' : ''}{v}</code>
-              {isAdmin && (
-                <button
-                  onClick={() => remove(k)}
-                  disabled={busy}
-                  className="hover:text-red-600 disabled:opacity-50"
-                  title="Remove label"
-                >
-                  ×
-                </button>
-              )}
-            </span>
-          ))}
-        </div>
-      )}
-      {isAdmin && (
-        <div className="flex items-center gap-2">
-          <input
-            type="text"
-            value={draftKey}
-            onChange={(e) => setDraftKey(e.target.value)}
-            placeholder="key (e.g. env)"
-            className="text-xs px-2 py-1 rounded border border-border font-mono w-32"
-          />
-          <input
-            type="text"
-            value={draftValue}
-            onChange={(e) => setDraftValue(e.target.value)}
-            placeholder="value (e.g. prod)"
-            onKeyDown={(e) => { if (e.key === 'Enter') add(); }}
-            className="text-xs px-2 py-1 rounded border border-border font-mono flex-1 max-w-xs"
-          />
-          <button
-            onClick={add}
-            disabled={busy || !draftKey.trim()}
-            className="text-xs px-3 py-1 rounded bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50"
-          >
-            Add
-          </button>
-        </div>
-      )}
+      <LabelEditor kind="node" idOrKey={nodeID} readonly={!isAdmin} />
     </section>
   );
 }
