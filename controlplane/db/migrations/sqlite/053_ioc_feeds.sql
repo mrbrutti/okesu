@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS ioc_feeds (
   subpath                     TEXT,
   parser                      TEXT NOT NULL
                                 CHECK (parser IN ('yara','sigma','urlhaus_csv','threatfox_csv','cisa_kev_json')),
-  auth_credential_id          INTEGER REFERENCES credentials(id) ON DELETE SET NULL,
+  auth_credential_id          INTEGER REFERENCES cloud_credentials(id) ON DELETE SET NULL,
   refresh_interval_seconds    INTEGER NOT NULL DEFAULT 86400,
   enabled                     INTEGER NOT NULL DEFAULT 0,
   installed_from_registry     INTEGER NOT NULL DEFAULT 0,
