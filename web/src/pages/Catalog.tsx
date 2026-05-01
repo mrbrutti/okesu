@@ -5,12 +5,15 @@ import { Library, Loader2 } from 'lucide-react';
 import { api, type FederatedIOCRecord, type CPSourceRef } from '../api';
 import { cn } from '../lib/cn';
 import CatalogDrawer from '../components/CatalogDrawer';
+import CatalogFeedsTab from './CatalogFeedsTab';
 
 // Mirrors validKinds in controlplane/ioc/catalog/catalog.go.
 const ALL_KINDS = ['sha256', 'sha1', 'md5', 'ipv4', 'ipv6', 'domain', 'url', 'cve', 'mitre', 'yara_rule', 'sigma_rule'];
 
-type SourceFilter = '' | 'catalog' | 'observed';
-const SOURCE_OPTIONS: { value: SourceFilter; label: string }[] = [
+// '' = all; 'catalog' / 'observed' = built-in source values;
+// `feed:<slug>` = scope to one feed's contributions.
+type SourceFilter = '' | 'catalog' | 'observed' | `feed:${string}`;
+const SOURCE_OPTIONS: { value: '' | 'catalog' | 'observed'; label: string }[] = [
   { value: '',         label: 'All' },
   { value: 'catalog',  label: 'Catalog' },
   { value: 'observed', label: 'Observed' },
@@ -21,6 +24,7 @@ export default function CatalogPage() {
   const [rows, setRows] = useState<FederatedIOCRecord[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
+  const [tab, setTab] = useState<'indicators' | 'feeds'>('indicators');
   const [kindFilter, setKindFilter] = useState<Set<string>>(new Set(ALL_KINDS));
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>('');
   const [query, setQuery] = useState('');
@@ -63,6 +67,33 @@ export default function CatalogPage() {
         </div>
       </header>
 
+      <div className="px-6 pt-3 border-b border-border">
+        <nav className="flex gap-4 text-sm">
+          {(['indicators', 'feeds'] as const).map((t) => (
+            <button
+              key={t}
+              onClick={() => setTab(t)}
+              className={cn(
+                'pb-2 -mb-px border-b-2',
+                tab === t
+                  ? 'border-brand-600 text-brand-700 font-medium'
+                  : 'border-transparent text-ink-dim hover:text-ink',
+              )}
+            >
+              {t === 'indicators' ? 'Indicators' : 'Feeds'}
+            </button>
+          ))}
+        </nav>
+      </div>
+
+      {tab === 'feeds' ? (
+        <CatalogFeedsTab
+          onSelectSlug={(slug) => {
+            setSourceFilter(`feed:${slug}` as SourceFilter);
+            setTab('indicators');
+          }}
+        />
+      ) : (
       <div className="flex-1 overflow-auto p-6 space-y-4">
         {error && (
           <div className="text-xs text-red-700 bg-red-50 border border-red-200 px-3 py-2 rounded-md">
@@ -94,6 +125,16 @@ export default function CatalogPage() {
                 </button>
               ))}
             </div>
+            {sourceFilter.startsWith('feed:') && (
+              <button
+                onClick={() => setSourceFilter('')}
+                className="px-2 py-1 rounded text-xs bg-brand-50 text-brand-700 font-medium ring-1 ring-brand-200 inline-flex items-center gap-1 font-mono"
+                title="Click to clear feed filter"
+              >
+                {sourceFilter}
+                <span className="text-brand-500 font-sans">×</span>
+              </button>
+            )}
           </div>
 
           <div className="flex items-center gap-2">
@@ -183,6 +224,7 @@ export default function CatalogPage() {
           </div>
         )}
       </div>
+      )}
 
       {drawerIOC && (
         <CatalogDrawer
