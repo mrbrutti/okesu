@@ -23,7 +23,9 @@ export function aggregateHosts(b: InvestigationDetail): InvestigationHostItem[] 
   return Array.from(counts, ([host, count]) => ({ Host: host, Count: count }))
     .sort((a, b) => {
       if (a.Count !== b.Count) return b.Count - a.Count;
-      return a.Host.localeCompare(b.Host);
+      if (a.Host < b.Host) return -1;
+      if (a.Host > b.Host) return 1;
+      return 0;
     });
 }
 

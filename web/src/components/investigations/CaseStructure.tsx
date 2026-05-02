@@ -19,6 +19,11 @@ export function CaseStructure({ bundle, cpInstanceID }: Props) {
   const iocs = useMemo(() => topIOCs(bundle), [bundle]);
   const daimons = useMemo(() => topDaimons(bundle), [bundle]);
   const orchList = useMemo(() => deriveOrchestrations(bundle), [bundle]);
+  // totalRuns sums the per-orch RunCount instead of bundle.runs.length
+  // because the server path (Task 5) consumes structure.orchestrations
+  // only — there is no raw runs array to count from. In the bundle/
+  // fallback path the two values are equivalent (every run has an
+  // orchestration ID), so the result matches the old computation.
   const totalRuns = useMemo(() => orchList.reduce((acc, o) => acc + o.RunCount, 0), [orchList]);
 
   const cpQS = cpInstanceID ? `&cp=${encodeURIComponent(cpInstanceID)}` : '';
