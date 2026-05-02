@@ -672,6 +672,7 @@ func (s *Server) routes() http.Handler {
 	// federate via the same `?cp=<id>` proxy convention.
 	r.Get("/api/v1/federation/investigations/{id}/audit", api.FederationInvestigationAudit(s.store))
 	r.Get("/api/v1/federation/investigations/{id}/report.pdf", api.FederationInvestigationReport(s.store))
+	r.Get("/api/v1/federation/investigations/{id}/graph", api.FederationInvestigationGraph(s.store))
 	r.Get("/api/v1/federation/investigations/{id}/suggested-findings", api.FederationSuggestFindings(s.store))
 	r.Put("/api/v1/federation/investigations/{id}/dismissed-findings/{finding_id}", api.FederationDismissSuggestedFinding(s.store))
 	// Phase 22.6.1 — bulk-link from workspace "Add all ≥ N" buttons.
@@ -895,6 +896,7 @@ func (s *Server) routes() http.Handler {
 		r.Delete("/api/investigations/{id}/runs/{run_id}", api.UnlinkRunFromInvestigationHandler(s.store))
 		r.Get("/api/investigations/{id}/audit", api.FederatedInvestigationAudit(s.store, s.fedAgg))
 		r.Get("/api/investigations/{id}/report.pdf", api.FederatedInvestigationReport(s.store, s.fedAgg))
+		r.Get("/api/investigations/{id}/graph", api.FederatedInvestigationGraph(s.store, s.fedAgg))
 		r.Get("/api/investigations/{id}/suggested-findings", api.FederatedSuggestFindings(s.store, s.fedAgg))
 		r.Put("/api/investigations/{id}/dismissed-findings/{finding_id}", api.FederatedDismissSuggestedFinding(s.store, s.fedAgg))
 		r.Post("/api/investigations/{id}/bulk-link-findings", api.FederatedBulkLinkFindings(s.store, s.fedAgg))
