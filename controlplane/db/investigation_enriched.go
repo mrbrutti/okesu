@@ -74,13 +74,26 @@ type InvestigationDaimonItem struct {
 	LastSeenTs   int64
 }
 
+// InvestigationHostItem is one row of the case's host rollup.
+// Aggregated from the host column of the case's linked findings.
+type InvestigationHostItem struct {
+	Host  string
+	Count int
+}
+
 // InvestigationOrchestrationItem groups linked runs by orchestration.
-// Each row has the orchestration name + how many of its runs are on
-// this case + the most recent run's started_at.
+// Each row has the orchestration name, total run count, per-status
+// counts (Completed/Failed/Cancelled/Running — anything not in the
+// first three is bucketed as Running, matching the operator UI), and
+// the most recent run's started_at.
 type InvestigationOrchestrationItem struct {
 	OrchestrationID   sql.NullInt64
 	OrchestrationName string
 	RunCount          int
+	Completed         int
+	Failed            int
+	Cancelled         int
+	Running           int
 	LastStartedAt     string
 }
 
@@ -236,6 +249,32 @@ func (s *Store) ListDaimonsForInvestigation(invID int64) ([]InvestigationDaimonI
 	return out, rows.Err()
 }
 
+// ListHostsForInvestigation returns distinct non-empty hosts seen
+// across the case's linked findings, sorted desc by count. Findings
+// with NULL/empty host are excluded.
+func (s *Store) ListHostsForInvestigation(invID int64) ([]InvestigationHostItem, error) {
+	rows, err := s.Query(`
+		SELECT f.host AS host, COUNT(*) AS count
+		FROM investigation_findings l
+		JOIN findings f ON f.id = l.finding_id
+		WHERE l.investigation_id = ? AND f.host IS NOT NULL AND f.host != ''
+		GROUP BY f.host
+		ORDER BY count DESC, f.host ASC`, invID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []InvestigationHostItem{}
+	for rows.Next() {
+		var it InvestigationHostItem
+		if err := rows.Scan(&it.Host, &it.Count); err != nil {
+			return nil, err
+		}
+		out = append(out, it)
+	}
+	return out, rows.Err()
+}
+
 // ListOrchestrationsForInvestigation groups linked orchestration_runs
 // by their owning orchestration. Returned newest-first by most-recent
 // run start.
@@ -244,6 +283,10 @@ func (s *Store) ListOrchestrationsForInvestigation(invID int64) ([]Investigation
 		SELECT r.orchestration_id,
 		       COALESCE(o.name, '(deleted)') AS orch_name,
 		       COUNT(r.id) AS run_count,
+		       COUNT(CASE WHEN r.status = 'completed' THEN 1 END) AS completed,
+		       COUNT(CASE WHEN r.status = 'failed'    THEN 1 END) AS failed,
+		       COUNT(CASE WHEN r.status = 'cancelled' THEN 1 END) AS cancelled,
+		       COUNT(CASE WHEN r.status NOT IN ('completed','failed','cancelled') THEN 1 END) AS running,
 		       MAX(r.started_at) AS last_started_at
 		FROM investigation_runs l
 		JOIN orchestration_runs r ON r.id = l.orchestration_run_id
@@ -258,13 +301,15 @@ func (s *Store) ListOrchestrationsForInvestigation(invID int64) ([]Investigation
 	out := []InvestigationOrchestrationItem{}
 	for rows.Next() {
 		var it InvestigationOrchestrationItem
-		var lastStarted sql.NullTime
+		var lastStarted sql.NullString
 		if err := rows.Scan(&it.OrchestrationID, &it.OrchestrationName,
-			&it.RunCount, &lastStarted); err != nil {
+			&it.RunCount,
+			&it.Completed, &it.Failed, &it.Cancelled, &it.Running,
+			&lastStarted); err != nil {
 			return nil, err
 		}
 		if lastStarted.Valid {
-			it.LastStartedAt = lastStarted.Time.UTC().Format(rfc3339)
+			it.LastStartedAt = ParseTimestamp(lastStarted.String).UTC().Format(rfc3339)
 		}
 		out = append(out, it)
 	}
