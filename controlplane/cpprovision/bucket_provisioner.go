@@ -25,12 +25,18 @@ type BucketProvisioner interface {
 	// ListBuckets returns every bucket visible to the credential.
 	// Region narrows the listing for clouds that scope buckets per
 	// region (AWS, OCI). MinIO ignores region.
-	ListBuckets(ctx context.Context, creds []byte, region string) ([]BucketInfo, error)
+	// compartmentID overrides the credential's default compartment;
+	// pass empty string to fall back to creds.CompartmentID, then
+	// creds.TenancyOCID.
+	ListBuckets(ctx context.Context, creds []byte, region, compartmentID string) ([]BucketInfo, error)
 
 	// EnsureBucket creates a bucket with the given name + region,
 	// or returns the existing bucket if one already exists with the
 	// same name in this credential's account. Idempotent.
-	EnsureBucket(ctx context.Context, creds []byte, name, region string) (*BucketInfo, error)
+	// compartmentID overrides the credential's default compartment;
+	// pass empty string to fall back to creds.CompartmentID, then
+	// creds.TenancyOCID.
+	EnsureBucket(ctx context.Context, creds []byte, name, region, compartmentID string) (*BucketInfo, error)
 
 	// BucketAccessKeys returns S3-compatible keys scoped to the
 	// credential. AWS / MinIO return the credential's own keys
@@ -45,6 +51,24 @@ type BucketInfo struct {
 	Name     string `json:"name"`
 	Region   string `json:"region"`
 	Endpoint string `json:"endpoint"`
+}
+
+// CompartmentLister is implemented by clouds that have a compartment
+// concept (OCI). Clouds without it (AWS, MinIO) simply don't implement
+// this interface — callers check via type assertion and return an empty
+// list so the UI can show "no compartments" messaging.
+type CompartmentLister interface {
+	ListCompartments(ctx context.Context, creds []byte, region string) ([]Compartment, error)
+}
+
+// Compartment is the cross-cloud projection of a cloud compartment /
+// organisational unit. Currently only OCI has a first-class compartment
+// concept; for other clouds the field is unused.
+type Compartment struct {
+	OCID           string `json:"ocid"`
+	Name           string `json:"name"`
+	ParentID       string `json:"parent_id,omitempty"`
+	LifecycleState string `json:"lifecycle_state,omitempty"`
 }
 
 // ErrNoBucketProvisioner is returned by BucketRegistry.Get when the

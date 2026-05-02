@@ -6,6 +6,7 @@ import {
   type BucketCloudProvider,
   type BucketInfo,
   type BucketProvisionReq,
+  type CloudCompartment,
   type TransportConfigCreateReq,
   type TransportConfigSummary,
 } from '../api';
@@ -32,6 +33,10 @@ export default function AddBucketWizard({ onClose, onCreated }: Props) {
   const [displayName, setDisplayName] = useState('');
   const [scannerIntervalMs, setScannerIntervalMs] = useState(30000);
   const [generateFleetKeys, setGenerateFleetKeys] = useState(true);
+  const [compartments, setCompartments] = useState<CloudCompartment[] | null>(null);
+  const [compartmentID, setCompartmentID] = useState('');
+  const [compartmentsLoading, setCompartmentsLoading] = useState(false);
+  const [compartmentManualMode, setCompartmentManualMode] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -70,6 +75,29 @@ export default function AddBucketWizard({ onClose, onCreated }: Props) {
       .finally(() => setDiscoverLoading(false));
   }, [source, providerID, region, subMode]);
 
+  // Fetch compartments when provider + region are set in configured mode.
+  useEffect(() => {
+    if (source !== 'configured' || !providerID || !region) {
+      setCompartments(null);
+      setCompartmentID('');
+      return;
+    }
+    setCompartmentsLoading(true);
+    api.cloudCredentialCompartments(providerID, region)
+      .then((c) => {
+        setCompartments(c);
+        // Auto-select if exactly one compartment is returned.
+        if (c.length === 1) setCompartmentID(c[0].ocid);
+      })
+      .catch((err) => {
+        // If listing fails (likely IAM gap), fall back to manual entry.
+        setCompartments([]);
+        setCompartmentManualMode(true);
+        console.warn('compartments list failed:', err);
+      })
+      .finally(() => setCompartmentsLoading(false));
+  }, [source, providerID, region]);
+
   function submitConfigured() {
     if (!providerID || !displayName || !bucketName || !region) {
       setError('Pick a provider, region, and bucket; enter a display name.');
@@ -78,6 +106,7 @@ export default function AddBucketWizard({ onClose, onCreated }: Props) {
     const req: BucketProvisionReq = {
       cloud_credential_id: providerID,
       region,
+      compartment_id: compartmentID || undefined,
       bucket_name: bucketName,
       mode: subMode,
       display_name: displayName,
@@ -201,6 +230,54 @@ export default function AddBucketWizard({ onClose, onCreated }: Props) {
                   className="w-full text-sm px-2.5 py-1.5 rounded-md ring-1 ring-border bg-white"
                 />
               </div>
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs text-ink-mute">Compartment</label>
+                  {compartments && compartments.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setCompartmentManualMode((v) => !v)}
+                      className="text-[10px] text-ink-dim hover:text-ink underline"
+                    >
+                      {compartmentManualMode ? 'Pick from list' : 'Enter OCID manually'}
+                    </button>
+                  )}
+                </div>
+                {compartmentsLoading ? (
+                  <div className="flex items-center gap-2 text-xs text-ink-dim">
+                    <Loader2 size={12} className="animate-spin" /> Listing compartments…
+                  </div>
+                ) : compartments === null ? (
+                  <div className="text-[11px] text-ink-mute">
+                    Pick a provider and region above to list compartments.
+                  </div>
+                ) : compartments.length === 0 && !compartmentManualMode ? (
+                  <div className="text-[11px] text-ink-mute">
+                    This cloud doesn't use compartments. Leave blank — buckets land in the account default.
+                  </div>
+                ) : compartmentManualMode ? (
+                  <input
+                    type="text"
+                    value={compartmentID}
+                    onChange={(e) => setCompartmentID(e.target.value)}
+                    placeholder="ocid1.compartment.oc1..…"
+                    className="w-full text-xs font-mono px-2.5 py-1.5 rounded-md ring-1 ring-border bg-white"
+                  />
+                ) : (
+                  <select
+                    value={compartmentID}
+                    onChange={(e) => setCompartmentID(e.target.value)}
+                    className="w-full text-sm px-2.5 py-1.5 rounded-md ring-1 ring-border bg-white"
+                  >
+                    <option value="">Choose a compartment…</option>
+                    {compartments.map((c) => (
+                      <option key={c.ocid} value={c.ocid}>
+                        {c.name} · {c.ocid.length > 30 ? c.ocid.slice(0, 20) + '…' + c.ocid.slice(-8) : c.ocid}
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </div>
               <div className="flex gap-1 border-b border-border">
                 <button
                   onClick={() => setSubMode('discover')}
@@ -296,7 +373,7 @@ export default function AddBucketWizard({ onClose, onCreated }: Props) {
                 </button>
                 <button
                   onClick={submitConfigured}
-                  disabled={submitting}
+                  disabled={submitting || compartmentsLoading}
                   className="text-xs px-3 py-1.5 bg-brand-600 text-white rounded-md hover:bg-brand-700 disabled:opacity-50"
                 >
                   {submitting ? 'Provisioning…' : 'Add bucket'}

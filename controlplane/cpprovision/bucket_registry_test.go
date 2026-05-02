@@ -10,10 +10,10 @@ import (
 type fakeBucketProvisioner struct{ cloud string }
 
 func (f *fakeBucketProvisioner) Cloud() string { return f.cloud }
-func (f *fakeBucketProvisioner) ListBuckets(_ context.Context, _ []byte, _ string) ([]BucketInfo, error) {
+func (f *fakeBucketProvisioner) ListBuckets(_ context.Context, _ []byte, _, _ string) ([]BucketInfo, error) {
 	return nil, nil
 }
-func (f *fakeBucketProvisioner) EnsureBucket(_ context.Context, _ []byte, _, _ string) (*BucketInfo, error) {
+func (f *fakeBucketProvisioner) EnsureBucket(_ context.Context, _ []byte, _, _, _ string) (*BucketInfo, error) {
 	return nil, nil
 }
 func (f *fakeBucketProvisioner) BucketAccessKeys(_ context.Context, _ []byte) (string, string, error) {

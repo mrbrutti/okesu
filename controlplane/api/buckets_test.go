@@ -33,10 +33,10 @@ type fakeBucketProvisioner struct {
 }
 
 func (f *fakeBucketProvisioner) Cloud() string { return f.cloud }
-func (f *fakeBucketProvisioner) ListBuckets(_ context.Context, _ []byte, _ string) ([]cpprovision.BucketInfo, error) {
+func (f *fakeBucketProvisioner) ListBuckets(_ context.Context, _ []byte, _, _ string) ([]cpprovision.BucketInfo, error) {
 	return f.buckets, nil
 }
-func (f *fakeBucketProvisioner) EnsureBucket(_ context.Context, _ []byte, name, region string) (*cpprovision.BucketInfo, error) {
+func (f *fakeBucketProvisioner) EnsureBucket(_ context.Context, _ []byte, name, region, _ string) (*cpprovision.BucketInfo, error) {
 	bi := cpprovision.BucketInfo{Name: name, Region: region, Endpoint: "https://fake.example"}
 	return &bi, nil
 }

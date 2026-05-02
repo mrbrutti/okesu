@@ -150,6 +150,27 @@ func (p *Poller) tickAll(ctx context.Context) {
 // pollOne hits a single peer's introspect endpoint and updates its
 // row. PollOnce is also exported for the API's "force refresh" button.
 func (p *Poller) pollOne(ctx context.Context, peer *db.FederationPeer) {
+	// s3_dead_drop peers are polled by s3reader.Loop, which writes the
+	// same RecordPeerSuccess / RecordPeerFailure markers and hydrates
+	// peer-cache assets from the bucket. The federation poller's
+	// HTTP-dial path doesn't apply (peer.URL is a synthetic marker
+	// like s3-deaddrop://… by design). Skip silently.
+	if peer.Transport == "s3_dead_drop" {
+		return
+	}
+
+	// Unknown transport — log + skip with a clear marker on the peer
+	// row so operators see the gap. Do NOT bubble through to
+	// fetchIntrospect — that produces a misleading "unsupported
+	// protocol scheme" error. The empty-string check covers legacy rows
+	// that predate the transport column (they default to https_pull
+	// behavior).
+	if peer.Transport != "" && peer.Transport != "https_pull" {
+		log.Printf("federation poller: peer %d has unknown transport %q; skipping", peer.ID, peer.Transport)
+		_ = p.store.RecordPeerFailure(peer.ID, "unknown federation transport: "+peer.Transport)
+		return
+	}
+
 	body, err := p.fetchIntrospect(ctx, peer.URL, peer.Token)
 	if err != nil {
 		_ = p.store.RecordPeerFailure(peer.ID, err.Error())

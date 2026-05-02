@@ -11,7 +11,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
+	"time"
 
 	"github.com/oracle/oci-go-sdk/v65/common"
 	"github.com/oracle/oci-go-sdk/v65/identity"
@@ -26,7 +28,7 @@ func NewBucketProvisioner() cpprovision.BucketProvisioner { return &BucketProvis
 
 func (p *BucketProvisioner) Cloud() string { return "oci" }
 
-func (p *BucketProvisioner) ListBuckets(ctx context.Context, credsRaw []byte, region string) ([]cpprovision.BucketInfo, error) {
+func (p *BucketProvisioner) ListBuckets(ctx context.Context, credsRaw []byte, region, compartmentID string) ([]cpprovision.BucketInfo, error) {
 	creds, err := decodeCredential(credsRaw)
 	if err != nil {
 		return nil, err
@@ -50,7 +52,7 @@ func (p *BucketProvisioner) ListBuckets(ctx context.Context, credsRaw []byte, re
 
 	resp, err := client.ListBuckets(ctx, objectstorage.ListBucketsRequest{
 		NamespaceName: ns.Value,
-		CompartmentId: common.String(creds.TenancyOCID), // root compartment by default
+		CompartmentId: common.String(chooseCompartment(compartmentID, creds)),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("oci: list buckets: %w", err)
@@ -66,7 +68,7 @@ func (p *BucketProvisioner) ListBuckets(ctx context.Context, credsRaw []byte, re
 	return out, nil
 }
 
-func (p *BucketProvisioner) EnsureBucket(ctx context.Context, credsRaw []byte, name, region string) (*cpprovision.BucketInfo, error) {
+func (p *BucketProvisioner) EnsureBucket(ctx context.Context, credsRaw []byte, name, region, compartmentID string) (*cpprovision.BucketInfo, error) {
 	creds, err := decodeCredential(credsRaw)
 	if err != nil {
 		return nil, err
@@ -110,7 +112,7 @@ func (p *BucketProvisioner) EnsureBucket(ctx context.Context, credsRaw []byte, n
 		NamespaceName: ns.Value,
 		CreateBucketDetails: objectstorage.CreateBucketDetails{
 			Name:          common.String(name),
-			CompartmentId: common.String(creds.TenancyOCID),
+			CompartmentId: common.String(chooseCompartment(compartmentID, creds)),
 		},
 	})
 	if createErr == nil {
@@ -170,12 +172,53 @@ func (p *BucketProvisioner) BucketAccessKeys(ctx context.Context, credsRaw []byt
 	if err != nil {
 		return "", "", err
 	}
+
+	// Identity mutation calls (CreateCustomerSecretKey) must be made
+	// against the user's home region — OCI rejects them with "Please
+	// go to your home region" if issued against any other region.
+	// Discover the home region first, then pin the Identity client to it.
+	hr, err := homeRegion(ctx, creds)
+	if err != nil {
+		// Fall back to creds.Region with a warning rather than hard-
+		// failing. Some tenancy setups (e.g. single-region) may work
+		// even without this, and a degraded attempt beats a blank error.
+		log.Printf("oci: warning: could not determine home region for tenancy %s: %v — falling back to creds.Region %s",
+			creds.TenancyOCID, err, creds.Region)
+		hr = creds.Region
+	}
+
 	provider := common.NewRawConfigurationProvider(
-		creds.TenancyOCID, creds.UserOCID, creds.Region, creds.Fingerprint, creds.PrivateKey, nil)
+		creds.TenancyOCID, creds.UserOCID, hr, creds.Fingerprint, creds.PrivateKey, nil)
 
 	idClient, err := identity.NewIdentityClientWithConfigurationProvider(provider)
 	if err != nil {
 		return "", "", fmt.Errorf("oci: build identity client: %w", err)
+	}
+
+	// Pre-flight #1: reject federated (SSO) users early with a clear message.
+	// CreateCustomerSecretKey returns an opaque HTTP 401 IdcsConversionError for
+	// federated users; catching it here gives operators an actionable explanation.
+	userResp, err := idClient.GetUser(ctx, identity.GetUserRequest{
+		UserId: common.String(creds.UserOCID),
+	})
+	if err != nil {
+		return "", "", fmt.Errorf("oci: GetUser to verify provider type: %w", err)
+	}
+	if err := checkFederatedUser(userResp.User); err != nil {
+		return "", "", err
+	}
+
+	// Pre-flight #2: surface the per-user 2-key limit clearly.
+	// CreateCustomerSecretKey returns an opaque HTTP 400 LimitExceeded on the
+	// third key; showing the existing keys lets operators decide which to delete.
+	keysResp, err := idClient.ListCustomerSecretKeys(ctx, identity.ListCustomerSecretKeysRequest{
+		UserId: common.String(creds.UserOCID),
+	})
+	if err != nil {
+		return "", "", fmt.Errorf("oci: list existing Customer Secret Keys: %w", err)
+	}
+	if err := checkKeyLimit(keysResp.Items); err != nil {
+		return "", "", err
 	}
 
 	resp, err := idClient.CreateCustomerSecretKey(ctx, identity.CreateCustomerSecretKeyRequest{
@@ -198,6 +241,83 @@ func (p *BucketProvisioner) BucketAccessKeys(ctx context.Context, credsRaw []byt
 	return access, secret, nil
 }
 
+// chooseCompartment returns the effective compartment OCID to use for
+// OCI object-storage operations. Priority:
+//  1. override — if non-empty, use it directly (caller-supplied compartment).
+//  2. creds.CompartmentID — the default compartment stored in the credential.
+//  3. creds.TenancyOCID — root compartment fallback.
+func chooseCompartment(override string, creds *credentialPayload) string {
+	if override != "" {
+		return override
+	}
+	if creds.CompartmentID != "" {
+		return creds.CompartmentID
+	}
+	return creds.TenancyOCID
+}
+
+// homeRegion discovers the canonical region name for the tenancy's
+// home region by calling Identity's GetTenancy and translating the
+// returned HomeRegionKey (e.g. "PHX") to a full region name
+// (e.g. "us-phoenix-1") using the OCI SDK's region table.
+//
+// The Identity client used here is built against creds.Region only
+// for the purpose of the GetTenancy read — that call is globally
+// routable and does not require the home region.
+func homeRegion(ctx context.Context, creds *credentialPayload) (string, error) {
+	provider := common.NewRawConfigurationProvider(
+		creds.TenancyOCID, creds.UserOCID, creds.Region, creds.Fingerprint, creds.PrivateKey, nil)
+
+	idClient, err := identity.NewIdentityClientWithConfigurationProvider(provider)
+	if err != nil {
+		return "", fmt.Errorf("oci: build identity client for home-region discovery: %w", err)
+	}
+
+	resp, err := idClient.GetTenancy(ctx, identity.GetTenancyRequest{
+		TenancyId: common.String(creds.TenancyOCID),
+	})
+	if err != nil {
+		return "", fmt.Errorf("oci: GetTenancy: %w", err)
+	}
+
+	key := safeStrPtr(resp.Tenancy.HomeRegionKey)
+	if key == "" {
+		return "", errors.New("oci: GetTenancy returned empty HomeRegionKey")
+	}
+
+	// common.StringToRegion accepts both short keys ("phx") and full
+	// names ("us-phoenix-1"). It lowercases the input before lookup.
+	r := common.StringToRegion(strings.ToLower(key))
+	name := string(r)
+	if name == "" || name == strings.ToLower(key) {
+		// SDK didn't recognise the key — fall back to the hand-built map.
+		if mapped, ok := regionByKey[strings.ToUpper(key)]; ok {
+			return mapped, nil
+		}
+		return "", fmt.Errorf("oci: unknown HomeRegionKey %q", key)
+	}
+	return name, nil
+}
+
+// regionByKey maps OCI's 3-letter home-region codes to canonical
+// region names. Used as a fallback when common.StringToRegion returns
+// the raw key unchanged (e.g. for newly-added regions not yet in the
+// SDK's built-in table).
+var regionByKey = map[string]string{
+	"PHX": "us-phoenix-1",
+	"IAD": "us-ashburn-1",
+	"FRA": "eu-frankfurt-1",
+	"LHR": "uk-london-1",
+	"YYZ": "ca-toronto-1",
+	"NRT": "ap-tokyo-1",
+	"SYD": "ap-sydney-1",
+	"ICN": "ap-seoul-1",
+	"BOM": "ap-mumbai-1",
+	"GRU": "sa-saopaulo-1",
+	"ZRH": "eu-zurich-1",
+	"AMS": "eu-amsterdam-1",
+}
+
 // ociS3Endpoint returns the S3-compatible URL for a namespace+region.
 // Operators write to this URL with the Customer Secret Keys returned
 // by BucketAccessKeys.
@@ -211,4 +331,51 @@ func safeStrPtr(p *string) string {
 		return ""
 	}
 	return *p
+}
+
+// checkFederatedUser returns a clear, actionable error if user is a federated
+// SSO user (IDCS / Identity Domain). Such users cannot own Customer Secret Keys
+// and OCI surfaces a cryptic HTTP 401 IdcsConversionError on the create call.
+// Exported for unit-testing without a live OCI endpoint.
+func checkFederatedUser(user identity.User) error {
+	if user.IdentityProviderId == nil || *user.IdentityProviderId == "" {
+		return nil
+	}
+	return fmt.Errorf(
+		"oci: cannot create Customer Secret Keys for user %q — this is a federated SSO user (provider %q). "+
+			"Customer Secret Keys can only be created on native IAM users. Either configure okesu-cp's cloud "+
+			"credential to use a native IAM user (one without identity_provider_id), or create a dedicated "+
+			"service user in your Default identity domain with `manage object-family in tenancy` and use that.",
+		safeStrPtr(user.Name), safeStrPtr(user.IdentityProviderId),
+	)
+}
+
+// checkKeyLimit returns a clear, actionable error if the user already has 2
+// active Customer Secret Keys (the per-user OCI limit). OCI surfaces a cryptic
+// HTTP 400 LimitExceeded on the third create call; catching it here lets
+// operators see which existing keys are blocking the operation.
+// Exported for unit-testing without a live OCI endpoint.
+func checkKeyLimit(items []identity.CustomerSecretKeySummary) error {
+	activeCount := 0
+	var existing []string
+	for _, k := range items {
+		if k.LifecycleState == identity.CustomerSecretKeySummaryLifecycleStateActive {
+			activeCount++
+			id := safeStrPtr(k.Id)
+			ts := ""
+			if k.TimeCreated != nil {
+				ts = k.TimeCreated.Time.Format(time.RFC3339)
+			}
+			existing = append(existing, fmt.Sprintf("%s (created %s)", id, ts))
+		}
+	}
+	if activeCount >= 2 {
+		return fmt.Errorf(
+			"oci: user already has %d active Customer Secret Keys (per-user limit is 2). "+
+				"Existing: [%s]. Delete an unused key in OCI Console "+
+				"(Identity → Users → API Keys → Customer Secret Keys), or use the existing key.",
+			activeCount, strings.Join(existing, "; "),
+		)
+	}
+	return nil
 }
