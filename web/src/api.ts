@@ -2315,6 +2315,11 @@ export interface BucketProvisionReq {
   display_name: string;
   generate_fleet_keys: boolean;
   scanner_interval_ms: number;
+  /** OCI only: overrides the credential's default compartment for
+   *  ListBuckets / EnsureBucket. Omit (or pass empty string) to fall
+   *  back to the credential's stored compartment, then the tenancy root.
+   *  Ignored by AWS and MinIO provisioners. */
+  compartment_id?: string;
 }
 
 export interface TransportConfigPatch {

@@ -62,6 +62,7 @@ func BucketDiscover(store *db.Store, registry *cpprovision.BucketRegistry) http.
 	return func(w http.ResponseWriter, r *http.Request) {
 		idStr := r.URL.Query().Get("cloud_credential_id")
 		region := r.URL.Query().Get("region")
+		compartmentID := r.URL.Query().Get("compartment_id")
 		credID, err := strconv.ParseInt(idStr, 10, 64)
 		if err != nil || credID == 0 {
 			http.Error(w, "missing or bad cloud_credential_id", http.StatusBadRequest)
@@ -87,7 +88,7 @@ func BucketDiscover(store *db.Store, registry *cpprovision.BucketRegistry) http.
 			http.Error(w, "decrypt credential: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
-		buckets, err := provisioner.ListBuckets(r.Context(), payload, region)
+		buckets, err := provisioner.ListBuckets(r.Context(), payload, region, compartmentID)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadGateway)
 			return
@@ -109,6 +110,11 @@ type bucketProvisionReq struct {
 	DisplayName       string `json:"display_name"`
 	GenerateFleetKeys bool   `json:"generate_fleet_keys"`
 	ScannerIntervalMs int    `json:"scanner_interval_ms"`
+	// CompartmentID overrides the credential's default OCI compartment
+	// for ListBuckets / EnsureBucket. Empty string falls back to the
+	// credential's stored compartment, then the tenancy root. Ignored
+	// by AWS and MinIO provisioners.
+	CompartmentID string `json:"compartment_id,omitempty"`
 }
 
 // BucketProvision either discovers an existing bucket and writes a
@@ -156,7 +162,7 @@ func BucketProvision(store *db.Store, registry *cpprovision.BucketRegistry) http
 		var info *cpprovision.BucketInfo
 		switch req.Mode {
 		case "discover":
-			list, err := provisioner.ListBuckets(r.Context(), payload, req.Region)
+			list, err := provisioner.ListBuckets(r.Context(), payload, req.Region, req.CompartmentID)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusBadGateway)
 				return
@@ -172,7 +178,7 @@ func BucketProvision(store *db.Store, registry *cpprovision.BucketRegistry) http
 				return
 			}
 		case "create":
-			info, err = provisioner.EnsureBucket(r.Context(), payload, req.BucketName, req.Region)
+			info, err = provisioner.EnsureBucket(r.Context(), payload, req.BucketName, req.Region, req.CompartmentID)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusBadGateway)
 				return

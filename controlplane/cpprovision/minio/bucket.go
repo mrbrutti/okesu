@@ -47,7 +47,10 @@ func NewBucketProvisioner() cpprovision.BucketProvisioner { return &BucketProvis
 
 func (p *BucketProvisioner) Cloud() string { return "minio" }
 
-func (p *BucketProvisioner) ListBuckets(ctx context.Context, credsRaw []byte, _ string) ([]cpprovision.BucketInfo, error) {
+// ListBuckets lists MinIO buckets. region and compartmentID are accepted for
+// interface compatibility but ignored — MinIO is regionless and does not
+// use OCI-style compartments.
+func (p *BucketProvisioner) ListBuckets(ctx context.Context, credsRaw []byte, _, _ string) ([]cpprovision.BucketInfo, error) {
 	creds, err := decodeCredential(credsRaw)
 	if err != nil {
 		return nil, err
@@ -72,7 +75,10 @@ func (p *BucketProvisioner) ListBuckets(ctx context.Context, credsRaw []byte, _ 
 	return infos, nil
 }
 
-func (p *BucketProvisioner) EnsureBucket(ctx context.Context, credsRaw []byte, name, _ string) (*cpprovision.BucketInfo, error) {
+// EnsureBucket creates or returns an existing MinIO bucket. region and
+// compartmentID are accepted for interface compatibility but ignored —
+// MinIO is regionless and does not use OCI-style compartments.
+func (p *BucketProvisioner) EnsureBucket(ctx context.Context, credsRaw []byte, name, _, _ string) (*cpprovision.BucketInfo, error) {
 	creds, err := decodeCredential(credsRaw)
 	if err != nil {
 		return nil, err

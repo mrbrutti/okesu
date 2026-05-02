@@ -53,11 +53,12 @@ func (ociProvisioner) Cloud() string { return "oci" }
 // for OCI in cloud_credentials.encrypted_payload. Field names match
 // the validators in api/cloud_credentials.go.
 type credentialPayload struct {
-	TenancyOCID string `json:"tenancy_ocid"`
-	UserOCID    string `json:"user_ocid"`
-	Fingerprint string `json:"fingerprint"`
-	PrivateKey  string `json:"private_key"`
-	Region      string `json:"region"`
+	TenancyOCID   string `json:"tenancy_ocid"`
+	UserOCID      string `json:"user_ocid"`
+	Fingerprint   string `json:"fingerprint"`
+	PrivateKey    string `json:"private_key"`
+	Region        string `json:"region"`
+	CompartmentID string `json:"compartment_id,omitempty"`
 }
 
 // launchParams is what the +Add CP modal's cloud_params textarea

@@ -23,7 +23,9 @@ func NewBucketProvisioner() cpprovision.BucketProvisioner { return &BucketProvis
 
 func (p *BucketProvisioner) Cloud() string { return "aws" }
 
-func (p *BucketProvisioner) ListBuckets(ctx context.Context, credsRaw []byte, region string) ([]cpprovision.BucketInfo, error) {
+// ListBuckets lists S3 buckets. compartmentID is accepted for interface
+// compatibility but ignored — AWS does not use OCI-style compartments.
+func (p *BucketProvisioner) ListBuckets(ctx context.Context, credsRaw []byte, region, compartmentID string) ([]cpprovision.BucketInfo, error) {
 	creds, err := decodeCredential(credsRaw)
 	if err != nil {
 		return nil, err
@@ -63,7 +65,10 @@ func (p *BucketProvisioner) ListBuckets(ctx context.Context, credsRaw []byte, re
 	return infos, nil
 }
 
-func (p *BucketProvisioner) EnsureBucket(ctx context.Context, credsRaw []byte, name, region string) (*cpprovision.BucketInfo, error) {
+// EnsureBucket creates or returns an existing S3 bucket. compartmentID is
+// accepted for interface compatibility but ignored — AWS does not use
+// OCI-style compartments.
+func (p *BucketProvisioner) EnsureBucket(ctx context.Context, credsRaw []byte, name, region, compartmentID string) (*cpprovision.BucketInfo, error) {
 	creds, err := decodeCredential(credsRaw)
 	if err != nil {
 		return nil, err
