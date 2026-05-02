@@ -636,6 +636,29 @@ func FederationLinkRunToInvestigation(store *db.Store) http.HandlerFunc {
 	return requireFederationToken(store, LinkRunToInvestigationHandler(store))
 }
 
+// FederatedAddInvestigationNote forwards POST /api/investigations/
+// {id}/notes to the owning child via `?cp=<id>`. Without the
+// federated forwarding, a note posted from the parent's UI on a
+// federated case lands on the parent's local case with the same
+// id (or 404s) — operators see the post succeed but the note never
+// appears when they reload, because the bundle they're looking at
+// is the child's. Phase 22.6 was supposed to cover this; it
+// missed the notes endpoint.
+func FederatedAddInvestigationNote(store *db.Store, agg *federation.Aggregator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		path := strings.Replace(r.URL.Path, "/api/investigations/", "/api/v1/federation/investigations/", 1)
+		if handled, _ := proxyWriteByQuery(w, r, agg, path, "", nil); handled {
+			return
+		}
+		AddInvestigationNoteHandler(store).ServeHTTP(w, r)
+	}
+}
+
+// FederationAddInvestigationNote — child-side, token-authed.
+func FederationAddInvestigationNote(store *db.Store) http.HandlerFunc {
+	return requireFederationToken(store, AddInvestigationNoteHandler(store))
+}
+
 // FederatedListInvestigationsForFinding — read proxy for the
 // case-membership lookup used by the InvestigateDialog. Without
 // this wrapper, asking "what cases is this federated finding in?"
