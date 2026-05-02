@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"time"
 
 	"github.com/oracle/oci-go-sdk/v65/common"
 	"github.com/oracle/oci-go-sdk/v65/identity"
@@ -194,6 +195,32 @@ func (p *BucketProvisioner) BucketAccessKeys(ctx context.Context, credsRaw []byt
 		return "", "", fmt.Errorf("oci: build identity client: %w", err)
 	}
 
+	// Pre-flight #1: reject federated (SSO) users early with a clear message.
+	// CreateCustomerSecretKey returns an opaque HTTP 401 IdcsConversionError for
+	// federated users; catching it here gives operators an actionable explanation.
+	userResp, err := idClient.GetUser(ctx, identity.GetUserRequest{
+		UserId: common.String(creds.UserOCID),
+	})
+	if err != nil {
+		return "", "", fmt.Errorf("oci: GetUser to verify provider type: %w", err)
+	}
+	if err := checkFederatedUser(userResp.User); err != nil {
+		return "", "", err
+	}
+
+	// Pre-flight #2: surface the per-user 2-key limit clearly.
+	// CreateCustomerSecretKey returns an opaque HTTP 400 LimitExceeded on the
+	// third key; showing the existing keys lets operators decide which to delete.
+	keysResp, err := idClient.ListCustomerSecretKeys(ctx, identity.ListCustomerSecretKeysRequest{
+		UserId: common.String(creds.UserOCID),
+	})
+	if err != nil {
+		return "", "", fmt.Errorf("oci: list existing Customer Secret Keys: %w", err)
+	}
+	if err := checkKeyLimit(keysResp.Items); err != nil {
+		return "", "", err
+	}
+
 	resp, err := idClient.CreateCustomerSecretKey(ctx, identity.CreateCustomerSecretKeyRequest{
 		UserId: common.String(creds.UserOCID),
 		CreateCustomerSecretKeyDetails: identity.CreateCustomerSecretKeyDetails{
@@ -304,4 +331,51 @@ func safeStrPtr(p *string) string {
 		return ""
 	}
 	return *p
+}
+
+// checkFederatedUser returns a clear, actionable error if user is a federated
+// SSO user (IDCS / Identity Domain). Such users cannot own Customer Secret Keys
+// and OCI surfaces a cryptic HTTP 401 IdcsConversionError on the create call.
+// Exported for unit-testing without a live OCI endpoint.
+func checkFederatedUser(user identity.User) error {
+	if user.IdentityProviderId == nil || *user.IdentityProviderId == "" {
+		return nil
+	}
+	return fmt.Errorf(
+		"oci: cannot create Customer Secret Keys for user %q — this is a federated SSO user (provider %q). "+
+			"Customer Secret Keys can only be created on native IAM users. Either configure okesu-cp's cloud "+
+			"credential to use a native IAM user (one without identity_provider_id), or create a dedicated "+
+			"service user in your Default identity domain with `manage object-family in tenancy` and use that.",
+		safeStrPtr(user.Name), safeStrPtr(user.IdentityProviderId),
+	)
+}
+
+// checkKeyLimit returns a clear, actionable error if the user already has 2
+// active Customer Secret Keys (the per-user OCI limit). OCI surfaces a cryptic
+// HTTP 400 LimitExceeded on the third create call; catching it here lets
+// operators see which existing keys are blocking the operation.
+// Exported for unit-testing without a live OCI endpoint.
+func checkKeyLimit(items []identity.CustomerSecretKeySummary) error {
+	activeCount := 0
+	var existing []string
+	for _, k := range items {
+		if k.LifecycleState == identity.CustomerSecretKeySummaryLifecycleStateActive {
+			activeCount++
+			id := safeStrPtr(k.Id)
+			ts := ""
+			if k.TimeCreated != nil {
+				ts = k.TimeCreated.Time.Format(time.RFC3339)
+			}
+			existing = append(existing, fmt.Sprintf("%s (created %s)", id, ts))
+		}
+	}
+	if activeCount >= 2 {
+		return fmt.Errorf(
+			"oci: user already has %d active Customer Secret Keys (per-user limit is 2). "+
+				"Existing: [%s]. Delete an unused key in OCI Console "+
+				"(Identity → Users → API Keys → Customer Secret Keys), or use the existing key.",
+			activeCount, strings.Join(existing, "; "),
+		)
+	}
+	return nil
 }
