@@ -23,8 +23,13 @@ interface Props {
 const STORAGE_KEY = 'investigation:overview:lanes';
 const LANE_HEIGHT = 36;
 const LANE_LABEL_W = 80;
-const HEIGHT = 320;
-const SVG_WIDTH = 800;
+const SVG_WIDTH = 1600;
+const TOP_PADDING = 8;
+const BOTTOM_PADDING = 8;
+// Minimum height keeps the empty-state placeholder readable; otherwise
+// the SVG sizes to fit its visible lanes so the operator never sees
+// a wall of empty 320-px canvas under a 4-lane case.
+const MIN_HEIGHT = 200;
 
 export function CaseTimeline({ bundle, cpInstanceID }: Props) {
   const [activeLanes, setActiveLanes] = useState<TimelineLane[]>(loadLanes);
@@ -84,6 +89,13 @@ export function CaseTimeline({ bundle, cpInstanceID }: Props) {
 
   const onlyLifecycle = events.length === 1 && events[0].kind === 'lifecycle';
   const drawableWidth = SVG_WIDTH - LANE_LABEL_W;
+  // Fit height to the number of visible lanes — empty space below
+  // the lanes was the "not expanding" complaint. We also keep a
+  // minimum so the empty-state placeholder is readable.
+  const computedHeight = Math.max(
+    MIN_HEIGHT,
+    visibleLanes.length * LANE_HEIGHT + TOP_PADDING + BOTTOM_PADDING,
+  );
 
   return (
     <div className="border border-border rounded-md bg-white p-3 space-y-2">
@@ -111,22 +123,49 @@ export function CaseTimeline({ bundle, cpInstanceID }: Props) {
       </div>
 
       {onlyLifecycle ? (
-        <div className="h-[280px] flex items-center justify-center text-sm text-ink-mute italic">
+        <div style={{ height: MIN_HEIGHT }} className="flex items-center justify-center text-sm text-ink-mute italic">
           No signals yet — link findings to populate the timeline.
         </div>
       ) : (
-        <svg viewBox={`0 0 ${SVG_WIDTH} ${HEIGHT}`} className="w-full" style={{ height: HEIGHT }} role="img" aria-label="Case timeline">
+        <svg
+          viewBox={`0 0 ${SVG_WIDTH} ${computedHeight}`}
+          className="w-full"
+          style={{ height: computedHeight }}
+          preserveAspectRatio="none"
+          role="img"
+          aria-label="Case timeline"
+        >
           {visibleLanes.map((l, i) => (
             <g key={l}>
-              <text x={6} y={i * LANE_HEIGHT + LANE_HEIGHT / 2 + 4} fontSize="11" fill="#64748b">
+              <text
+                x={6}
+                y={TOP_PADDING + i * LANE_HEIGHT + LANE_HEIGHT / 2 + 4}
+                fontSize="11"
+                fill="#64748b"
+              >
                 {l}
               </text>
-              <line x1={LANE_LABEL_W} x2={SVG_WIDTH} y1={(i + 1) * LANE_HEIGHT} y2={(i + 1) * LANE_HEIGHT} stroke="#e2e8f0" strokeDasharray="2 4" />
+              <line
+                x1={LANE_LABEL_W}
+                x2={SVG_WIDTH}
+                y1={TOP_PADDING + (i + 1) * LANE_HEIGHT}
+                y2={TOP_PADDING + (i + 1) * LANE_HEIGHT}
+                stroke="#e2e8f0"
+                strokeDasharray="2 4"
+              />
             </g>
           ))}
-          {/* Events go here in Phase D2 */}
           {range && events.length > 0 && (
-            <EventsLayer events={events} visibleLanes={visibleLanes} range={range} laneLabelWidth={LANE_LABEL_W} drawableWidth={drawableWidth} cpInstanceID={cpInstanceID} />
+            <g transform={`translate(0, ${TOP_PADDING})`}>
+              <EventsLayer
+                events={events}
+                visibleLanes={visibleLanes}
+                range={range}
+                laneLabelWidth={LANE_LABEL_W}
+                drawableWidth={drawableWidth}
+                cpInstanceID={cpInstanceID}
+              />
+            </g>
           )}
         </svg>
       )}

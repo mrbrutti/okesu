@@ -10,6 +10,7 @@
 import { useEffect, useState } from 'react';
 import { Tag, Plus } from 'lucide-react';
 import { api, type LabelKind } from '../../api';
+import { LABELS_CHANGED_EVENT, type LabelsChangedDetail } from './labelsBus';
 
 interface Props {
   kind: LabelKind;
@@ -29,12 +30,25 @@ export function LabelStrip({ kind, idOrKey, scrollAnchor = 'labels-card', classN
   }
   useEffect(() => {
     refresh();
-    // Refresh when window regains focus — picks up edits from the
-    // lower-page card (or another tab) without requiring a manual
-    // refetch hook on every detail page.
+    // Refresh when window regains focus — picks up edits from
+    // another tab without a manual refetch.
     function onFocus() { refresh(); }
     window.addEventListener('focus', onFocus);
-    return () => window.removeEventListener('focus', onFocus);
+    // Refresh on cross-component label mutations (LabelEditor
+    // dispatches when add/delete completes). Fixes the case where
+    // the operator adds a label via the lower-page editor and the
+    // header strip stayed stuck on the previous chip set.
+    function onLabelsChanged(e: Event) {
+      const ev = e as CustomEvent<LabelsChangedDetail>;
+      if (ev.detail?.kind === kind && String(ev.detail?.idOrKey) === String(idOrKey)) {
+        refresh();
+      }
+    }
+    window.addEventListener(LABELS_CHANGED_EVENT, onLabelsChanged);
+    return () => {
+      window.removeEventListener('focus', onFocus);
+      window.removeEventListener(LABELS_CHANGED_EVENT, onLabelsChanged);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [kind, idOrKey]);
 

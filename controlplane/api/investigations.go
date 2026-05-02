@@ -103,6 +103,19 @@ func UpdateInvestigationHandler(store *db.Store) http.HandlerFunc {
 
 // AddInvestigationNoteHandler appends a note. Path:
 // /api/investigations/{id}/notes.
+//
+// Author is derived from the authenticated session — clients used
+// to be required to send `author` in the body, but every UI surface
+// that actually wires this endpoint already has the session, and
+// asking the client to remember its own email both invites
+// impersonation and broke notes posting in the case workspace
+// (the body never sent `author`, so the request failed with
+// "author is required" and notes silently never appeared).
+//
+// Optional `author` in the body is still respected as a back-compat
+// hatch for scripted/automation callers, but the session always
+// wins when both are present so an admin token can't claim to be a
+// different operator.
 func AddInvestigationNoteHandler(store *db.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, err := investigationIDFromChi(r)
@@ -118,7 +131,14 @@ func AddInvestigationNoteHandler(store *db.Store) http.HandlerFunc {
 			http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
 			return
 		}
-		noteID, err := store.AddInvestigationNote(id, req.Author, req.Body)
+		author := ""
+		if u := auth.UserFromContext(r.Context()); u != nil {
+			author = u.Email
+		}
+		if author == "" {
+			author = req.Author // automation back-compat
+		}
+		noteID, err := store.AddInvestigationNote(id, author, req.Body)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
