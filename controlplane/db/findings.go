@@ -479,10 +479,19 @@ func (s *Store) SetFindingStatus(findingID int64, status string, userID int64, u
 	return err
 }
 
-// SetGroupStatus applies the same status to every open finding sharing the
-// given dedup_key (preferred) or (title, severity, agent). Returns the
-// number of rows updated. Going to 'open' from a triaged status reopens
-// the entire group.
+// SetGroupStatus applies the same status to every finding in the
+// group sharing the given dedup_key (preferred) or (title, severity,
+// agent). Returns the number of rows updated.
+//
+// Status transitions are idempotent (existing rows already at the
+// target are left untouched, return = 0 RowsAffected for those) but
+// the WHERE clause does NOT require rows to currently be 'open'.
+// The grouped findings list shows every status (open + superseded +
+// false_positive + acknowledged + ...), so a bulk action from that
+// view should act on every visible row, not just the open subset.
+// Pre-fix behaviour silently succeeded with changed=0 whenever the
+// group's rows had already been auto-rolled-up or auto-stale-closed,
+// which is the common case after Phase 22.10's GC sweeps.
 func (s *Store) SetGroupStatus(dedupKey, title, severity, agent, status string,
 	userID int64, userEmail, note string) (int64, error) {
 
@@ -512,7 +521,11 @@ func (s *Store) SetGroupStatus(dedupKey, title, severity, agent, status string,
 			status, nullable(note), nullableInt64(userID), nullable(userEmail),
 			nullableInt64(userID), nullable(note),
 		}
-		whereSQL = "status = 'open'"
+		// Match every row whose current status differs from the
+		// target. Idempotent: rows already at the target stay
+		// untouched (RowsAffected reflects only the actual transitions).
+		whereSQL = "(status IS NULL OR status != ?)"
+		args = append(args, status)
 	}
 
 	if dedupKey != "" {
