@@ -2359,6 +2359,34 @@ over events the federation aggregator already returned, and saved
 searches are user-scoped (not CP-scoped) so an operator's
 "my CRIT-only view" works on every case across federated CPs.
 
+## Investigation Overview — case-structure aggregation endpoint
+
+The Overview tab's structure cards (hosts / IOCs / daimons / runs ×
+orchestrations) read from a dedicated endpoint
+`GET /api/investigations/{id}/structure` rather than aggregating
+client-side over the bundle. The endpoint returns four pre-sorted
+lists in one JSON payload — host rollup (new), IOCs by observation
+count, daimons by finding count, orchestrations by run count with
+per-status breakdown (completed / failed / cancelled / running, with
+all other statuses bucketed as Running).
+
+The handler
+(`controlplane/api/investigation_structure.go`) is thin: existence
+check, four `Store.List*ForInvestigation` calls, sort iocs / daimons
+/ orchs in Go (the Store methods sort by recency for the IOCs / Runs
+/ Daimons tabs; the structure cards want desc-by-primary-count), and
+emit. Federation follows the existing graph pattern: parent proxies
+via `?cp=<id>`; child is token-authed.
+
+The client (`web/src/components/investigations/CaseStructure.tsx`)
+fetches the endpoint on mount and renders from the response.
+On any failure (404 from a federated child running an older binary,
+transient network error) it falls back to client-side derivation
+via `caseStructure/derive.ts` — the same four aggregators that
+previously lived inline in the component, now extracted for
+testability and reuse on the fallback path. Wire shape is identical
+between server and fallback paths so the render is shared.
+
 ## Investigation PDF report
 
 Operators can export a case as a PDF report from the investigation detail page (`Export report` button). The endpoint is `GET /api/investigations/{id}/report.pdf`; federated cases route to the owning child CP via the existing `?cp=<instance_id>` proxy convention.
