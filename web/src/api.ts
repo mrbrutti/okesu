@@ -612,6 +612,14 @@ export interface FindingsFilterConfig {
   host_selector?: string;
 }
 
+/** Investigation-timeline-scoped saved-search payload. Persisted under
+ *  scope='investigation_timeline'. Empty fields = no filter on that
+ *  dimension. Mirrored from
+ *  web/src/components/investigations/timeline/filter.ts so other
+ *  callers (e.g. saved-search default-apply effect) can reference
+ *  the type without reaching into a component subdirectory. */
+export type { TimelineFilterConfig } from './components/investigations/timeline/filter';
+
 // InvestigationAuditEvent — one row in the case timeline. Kinds are
 // stable enums; the `details` shape is dictated by `kind` (see
 // controlplane/db/investigation_audit.go for the wire contract).
