@@ -16,8 +16,12 @@
 // banner so an operator deep-linked from there sees the same level
 // of urgency in the case view.
 
-import { useEffect, useMemo, useState } from 'react';
+import { Suspense, lazy, useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
+
+const CaseGraph = lazy(() =>
+  import('../components/investigations/CaseGraph').then((m) => ({ default: m.CaseGraph })),
+);
 import {
   Activity,
   AlertTriangle,
@@ -35,6 +39,7 @@ import {
   Loader2,
   Lock,
   MessageSquarePlus,
+  Network,
   Pencil,
   Play,
   Plus,
@@ -70,7 +75,7 @@ import { CaseTimeline } from '../components/investigations/CaseTimeline';
 import { CaseStructure } from '../components/investigations/CaseStructure';
 
 type Resolution = 'resolved' | 'false_positive' | 'duplicate' | 'wont_fix';
-type Tab = 'overview' | 'findings' | 'runs' | 'iocs' | 'daimons' | 'orchestrations' | 'notes' | 'audit';
+type Tab = 'overview' | 'graph' | 'findings' | 'runs' | 'iocs' | 'daimons' | 'orchestrations' | 'notes' | 'audit';
 
 const RESOLUTION_OPTIONS: { value: Resolution; label: string; icon: typeof Check; tone: string }[] = [
   { value: 'resolved',       label: 'Resolved',        icon: CheckCircle2, tone: 'text-green-700' },
@@ -314,6 +319,7 @@ export default function InvestigationDetailPage() {
       {/* Tab strip */}
       <nav className="px-6 border-b border-border flex items-center gap-1 bg-panel">
         <TabButton current={tab} value="overview"      onClick={setTab} icon={FileText}     label="Overview" />
+        <TabButton current={tab} value="graph"         onClick={setTab} icon={Network}      label="Graph" />
         <TabButton current={tab} value="findings"      onClick={setTab} icon={Hash}         label="Findings"        count={bundle.findings.length} />
         <TabButton current={tab} value="runs"          onClick={setTab} icon={Sparkles}     label="Runs"            count={bundle.runs.length} />
         <TabButton current={tab} value="iocs"          onClick={setTab} icon={Eye}          label="IOCs"            count={bundle.iocs.length} />
@@ -342,6 +348,16 @@ export default function InvestigationDetailPage() {
             bundle={bundle}
             onChange={reload}
           />
+        )}
+
+        {tab === 'graph' && (
+          <Suspense fallback={<div className="p-8 text-center text-sm text-ink-mute italic">Loading graph…</div>}>
+            <CaseGraph
+              investigationID={invID}
+              cpInstanceID={cpInstanceID}
+              bundleFindingsCount={bundle.findings.length}
+            />
+          </Suspense>
         )}
 
         {tab === 'findings' && (

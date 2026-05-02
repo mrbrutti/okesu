@@ -746,6 +746,42 @@ export interface InvestigationDetail {
   war_room: boolean;
 }
 
+// Graph view types. Returned by GET /api/investigations/{id}/graph.
+// The bipartite layout puts findings on the left and hosts/daimons/
+// IOCs on the right.
+
+export type GraphNodeKind = 'finding' | 'host' | 'daimon' | 'ioc';
+
+export interface GraphNode {
+  id: string;
+  kind: GraphNodeKind;
+  label: string;
+  // finding-only:
+  severity?: string;
+  host?: string;
+  agent?: string;
+  // daimon-only:
+  finding_count?: number;
+  // ioc-only:
+  ioc_kind?: string;
+  ioc_value?: string;
+  obs_count?: number;
+  host_count?: number;
+}
+
+export interface GraphEdge {
+  id: string;
+  source: string;
+  target: string;
+}
+
+export interface GraphResponse {
+  total_findings: number;
+  limit_applied: number;
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+}
+
 export interface AuthConfig {
   oidc_enabled: boolean;
   oidc_label?: string;
@@ -1377,6 +1413,13 @@ export const api = {
     audit: (invID: number, cpInstanceID?: string) => {
       const qs = cpInstanceID ? `?cp=${encodeURIComponent(cpInstanceID)}` : '';
       return request<InvestigationAuditEvent[]>(`/api/investigations/${invID}/audit${qs}`);
+    },
+    graph: (invID: number, opts?: { cpInstanceID?: string; limit?: number }) => {
+      const qs: string[] = [];
+      if (opts?.cpInstanceID) qs.push(`cp=${encodeURIComponent(opts.cpInstanceID)}`);
+      if (opts?.limit !== undefined) qs.push(`limit=${opts.limit}`);
+      const suffix = qs.length > 0 ? `?${qs.join('&')}` : '';
+      return request<GraphResponse>(`/api/investigations/${invID}/graph${suffix}`);
     },
     bulkLinkFindings: (
       invID: number,
