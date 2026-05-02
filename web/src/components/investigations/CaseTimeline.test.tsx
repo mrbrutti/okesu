@@ -3,6 +3,7 @@ import { render, screen, cleanup, fireEvent } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { CaseTimeline } from './CaseTimeline';
 import type { InvestigationDetail } from '../../api';
+import { api } from '../../api';
 
 // Node 25 ships an experimental top-level `localStorage` that is not
 // usable without `--localstorage-file`; it shadows jsdom's
@@ -36,6 +37,13 @@ vi.mock('../../api', async () => {
       investigations: {
         ...actual.api.investigations,
         audit: vi.fn().mockResolvedValue([]),
+      },
+      savedSearches: {
+        ...actual.api.savedSearches,
+        list: vi.fn().mockResolvedValue([]),
+        create: vi.fn(),
+        update: vi.fn(),
+        delete: vi.fn(),
       },
     },
   };
@@ -216,5 +224,82 @@ describe('CaseTimeline (clusters + tooltip)', () => {
     } finally {
       window.removeEventListener('entity:open', handler);
     }
+  });
+});
+
+describe('CaseTimeline filter integration', () => {
+  function makeFinding(id: number, severity: string, host: string) {
+    return {
+      ID: id,
+      Severity: { Valid: true, String: severity },
+      Title: { Valid: true, String: `f${id}` },
+      Agent: { Valid: true, String: 'edr-agent' },
+      Host: { Valid: true, String: host },
+      Ts: 1700000000000 + id * 1000,
+    } as unknown as InvestigationDetail['findings'][number];
+  }
+
+  it('clicking a severity chip narrows the rendered events to the matching ones', async () => {
+    const b = bundle({
+      findings: [makeFinding(1, 'CRITICAL', 'h1'), makeFinding(2, 'LOW', 'h1')],
+    });
+    render(<MemoryRouter><CaseTimeline bundle={b} /></MemoryRouter>);
+    expect(screen.getAllByRole('button', { name: /Finding #/ })).toHaveLength(2);
+    fireEvent.click(screen.getByRole('button', { name: /^CRITICAL$/ }));
+    expect(screen.getAllByRole('button', { name: /Finding #/ })).toHaveLength(1);
+    expect(screen.getByRole('button', { name: /Finding #1/ })).toBeTruthy();
+  });
+
+  it('renders zero-matches banner when filter excludes every event', () => {
+    const b = bundle({
+      findings: [makeFinding(1, 'LOW', 'h1'), makeFinding(2, 'LOW', 'h1')],
+    });
+    render(<MemoryRouter><CaseTimeline bundle={b} /></MemoryRouter>);
+    fireEvent.click(screen.getByRole('button', { name: /^CRITICAL$/ }));
+    expect(screen.getByText(/0 of \d+ events match/i)).toBeTruthy();
+  });
+
+  it('Clear restores all events', () => {
+    const b = bundle({
+      findings: [makeFinding(1, 'CRITICAL', 'h1'), makeFinding(2, 'LOW', 'h1')],
+    });
+    render(<MemoryRouter><CaseTimeline bundle={b} /></MemoryRouter>);
+    fireEvent.click(screen.getByRole('button', { name: /^CRITICAL$/ }));
+    expect(screen.getAllByRole('button', { name: /Finding #/ })).toHaveLength(1);
+    fireEvent.click(screen.getByRole('button', { name: /clear/i }));
+    expect(screen.getAllByRole('button', { name: /Finding #/ })).toHaveLength(2);
+  });
+});
+
+describe('CaseTimeline default saved search', () => {
+  function makeFinding(id: number, severity: string, host: string) {
+    return {
+      ID: id,
+      Severity: { Valid: true, String: severity },
+      Title: { Valid: true, String: `f${id}` },
+      Agent: { Valid: true, String: 'edr-agent' },
+      Host: { Valid: true, String: host },
+      Ts: 1700000000000 + id * 1000,
+    } as unknown as InvestigationDetail['findings'][number];
+  }
+
+  it('auto-applies the default saved search on mount', async () => {
+    (api.savedSearches.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
+      {
+        id: 5, user_id: 1, name: 'crit-only', scope: 'investigation_timeline',
+        config_json: JSON.stringify({ severities: ['CRITICAL'] }),
+        is_default: true,
+        created_at: '2026-04-01T00:00:00Z', updated_at: '2026-04-01T00:00:00Z',
+      },
+    ]);
+    const b = bundle({
+      findings: [makeFinding(1, 'CRITICAL', 'h1'), makeFinding(2, 'LOW', 'h1')],
+    });
+    render(<MemoryRouter><CaseTimeline bundle={b} /></MemoryRouter>);
+    // Wait one tick so the savedSearches.list promise resolves.
+    await new Promise((r) => setTimeout(r, 0));
+    // Only the CRITICAL finding should still be on the timeline.
+    expect(screen.getAllByRole('button', { name: /Finding #/ })).toHaveLength(1);
+    expect(screen.getByRole('button', { name: /Finding #1/ })).toBeTruthy();
   });
 });
