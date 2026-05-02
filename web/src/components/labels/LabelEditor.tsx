@@ -9,6 +9,7 @@
 import { useEffect, useState } from 'react';
 import { Plus, X, Tag } from 'lucide-react';
 import { api, ApiError, type LabelKind } from '../../api';
+import { notifyLabelsChanged } from './labelsBus';
 
 interface Props {
   kind: LabelKind;
@@ -49,6 +50,7 @@ export function LabelEditor({ kind, idOrKey, readonly, onChange, className = '' 
       setDraftValue('');
       refresh();
       onChange?.();
+      notifyLabelsChanged(kind, idOrKey);
     } catch (e) {
       setError(e instanceof ApiError ? e.message : String(e));
     } finally {
@@ -62,12 +64,31 @@ export function LabelEditor({ kind, idOrKey, readonly, onChange, className = '' 
       await api.deleteLabel(kind, idOrKey, key);
       refresh();
       onChange?.();
+      notifyLabelsChanged(kind, idOrKey);
     } catch (e) {
       setError(e instanceof ApiError ? e.message : String(e));
     } finally {
       setBusy(false);
     }
   }
+
+  // Listen for sibling LabelStrip / LabelEditor mutations so the
+  // chip list re-renders without waiting for a parent reload tick.
+  // Uses a window-level CustomEvent so any consumer of the same
+  // (kind, idOrKey) stays in sync — fixes the "I added two labels
+  // but only see one" bug where the header strip cached state and
+  // the body editor didn't notify it.
+  useEffect(() => {
+    function handler(e: Event) {
+      const ev = e as CustomEvent<{ kind: string; idOrKey: string | number }>;
+      if (ev.detail?.kind === kind && String(ev.detail?.idOrKey) === String(idOrKey)) {
+        refresh();
+      }
+    }
+    window.addEventListener('okesu:labels:changed', handler);
+    return () => window.removeEventListener('okesu:labels:changed', handler);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [kind, idOrKey]);
 
   return (
     <div className={className}>
