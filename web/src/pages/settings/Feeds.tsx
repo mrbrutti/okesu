@@ -276,10 +276,16 @@ function FeedRow({
       <td className="px-3 py-2 text-right">
         <div className="inline-flex gap-1">
           <button
-            disabled={busy !== null || isFederated}
+            disabled={busy !== null || isFederated || !f.Enabled}
             onClick={onRefresh}
             className="px-2 py-1 text-xs rounded border border-border hover:bg-slate-50 disabled:opacity-40"
-            title={isFederated ? 'Federated feeds refresh on a schedule' : 'Refresh now'}
+            title={
+              isFederated
+                ? 'Federated feeds refresh on a schedule'
+                : !f.Enabled
+                  ? 'Feed is disabled — enable it first to allow refreshes'
+                  : 'Refresh now'
+            }
           >
             <RefreshCw size={12} />
           </button>
