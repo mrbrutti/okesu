@@ -1,8 +1,23 @@
-import { describe, it, expect, afterEach } from 'vitest';
-import { render, screen, cleanup } from '@testing-library/react';
+import { describe, it, expect, afterEach, vi } from 'vitest';
+import { render, screen, cleanup, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { CaseStructure } from './CaseStructure';
-import type { InvestigationDetail } from '../../api';
+import { api, ApiError, type InvestigationDetail, type InvestigationStructure } from '../../api';
+
+vi.mock('../../api', async () => {
+  const actual = await vi.importActual<typeof import('../../api')>('../../api');
+  const { ApiError: ActualApiError } = actual;
+  return {
+    ...actual,
+    api: {
+      ...actual.api,
+      investigations: {
+        ...actual.api.investigations,
+        structure: vi.fn().mockRejectedValue(new ActualApiError(404, 'not implemented')),
+      },
+    },
+  };
+});
 
 afterEach(cleanup);
 
@@ -88,5 +103,51 @@ describe('CaseStructure', () => {
     expect(screen.getByText(/triage/)).toBeTruthy();
     expect(screen.getByText(/2 ✓/)).toBeTruthy();
     expect(screen.getByText(/1 ✗/)).toBeTruthy();
+  });
+});
+
+describe('CaseStructure (server-side path)', () => {
+  it('renders host count from /structure response', async () => {
+    (api.investigations.structure as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      hosts:          [{ Host: 'edr-fedora-3', Count: 7 }, { Host: 'web-1', Count: 2 }],
+      iocs:           [],
+      daimons:        [],
+      orchestrations: [],
+    } satisfies InvestigationStructure);
+    render(<MemoryRouter><CaseStructure bundle={makeBundle()} /></MemoryRouter>);
+    await waitFor(() => {
+      expect(screen.getByText(/Hosts \(2\)/)).toBeTruthy();
+      expect(screen.getByText(/edr-fedora-3 — 7 findings/)).toBeTruthy();
+    });
+  });
+});
+
+describe('CaseStructure (fallback path)', () => {
+  it('falls back to bundle-derived numbers on 404', async () => {
+    (api.investigations.structure as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new ApiError(404, 'not found'),
+    );
+    const bundle = makeBundle({
+      findings: [
+        { ID: 1, Ts: 0, Severity: { Valid: true, String: 'HIGH' }, Title: { Valid: true, String: 't' }, Agent: { Valid: true, String: 'a' }, Host: { Valid: true, String: 'h-a' }, Status: { String: 'open', Valid: true }, Tags: { String: '', Valid: false }, Subtype: { String: '', Valid: false }, LinkedAt: '', LinkMethod: { String: '', Valid: false }, LinkedBy: { String: '', Valid: false } },
+        { ID: 2, Ts: 0, Severity: { Valid: true, String: 'HIGH' }, Title: { Valid: true, String: 't' }, Agent: { Valid: true, String: 'a' }, Host: { Valid: true, String: 'h-a' }, Status: { String: 'open', Valid: true }, Tags: { String: '', Valid: false }, Subtype: { String: '', Valid: false }, LinkedAt: '', LinkMethod: { String: '', Valid: false }, LinkedBy: { String: '', Valid: false } },
+      ] as unknown as InvestigationDetail['findings'],
+    });
+    render(<MemoryRouter><CaseStructure bundle={bundle} /></MemoryRouter>);
+    // Bundle-derived hosts: 1 distinct host with count 2.
+    await waitFor(() => {
+      expect(screen.getByText(/Hosts \(1\)/)).toBeTruthy();
+      expect(screen.getByText(/h-a — 2 findings/)).toBeTruthy();
+    });
+  });
+
+  it('falls back on network error', async () => {
+    (api.investigations.structure as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error('network down'),
+    );
+    render(<MemoryRouter><CaseStructure bundle={makeBundle()} /></MemoryRouter>);
+    await waitFor(() => {
+      expect(screen.getByText(/Hosts \(0\)/)).toBeTruthy();
+    });
   });
 });

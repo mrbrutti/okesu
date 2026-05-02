@@ -1,13 +1,15 @@
 // CaseStructure: four-card grid summarising case shape across hosts /
-// IOCs / daimons / runs+orchestrations. Pure presentation over the
-// existing InvestigationDetail bundle. Click-throughs use react-router
-// for tab navigation; row clicks fire entity:open for drawer-bearing
-// kinds (IOC) — same bus the SmartPayload chips use.
-import { useMemo } from 'react';
+// IOCs / daimons / runs+orchestrations. Fetches the pre-aggregated
+// /structure endpoint on mount; falls back to client-side derivation
+// over the bundle if the fetch fails (federated child running an
+// older binary, transient network error). Click-throughs use
+// react-router for tab navigation; row clicks fire entity:open.
+import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Bot, Hash, Server, Workflow } from 'lucide-react';
-import type { InvestigationDetail } from '../../api';
-import { aggregateHosts, topIOCs, topDaimons, deriveOrchestrations } from './caseStructure/derive';
+import type { InvestigationDetail, InvestigationStructure } from '../../api';
+import { api } from '../../api';
+import { deriveFromBundle } from './caseStructure/derive';
 
 interface Props {
   bundle: InvestigationDetail;
@@ -15,19 +17,40 @@ interface Props {
 }
 
 export function CaseStructure({ bundle, cpInstanceID }: Props) {
-  const hostsList = useMemo(() => aggregateHosts(bundle), [bundle]);
-  const iocs = useMemo(() => topIOCs(bundle), [bundle]);
-  const daimons = useMemo(() => topDaimons(bundle), [bundle]);
-  const orchList = useMemo(() => deriveOrchestrations(bundle), [bundle]);
-  // totalRuns sums the per-orch RunCount instead of bundle.runs.length
-  // because the server path (Task 5) consumes structure.orchestrations
-  // only — there is no raw runs array to count from. In the bundle/
-  // fallback path the two values are equivalent (every run has an
-  // orchestration ID), so the result matches the old computation.
+  const [data, setData] = useState<InvestigationStructure | null>(null);
+  const invID = bundle.investigation.ID;
+
+  useEffect(() => {
+    let cancelled = false;
+    api.investigations.structure(invID, cpInstanceID)
+      .then((r) => { if (!cancelled) setData(r); })
+      .catch(() => {
+        if (!cancelled) {
+          setData(null);
+          console.warn('case-structure fetch failed; using bundle-derived view', invID);
+        }
+      });
+    return () => { cancelled = true; };
+  }, [invID, cpInstanceID]);
+
+  // data === null → either still loading OR fetch failed; either
+  // way render from the bundle-derived view. Wire shape is identical
+  // so the rest of the render is shared.
+  const view: InvestigationStructure = useMemo(
+    () => data ?? deriveFromBundle(bundle),
+    [data, bundle],
+  );
+
+  const hostsList = view.hosts;
+  const iocsList = view.iocs;
+  const daimonsList = view.daimons;
+  const orchList = view.orchestrations;
+  // totalRuns sums per-orch RunCount instead of bundle.runs.length:
+  // the server path (no raw runs array) and bundle/fallback path
+  // produce the same value when every run has an orchestration ID.
   const totalRuns = useMemo(() => orchList.reduce((acc, o) => acc + o.RunCount, 0), [orchList]);
 
   const cpQS = cpInstanceID ? `&cp=${encodeURIComponent(cpInstanceID)}` : '';
-  const invID = bundle.investigation.ID;
 
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
@@ -41,10 +64,10 @@ export function CaseStructure({ bundle, cpInstanceID }: Props) {
       />
       <Card
         icon={<Hash size={14} className="text-purple-600" />}
-        title={`IOCs (${iocs.length})`}
-        empty={iocs.length === 0 ? 'no items linked yet' : null}
-        topLine={iocs[0] ? `Most-observed: ${iocs[0].Kind}:${shortVal(iocs[0].Value)} — ${iocs[0].ObservationCount} obs across ${iocs[0].HostCount} host${iocs[0].HostCount === 1 ? '' : 's'}` : null}
-        rows={iocs.slice(1, 4).map((i) => ({
+        title={`IOCs (${iocsList.length})`}
+        empty={iocsList.length === 0 ? 'no items linked yet' : null}
+        topLine={iocsList[0] ? `Most-observed: ${iocsList[0].Kind}:${shortVal(iocsList[0].Value)} — ${iocsList[0].ObservationCount} obs across ${iocsList[0].HostCount} host${iocsList[0].HostCount === 1 ? '' : 's'}` : null}
+        rows={iocsList.slice(1, 4).map((i) => ({
           key: `${i.Kind}:${i.Value}`,
           label: `${i.Kind}:${shortVal(i.Value)}`,
           suffix: `${i.ObservationCount} obs`,
@@ -54,10 +77,10 @@ export function CaseStructure({ bundle, cpInstanceID }: Props) {
       />
       <Card
         icon={<Bot size={14} className="text-indigo-600" />}
-        title={`Daimons (${daimons.length})`}
-        empty={daimons.length === 0 ? 'no items linked yet' : null}
-        topLine={daimons[0] ? `Top emitter: ${daimons[0].Agent} — ${daimons[0].FindingCount} finding${daimons[0].FindingCount === 1 ? '' : 's'}, last seen ${relTime(daimons[0].LastSeenTs)}` : null}
-        rows={daimons.slice(1, 4).map((d) => ({ key: d.Agent, label: d.Agent, suffix: `${d.FindingCount}` }))}
+        title={`Daimons (${daimonsList.length})`}
+        empty={daimonsList.length === 0 ? 'no items linked yet' : null}
+        topLine={daimonsList[0] ? `Top emitter: ${daimonsList[0].Agent} — ${daimonsList[0].FindingCount} finding${daimonsList[0].FindingCount === 1 ? '' : 's'}, last seen ${relTime(daimonsList[0].LastSeenTs)}` : null}
+        rows={daimonsList.slice(1, 4).map((d) => ({ key: d.Agent, label: d.Agent, suffix: `${d.FindingCount}` }))}
         tabHref={`/investigations/${invID}?tab=daimons${cpQS}`}
       />
       <Card
