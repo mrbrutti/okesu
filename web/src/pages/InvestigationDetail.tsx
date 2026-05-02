@@ -361,7 +361,7 @@ export default function InvestigationDetailPage() {
         )}
 
         {tab === 'notes' && (
-          <NotesPanel invID={invID} notes={bundle.notes} onChange={reload} />
+          <NotesPanel invID={invID} cpInstanceID={cpInstanceID} notes={bundle.notes} onChange={reload} />
         )}
 
         {tab === 'audit' && (
@@ -744,22 +744,26 @@ function OrchestrationsPanel({ invID, cpInstanceID, orchs, onChange }: {
 
 // ── Notes panel ─────────────────────────────────────────────────────
 
-function NotesPanel({ invID, notes, onChange }: {
+function NotesPanel({ invID, cpInstanceID, notes, onChange }: {
   invID: number;
+  cpInstanceID?: string;
   notes: InvestigationNote[];
   onChange: () => void;
 }) {
   const [author, setAuthor] = useState('');
   const [body, setBody] = useState('');
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   async function add() {
     if (!body.trim()) return;
-    setBusy(true);
+    setBusy(true); setError(null);
     try {
-      await api.investigations.addNote(invID, author.trim() || 'operator', body.trim());
+      await api.investigations.addNote(invID, author.trim() || 'operator', body.trim(), cpInstanceID);
       setBody('');
       onChange();
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : String(e));
     } finally {
       setBusy(false);
     }
@@ -787,7 +791,12 @@ function NotesPanel({ invID, notes, onChange }: {
           className="w-full px-2.5 py-1.5 rounded-md border border-border text-sm"
           placeholder="Add a note — observations, hypotheses, next steps…"
         />
-        <div className="flex justify-end">
+        <div className="flex items-center justify-between gap-2">
+          {error ? (
+            <div className="text-xs text-red-700 bg-red-50 border border-red-200 px-2 py-1 rounded">
+              {error}
+            </div>
+          ) : <span />}
           <button
             onClick={add}
             disabled={busy || !body.trim()}

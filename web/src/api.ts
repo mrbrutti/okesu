@@ -1305,11 +1305,18 @@ export const api = {
         method: 'PATCH',
         body: JSON.stringify(patch),
       }),
-    addNote: (id: number, author: string, body: string) =>
-      request<{ id: number }>(`/api/investigations/${id}/notes`, {
+    addNote: (id: number, author: string, body: string, cpInstanceID?: string) => {
+      // Federated note posting: when the case lives on a child CP,
+      // append ?cp=<id> so the parent forwards the POST to that
+      // child via FederatedAddInvestigationNote. Without the
+      // forwarding the note lands on the parent's local case with
+      // the same id and silently disappears from the operator's view.
+      const qs = cpInstanceID ? `?cp=${encodeURIComponent(cpInstanceID)}` : '';
+      return request<{ id: number }>(`/api/investigations/${id}/notes${qs}`, {
         method: 'POST',
         body: JSON.stringify({ author, body }),
-      }),
+      });
+    },
     linkFinding: (invID: number, findingID: number, cpInstanceID?: string) => {
       const qs = cpInstanceID ? `?cp=${encodeURIComponent(cpInstanceID)}` : '';
       return request<void>(`/api/investigations/${invID}/findings/${findingID}${qs}`, {

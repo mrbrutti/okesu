@@ -666,6 +666,7 @@ func (s *Server) routes() http.Handler {
 	r.Post("/api/v1/federation/investigations", api.FederationCreateInvestigation(s.store))
 	r.Put("/api/v1/federation/investigations/{id}/findings/{finding_id}", api.FederationLinkFindingToInvestigation(s.store))
 	r.Put("/api/v1/federation/investigations/{id}/runs/{run_id}", api.FederationLinkRunToInvestigation(s.store))
+	r.Post("/api/v1/federation/investigations/{id}/notes", api.FederationAddInvestigationNote(s.store))
 	// Phase 22.6 — Suggested findings on a case workspace. Read +
 	// dismiss are CP-local (tombstones live with the case row), so
 	// federate via the same `?cp=<id>` proxy convention.
@@ -887,7 +888,7 @@ func (s *Server) routes() http.Handler {
 		r.Post("/api/investigations/by-dedup", api.UpsertInvestigationByDedupHandler(s.store))
 		r.Get("/api/investigations/{id}", api.FederatedInvestigationDetail(s.store, s.fedAgg))
 		r.Patch("/api/investigations/{id}", api.UpdateInvestigationHandler(s.store))
-		r.Post("/api/investigations/{id}/notes", api.AddInvestigationNoteHandler(s.store))
+		r.Post("/api/investigations/{id}/notes", api.FederatedAddInvestigationNote(s.store, s.fedAgg))
 		r.Put("/api/investigations/{id}/findings/{finding_id}", api.FederatedLinkFindingToInvestigation(s.store, s.fedAgg))
 		r.Delete("/api/investigations/{id}/findings/{finding_id}", api.UnlinkFindingFromInvestigationHandler(s.store))
 		r.Put("/api/investigations/{id}/runs/{run_id}", api.FederatedLinkRunToInvestigation(s.store, s.fedAgg))
