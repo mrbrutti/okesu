@@ -49,7 +49,17 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     const text = await res.text().catch(() => res.statusText);
     throw new ApiError(res.status, text || res.statusText, text);
   }
-  if (res.status === 204) return undefined as T;
+  // 204 No Content (RFC 7231) and 202 Accepted both routinely arrive
+  // with empty bodies. Reading them via res.json() would throw a
+  // SyntaxError on the empty string; WebKit surfaces this as
+  // "The string did not match the expected pattern" rather than the
+  // V8/Firefox "Unexpected end of JSON input". Short-circuit instead.
+  if (res.status === 204 || res.status === 202) return undefined as T;
+  // Defensive fallback: if any other 2xx returns Content-Length: 0,
+  // treat it as empty too rather than letting JSON.parse throw on an
+  // empty string. Cheap to check, generous to handlers that omit the
+  // body for nominal success paths.
+  if (res.headers.get('Content-Length') === '0') return undefined as T;
   return res.json();
 }
 
