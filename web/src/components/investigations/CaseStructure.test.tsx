@@ -80,7 +80,7 @@ describe('CaseStructure', () => {
         { ID: 3, OrchestrationID: 100, OrchestrationName: { String: 'triage', Valid: true }, Status: 'failed',    TriggerKind: 'auto', StartedAt: '2026-05-01T00:02:00Z', EndedAt: { String: '2026-05-01T00:03:00Z', Valid: true }, CurrentStepID: { String: '', Valid: false }, Error: { String: 'oops', Valid: true }, LinkedAt: '' },
       ],
       orchestrations: [
-        { OrchestrationID: { Int64: 100, Valid: true }, OrchestrationName: 'triage', RunCount: 3, LastStartedAt: '2026-05-01T00:02:00Z' },
+        { OrchestrationID: { Int64: 100, Valid: true }, OrchestrationName: 'triage', RunCount: 3, Completed: 2, Failed: 1, Cancelled: 0, Running: 0, LastStartedAt: '2026-05-01T00:02:00Z' },
       ],
     });
     render(<MemoryRouter><CaseStructure bundle={bundle} /></MemoryRouter>);
