@@ -9,6 +9,7 @@
 import { useMemo } from 'react';
 import type { InvestigationDetail } from '../../api';
 import type { Severity, RunStatus, TimelineFilterConfig } from './timeline/filter';
+import { cn } from '../../lib/cn';
 
 const SEVERITIES: Severity[] = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO'];
 const RUN_STATUSES: RunStatus[] = ['completed', 'failed', 'cancelled', 'running'];
@@ -22,6 +23,9 @@ interface Props {
 export function TimelineFilterBar({ bundle, filter, onChange }: Props) {
   const hosts = useMemo(() => distinctHosts(bundle), [bundle]);
   const agents = useMemo(() => distinctAgents(bundle), [bundle]);
+  const invID = bundle.investigation.ID;
+  const hostListID = `timeline-host-options-${invID}`;
+  const agentListID = `timeline-agent-options-${invID}`;
 
   function toggleSev(s: Severity) {
     const cur = filter.severities ?? [];
@@ -36,11 +40,13 @@ export function TimelineFilterBar({ bundle, filter, onChange }: Props) {
   }
 
   function setHost(v: string) {
-    onChange({ ...filter, host: v.trim() === '' ? undefined : v });
+    const t = v.trim();
+    onChange({ ...filter, host: t === '' ? undefined : t });
   }
 
   function setAgent(v: string) {
-    onChange({ ...filter, agent: v.trim() === '' ? undefined : v });
+    const t = v.trim();
+    onChange({ ...filter, agent: t === '' ? undefined : t });
   }
 
   function clear() {
@@ -60,7 +66,12 @@ export function TimelineFilterBar({ bundle, filter, onChange }: Props) {
             type="button"
             onClick={() => toggleSev(s)}
             aria-pressed={sevSelected(s)}
-            className={`px-2 py-0.5 rounded-md border ${sevSelected(s) ? sevTone(s) : 'border-border bg-white text-ink-mute'}`}
+            className={cn(
+              'severity-badge',
+              `severity-${s.toLowerCase()}`,
+              'cursor-pointer transition',
+              sevSelected(s) ? 'ring-2 ring-offset-1 ring-brand-500/40' : 'opacity-60 hover:opacity-100',
+            )}
           >
             {s}
           </button>
@@ -69,28 +80,28 @@ export function TimelineFilterBar({ bundle, filter, onChange }: Props) {
       <label className="flex items-center gap-1">
         <span className="text-ink-mute">Host:</span>
         <input
-          list="timeline-host-options"
+          list={hostListID}
           value={filter.host ?? ''}
           onChange={(e) => setHost(e.target.value)}
           placeholder="any"
-          className="px-2 py-0.5 rounded border border-border outline-none focus:ring-1 focus:ring-brand-300"
+          className="px-2 py-0.5 rounded border border-border focus:outline-none focus:ring-2 focus:ring-brand-500/30"
           style={{ minWidth: 140 }}
         />
-        <datalist id="timeline-host-options">
+        <datalist id={hostListID}>
           {hosts.map((h) => <option key={h} value={h} />)}
         </datalist>
       </label>
       <label className="flex items-center gap-1">
         <span className="text-ink-mute">Agent:</span>
         <input
-          list="timeline-agent-options"
+          list={agentListID}
           value={filter.agent ?? ''}
           onChange={(e) => setAgent(e.target.value)}
           placeholder="any"
-          className="px-2 py-0.5 rounded border border-border outline-none focus:ring-1 focus:ring-brand-300"
+          className="px-2 py-0.5 rounded border border-border focus:outline-none focus:ring-2 focus:ring-brand-500/30"
           style={{ minWidth: 140 }}
         />
-        <datalist id="timeline-agent-options">
+        <datalist id={agentListID}>
           {agents.map((a) => <option key={a} value={a} />)}
         </datalist>
       </label>
@@ -136,14 +147,6 @@ function distinctAgents(bundle: InvestigationDetail): string[] {
     if (d.Agent) set.add(d.Agent);
   }
   return [...set].sort();
-}
-
-function sevTone(s: Severity): string {
-  if (s === 'CRITICAL') return 'border-red-300 bg-red-50 text-red-700';
-  if (s === 'HIGH') return 'border-orange-300 bg-orange-50 text-orange-700';
-  if (s === 'MEDIUM') return 'border-amber-300 bg-amber-50 text-amber-700';
-  if (s === 'LOW') return 'border-blue-300 bg-blue-50 text-blue-700';
-  return 'border-slate-300 bg-slate-50 text-slate-700';
 }
 
 function runTone(r: RunStatus): string {

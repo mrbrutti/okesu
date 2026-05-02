@@ -89,4 +89,11 @@ describe('TimelineFilterBar', () => {
     fireEvent.click(screen.getByRole('button', { name: /clear/i }));
     expect(onChange).toHaveBeenCalledWith({});
   });
+
+  it('trims surrounding whitespace from host input before storing', () => {
+    const onChange = vi.fn();
+    render(<TimelineFilterBar bundle={bundle()} filter={{}} onChange={onChange} />);
+    fireEvent.change(screen.getByLabelText(/host/i), { target: { value: '  edr-fedora-3  ' } });
+    expect(onChange).toHaveBeenCalledWith({ host: 'edr-fedora-3' });
+  });
 });
