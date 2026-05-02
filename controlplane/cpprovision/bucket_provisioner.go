@@ -53,6 +53,24 @@ type BucketInfo struct {
 	Endpoint string `json:"endpoint"`
 }
 
+// CompartmentLister is implemented by clouds that have a compartment
+// concept (OCI). Clouds without it (AWS, MinIO) simply don't implement
+// this interface — callers check via type assertion and return an empty
+// list so the UI can show "no compartments" messaging.
+type CompartmentLister interface {
+	ListCompartments(ctx context.Context, creds []byte, region string) ([]Compartment, error)
+}
+
+// Compartment is the cross-cloud projection of a cloud compartment /
+// organisational unit. Currently only OCI has a first-class compartment
+// concept; for other clouds the field is unused.
+type Compartment struct {
+	OCID           string `json:"ocid"`
+	Name           string `json:"name"`
+	ParentID       string `json:"parent_id,omitempty"`
+	LifecycleState string `json:"lifecycle_state,omitempty"`
+}
+
 // ErrNoBucketProvisioner is returned by BucketRegistry.Get when the
 // requested cloud has no implementation registered.
 var ErrNoBucketProvisioner = errors.New("no bucket provisioner registered")

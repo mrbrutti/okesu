@@ -1802,6 +1802,15 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ monthly_budget_usd: monthlyBudgetUSD }),
     }),
+  // AddBucketWizard compartment selector. Returns every compartment
+  // the credential can see, sorted by name. Returns [] for clouds
+  // without compartments (AWS, MinIO). OCI only for now.
+  cloudCredentialCompartments: (id: number, region?: string) =>
+    request<CloudCompartment[]>(
+      region
+        ? `/api/cloud-credentials/${id}/compartments?region=${encodeURIComponent(region)}`
+        : `/api/cloud-credentials/${id}/compartments`,
+    ),
 
   // Fleet-env (Settings → LLM Keys). GET returns the masked summary;
   // PUT applies a partial patch (omit field = leave alone, "" =
@@ -2713,6 +2722,16 @@ export interface CloudCredentialUpdateRequest {
   name?: string;
   region?: string;
   payload?: Record<string, string>;
+}
+
+/** A cloud compartment / organisational unit. Currently only OCI has
+ *  a first-class compartment concept; for AWS/MinIO the endpoint
+ *  returns an empty array. */
+export interface CloudCompartment {
+  ocid: string;
+  name: string;
+  parent_id?: string;
+  lifecycle_state?: string;
 }
 
 // Fleet-env (Settings → LLM Keys). Holds Anthropic + OpenAI keys

@@ -1004,6 +1004,11 @@ func (s *Server) routes() http.Handler {
 			// Phase 21.5 — per-credential monthly USD budget. Empty body
 			// (or {"monthly_budget_usd": null}) clears the cap.
 			r.Put("/api/cloud-credentials/{id}/budget", api.CloudCredentialBudgetUpdate(s.store))
+			// AddBucketWizard compartment selector. Returns the flat
+			// list of compartments the credential can see, sorted by
+			// name. Returns [] for clouds without compartments (AWS,
+			// MinIO). OCI paginates up to 5 000 compartments.
+			r.Get("/api/cloud-credentials/{id}/compartments", api.ListCompartmentsForCredential(s.store, s.bucketProvisioners))
 			// Cloud-side discovery for the +Add CP "Managed deploy"
 			// dropdowns. Each handler decrypts the credential, calls
 			// the relevant SDK list endpoint, and returns
