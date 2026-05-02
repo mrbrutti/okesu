@@ -120,6 +120,17 @@ describe('applyTimelineFilter', () => {
     expect(out.some((e) => e.kind === 'note')).toBe(true);
   });
 
+  it('trims whitespace around host and agent before matching', () => {
+    const events: TimelineEvent[] = [
+      finding({ id: 1, host: 'edr-fedora-3', agent: 'edr-agent' }),
+      finding({ id: 2, host: 'web-1',        agent: 'web-agent' }),
+    ];
+    const out1 = applyTimelineFilter(events, { host: '  edr-fedora-3  ' });
+    expect(out1.filter((e) => e.kind === 'finding').map((f) => f.kind === 'finding' ? f.id : 0)).toEqual([1]);
+    const out2 = applyTimelineFilter(events, { agent: '  edr-agent  ' });
+    expect(out2.filter((e) => e.kind === 'finding').map((f) => f.kind === 'finding' ? f.id : 0)).toEqual([1]);
+  });
+
   it('AND-s across dimensions (severity + host)', () => {
     const events: TimelineEvent[] = [
       finding({ id: 1, severity: 'HIGH', host: 'edr-fedora-3' }),
