@@ -98,10 +98,12 @@ export function CaseTimeline({ bundle, cpInstanceID }: Props) {
   );
 
   const activeSavedID = useMemo(() => {
-    const target = JSON.stringify(filter);
+    const target = normaliseFilter(filter);
     for (const s of savedSearches) {
       try {
-        if (JSON.stringify(JSON.parse(s.config_json)) === target) return s.id;
+        if (normaliseFilter(JSON.parse(s.config_json) as TimelineFilterConfig) === target) {
+          return s.id;
+        }
       } catch { /* skip malformed */ }
     }
     return null;
@@ -189,8 +191,11 @@ export function CaseTimeline({ bundle, cpInstanceID }: Props) {
             currentConfig={filter}
             activeID={activeSavedID}
             onApply={(s) => {
-              try { setFilter(JSON.parse(s.config_json) as TimelineFilterConfig); }
-              catch { /* malformed — ignore */ }
+              try {
+                setFilter(JSON.parse(s.config_json) as TimelineFilterConfig);
+              } catch {
+                console.warn('investigation_timeline saved search has malformed config_json', s.id);
+              }
             }}
             onSearchesChange={refreshSavedSearches}
           />
@@ -603,6 +608,15 @@ function renderCluster(
       </g>
     </Tooltip>
   );
+}
+
+function normaliseFilter(f: TimelineFilterConfig): string {
+  const o: Record<string, unknown> = {};
+  if (f.severities && f.severities.length > 0) o.severities = [...f.severities].sort();
+  if (f.host) o.host = f.host;
+  if (f.agent) o.agent = f.agent;
+  if (f.run_statuses && f.run_statuses.length > 0) o.run_statuses = [...f.run_statuses].sort();
+  return JSON.stringify(o);
 }
 
 function loadLanes(): TimelineLane[] {

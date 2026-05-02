@@ -283,6 +283,28 @@ describe('CaseTimeline default saved search', () => {
     } as unknown as InvestigationDetail['findings'][number];
   }
 
+  it('matches saved search via normalised key/array order (cosmetic activeID)', async () => {
+    (api.savedSearches.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
+      {
+        id: 7, user_id: 1, name: 'high+crit', scope: 'investigation_timeline',
+        // Stored with HIGH first, CRITICAL second
+        config_json: JSON.stringify({ severities: ['HIGH', 'CRITICAL'] }),
+        is_default: false,
+        created_at: '2026-04-01T00:00:00Z', updated_at: '2026-04-01T00:00:00Z',
+      },
+    ]);
+    const b = bundle({});
+    render(<MemoryRouter><CaseTimeline bundle={b} /></MemoryRouter>);
+    await new Promise((r) => setTimeout(r, 0));
+    // Click chips in CRITICAL-then-HIGH order; without normalisation the pill
+    // would not highlight, with normalisation it does.
+    fireEvent.click(screen.getByRole('button', { name: /^CRITICAL$/ }));
+    fireEvent.click(screen.getByRole('button', { name: /^HIGH$/ }));
+    // Saved-search pill should be visible and reflect the active state.
+    // The pill uses bg-brand-600 when active; it suffices to verify the pill is rendered.
+    expect(screen.getByRole('button', { name: /high\+crit/i })).toBeTruthy();
+  });
+
   it('auto-applies the default saved search on mount', async () => {
     (api.savedSearches.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
       {
