@@ -83,6 +83,16 @@ export function CaseTimeline({ bundle, cpInstanceID }: Props) {
 
   const filteredEvents = useMemo(() => applyTimelineFilter(events, filter), [events, filter]);
 
+  const primaryEventCount = useMemo(
+    () => events.filter((e) => e.kind !== 'lifecycle' && e.kind !== 'daimon').length,
+    [events],
+  );
+
+  const filteredPrimaryCount = useMemo(
+    () => filteredEvents.filter((e) => e.kind !== 'lifecycle' && e.kind !== 'daimon').length,
+    [filteredEvents],
+  );
+
   const activeSavedID = useMemo(() => {
     const target = JSON.stringify(filter);
     for (const s of savedSearches) {
@@ -185,10 +195,9 @@ export function CaseTimeline({ bundle, cpInstanceID }: Props) {
 
       <TimelineFilterBar bundle={bundle} filter={filter} onChange={setFilter} />
 
-      {filteredEvents.filter((e) => e.kind !== 'lifecycle' && e.kind !== 'daimon').length === 0 &&
-        events.filter((e) => e.kind !== 'lifecycle' && e.kind !== 'daimon').length > 0 && (
+      {filteredPrimaryCount === 0 && primaryEventCount > 0 && (
         <div className="px-3 py-1.5 rounded-md text-xs text-amber-800 bg-amber-50 border border-amber-200">
-          0 of {events.filter((e) => e.kind !== 'lifecycle' && e.kind !== 'daimon').length} events match — adjust filters or click Clear.
+          0 of {primaryEventCount} events match — adjust filters or click Clear.
         </div>
       )}
 
