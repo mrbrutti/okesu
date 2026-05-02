@@ -7,8 +7,11 @@
 // Refresh is driven by the parent's existing 30s/5s war-room poll —
 // re-render happens on every bundle replacement.
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { InvestigationDetail, InvestigationAuditEvent } from '../../api';
+import type { InvestigationDetail, InvestigationAuditEvent, SavedSearch } from '../../api';
 import { api } from '../../api';
+import { TimelineFilterBar } from './TimelineFilterBar';
+import { SavedSearchesBar } from '../SavedSearchesBar';
+import { applyTimelineFilter, type TimelineFilterConfig } from './timeline/filter';
 import { buildEvents } from './timeline/buildEvents';
 import { ALL_LANES, DEFAULT_LANES_ON, type TimelineLane, type TimelineEvent } from './timeline/types';
 import { autoFitRange, presetRange, tToX, type Preset, type Range } from './timeline/scale';
@@ -36,6 +39,36 @@ export function CaseTimeline({ bundle, cpInstanceID }: Props) {
   const [audit, setAudit] = useState<InvestigationAuditEvent[]>([]);
   const [range, setRange] = useState<Range | null>(null);
   const auditFetchedRef = useRef(false);
+  const [filter, setFilter] = useState<TimelineFilterConfig>({});
+  const [savedSearches, setSavedSearches] = useState<SavedSearch[]>([]);
+  const defaultAppliedRef = useRef(false);
+
+  const refreshSavedSearches = () => {
+    api.savedSearches.list('investigation_timeline')
+      .then(setSavedSearches)
+      .catch(() => { /* silent — filtering still works without saved searches */ });
+  };
+  useEffect(() => { refreshSavedSearches(); }, []);
+
+  // Apply default saved search once after the list lands. Skip if a
+  // filter is already set (operator already changed something) so we
+  // don't clobber explicit intent.
+  useEffect(() => {
+    if (defaultAppliedRef.current) return;
+    if (savedSearches.length === 0) return;
+    const def = savedSearches.find((s) => s.is_default);
+    defaultAppliedRef.current = true;
+    if (!def) return;
+    const hasFilter = Object.keys(filter).length > 0;
+    if (hasFilter) return;
+    try {
+      const parsed = JSON.parse(def.config_json) as TimelineFilterConfig;
+      setFilter(parsed);
+    } catch {
+      console.warn('investigation_timeline saved search has malformed config_json', def.id);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [savedSearches]);
 
   // Lazy-fetch audit lane the first time it's enabled.
   useEffect(() => {
@@ -47,6 +80,18 @@ export function CaseTimeline({ bundle, cpInstanceID }: Props) {
   }, [activeLanes, bundle.investigation.ID, cpInstanceID]);
 
   const events = useMemo(() => buildEvents(bundle, audit), [bundle, audit]);
+
+  const filteredEvents = useMemo(() => applyTimelineFilter(events, filter), [events, filter]);
+
+  const activeSavedID = useMemo(() => {
+    const target = JSON.stringify(filter);
+    for (const s of savedSearches) {
+      try {
+        if (JSON.stringify(JSON.parse(s.config_json)) === target) return s.id;
+      } catch { /* skip malformed */ }
+    }
+    return null;
+  }, [savedSearches, filter]);
 
   const visibleLanes = useMemo(() => ALL_LANES.filter((l) => activeLanes.includes(l)), [activeLanes]);
 
@@ -122,6 +167,31 @@ export function CaseTimeline({ bundle, cpInstanceID }: Props) {
         </div>
       </div>
 
+      {(savedSearches.length > 0 || Object.keys(filter).length > 0) && (
+        <div className="flex items-center gap-2 flex-wrap pt-1 border-t border-border">
+          <SavedSearchesBar
+            scope="investigation_timeline"
+            searches={savedSearches}
+            currentConfig={filter}
+            activeID={activeSavedID}
+            onApply={(s) => {
+              try { setFilter(JSON.parse(s.config_json) as TimelineFilterConfig); }
+              catch { /* malformed — ignore */ }
+            }}
+            onSearchesChange={refreshSavedSearches}
+          />
+        </div>
+      )}
+
+      <TimelineFilterBar bundle={bundle} filter={filter} onChange={setFilter} />
+
+      {filteredEvents.filter((e) => e.kind !== 'lifecycle' && e.kind !== 'daimon').length === 0 &&
+        events.filter((e) => e.kind !== 'lifecycle' && e.kind !== 'daimon').length > 0 && (
+        <div className="px-3 py-1.5 rounded-md text-xs text-amber-800 bg-amber-50 border border-amber-200">
+          0 of {events.filter((e) => e.kind !== 'lifecycle' && e.kind !== 'daimon').length} events match — adjust filters or click Clear.
+        </div>
+      )}
+
       {onlyLifecycle ? (
         <div style={{ height: MIN_HEIGHT }} className="flex items-center justify-center text-sm text-ink-mute italic">
           No signals yet — link findings to populate the timeline.
@@ -155,10 +225,10 @@ export function CaseTimeline({ bundle, cpInstanceID }: Props) {
               />
             </g>
           ))}
-          {range && events.length > 0 && (
+          {range && filteredEvents.length > 0 && (
             <g transform={`translate(0, ${TOP_PADDING})`}>
               <EventsLayer
-                events={events}
+                events={filteredEvents}
                 visibleLanes={visibleLanes}
                 range={range}
                 laneLabelWidth={LANE_LABEL_W}
