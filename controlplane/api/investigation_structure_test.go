@@ -98,8 +98,30 @@ func TestInvestigationStructure_Populated(t *testing.T) {
 	if got.Hosts[0].Host != "host-a" || got.Hosts[0].Count != 2 {
 		t.Errorf("hosts[0] = %+v, want host-a/2", got.Hosts[0])
 	}
+	if got.Hosts[1].Host != "host-b" || got.Hosts[1].Count != 1 {
+		t.Errorf("hosts[1] = %+v, want host-b/1", got.Hosts[1])
+	}
 }
 
+func TestFederationInvestigationStructure_RejectsWithoutToken(t *testing.T) {
+	store := newSeededTestStore(t)
+	router := chi.NewRouter()
+	router.Get("/api/v1/federation/investigations/{id}/structure",
+		FederationInvestigationStructure(store))
+
+	req := httptest.NewRequest("GET", "/api/v1/federation/investigations/1/structure", nil)
+	// no X-Okesu-Federation-Token header
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401", w.Code)
+	}
+}
+
+// Locally scoped duplicate of mustStructInsertFinding from
+// controlplane/db/investigation_structure_test.go — the db-package
+// helper isn't exported, so api-package tests reimplement it.
+//
 // mustAPIInsertFinding inserts a parent event then a finding.
 // FindingInsert uses plain strings; Event.Agent uses sql.NullString.
 func mustAPIInsertFinding(t *testing.T, s *db.Store, severity, host, agent string, ts int64) int64 {
