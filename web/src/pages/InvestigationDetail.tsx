@@ -28,6 +28,7 @@ import {
   CheckCircle2,
   ClipboardList,
   Clock,
+  Download,
   Eye,
   FileText,
   Hash,
@@ -245,6 +246,16 @@ export default function InvestigationDetailPage() {
             <LabelStrip kind="investigation" idOrKey={inv.ID} className="mt-1.5" />
           </div>
           <div className="flex items-center gap-2 shrink-0">
+            {!editing && (
+              <a
+                href={`/api/investigations/${invID}/report.pdf${cpInstanceID ? `?cp=${encodeURIComponent(cpInstanceID)}` : ''}`}
+                download
+                className="inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded-md text-ink-dim hover:text-ink hover:bg-slate-100"
+                title="Export PDF report"
+              >
+                <Download size={11} /> Export report
+              </a>
+            )}
             {!editing && (
               <button
                 onClick={() => setEditing(true)}

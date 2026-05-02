@@ -2330,3 +2330,11 @@ Building on the layered Investigation Overview, the timeline component (`web/src
 The clustering algorithm (`web/src/components/investigations/timeline/cluster.ts`) is a pure function that buckets point events on `(lane, x-bucket)` with a default 12px bucket width and 4-event threshold. Bars (runs / IOCs) skip clustering — their duration is the visual signal. Cluster click opens a popover (controlled `<Tooltip>`) listing each event with row-level click-through to the matching detail drawer.
 
 The shared `<Tooltip>` component (`web/src/components/Tooltip.tsx`) is portal'd to `document.body` so it never gets clipped by SVG viewport or parent `overflow:hidden`. Two modes — uncontrolled hover/focus (replacing SVG `<title>` with instant `delay=0` appearance + styled rendering) and controlled (used as the cluster popover with outside-click + Escape dismissal). Reusable beyond the timeline.
+
+## Investigation PDF report
+
+Operators can export a case as a PDF report from the investigation detail page (`Export report` button). The endpoint is `GET /api/investigations/{id}/report.pdf`; federated cases route to the owning child CP via the existing `?cp=<instance_id>` proxy convention.
+
+Renderer lives in `controlplane/api/investigation_report/`, built on `github.com/jung-kurt/gofpdf` (pure-Go, MIT, no Cgo, built-in Helvetica/Courier fonts). The document layout is custom-shaped — page 1 executive summary, pages 2..N chronological narrative, pages N+1..end reference tables (findings/IOCs/runs/audit, capped at 200 rows each). Each export writes one `audit_log` row with action `investigation.report_exported`.
+
+The renderer is text-shaped and does not attempt to mirror the on-screen Overview — operators view the live timeline in the UI; the PDF is for handovers and incident-report writeups.
