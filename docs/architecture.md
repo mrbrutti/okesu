@@ -2338,3 +2338,11 @@ Operators can export a case as a PDF report from the investigation detail page (
 Renderer lives in `controlplane/api/investigation_report/`, built on `github.com/jung-kurt/gofpdf` (pure-Go, MIT, no Cgo, built-in Helvetica/Courier fonts). The document layout is custom-shaped — page 1 executive summary, pages 2..N chronological narrative, pages N+1..end reference tables (findings/IOCs/runs/audit, capped at 200 rows each). Each export writes one `audit_log` row with action `investigation.report_exported`.
 
 The renderer is text-shaped and does not attempt to mirror the on-screen Overview — operators view the live timeline in the UI; the PDF is for handovers and incident-report writeups.
+
+## Investigation graph view (bipartite)
+
+A "Graph" tab on the investigation detail page renders the case as a bipartite relationship graph: linked findings on the left, hosts / daimons / IOCs on the right, with edges showing which finding touches which entity. Surfaces the "this IOC is the hub across N findings" pattern that the summary cards on the Overview tab can't make visible.
+
+Server-side: `GET /api/investigations/{id}/graph?limit=20` returns `{nodes, edges, total_findings, limit_applied}`. Joins `investigation_findings` + `findings` + `ioc_observations` + `iocs`. Caps at 20 findings (max 100) sorted by severity desc + Ts desc; client renders a "20 of N shown" banner when capped. Federation routes via the existing `?cp=<instance_id>` proxy convention.
+
+Client-side: `web/src/components/investigations/CaseGraph.tsx` uses `@xyflow/react` (already a dep — orchestration run canvas) with deterministic bipartite layout (`graph/layout.ts`) and degree-sort within each column. Click affordances reuse the SmartPayload `entity:open` event bus + `EntityDrawerHost` portal. Hosts have no drawer; clicking navigates to `/findings?host=…` instead.
