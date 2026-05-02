@@ -675,13 +675,36 @@ export interface InvestigationDaimonItem {
   LastSeenTs: number;
 }
 
+// InvestigationHostItem — one row of the case's host rollup,
+// derived server-side from the case's linked findings.
+export interface InvestigationHostItem {
+  Host:  string;
+  Count: number;
+}
+
 // InvestigationOrchestrationItem — orchestrations that own the
-// case's linked runs, grouped with run count + most-recent start.
+// case's linked runs, grouped with run count + per-status breakdown
+// + most-recent start.
 export interface InvestigationOrchestrationItem {
-  OrchestrationID: { Int64: number; Valid: boolean };
+  OrchestrationID:   { Int64: number; Valid: boolean };
   OrchestrationName: string;
-  RunCount: number;
-  LastStartedAt: string;
+  RunCount:          number;
+  Completed:         number;
+  Failed:            number;
+  Cancelled:         number;
+  Running:           number;
+  LastStartedAt:     string;
+}
+
+// InvestigationStructure — wire shape returned by
+// /api/investigations/{id}/structure. Same item types as the bundle,
+// but pre-aggregated and pre-sorted DESC by primary count so the
+// Overview tab's structure cards render without client-side aggregation.
+export interface InvestigationStructure {
+  hosts:          InvestigationHostItem[];
+  iocs:           InvestigationIOCItem[];
+  daimons:        InvestigationDaimonItem[];
+  orchestrations: InvestigationOrchestrationItem[];
 }
 
 // SuggestedFinding — server-scored candidate the workspace's
@@ -1421,6 +1444,10 @@ export const api = {
     audit: (invID: number, cpInstanceID?: string) => {
       const qs = cpInstanceID ? `?cp=${encodeURIComponent(cpInstanceID)}` : '';
       return request<InvestigationAuditEvent[]>(`/api/investigations/${invID}/audit${qs}`);
+    },
+    structure: (id: number, cpInstanceID?: string) => {
+      const qs = cpInstanceID ? `?cp=${encodeURIComponent(cpInstanceID)}` : '';
+      return request<InvestigationStructure>(`/api/investigations/${id}/structure${qs}`);
     },
     graph: (invID: number, opts?: { cpInstanceID?: string; limit?: number }) => {
       const qs: string[] = [];

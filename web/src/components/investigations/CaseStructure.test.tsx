@@ -1,8 +1,23 @@
-import { describe, it, expect, afterEach } from 'vitest';
-import { render, screen, cleanup } from '@testing-library/react';
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
+import { render, screen, cleanup, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { CaseStructure } from './CaseStructure';
-import type { InvestigationDetail } from '../../api';
+import { api, ApiError, type InvestigationDetail, type InvestigationStructure } from '../../api';
+
+vi.mock('../../api', async () => {
+  const actual = await vi.importActual<typeof import('../../api')>('../../api');
+  const { ApiError: ActualApiError } = actual;
+  return {
+    ...actual,
+    api: {
+      ...actual.api,
+      investigations: {
+        ...actual.api.investigations,
+        structure: vi.fn().mockRejectedValue(new ActualApiError(404, 'not implemented')),
+      },
+    },
+  };
+});
 
 afterEach(cleanup);
 
@@ -80,7 +95,7 @@ describe('CaseStructure', () => {
         { ID: 3, OrchestrationID: 100, OrchestrationName: { String: 'triage', Valid: true }, Status: 'failed',    TriggerKind: 'auto', StartedAt: '2026-05-01T00:02:00Z', EndedAt: { String: '2026-05-01T00:03:00Z', Valid: true }, CurrentStepID: { String: '', Valid: false }, Error: { String: 'oops', Valid: true }, LinkedAt: '' },
       ],
       orchestrations: [
-        { OrchestrationID: { Int64: 100, Valid: true }, OrchestrationName: 'triage', RunCount: 3, LastStartedAt: '2026-05-01T00:02:00Z' },
+        { OrchestrationID: { Int64: 100, Valid: true }, OrchestrationName: 'triage', RunCount: 3, Completed: 2, Failed: 1, Cancelled: 0, Running: 0, LastStartedAt: '2026-05-01T00:02:00Z' },
       ],
     });
     render(<MemoryRouter><CaseStructure bundle={bundle} /></MemoryRouter>);
@@ -88,5 +103,153 @@ describe('CaseStructure', () => {
     expect(screen.getByText(/triage/)).toBeTruthy();
     expect(screen.getByText(/2 ✓/)).toBeTruthy();
     expect(screen.getByText(/1 ✗/)).toBeTruthy();
+  });
+});
+
+describe('CaseStructure (server-side path)', () => {
+  it('renders host count from /structure response', async () => {
+    (api.investigations.structure as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      hosts:          [{ Host: 'edr-fedora-3', Count: 7 }, { Host: 'web-1', Count: 2 }],
+      iocs:           [],
+      daimons:        [],
+      orchestrations: [],
+    } satisfies InvestigationStructure);
+    render(<MemoryRouter><CaseStructure bundle={makeBundle()} /></MemoryRouter>);
+    await waitFor(() => {
+      expect(screen.getByText(/Hosts \(2\)/)).toBeTruthy();
+      expect(screen.getByText(/edr-fedora-3 — 7 findings/)).toBeTruthy();
+    });
+  });
+});
+
+describe('CaseStructure (fallback path)', () => {
+  it('falls back to bundle-derived numbers on 404', async () => {
+    (api.investigations.structure as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new ApiError(404, 'not found'),
+    );
+    const bundle = makeBundle({
+      findings: [
+        { ID: 1, Ts: 0, Severity: { Valid: true, String: 'HIGH' }, Title: { Valid: true, String: 't' }, Agent: { Valid: true, String: 'a' }, Host: { Valid: true, String: 'h-a' }, Status: { String: 'open', Valid: true }, Tags: { String: '', Valid: false }, Subtype: { String: '', Valid: false }, LinkedAt: '', LinkMethod: { String: '', Valid: false }, LinkedBy: { String: '', Valid: false } },
+        { ID: 2, Ts: 0, Severity: { Valid: true, String: 'HIGH' }, Title: { Valid: true, String: 't' }, Agent: { Valid: true, String: 'a' }, Host: { Valid: true, String: 'h-a' }, Status: { String: 'open', Valid: true }, Tags: { String: '', Valid: false }, Subtype: { String: '', Valid: false }, LinkedAt: '', LinkMethod: { String: '', Valid: false }, LinkedBy: { String: '', Valid: false } },
+      ] as unknown as InvestigationDetail['findings'],
+    });
+    render(<MemoryRouter><CaseStructure bundle={bundle} /></MemoryRouter>);
+    // Bundle-derived hosts: 1 distinct host with count 2.
+    await waitFor(() => {
+      expect(screen.getByText(/Hosts \(1\)/)).toBeTruthy();
+      expect(screen.getByText(/h-a — 2 findings/)).toBeTruthy();
+    });
+  });
+
+  it('falls back on network error', async () => {
+    (api.investigations.structure as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error('network down'),
+    );
+    render(<MemoryRouter><CaseStructure bundle={makeBundle()} /></MemoryRouter>);
+    await waitFor(() => {
+      expect(screen.getByText(/Hosts \(0\)/)).toBeTruthy();
+    });
+  });
+});
+
+describe('CaseStructure (invID change + cancellation)', () => {
+  beforeEach(() => {
+    (api.investigations.structure as ReturnType<typeof vi.fn>).mockClear();
+  });
+
+  it('refetches /structure when the invID prop changes', async () => {
+    const m = api.investigations.structure as ReturnType<typeof vi.fn>;
+    m.mockResolvedValueOnce({
+      hosts:          [{ Host: 'first-host', Count: 1 }],
+      iocs:           [], daimons: [], orchestrations: [],
+    } satisfies InvestigationStructure);
+    m.mockResolvedValueOnce({
+      hosts:          [{ Host: 'second-host', Count: 2 }],
+      iocs:           [], daimons: [], orchestrations: [],
+    } satisfies InvestigationStructure);
+
+    const b1 = makeBundle();
+    b1.investigation.ID = 1;
+    const { rerender } = render(<MemoryRouter><CaseStructure bundle={b1} /></MemoryRouter>);
+    await waitFor(() => expect(screen.getByText(/first-host/)).toBeTruthy());
+
+    const b2 = makeBundle();
+    b2.investigation.ID = 2;
+    rerender(<MemoryRouter><CaseStructure bundle={b2} /></MemoryRouter>);
+    await waitFor(() => expect(screen.getByText(/second-host/)).toBeTruthy());
+
+    expect(m).toHaveBeenCalledTimes(2);
+    expect(m).toHaveBeenNthCalledWith(1, 1, undefined);
+    expect(m).toHaveBeenNthCalledWith(2, 2, undefined);
+  });
+
+  it('discards a slow first response if the bundle changes before it lands', async () => {
+    const m = api.investigations.structure as ReturnType<typeof vi.fn>;
+
+    // First call resolves slowly with a "stale" host.
+    let resolveSlow!: (v: InvestigationStructure) => void;
+    const slow = new Promise<InvestigationStructure>((resolve) => { resolveSlow = resolve; });
+    m.mockReturnValueOnce(slow);
+
+    // Second call resolves immediately with a "fresh" host.
+    m.mockResolvedValueOnce({
+      hosts:          [{ Host: 'fresh-host', Count: 1 }],
+      iocs:           [], daimons: [], orchestrations: [],
+    } satisfies InvestigationStructure);
+
+    const b1 = makeBundle();
+    b1.investigation.ID = 1;
+    const { rerender } = render(<MemoryRouter><CaseStructure bundle={b1} /></MemoryRouter>);
+
+    const b2 = makeBundle();
+    b2.investigation.ID = 2;
+    rerender(<MemoryRouter><CaseStructure bundle={b2} /></MemoryRouter>);
+
+    // Fresh fetch resolves first.
+    await waitFor(() => expect(screen.getByText(/fresh-host/)).toBeTruthy());
+
+    // Now resolve the slow first call. The cancelled flag should
+    // prevent it from clobbering the fresh data.
+    resolveSlow({
+      hosts:          [{ Host: 'stale-host', Count: 99 }],
+      iocs:           [], daimons: [], orchestrations: [],
+    });
+    // Give React one microtask to process if anything were to leak through.
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(screen.queryByText(/stale-host/)).toBeNull();
+    expect(screen.getByText(/fresh-host/)).toBeTruthy();
+  });
+
+  it('clears stale server data when a refetch fails after a prior success', async () => {
+    const m = api.investigations.structure as ReturnType<typeof vi.fn>;
+    // First call succeeds.
+    m.mockResolvedValueOnce({
+      hosts:          [{ Host: 'success-host', Count: 1 }],
+      iocs:           [], daimons: [], orchestrations: [],
+    } satisfies InvestigationStructure);
+    // Second call (after invID change) fails.
+    m.mockRejectedValueOnce(new ApiError(404, 'not found'));
+
+    const b1 = makeBundle();
+    b1.investigation.ID = 1;
+    const { rerender } = render(<MemoryRouter><CaseStructure bundle={b1} /></MemoryRouter>);
+    await waitFor(() => expect(screen.getByText(/success-host/)).toBeTruthy());
+
+    // Switch to case 2 with a host that's only present in the bundle.
+    const b2 = makeBundle({
+      findings: [
+        { ID: 9, Ts: 0, Severity: { Valid: true, String: 'HIGH' }, Title: { Valid: true, String: 't' }, Agent: { Valid: true, String: 'a' }, Host: { Valid: true, String: 'fallback-host' } },
+      ] as unknown as InvestigationDetail['findings'],
+    });
+    b2.investigation.ID = 2;
+    rerender(<MemoryRouter><CaseStructure bundle={b2} /></MemoryRouter>);
+
+    // After the second fetch fails, the bundle-derived view for case 2
+    // must replace case 1's server data — NOT show "success-host" stale.
+    await waitFor(() => {
+      expect(screen.getByText(/fallback-host/)).toBeTruthy();
+    });
+    expect(screen.queryByText(/success-host/)).toBeNull();
   });
 });

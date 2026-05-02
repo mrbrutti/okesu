@@ -1,12 +1,15 @@
 // CaseStructure: four-card grid summarising case shape across hosts /
-// IOCs / daimons / runs+orchestrations. Pure presentation over the
-// existing InvestigationDetail bundle. Click-throughs use react-router
-// for tab navigation; row clicks fire entity:open for drawer-bearing
-// kinds (IOC) — same bus the SmartPayload chips use.
-import { useMemo } from 'react';
+// IOCs / daimons / runs+orchestrations. Fetches the pre-aggregated
+// /structure endpoint on mount; falls back to client-side derivation
+// over the bundle if the fetch fails (federated child running an
+// older binary, transient network error). Click-throughs use
+// react-router for tab navigation; row clicks fire entity:open.
+import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Bot, Hash, Server, Workflow } from 'lucide-react';
-import type { InvestigationDetail } from '../../api';
+import type { InvestigationDetail, InvestigationStructure } from '../../api';
+import { api } from '../../api';
+import { deriveFromBundle } from './caseStructure/derive';
 
 interface Props {
   bundle: InvestigationDetail;
@@ -14,30 +17,60 @@ interface Props {
 }
 
 export function CaseStructure({ bundle, cpInstanceID }: Props) {
-  const hosts = useMemo(() => aggregateHosts(bundle), [bundle]);
-  const iocs = useMemo(() => topIOCs(bundle), [bundle]);
-  const daimons = useMemo(() => topDaimons(bundle), [bundle]);
-  const orchs = useMemo(() => topOrchestrations(bundle), [bundle]);
+  const [data, setData] = useState<InvestigationStructure | null>(null);
+  const invID = bundle.investigation.ID;
+
+  useEffect(() => {
+    let cancelled = false;
+    api.investigations.structure(invID, cpInstanceID)
+      .then((r) => { if (!cancelled) setData(r); })
+      .catch((err) => {
+        if (!cancelled) {
+          setData(null);
+          console.warn(
+            'case-structure fetch failed; using bundle-derived view',
+            { invID, cpInstanceID, err },
+          );
+        }
+      });
+    return () => { cancelled = true; };
+  }, [invID, cpInstanceID]);
+
+  // data === null → either still loading OR fetch failed; either
+  // way render from the bundle-derived view. Wire shape is identical
+  // so the rest of the render is shared.
+  const view: InvestigationStructure = useMemo(
+    () => data ?? deriveFromBundle(bundle),
+    [data, bundle],
+  );
+
+  const hostsList = view.hosts;
+  const iocsList = view.iocs;
+  const daimonsList = view.daimons;
+  const orchList = view.orchestrations;
+  // totalRuns sums per-orch RunCount instead of bundle.runs.length:
+  // the server path (no raw runs array) and bundle/fallback path
+  // produce the same value when every run has an orchestration ID.
+  const totalRuns = useMemo(() => orchList.reduce((acc, o) => acc + o.RunCount, 0), [orchList]);
 
   const cpQS = cpInstanceID ? `&cp=${encodeURIComponent(cpInstanceID)}` : '';
-  const invID = bundle.investigation.ID;
 
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
       <Card
         icon={<Server size={14} className="text-emerald-600" />}
-        title={`Hosts (${hosts.distinct})`}
-        empty={hosts.distinct === 0 ? 'no items linked yet' : null}
-        topLine={hosts.top ? `Most-hit: ${hosts.top.host} — ${hosts.top.count} finding${hosts.top.count === 1 ? '' : 's'}` : null}
-        rows={hosts.list.slice(1, 4).map((h) => ({ key: h.host, label: h.host, suffix: `${h.count}` }))}
+        title={`Hosts (${hostsList.length})`}
+        empty={hostsList.length === 0 ? 'no items linked yet' : null}
+        topLine={hostsList[0] ? `Most-hit: ${hostsList[0].Host} — ${hostsList[0].Count} finding${hostsList[0].Count === 1 ? '' : 's'}` : null}
+        rows={hostsList.slice(1, 4).map((h) => ({ key: h.Host, label: h.Host, suffix: `${h.Count}` }))}
         tabHref={`/investigations/${invID}?tab=findings${cpQS}`}
       />
       <Card
         icon={<Hash size={14} className="text-purple-600" />}
-        title={`IOCs (${iocs.length})`}
-        empty={iocs.length === 0 ? 'no items linked yet' : null}
-        topLine={iocs[0] ? `Most-observed: ${iocs[0].Kind}:${shortVal(iocs[0].Value)} — ${iocs[0].ObservationCount} obs across ${iocs[0].HostCount} host${iocs[0].HostCount === 1 ? '' : 's'}` : null}
-        rows={iocs.slice(1, 4).map((i) => ({
+        title={`IOCs (${iocsList.length})`}
+        empty={iocsList.length === 0 ? 'no items linked yet' : null}
+        topLine={iocsList[0] ? `Most-observed: ${iocsList[0].Kind}:${shortVal(iocsList[0].Value)} — ${iocsList[0].ObservationCount} obs across ${iocsList[0].HostCount} host${iocsList[0].HostCount === 1 ? '' : 's'}` : null}
+        rows={iocsList.slice(1, 4).map((i) => ({
           key: `${i.Kind}:${i.Value}`,
           label: `${i.Kind}:${shortVal(i.Value)}`,
           suffix: `${i.ObservationCount} obs`,
@@ -47,21 +80,21 @@ export function CaseStructure({ bundle, cpInstanceID }: Props) {
       />
       <Card
         icon={<Bot size={14} className="text-indigo-600" />}
-        title={`Daimons (${daimons.length})`}
-        empty={daimons.length === 0 ? 'no items linked yet' : null}
-        topLine={daimons[0] ? `Top emitter: ${daimons[0].Agent} — ${daimons[0].FindingCount} finding${daimons[0].FindingCount === 1 ? '' : 's'}, last seen ${relTime(daimons[0].LastSeenTs)}` : null}
-        rows={daimons.slice(1, 4).map((d) => ({ key: d.Agent, label: d.Agent, suffix: `${d.FindingCount}` }))}
+        title={`Daimons (${daimonsList.length})`}
+        empty={daimonsList.length === 0 ? 'no items linked yet' : null}
+        topLine={daimonsList[0] ? `Top emitter: ${daimonsList[0].Agent} — ${daimonsList[0].FindingCount} finding${daimonsList[0].FindingCount === 1 ? '' : 's'}, last seen ${relTime(daimonsList[0].LastSeenTs)}` : null}
+        rows={daimonsList.slice(1, 4).map((d) => ({ key: d.Agent, label: d.Agent, suffix: `${d.FindingCount}` }))}
         tabHref={`/investigations/${invID}?tab=daimons${cpQS}`}
       />
       <Card
         icon={<Workflow size={14} className="text-cyan-600" />}
-        title={`Runs (${orchs.runCount} / ${orchs.orchCount} orch${orchs.orchCount === 1 ? '' : 's'})`}
-        empty={orchs.runCount === 0 ? 'no items linked yet' : null}
-        topLine={orchs.top ? `Most-run: ${orchs.top.name} — ${orchs.top.runs} run${orchs.top.runs === 1 ? '' : 's'} (${orchs.top.completed} ✓ ${orchs.top.failed} ✗)` : null}
-        rows={orchs.list.slice(1, 4).map((o) => ({
-          key: o.name,
-          label: o.name,
-          suffix: `${o.runs} run${o.runs === 1 ? '' : 's'}`,
+        title={`Runs (${totalRuns} / ${orchList.length} orch${orchList.length === 1 ? '' : 's'})`}
+        empty={totalRuns === 0 ? 'no items linked yet' : null}
+        topLine={orchList[0] ? `Most-run: ${orchList[0].OrchestrationName} — ${orchList[0].RunCount} run${orchList[0].RunCount === 1 ? '' : 's'} (${orchList[0].Completed} ✓ ${orchList[0].Failed} ✗)` : null}
+        rows={orchList.slice(1, 4).map((o) => ({
+          key: o.OrchestrationName,
+          label: o.OrchestrationName,
+          suffix: `${o.RunCount} run${o.RunCount === 1 ? '' : 's'}`,
         }))}
         tabHref={`/investigations/${invID}?tab=runs${cpQS}`}
       />
@@ -118,55 +151,6 @@ function Card({
       )}
     </div>
   );
-}
-
-// ─── aggregators (pure, exported for testability if needed) ─────────────
-
-function aggregateHosts(b: InvestigationDetail) {
-  const counts = new Map<string, number>();
-  for (const f of b.findings) {
-    if (!f.Host.Valid || !f.Host.String) continue;
-    counts.set(f.Host.String, (counts.get(f.Host.String) ?? 0) + 1);
-  }
-  const list = Array.from(counts, ([host, count]) => ({ host, count }))
-    .sort((a, b) => b.count - a.count);
-  return { distinct: list.length, top: list[0] ?? null, list };
-}
-
-function topIOCs(b: InvestigationDetail) {
-  return [...b.iocs].sort((a, b) => b.ObservationCount - a.ObservationCount);
-}
-
-function topDaimons(b: InvestigationDetail) {
-  return [...b.daimons].sort((a, b) => {
-    if (a.FindingCount !== b.FindingCount) return b.FindingCount - a.FindingCount;
-    return b.LastSeenTs - a.LastSeenTs;
-  });
-}
-
-function topOrchestrations(b: InvestigationDetail) {
-  const byID = new Map<number, { name: string; runs: number; completed: number; failed: number; cancelled: number; running: number }>();
-  for (const r of b.runs) {
-    const id = r.OrchestrationID;
-    const name = r.OrchestrationName.Valid ? r.OrchestrationName.String : `orchestration #${id}`;
-    let row = byID.get(id);
-    if (!row) {
-      row = { name, runs: 0, completed: 0, failed: 0, cancelled: 0, running: 0 };
-      byID.set(id, row);
-    }
-    row.runs += 1;
-    if (r.Status === 'completed') row.completed += 1;
-    else if (r.Status === 'failed') row.failed += 1;
-    else if (r.Status === 'cancelled') row.cancelled += 1;
-    else row.running += 1;
-  }
-  const list = Array.from(byID.values()).sort((a, b) => b.runs - a.runs);
-  return {
-    runCount: b.runs.length,
-    orchCount: byID.size,
-    top: list[0] ?? null,
-    list,
-  };
 }
 
 // ─── tiny helpers ───────────────────────────────────────────
