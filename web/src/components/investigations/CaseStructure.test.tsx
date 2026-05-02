@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach, vi } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { render, screen, cleanup, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { CaseStructure } from './CaseStructure';
@@ -149,5 +149,75 @@ describe('CaseStructure (fallback path)', () => {
     await waitFor(() => {
       expect(screen.getByText(/Hosts \(0\)/)).toBeTruthy();
     });
+  });
+});
+
+describe('CaseStructure (invID change + cancellation)', () => {
+  beforeEach(() => {
+    (api.investigations.structure as ReturnType<typeof vi.fn>).mockClear();
+  });
+
+  it('refetches /structure when the invID prop changes', async () => {
+    const m = api.investigations.structure as ReturnType<typeof vi.fn>;
+    m.mockResolvedValueOnce({
+      hosts:          [{ Host: 'first-host', Count: 1 }],
+      iocs:           [], daimons: [], orchestrations: [],
+    } satisfies InvestigationStructure);
+    m.mockResolvedValueOnce({
+      hosts:          [{ Host: 'second-host', Count: 2 }],
+      iocs:           [], daimons: [], orchestrations: [],
+    } satisfies InvestigationStructure);
+
+    const b1 = makeBundle();
+    b1.investigation.ID = 1;
+    const { rerender } = render(<MemoryRouter><CaseStructure bundle={b1} /></MemoryRouter>);
+    await waitFor(() => expect(screen.getByText(/first-host/)).toBeTruthy());
+
+    const b2 = makeBundle();
+    b2.investigation.ID = 2;
+    rerender(<MemoryRouter><CaseStructure bundle={b2} /></MemoryRouter>);
+    await waitFor(() => expect(screen.getByText(/second-host/)).toBeTruthy());
+
+    expect(m).toHaveBeenCalledTimes(2);
+    expect(m).toHaveBeenNthCalledWith(1, 1, undefined);
+    expect(m).toHaveBeenNthCalledWith(2, 2, undefined);
+  });
+
+  it('discards a slow first response if the bundle changes before it lands', async () => {
+    const m = api.investigations.structure as ReturnType<typeof vi.fn>;
+
+    // First call resolves slowly with a "stale" host.
+    let resolveSlow!: (v: InvestigationStructure) => void;
+    const slow = new Promise<InvestigationStructure>((resolve) => { resolveSlow = resolve; });
+    m.mockReturnValueOnce(slow);
+
+    // Second call resolves immediately with a "fresh" host.
+    m.mockResolvedValueOnce({
+      hosts:          [{ Host: 'fresh-host', Count: 1 }],
+      iocs:           [], daimons: [], orchestrations: [],
+    } satisfies InvestigationStructure);
+
+    const b1 = makeBundle();
+    b1.investigation.ID = 1;
+    const { rerender } = render(<MemoryRouter><CaseStructure bundle={b1} /></MemoryRouter>);
+
+    const b2 = makeBundle();
+    b2.investigation.ID = 2;
+    rerender(<MemoryRouter><CaseStructure bundle={b2} /></MemoryRouter>);
+
+    // Fresh fetch resolves first.
+    await waitFor(() => expect(screen.getByText(/fresh-host/)).toBeTruthy());
+
+    // Now resolve the slow first call. The cancelled flag should
+    // prevent it from clobbering the fresh data.
+    resolveSlow({
+      hosts:          [{ Host: 'stale-host', Count: 99 }],
+      iocs:           [], daimons: [], orchestrations: [],
+    });
+    // Give React one microtask to process if anything were to leak through.
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(screen.queryByText(/stale-host/)).toBeNull();
+    expect(screen.getByText(/fresh-host/)).toBeTruthy();
   });
 });

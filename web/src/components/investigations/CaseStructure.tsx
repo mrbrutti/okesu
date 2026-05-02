@@ -24,10 +24,12 @@ export function CaseStructure({ bundle, cpInstanceID }: Props) {
     let cancelled = false;
     api.investigations.structure(invID, cpInstanceID)
       .then((r) => { if (!cancelled) setData(r); })
-      .catch(() => {
+      .catch((err) => {
         if (!cancelled) {
-          setData(null);
-          console.warn('case-structure fetch failed; using bundle-derived view', invID);
+          console.warn(
+            'case-structure fetch failed; using bundle-derived view',
+            { invID, cpInstanceID, err },
+          );
         }
       });
     return () => { cancelled = true; };
