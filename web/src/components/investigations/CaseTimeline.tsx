@@ -67,7 +67,7 @@ export function CaseTimeline({ bundle, cpInstanceID }: Props) {
     } catch {
       console.warn('investigation_timeline saved search has malformed config_json', def.id);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- filter intentionally omitted: including it would re-run the effect on every operator keystroke and re-apply the default, defeating the one-shot gate
   }, [savedSearches]);
 
   // Lazy-fetch audit lane the first time it's enabled.
@@ -83,6 +83,10 @@ export function CaseTimeline({ bundle, cpInstanceID }: Props) {
 
   const filteredEvents = useMemo(() => applyTimelineFilter(events, filter), [events, filter]);
 
+  // primaryEventCount / filteredPrimaryCount drive the zero-matches
+  // banner. We exclude lifecycle and daimon kinds because pass-through
+  // semantics make them survive every filter dimension; counting them
+  // would prevent the banner from ever firing on a non-trivial case.
   const primaryEventCount = useMemo(
     () => events.filter((e) => e.kind !== 'lifecycle' && e.kind !== 'daimon').length,
     [events],
