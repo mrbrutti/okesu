@@ -85,7 +85,7 @@ DAEMON_GOOS   ?= linux
 DAEMON_GOARCH ?= arm64
 DAEMON_OUT    ?= okesu-$(DAEMON_GOOS)-$(DAEMON_GOARCH)
 
-.PHONY: all daemon daemon-host daemons cp cp-all release ui clean version deposit
+.PHONY: all daemon daemon-host daemons cp cp-fresh cp-all release ui clean version deposit redeploy-local restart-local
 
 all: ui daemon cp
 
@@ -97,11 +97,51 @@ daemon:
 daemon-host:
 	CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o okesu ./cmd/okesu
 
+# `make cp` builds the CP binary from whatever's currently in
+# controlplane/ui/dist/. The Go source uses `//go:embed all:dist` so a
+# stale dist gets baked into the binary silently — operators see old
+# UI even after redeploying. If you've changed any web/ source, use
+# `make cp-fresh` instead.
 cp:
 	CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o okesu-cp ./cmd/cp
 
+# `make cp-fresh` always rebuilds the UI before the CP binary. The
+# canonical inner-loop target when iterating across both halves of
+# the codebase. Pairs with `make redeploy-local` to also restart the
+# local federated test stack.
+cp-fresh: ui cp
+
 ui:
 	cd web && npm install --silent && npm run build
+
+# ── Local federated test stack lifecycle ───────────────────────────
+# Wraps test/stack/{start,stop}-federated.sh so the inner-loop dev
+# flow lives in one Makefile target. The federated stack runs three
+# CPs locally at :7443 (global parent), :8443 (east child), :9443
+# (west child) — see test/stack/start-federated.sh's diagram.
+#
+# After `make redeploy-local` returns, hard-refresh each browser tab
+# (Cmd+Shift+R) so the cached old bundle is dropped and the new one
+# served by the fresh CP loads. The Go binary embeds the UI dist via
+# `//go:embed all:dist` so a fresh binary is the only path to fresh
+# UI for already-running operators.
+
+# Full inner-loop redeploy: rebuild UI + CP binary, then bounce the
+# federated stack. Use this when you've changed anything in web/ or
+# controlplane/. Idempotent.
+redeploy-local: cp-fresh
+	@echo "Bouncing local federated stack…"
+	@./test/stack/stop-federated.sh || true
+	@./test/stack/start-federated.sh
+	@echo "Stack ready. Hard-refresh browser tabs (Cmd+Shift+R) to drop the old bundle."
+
+# Restart the federated stack without rebuilding. Use when the
+# binary on disk is already current and you just want a clean
+# process restart (e.g., to clear in-memory state).
+restart-local:
+	@echo "Bouncing local federated stack (no rebuild)…"
+	@./test/stack/stop-federated.sh || true
+	@./test/stack/start-federated.sh
 
 # ── Full matrix builds ──────────────────────────────────────────────
 # `make daemons` rebuilds every platform in DAEMON_TARGETS into
