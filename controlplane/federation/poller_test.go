@@ -563,3 +563,100 @@ func TestPoller_PollOnce_Feeds404Tolerated(t *testing.T) {
 		t.Errorf("no feeds should be stored on 404, got %d", len(all))
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Transport-branching tests (Slice 5)
+// ---------------------------------------------------------------------------
+
+func TestPoller_SkipsS3DeadDropPeers(t *testing.T) {
+	// Stand up a fakeParent that would succeed for https_pull requests.
+	// The s3_dead_drop peer must never produce an HTTP dial error — the
+	// poller should return immediately without touching fetchIntrospect.
+	parent := newFakeParent(t, "shared-1", "cp-parent-s3skip")
+	defer parent.Close()
+
+	store := openTempStore(t)
+	seedMasterKey(t, store)
+
+	// Insert a normal https_pull peer so tickAll has at least one peer
+	// that exercises the happy path alongside the s3 peer.
+	_, err := store.AddFederationPeer(parent.URL, "HTTPSPeer", "shared-1")
+	if err != nil {
+		t.Fatalf("add https peer: %v", err)
+	}
+
+	// Create a minimal transport_config row so the FK constraint is
+	// satisfied, then insert the s3_dead_drop peer.
+	tcID, err := store.CreateTransportConfig(db.TransportConfig{
+		Name:     "test-tc",
+		Kind:     "s3",
+		Bucket:   "test-bucket",
+		Endpoint: "https://s3.test.example",
+		UseSSL:   true,
+	})
+	if err != nil {
+		t.Fatalf("create transport config: %v", err)
+	}
+	s3Peer, err := store.AddS3FederationPeer("S3Peer", "cp/abc/outbound/parent/", tcID, "tok-s3")
+	if err != nil {
+		t.Fatalf("add s3 peer: %v", err)
+	}
+
+	p := NewPoller(store, nil)
+	p.tickAll(context.Background())
+
+	// The s3 peer must have no error after the tick — the poller skipped
+	// it without attempting an HTTP dial to s3-deaddrop://.
+	fresh, err := store.FederationPeer(s3Peer.ID)
+	if err != nil {
+		t.Fatalf("fetch s3 peer: %v", err)
+	}
+	if fresh.LastError != "" {
+		t.Fatalf("s3 peer should have no error after tick, got %q", fresh.LastError)
+	}
+	// Sanity: last_seen_at must also be untouched (s3reader sets it, not
+	// the federation poller).
+	if fresh.LastSeenAt.Valid {
+		t.Error("s3 peer last_seen_at should not be set by the federation poller")
+	}
+}
+
+func TestPoller_UnknownTransportSetsClearError(t *testing.T) {
+	// Insert a peer with an unrecognised transport string via raw SQL so
+	// we can bypass the typed AddFederationPeer helpers (which only write
+	// known transports). The poller must write a human-readable
+	// "unknown federation transport: ..." message to last_error rather
+	// than bubbling the misleading "unsupported protocol scheme" error
+	// from http.Client.
+	store := openTempStore(t)
+
+	_, err := store.Exec(
+		`INSERT INTO federation_peers (url, display_name, token, transport)
+		 VALUES ('exotic-scheme://some-host/path', 'ExoticPeer', 'tok-exotic', 'grpc_push')`,
+	)
+	if err != nil {
+		t.Fatalf("insert exotic peer: %v", err)
+	}
+	peers, err := store.ListFederationPeers()
+	if err != nil || len(peers) != 1 {
+		t.Fatalf("expected 1 peer, got %d (err=%v)", len(peers), err)
+	}
+	exoticPeer := peers[0]
+
+	p := NewPoller(store, nil)
+	p.tickAll(context.Background())
+
+	got, err := store.FederationPeer(exoticPeer.ID)
+	if err != nil {
+		t.Fatalf("fetch exotic peer: %v", err)
+	}
+	if got.LastError == "" {
+		t.Fatal("unknown-transport peer should have last_error set")
+	}
+	if !strings.Contains(got.LastError, "unknown federation transport") {
+		t.Errorf("last_error should mention 'unknown federation transport', got %q", got.LastError)
+	}
+	if strings.Contains(got.LastError, "unsupported protocol scheme") {
+		t.Errorf("last_error must NOT leak http.Client error, got %q", got.LastError)
+	}
+}

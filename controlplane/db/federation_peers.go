@@ -20,10 +20,15 @@ import (
 // authoritative cache the rest of the federation aggregator reads
 // from, so HealthyPeers / FetchJSON-like helpers don't change.
 type FederationPeer struct {
-	ID                int64
+	ID          int64
+	// URL is dial-able for https_pull peers (https://child.cp/...).
+	// For s3_dead_drop peers it's a synthetic marker like
+	// "s3-deaddrop://<bucket-prefix>" — never pass it to a standard
+	// http.Client. The s3reader.Loop owns introspect for those peers;
+	// the federation poller skips them.
 	URL               string
 	DisplayName       string
-	Token             string         // plaintext — sent outbound on each poll (https_pull)
+	Token             string // plaintext — sent outbound on each poll (https_pull)
 	AddedAt           time.Time
 	LastPolledAt      sql.NullTime
 	LastSeenAt        sql.NullTime
