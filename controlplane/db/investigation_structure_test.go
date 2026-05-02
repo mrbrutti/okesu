@@ -98,14 +98,14 @@ func TestListOrchestrationsForInvestigation_StatusBreakdown(t *testing.T) {
 		t.Fatalf("seed orchestration: %v", err)
 	}
 
-	// Five orchestration_runs across statuses + link each to the case.
+	// Six orchestration_runs across statuses + link each to the case.
 	type runSeed struct {
 		id     int64
 		status string
 	}
 	seeds := []runSeed{
 		{100, "completed"}, {101, "completed"}, {102, "failed"},
-		{103, "cancelled"}, {104, "running"},
+		{103, "cancelled"}, {104, "running"}, {105, "approval_required"},
 	}
 	for _, r := range seeds {
 		if _, err := s.Exec(`INSERT INTO orchestration_runs (id, orchestration_id, status, trigger_kind) VALUES (?, 10, ?, 'manual')`, r.id, r.status); err != nil {
@@ -124,11 +124,11 @@ func TestListOrchestrationsForInvestigation_StatusBreakdown(t *testing.T) {
 		t.Fatalf("len(orchs) = %d, want 1", len(got))
 	}
 	o := got[0]
-	if o.RunCount != 5 {
-		t.Errorf("RunCount = %d, want 5", o.RunCount)
+	if o.RunCount != 6 {
+		t.Errorf("RunCount = %d, want 6", o.RunCount)
 	}
-	if o.Completed != 2 || o.Failed != 1 || o.Cancelled != 1 || o.Running != 1 {
-		t.Errorf("status breakdown = %d/%d/%d/%d, want 2/1/1/1",
+	if o.Completed != 2 || o.Failed != 1 || o.Cancelled != 1 || o.Running != 2 {
+		t.Errorf("status breakdown = %d/%d/%d/%d, want 2/1/1/2 (approval_required folds into Running)",
 			o.Completed, o.Failed, o.Cancelled, o.Running)
 	}
 }
