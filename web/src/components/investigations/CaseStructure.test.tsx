@@ -220,4 +220,36 @@ describe('CaseStructure (invID change + cancellation)', () => {
     expect(screen.queryByText(/stale-host/)).toBeNull();
     expect(screen.getByText(/fresh-host/)).toBeTruthy();
   });
+
+  it('clears stale server data when a refetch fails after a prior success', async () => {
+    const m = api.investigations.structure as ReturnType<typeof vi.fn>;
+    // First call succeeds.
+    m.mockResolvedValueOnce({
+      hosts:          [{ Host: 'success-host', Count: 1 }],
+      iocs:           [], daimons: [], orchestrations: [],
+    } satisfies InvestigationStructure);
+    // Second call (after invID change) fails.
+    m.mockRejectedValueOnce(new ApiError(404, 'not found'));
+
+    const b1 = makeBundle();
+    b1.investigation.ID = 1;
+    const { rerender } = render(<MemoryRouter><CaseStructure bundle={b1} /></MemoryRouter>);
+    await waitFor(() => expect(screen.getByText(/success-host/)).toBeTruthy());
+
+    // Switch to case 2 with a host that's only present in the bundle.
+    const b2 = makeBundle({
+      findings: [
+        { ID: 9, Ts: 0, Severity: { Valid: true, String: 'HIGH' }, Title: { Valid: true, String: 't' }, Agent: { Valid: true, String: 'a' }, Host: { Valid: true, String: 'fallback-host' } },
+      ] as unknown as InvestigationDetail['findings'],
+    });
+    b2.investigation.ID = 2;
+    rerender(<MemoryRouter><CaseStructure bundle={b2} /></MemoryRouter>);
+
+    // After the second fetch fails, the bundle-derived view for case 2
+    // must replace case 1's server data — NOT show "success-host" stale.
+    await waitFor(() => {
+      expect(screen.getByText(/fallback-host/)).toBeTruthy();
+    });
+    expect(screen.queryByText(/success-host/)).toBeNull();
+  });
 });

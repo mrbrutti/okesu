@@ -26,6 +26,7 @@ export function CaseStructure({ bundle, cpInstanceID }: Props) {
       .then((r) => { if (!cancelled) setData(r); })
       .catch((err) => {
         if (!cancelled) {
+          setData(null);
           console.warn(
             'case-structure fetch failed; using bundle-derived view',
             { invID, cpInstanceID, err },
