@@ -2331,6 +2331,34 @@ The clustering algorithm (`web/src/components/investigations/timeline/cluster.ts
 
 The shared `<Tooltip>` component (`web/src/components/Tooltip.tsx`) is portal'd to `document.body` so it never gets clipped by SVG viewport or parent `overflow:hidden`. Two modes — uncontrolled hover/focus (replacing SVG `<title>` with instant `delay=0` appearance + styled rendering) and controlled (used as the cluster popover with outside-click + Escape dismissal). Reusable beyond the timeline.
 
+## Investigation Overview — timeline filter & saved searches
+
+The case timeline ships a structured filter bar above the SVG canvas:
+severity chips (CRITICAL/HIGH/MEDIUM/LOW/INFO), host typeahead, agent
+typeahead, and run-status chips (completed/failed/cancelled/running).
+Selections feed `applyTimelineFilter(events, filter)`
+(`web/src/components/investigations/timeline/filter.ts`) — a pure
+predicate that keeps matching findings/runs/daimons and passes
+non-applicable kinds (notes/audit/lifecycle/IOCs) through unchanged.
+Lane toggles remain the only knob that hides whole kinds.
+
+Saved filter sets reuse the existing `saved_searches` table
+(migration 045) under `scope='investigation_timeline'`. The shared
+`<SavedSearchesBar>` mounts above the filter inputs — same component
+the Findings page uses — so save/list/rename/default-pin/delete come
+free. Default-flagged saved searches auto-apply on case mount via
+`api.savedSearches.list('investigation_timeline')`.
+
+When a filter selection narrows the result to zero events on a
+non-empty case, the canvas renders lane bands + axis with a small
+amber banner above ("0 of N events match — adjust filters or
+click Clear"). The banner predicate excludes lifecycle and daimon
+kinds because pass-through semantics keep them surviving every
+filter dimension. Federation: filtering is purely client-side
+over events the federation aggregator already returned, and saved
+searches are user-scoped (not CP-scoped) so an operator's
+"my CRIT-only view" works on every case across federated CPs.
+
 ## Investigation PDF report
 
 Operators can export a case as a PDF report from the investigation detail page (`Export report` button). The endpoint is `GET /api/investigations/{id}/report.pdf`; federated cases route to the owning child CP via the existing `?cp=<instance_id>` proxy convention.
