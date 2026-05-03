@@ -73,6 +73,8 @@ import { InvestigationAuditPanel } from '../components/InvestigationAuditPanel';
 import { CaseStatusBar } from '../components/investigations/CaseStatusBar';
 import { CaseTimeline } from '../components/investigations/CaseTimeline';
 import { CaseStructure } from '../components/investigations/CaseStructure';
+import { connectWarRoomDraft, type YjsConnection } from '../components/investigations/warRoomDraft/yjsConnection';
+import { WarRoomDraftPanel } from '../components/investigations/WarRoomDraftPanel';
 
 type Resolution = 'resolved' | 'false_positive' | 'duplicate' | 'wont_fix';
 type Tab = 'overview' | 'graph' | 'findings' | 'runs' | 'iocs' | 'daimons' | 'orchestrations' | 'notes' | 'audit';
@@ -771,6 +773,36 @@ function NotesPanel({ invID, cpInstanceID, notes, onChange }: {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const [warRoomOpen, setWarRoomOpen] = useState(false);
+  const [warRoomConn, setWarRoomConn] = useState<YjsConnection | null>(null);
+  const [currentEmail, setCurrentEmail] = useState<string>('');
+
+  // Pull the current operator email once on mount; reuse across war-room opens.
+  useEffect(() => {
+    let cancelled = false;
+    api.me()
+      .then((u) => { if (!cancelled) setCurrentEmail(u.email); })
+      .catch(() => { /* anonymous fallback handled below */ });
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    if (!warRoomOpen) {
+      if (warRoomConn) {
+        warRoomConn.close();
+        setWarRoomConn(null);
+      }
+      return;
+    }
+    const c = connectWarRoomDraft(invID, cpInstanceID, {
+      email: currentEmail || 'operator',
+      displayName: currentEmail || 'operator',
+    });
+    setWarRoomConn(c);
+    return () => { c.close(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [warRoomOpen, invID, cpInstanceID]);
+
   async function add() {
     if (!body.trim()) return;
     setBusy(true); setError(null);
@@ -822,6 +854,22 @@ function NotesPanel({ invID, cpInstanceID, notes, onChange }: {
           </button>
         </div>
       </div>
+
+      <div className="flex items-center justify-between gap-2 mt-3">
+        <button
+          onClick={() => setWarRoomOpen((b) => !b)}
+          className="text-xs px-2.5 py-1.5 rounded-md border border-border hover:bg-slate-50"
+        >
+          {warRoomOpen ? 'Close war-room draft' : 'Open war-room draft'}
+        </button>
+      </div>
+      {warRoomOpen && warRoomConn && (
+        <WarRoomDraftPanel
+          conn={warRoomConn}
+          currentEmail={currentEmail}
+          onClose={() => { setWarRoomOpen(false); onChange(); }}
+        />
+      )}
 
       {ordered.length === 0 ? (
         <div className="text-xs text-ink-mute italic">No notes yet — add the first one above.</div>
