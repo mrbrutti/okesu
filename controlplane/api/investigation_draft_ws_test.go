@@ -131,7 +131,8 @@ func withTestUser(ctx context.Context, email string) context.Context {
 	return context.WithValue(ctx, testUserKey{}, email)
 }
 
-type testUserKey struct{}
+// testUserKey is defined in investigation_draft_ws.go (production file)
+// so it is available in both test and non-test compilation units.
 
 func TestDraftWS_FederationProxy(t *testing.T) {
 	// Two stores: parent and child. Two HTTP servers: parent and

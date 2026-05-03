@@ -23,6 +23,11 @@ var draftAcceptOpts = &websocket.AcceptOptions{
 	InsecureSkipVerify: true, // origin check handled by cookie/token auth
 }
 
+// testUserKey is a context key used in tests to inject a synthetic user
+// identity without requiring a live session cookie. The key type is
+// unexported so it cannot collide with any external package.
+type testUserKey struct{}
+
 // userIdentityFromContext returns the operator email for the request.
 // In production it comes from the cookie session via auth.UserFromContext;
 // in tests, from a test-only ctx key. Empty string = unauthenticated.
