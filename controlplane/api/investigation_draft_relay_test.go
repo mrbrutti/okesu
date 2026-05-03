@@ -83,12 +83,9 @@ func TestRelayHub_BroadcastForwardsBytes(t *testing.T) {
 	if got := b.snapshot(); len(got) != 1 || string(got[0]) != string(frame) {
 		t.Errorf("b received %v, want one frame matching %v", got, frame)
 	}
-	// alice may have received the snapshot push on first connect; we
-	// only need to verify the new frame was NOT relayed back to her.
-	for _, f := range a.snapshot() {
-		if string(f) == string(frame) {
-			t.Errorf("a received its own frame back (sender exclusion broken)")
-		}
+	// No DB snapshot was seeded, so a should have received nothing at all.
+	if got := a.snapshot(); len(got) != 0 {
+		t.Errorf("a received %d frames, want 0 (sender exclusion + no snapshot push)", len(got))
 	}
 }
 
@@ -193,6 +190,77 @@ func TestRelayHub_LiveRoomIDs(t *testing.T) {
 	}
 	r1.Leave(NewWsClient("a@x", c1)) // wrong client; just exercises the path
 	_ = r2
+}
+
+func TestRelayHub_LeaderHandover(t *testing.T) {
+	store := openTempStoreForRelayTest(t)
+	hub := NewRelayHub(store)
+	t.Cleanup(hub.Shutdown)
+
+	invID := mustCreateInvestigationForRelayTest(t, store, "case")
+	a := &fakeClient{}
+	b := &fakeClient{}
+	wsA := NewWsClient("a@x", a)
+	wsB := NewWsClient("b@x", b)
+	room := hub.JoinOrLoad(invID, wsA)
+	_ = hub.JoinOrLoad(invID, wsB)
+
+	// a is the initial leader. After a leaves, b should be elected.
+	room.Leave(wsA)
+
+	room.mu.Lock()
+	leader := room.leader
+	room.mu.Unlock()
+	if leader != wsB {
+		t.Errorf("after leader left, new leader = %v, want wsB (%v)", leader, wsB)
+	}
+}
+
+func TestRelayHub_MarkFinalizingIsExclusive(t *testing.T) {
+	store := openTempStoreForRelayTest(t)
+	hub := NewRelayHub(store)
+	t.Cleanup(hub.Shutdown)
+
+	invID := mustCreateInvestigationForRelayTest(t, store, "case")
+	c := &fakeClient{}
+	room := hub.JoinOrLoad(invID, NewWsClient("a@x", c))
+
+	if !room.MarkFinalizing() {
+		t.Errorf("first MarkFinalizing returned false; want true")
+	}
+	if room.MarkFinalizing() {
+		t.Errorf("second MarkFinalizing returned true; want false (exclusion)")
+	}
+}
+
+func TestRelayHub_SnapshotLoopExitsCleanly(t *testing.T) {
+	// Ensures the per-room snapshot goroutine terminates when the
+	// room is removed (regression guard against the goroutine leak).
+	store := openTempStoreForRelayTest(t)
+	hub := NewRelayHub(store)
+	t.Cleanup(hub.Shutdown)
+	hub.teardownDelay = 5 * time.Millisecond
+
+	invID := mustCreateInvestigationForRelayTest(t, store, "case")
+	c := &fakeClient{}
+	wsC := NewWsClient("a@x", c)
+	room := hub.JoinOrLoad(invID, wsC)
+
+	// Capture the per-room done channel so we can verify it closes.
+	room.mu.Lock()
+	done := room.done
+	room.mu.Unlock()
+
+	room.Leave(wsC)
+	// Wait for teardown timer + room removal.
+	time.Sleep(50 * time.Millisecond)
+
+	select {
+	case <-done:
+		// ok — channel closed by shutdownLocked
+	case <-time.After(100 * time.Millisecond):
+		t.Errorf("room.done not closed after teardown; goroutine leaked")
+	}
 }
 
 // Helpers (test-only)

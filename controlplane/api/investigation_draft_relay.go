@@ -6,6 +6,7 @@
 package api
 
 import (
+	"log"
 	"sync"
 	"time"
 
@@ -64,7 +65,8 @@ type room struct {
 	dirty          bool      // set on broadcast; cleared on snapshot
 	snapshotTicker *time.Ticker
 	teardownTimer  *time.Timer
-	finalizing     bool // set during a finalize POST
+	finalizing     bool        // set during a finalize POST
+	done           chan struct{} // closed by shutdownLocked to stop snapshotLoop
 }
 
 // RelayHub holds all live rooms.
@@ -163,6 +165,7 @@ func (h *RelayHub) newRoomLocked(invID int64) *room {
 		investigationID: invID,
 		hub:             h,
 		clients:         map[*wsClient]struct{}{},
+		done:            make(chan struct{}),
 	}
 	if snap, err := h.store.GetInvestigationNoteDraft(invID); err == nil {
 		r.snapshot = snap
@@ -216,6 +219,7 @@ func (r *room) SetAwareness(client *wsClient, payload []byte) {
 // configured grace period if it's now empty.
 func (r *room) Leave(client *wsClient) {
 	r.mu.Lock()
+	departing := client
 	delete(r.clients, client)
 	if r.leader == client {
 		r.leader = nil
@@ -229,10 +233,16 @@ func (r *room) Leave(client *wsClient) {
 		r.teardownTimer = time.AfterFunc(r.hub.teardownDelay, func() {
 			r.hub.removeRoom(r.investigationID)
 		})
-		// Force a final snapshot before the room can vanish.
-		go r.requestSnapshotFromLeader()
 	}
 	r.mu.Unlock()
+
+	// If this was the last client, ask the departing client for a
+	// final snapshot before their connection closes. They may or may
+	// not respond depending on how quickly their write pump exits;
+	// best-effort.
+	if empty {
+		departing.sender.Send(encodeSyncStep1Empty())
+	}
 }
 
 // requestSnapshotFromLeader sends the leader an empty sync-step-1.
@@ -261,6 +271,8 @@ func (r *room) snapshotLoop() {
 				continue
 			}
 			r.requestSnapshotFromLeader()
+		case <-r.done:
+			return
 		case <-r.hub.stopCh:
 			return
 		}
@@ -274,8 +286,11 @@ func (r *room) SetSnapshot(bytes []byte) {
 	r.snapshot = append(r.snapshot[:0], bytes...)
 	r.dirty = false
 	hub := r.hub
+	invID := r.investigationID
 	r.mu.Unlock()
-	_ = hub.store.UpsertInvestigationNoteDraft(r.investigationID, bytes)
+	if err := hub.store.UpsertInvestigationNoteDraft(invID, bytes); err != nil {
+		log.Printf("relay: SetSnapshot persist (inv=%d): %v", invID, err)
+	}
 }
 
 // SnapshotBytes returns a copy of the current snapshot. Used by the
@@ -301,6 +316,11 @@ func (r *room) MarkFinalizing() bool {
 }
 
 func (r *room) shutdownLocked() {
+	select {
+	case <-r.done:
+	default:
+		close(r.done)
+	}
 	if r.snapshotTicker != nil {
 		r.snapshotTicker.Stop()
 	}
