@@ -3,6 +3,7 @@
 // y-axis row and the toggle state in localStorage.
 
 export type TimelineLane =
+  | 'phases'      // NEW — opt-in
   | 'lifecycle'
   | 'findings'
   | 'runs'
@@ -81,4 +82,4 @@ export type TimelineEvent =
   | TimelineAuditEvent;
 
 export const DEFAULT_LANES_ON: ReadonlyArray<TimelineLane> = ['lifecycle', 'findings', 'runs', 'notes'];
-export const ALL_LANES: ReadonlyArray<TimelineLane> = ['lifecycle', 'findings', 'runs', 'notes', 'iocs', 'daimons', 'audit'];
+export const ALL_LANES: ReadonlyArray<TimelineLane> = ['phases', 'lifecycle', 'findings', 'runs', 'notes', 'iocs', 'daimons', 'audit'];

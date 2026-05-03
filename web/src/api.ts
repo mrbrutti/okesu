@@ -761,6 +761,19 @@ export interface RelatedCase {
   Signals: SuggestionSignal[];
 }
 
+// Operator-defined phase of a case (e.g. "Initial detection 14:00–14:35").
+// Renders as a pill in the timeline's "phases" lane. Color is derived
+// from hash(name); no category column.
+export interface InvestigationPhase {
+  ID:              number;
+  InvestigationID: number;
+  Name:            string;
+  StartTs:         number;
+  EndTs:           number;
+  CreatedBy:       { Valid: boolean; String: string };
+  CreatedAt:       string;
+}
+
 // InvestigationDetail is the shape of GET /api/investigations/{id}.
 // The handler returns enriched lists for every workspace tab; see
 // controlplane/api/investigations.go GetInvestigationHandler.
@@ -1493,6 +1506,33 @@ export const api = {
         method: 'POST',
         body: JSON.stringify(body),
       });
+    },
+
+    phases: {
+      list: (id: number, cpInstanceID?: string) => {
+        const qs = cpInstanceID ? `?cp=${encodeURIComponent(cpInstanceID)}` : '';
+        return request<InvestigationPhase[]>(`/api/investigations/${id}/phases${qs}`);
+      },
+      create: (id: number, body: { name: string; start_ts: number; end_ts: number }, cpInstanceID?: string) => {
+        const qs = cpInstanceID ? `?cp=${encodeURIComponent(cpInstanceID)}` : '';
+        return request<{ id: number }>(`/api/investigations/${id}/phases${qs}`, {
+          method: 'POST',
+          body: JSON.stringify(body),
+        });
+      },
+      update: (id: number, phaseID: number, body: { name: string }, cpInstanceID?: string) => {
+        const qs = cpInstanceID ? `?cp=${encodeURIComponent(cpInstanceID)}` : '';
+        return request<void>(`/api/investigations/${id}/phases/${phaseID}${qs}`, {
+          method: 'PATCH',
+          body: JSON.stringify(body),
+        });
+      },
+      delete: (id: number, phaseID: number, cpInstanceID?: string) => {
+        const qs = cpInstanceID ? `?cp=${encodeURIComponent(cpInstanceID)}` : '';
+        return request<void>(`/api/investigations/${id}/phases/${phaseID}${qs}`, {
+          method: 'DELETE',
+        });
+      },
     },
   },
 

@@ -16,6 +16,17 @@ export function tToX(t: number, tMin: number, tMax: number, width: number): numb
   return ((clamped - tMin) / (tMax - tMin)) * width;
 }
 
+/**
+ * xToT — inverse of tToX. Given a pixel x within the drawable width,
+ * returns the corresponding timestamp in [tMin, tMax]. Clamps x outside
+ * the drawable area. Returns tMin if width is zero.
+ */
+export function xToT(x: number, tMin: number, tMax: number, width: number): number {
+  if (width <= 0) return tMin;
+  const clamped = Math.min(Math.max(x, 0), width);
+  return tMin + (clamped / width) * (tMax - tMin);
+}
+
 export function autoFitRange(timestamps: number[], now: number, opts?: { warRoom?: boolean }): Range {
   if (opts?.warRoom) {
     return { tMin: now - HOUR_MS, tMax: now };
