@@ -1,6 +1,7 @@
 package db
 
 import (
+	"database/sql"
 	"errors"
 	"testing"
 	"time"
@@ -13,8 +14,8 @@ func TestInvestigationNoteDraft_GetEmpty(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 	_, err = s.GetInvestigationNoteDraft(invID)
-	if err == nil {
-		t.Errorf("got nil err, want sql.ErrNoRows")
+	if !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("got %v, want sql.ErrNoRows", err)
 	}
 }
 
@@ -70,14 +71,13 @@ func TestInvestigationNoteDraft_Delete(t *testing.T) {
 		t.Fatalf("delete: %v", err)
 	}
 	_, err = s.GetInvestigationNoteDraft(invID)
-	if err == nil {
-		t.Errorf("after delete: got nil err")
+	if !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("after delete: got %v, want sql.ErrNoRows", err)
 	}
 	// Idempotent: delete again should not error
 	if err := s.DeleteInvestigationNoteDraft(invID); err != nil {
 		t.Errorf("second delete: %v", err)
 	}
-	_ = errors.Is // keep imports clean
 }
 
 func TestInvestigationNoteDraft_SweepRespectsLiveSet(t *testing.T) {
@@ -112,5 +112,8 @@ func TestInvestigationNoteDraft_SweepRespectsLiveSet(t *testing.T) {
 	}
 	if _, err := s.GetInvestigationNoteDraft(young); err != nil {
 		t.Errorf("young gone: %v", err)
+	}
+	if _, err := s.GetInvestigationNoteDraft(stale); !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("stale not deleted: got err=%v", err)
 	}
 }

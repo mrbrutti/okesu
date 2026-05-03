@@ -1,7 +1,6 @@
 package db
 
 import (
-	"database/sql"
 	"strings"
 	"time"
 )
@@ -60,6 +59,3 @@ func (s *Store) SweepStaleInvestigationNoteDrafts(older time.Duration, liveIDs [
 	}
 	return res.RowsAffected()
 }
-
-// Compile-time guard so the unused-import linter doesn't ding sql.
-var _ = sql.ErrNoRows
