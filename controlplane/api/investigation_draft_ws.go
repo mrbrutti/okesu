@@ -6,8 +6,10 @@ package api
 
 import (
 	"context"
+	"log"
 	"net/http"
 	"sync"
+	"sync/atomic"
 
 	"github.com/coder/websocket"
 	"github.com/section9labs/okesu/controlplane/auth"
@@ -35,10 +37,11 @@ func userIdentityFromContext(ctx context.Context) string {
 // frameSender interface. Each adapter has its own write pump
 // goroutine to serialize writes to the same conn.
 type frameSenderForWS struct {
-	conn   *websocket.Conn
-	sendCh chan []byte
-	once   sync.Once
-	closed chan struct{}
+	conn    *websocket.Conn
+	sendCh  chan []byte
+	once    sync.Once
+	closed  chan struct{}
+	dropped atomic.Int64
 }
 
 func newFrameSenderForWS(conn *websocket.Conn) *frameSenderForWS {
@@ -58,13 +61,19 @@ func (s *frameSenderForWS) Send(b []byte) {
 	default:
 		// Backpressure: drop the frame if the channel is full. Yjs
 		// will recover via its next sync round-trip.
+		s.dropped.Add(1)
 	}
 }
 
 // Close is idempotent: it closes the done channel exactly once via
 // sync.Once, causing the write pump to exit.
 func (s *frameSenderForWS) Close() {
-	s.once.Do(func() { close(s.closed) })
+	s.once.Do(func() {
+		close(s.closed)
+		if d := s.dropped.Load(); d > 0 {
+			log.Printf("draft-ws: dropped %d frame(s) due to backpressure", d)
+		}
+	})
 }
 
 func (s *frameSenderForWS) writePump() {
@@ -105,6 +114,7 @@ func GetInvestigationDraftWSHandler(store *db.Store, hub *RelayHub) http.Handler
 			// Accept already wrote an error response to w.
 			return
 		}
+		conn.SetReadLimit(4 << 20) // 4 MiB; war-room Yjs snapshots can comfortably grow large
 
 		sender := newFrameSenderForWS(conn)
 		client := NewWsClient(email, sender)
@@ -203,6 +213,7 @@ func federationDraftWSHandler(store *db.Store, hub *RelayHub) http.HandlerFunc {
 		if err != nil {
 			return
 		}
+		conn.SetReadLimit(4 << 20) // 4 MiB; war-room Yjs snapshots can comfortably grow large
 
 		sender := newFrameSenderForWS(conn)
 		client := NewWsClient(email, sender)
@@ -210,6 +221,11 @@ func federationDraftWSHandler(store *db.Store, hub *RelayHub) http.HandlerFunc {
 		defer room.Leave(client)
 		defer sender.Close()
 
+		// requireFederationToken populates auth.UserFromContext with a
+		// synthetic "federation@parent" user. We deliberately ignore that
+		// here and read the actual operator's email from the parent's
+		// X-Okesu-Federation-Operator header so the room's awareness chips
+		// show the real operator, not the proxy CP.
 		runReadPump(r.Context(), conn, client, room)
 	}
 }
