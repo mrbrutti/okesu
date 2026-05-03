@@ -7,8 +7,9 @@
 // Refresh is driven by the parent's existing 30s/5s war-room poll —
 // re-render happens on every bundle replacement.
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { InvestigationDetail, InvestigationAuditEvent, SavedSearch } from '../../api';
+import type { InvestigationDetail, InvestigationAuditEvent, InvestigationPhase, SavedSearch } from '../../api';
 import { api } from '../../api';
+import { PhasesLane } from './PhasesLane';
 import { TimelineFilterBar } from './TimelineFilterBar';
 import { SavedSearchesBar } from '../SavedSearchesBar';
 import { applyTimelineFilter, type TimelineFilterConfig } from './timeline/filter';
@@ -78,6 +79,22 @@ export function CaseTimeline({ bundle, cpInstanceID }: Props) {
       .then(setAudit)
       .catch(() => { auditFetchedRef.current = false; });
   }, [activeLanes, bundle.investigation.ID, cpInstanceID]);
+
+  const [phases, setPhases] = useState<InvestigationPhase[]>([]);
+  const phasesFetchedRef = useRef(false);
+
+  useEffect(() => {
+    if (!activeLanes.includes('phases') || phasesFetchedRef.current) return;
+    phasesFetchedRef.current = true;
+    api.investigations.phases.list(bundle.investigation.ID, cpInstanceID)
+      .then(setPhases)
+      .catch(() => { phasesFetchedRef.current = false; });
+  }, [activeLanes, bundle.investigation.ID, cpInstanceID]);
+
+  const refreshPhases = () => {
+    api.investigations.phases.list(bundle.investigation.ID, cpInstanceID)
+      .then(setPhases).catch(() => {});
+  };
 
   const events = useMemo(() => buildEvents(bundle, audit), [bundle, audit]);
 
@@ -195,6 +212,18 @@ export function CaseTimeline({ bundle, cpInstanceID }: Props) {
             onSearchesChange={refreshSavedSearches}
           />
         </div>
+      )}
+
+      {activeLanes.includes('phases') && range && (
+        <PhasesLane
+          invID={bundle.investigation.ID}
+          cpInstanceID={cpInstanceID}
+          phases={phases}
+          range={range}
+          drawableWidth={drawableWidth}
+          laneLabelWidth={LANE_LABEL_W}
+          onPhasesChange={refreshPhases}
+        />
       )}
 
       <TimelineFilterBar bundle={bundle} filter={filter} onChange={setFilter} />

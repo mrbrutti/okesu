@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { tToX, autoFitRange, presetRange } from './scale';
+import { tToX, xToT, autoFitRange, presetRange } from './scale';
 
 describe('scale', () => {
   it('tToX maps tMin to 0 and tMax to width', () => {
@@ -102,5 +102,26 @@ describe('scale', () => {
     const now = 1_000_000_000;
     expect(presetRange('24h', now).tMin).toBe(now - 86_400_000);
     expect(presetRange('7d', now).tMin).toBe(now - 7 * 86_400_000);
+  });
+});
+
+describe('xToT', () => {
+  it('round-trips with tToX for several timestamps + ranges', () => {
+    const range = { tMin: 1000, tMax: 5000 };
+    const width = 1000;
+    for (const t of [1000, 1500, 2500, 3750, 4999, 5000]) {
+      const x = tToX(t, range.tMin, range.tMax, width);
+      const back = xToT(x, range.tMin, range.tMax, width);
+      expect(Math.round(back)).toBe(t);
+    }
+  });
+
+  it('clamps x outside the drawable range', () => {
+    expect(xToT(-100, 1000, 5000, 1000)).toBe(1000);
+    expect(xToT(2000,  1000, 5000, 1000)).toBe(5000);
+  });
+
+  it('returns tMin for zero-width drawable area', () => {
+    expect(xToT(50, 1000, 5000, 0)).toBe(1000);
   });
 });

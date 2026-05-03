@@ -2421,6 +2421,39 @@ token, and pumps bytes both directions. Drafts older than 7 days
 are removed by the daily GC sweep, with a "live rooms" carve-out
 to avoid deleting a snapshot that's about to be re-saved.
 
+## Investigation Overview — case phases (timeline annotations)
+
+Operators can mark named time ranges on the case timeline ("Initial
+detection 14:00–14:35", "Containment 14:35–16:10"). Phases persist
+in the `investigation_phases` table and render as a dedicated
+"phases" lane at the top of the timeline (toggleable, opt-in,
+lazy-fetched on first toggle).
+
+The lane is a sibling React `<div>` directly above the SVG canvas
+(NOT an SVG row), so the rubber-band drag gesture and inline rename
+input use plain DOM event handlers without fighting SVG event
+propagation. Pointer-down inside the lane background starts a
+rubber-band selection; pointer-up opens an inline `<input>` for the
+phase name; Enter commits via `POST /api/investigations/{id}/phases`
+which inserts one row.
+
+Click an existing phase pill to rename inline (`PATCH .../{phase_id}`).
+Hover to reveal an `×` delete button (`DELETE .../{phase_id}` with
+window.confirm). No resize via drag-the-edges; operators delete and
+re-create to fix a boundary.
+
+Phase colors are derived deterministically from `hash(name)` — no
+picker UI, no category column. Same name always renders with the
+same color across sessions. Overlapping phases stack vertically
+within the lane via the pure first-fit row-assignment helper at
+`web/src/components/investigations/timeline/phasesLayer.ts`.
+
+Federation: each handler (`Federated*` parent-side, `Federation*`
+child-side) follows the same template as the case-structure and
+war-room-draft endpoints. The parent's
+`?cp=<instance_id>` query proxies the request to the owning child;
+the child's `/api/v1/federation/...` route is token-authed.
+
 ## Investigation PDF report
 
 Operators can export a case as a PDF report from the investigation detail page (`Export report` button). The endpoint is `GET /api/investigations/{id}/report.pdf`; federated cases route to the owning child CP via the existing `?cp=<instance_id>` proxy convention.
