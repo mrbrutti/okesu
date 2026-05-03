@@ -301,6 +301,71 @@ func proxyToCPByQuery(w http.ResponseWriter, r *http.Request, agg *federation.Ag
 	return true, nil
 }
 
+// proxyToCPByQueryPost is the POST/PATCH variant of
+// proxyToCPByQuery. Forwards the request body verbatim to the child
+// CP's federation endpoint when ?cp=<instance_id> is set.
+//
+// Returns (handled, err). handled=true means the response was already
+// written; the caller should NOT touch w.
+func proxyToCPByQueryPost(w http.ResponseWriter, r *http.Request, agg *federation.Aggregator, federationPath string) (handled bool, err error) {
+	cpID := r.URL.Query().Get("cp")
+	if cpID == "" {
+		return false, nil
+	}
+	peers, _ := agg.HealthyPeers()
+	var target *federation.Peer
+	for i := range peers {
+		if peers[i].Snapshot.InstanceID == cpID {
+			target = &peers[i]
+			break
+		}
+	}
+	if target == nil {
+		http.Error(w, "target CP not found or unhealthy: "+cpID, http.StatusNotFound)
+		return true, nil
+	}
+	url := strings.TrimRight(target.Row.URL, "/") + federationPath
+	q := r.URL.Query()
+	q.Del("cp")
+	if enc := q.Encode(); enc != "" {
+		url += "?" + enc
+	}
+	body, _ := io.ReadAll(r.Body)
+	_ = r.Body.Close()
+	req, err := http.NewRequestWithContext(r.Context(), r.Method, url, bytes.NewReader(body))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return true, err
+	}
+	req.Header.Set("X-Okesu-Federation-Token", target.Row.Token)
+	if ct := r.Header.Get("Content-Type"); ct != "" {
+		req.Header.Set("Content-Type", ct)
+	}
+	req.Header.Set("Accept", "application/json")
+	client := &http.Client{
+		Timeout:   proxyTimeout,
+		Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}},
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		http.Error(w, "proxy to "+target.Snapshot.DisplayName+": "+err.Error(), http.StatusBadGateway)
+		return true, err
+	}
+	defer resp.Body.Close()
+	for k, vs := range resp.Header {
+		if strings.EqualFold(k, "Content-Length") || strings.EqualFold(k, "Transfer-Encoding") {
+			continue
+		}
+		for _, v := range vs {
+			w.Header().Add(k, v)
+		}
+	}
+	w.Header().Set("X-Okesu-Forwarded-To", target.Snapshot.InstanceID)
+	w.WriteHeader(resp.StatusCode)
+	_, _ = io.Copy(w, resp.Body)
+	return true, nil
+}
+
 // FederatedNodeDetail wraps NodeDetail. When ?cp=<instance_id> is in
 // the URL, proxies to that child's /api/v1/federation/nodes/{id}.
 func FederatedNodeDetail(store *db.Store, agg *federation.Aggregator) http.HandlerFunc {
