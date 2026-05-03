@@ -271,6 +271,26 @@ describe('CaseTimeline filter integration', () => {
   });
 });
 
+describe('CaseTimeline phases lane', () => {
+  it('lazy-fetches phases the first time the lane is toggled on', async () => {
+    const apiMod = await import('../../api');
+    const listMock = vi.spyOn(apiMod.api.investigations.phases, 'list').mockResolvedValue([]);
+    render(<MemoryRouter><CaseTimeline bundle={bundle()} /></MemoryRouter>);
+    // Lane is opt-in; not fetched until toggled.
+    expect(listMock).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: /^phases$/i }));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(listMock).toHaveBeenCalledTimes(1);
+    listMock.mockRestore();
+  });
+
+  it('does not include phases in DEFAULT_LANES_ON', () => {
+    render(<MemoryRouter><CaseTimeline bundle={bundle()} /></MemoryRouter>);
+    const phasesBtn = screen.getByRole('button', { name: /^phases$/i });
+    expect(phasesBtn.getAttribute('aria-pressed')).toBe('false');
+  });
+});
+
 describe('CaseTimeline default saved search', () => {
   function makeFinding(id: number, severity: string, host: string) {
     return {
