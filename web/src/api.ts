@@ -1478,6 +1478,22 @@ export const api = {
           body: JSON.stringify(s),
         }),
     },
+
+    /** Build the WebSocket URL for the war-room draft session. */
+    draftWSURL: (id: number, cpInstanceID?: string): string => {
+      const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const cp = cpInstanceID ? `?cp=${encodeURIComponent(cpInstanceID)}` : '';
+      return `${proto}//${window.location.host}/api/investigations/${id}/draft/ws${cp}`;
+    },
+
+    /** Finalize the in-flight draft as one immutable note. */
+    finalizeDraft: (id: number, body: { author?: string }, cpInstanceID?: string) => {
+      const qs = cpInstanceID ? `?cp=${encodeURIComponent(cpInstanceID)}` : '';
+      return request<{ note_id: number }>(`/api/investigations/${id}/draft/finalize${qs}`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
+    },
   },
 
   // Phase 5 — nodes & deploy.

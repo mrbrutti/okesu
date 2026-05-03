@@ -2387,6 +2387,40 @@ previously lived inline in the component, now extracted for
 testability and reuse on the fallback path. Wire shape is identical
 between server and fallback paths so the render is shared.
 
+## Investigation Overview — war-room collaborative drafts
+
+Operators can co-edit a single shared draft per investigation in
+real time via Yjs over a WebSocket relay. The draft is the
+"war-room" composer; the existing single-author note composer is
+unchanged. On Send, the current draft text becomes one immutable
+`InvestigationNote` row preserving the existing audit chain.
+
+The relay (`controlplane/api/investigation_draft_relay.go`) is
+byte-blind: it forwards Yjs binary frames between connected clients
+without maintaining a server-side `Y.Doc`. Snapshots are
+leader-driven — every 5s the relay sends a sync-step-1 to a
+designated client, captures their sync-step-2 reply as the canonical
+state, and persists those bytes to `investigation_note_drafts`. On
+finalize, a tiny single-purpose decoder
+(`controlplane/api/yjs_protocol.go::decodeYTextBody`) extracts the
+plain string from the snapshot bytes — the only Yjs-internals code
+on the Go side.
+
+The frontend
+(`web/src/components/investigations/WarRoomDraftPanel.tsx`) uses Yjs
++ `y-protocols` over native `WebSocket`. A thin textarea binding
+diffs the `<textarea>` value against the `Y.Text` content and
+applies a single replace transaction per change. Awareness drives
+presence chips and (future) cursor overlays.
+
+Federation: parent CPs can host war-room sessions for cases that
+live on a child via a WebSocket proxy
+(`proxyDraftWS`) — the parent upgrades the inbound WS, dials the
+child's `/api/v1/federation/.../draft/ws` with the federation
+token, and pumps bytes both directions. Drafts older than 7 days
+are removed by the daily GC sweep, with a "live rooms" carve-out
+to avoid deleting a snapshot that's about to be re-saved.
+
 ## Investigation PDF report
 
 Operators can export a case as a PDF report from the investigation detail page (`Export report` button). The endpoint is `GET /api/investigations/{id}/report.pdf`; federated cases route to the owning child CP via the existing `?cp=<instance_id>` proxy convention.

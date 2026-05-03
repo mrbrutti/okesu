@@ -66,6 +66,7 @@ type Server struct {
 	secrets    ports.Secrets
 	mgr        *auth.Manager
 	bcast      *Broadcaster
+	draftHub   *api.RelayHub  // war-room collaborative draft relay (Phase #3)
 	ca         *CA
 	oidc       *auth.OIDCProvider // nil when OIDC not configured
 	jobs       *jobs.Registry
@@ -322,6 +323,7 @@ func New(cfg Config) (*Server, error) {
 		bucketProvisioners: cpprovision.NewBucketRegistry(),
 		bundleCache:        api.NewBundleCache(),
 	}
+	srv.draftHub = api.NewRelayHub(store)
 	// Phase 21.3b/c — register per-cloud provisioners. Each cloud
 	// implementation lives in its own subpackage so adding a new one
 	// is one import + one Register() call.
@@ -674,6 +676,8 @@ func (s *Server) routes() http.Handler {
 	r.Get("/api/v1/federation/investigations/{id}/report.pdf", api.FederationInvestigationReport(s.store))
 	r.Get("/api/v1/federation/investigations/{id}/graph", api.FederationInvestigationGraph(s.store))
 	r.Get("/api/v1/federation/investigations/{id}/structure", api.FederationInvestigationStructure(s.store))
+	r.Get( "/api/v1/federation/investigations/{id}/draft/ws",       api.FederationInvestigationDraftWS(s.store, s.draftHub))
+	r.Post("/api/v1/federation/investigations/{id}/draft/finalize", api.FederationInvestigationDraftFinalize(s.store, s.draftHub))
 	r.Get("/api/v1/federation/investigations/{id}/suggested-findings", api.FederationSuggestFindings(s.store))
 	r.Put("/api/v1/federation/investigations/{id}/dismissed-findings/{finding_id}", api.FederationDismissSuggestedFinding(s.store))
 	// Phase 22.6.1 — bulk-link from workspace "Add all ≥ N" buttons.
@@ -899,6 +903,8 @@ func (s *Server) routes() http.Handler {
 		r.Get("/api/investigations/{id}/report.pdf", api.FederatedInvestigationReport(s.store, s.fedAgg))
 		r.Get("/api/investigations/{id}/graph", api.FederatedInvestigationGraph(s.store, s.fedAgg))
 		r.Get("/api/investigations/{id}/structure", api.FederatedInvestigationStructure(s.store, s.fedAgg))
+		r.Get( "/api/investigations/{id}/draft/ws",       api.FederatedInvestigationDraftWS(s.store, s.draftHub, s.fedAgg))
+		r.Post("/api/investigations/{id}/draft/finalize", api.FederatedInvestigationDraftFinalize(s.store, s.draftHub, s.fedAgg))
 		r.Get("/api/investigations/{id}/suggested-findings", api.FederatedSuggestFindings(s.store, s.fedAgg))
 		r.Put("/api/investigations/{id}/dismissed-findings/{finding_id}", api.FederatedDismissSuggestedFinding(s.store, s.fedAgg))
 		r.Post("/api/investigations/{id}/bulk-link-findings", api.FederatedBulkLinkFindings(s.store, s.fedAgg))
@@ -1660,6 +1666,7 @@ func (s *Server) Run(ctx context.Context) error {
 
 	go s.sessionGC(ctx)
 	go s.staleFindingsLoop(ctx)
+	go s.draftGCLoop(ctx)
 	// Phase 22.10 PR γ — seed orchestration specs from disk on boot
 	// (no-op when --orchestration-seed-dir is unset). Synchronous so
 	// the canonical set is in place before the engine's first tick.
@@ -2079,6 +2086,39 @@ func (s *Server) retentionLoop(ctx context.Context) {
 			return
 		case <-t.C:
 			prune()
+		}
+	}
+}
+
+// draftGCLoop runs the daily sweep for stale war-room note drafts.
+// Drafts older than 7 days that aren't currently bound to a live
+// in-memory room get deleted. Runs an immediate sweep on start so a
+// freshly-upgraded CP collapses the existing pile without waiting 24h.
+func (s *Server) draftGCLoop(ctx context.Context) {
+	const (
+		threshold = 7 * 24 * time.Hour
+		tick      = 24 * time.Hour
+	)
+	sweep := func() {
+		live := s.draftHub.LiveRoomIDs()
+		n, err := s.store.SweepStaleInvestigationNoteDrafts(threshold, live)
+		if err != nil {
+			log.Printf("draft-gc: %v", err)
+			return
+		}
+		if n > 0 {
+			log.Printf("draft-gc: deleted %d stale draft(s) older than %s", n, threshold)
+		}
+	}
+	sweep()
+	t := time.NewTicker(tick)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			sweep()
 		}
 	}
 }
