@@ -28,7 +28,7 @@ func TestInvestigationPhases_Unknown404(t *testing.T) {
 
 func TestInvestigationPhases_EmptyList(t *testing.T) {
 	store := newSeededTestStore(t)
-	id := mustCreatePhasesInvestigation(t, store, "case")
+	id := mustCreateInvestigationForRelayTest(t, store, "case")
 	router := chi.NewRouter()
 	router.Get("/api/investigations/{id}/phases", GetInvestigationPhasesHandler(store))
 
@@ -49,7 +49,7 @@ func TestInvestigationPhases_EmptyList(t *testing.T) {
 
 func TestInvestigationPhases_Create(t *testing.T) {
 	store := newSeededTestStore(t)
-	id := mustCreatePhasesInvestigation(t, store, "case")
+	id := mustCreateInvestigationForRelayTest(t, store, "case")
 	router := chi.NewRouter()
 	router.Post("/api/investigations/{id}/phases", CreateInvestigationPhaseHandler(store))
 
@@ -58,7 +58,7 @@ func TestInvestigationPhases_Create(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
-	if w.Code != http.StatusOK {
+	if w.Code != http.StatusCreated {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
 	}
 	var resp struct{ ID int64 `json:"id"` }
@@ -76,7 +76,7 @@ func TestInvestigationPhases_Create(t *testing.T) {
 
 func TestInvestigationPhases_CreateRejectsEmptyName(t *testing.T) {
 	store := newSeededTestStore(t)
-	id := mustCreatePhasesInvestigation(t, store, "case")
+	id := mustCreateInvestigationForRelayTest(t, store, "case")
 	router := chi.NewRouter()
 	router.Post("/api/investigations/{id}/phases", CreateInvestigationPhaseHandler(store))
 
@@ -94,7 +94,7 @@ func TestInvestigationPhases_CreateRejectsEmptyName(t *testing.T) {
 
 func TestInvestigationPhases_CreateRejectsBackwardsTime(t *testing.T) {
 	store := newSeededTestStore(t)
-	id := mustCreatePhasesInvestigation(t, store, "case")
+	id := mustCreateInvestigationForRelayTest(t, store, "case")
 	router := chi.NewRouter()
 	router.Post("/api/investigations/{id}/phases", CreateInvestigationPhaseHandler(store))
 
@@ -110,7 +110,7 @@ func TestInvestigationPhases_CreateRejectsBackwardsTime(t *testing.T) {
 
 func TestInvestigationPhases_Update(t *testing.T) {
 	store := newSeededTestStore(t)
-	invID := mustCreatePhasesInvestigation(t, store, "case")
+	invID := mustCreateInvestigationForRelayTest(t, store, "case")
 	phaseID, _ := store.InsertInvestigationPhase(&db.InvestigationPhaseInsert{
 		InvestigationID: invID, Name: "old", StartTs: 1, EndTs: 2, CreatedBy: "x",
 	})
@@ -133,7 +133,7 @@ func TestInvestigationPhases_Update(t *testing.T) {
 
 func TestInvestigationPhases_Delete(t *testing.T) {
 	store := newSeededTestStore(t)
-	invID := mustCreatePhasesInvestigation(t, store, "case")
+	invID := mustCreateInvestigationForRelayTest(t, store, "case")
 	phaseID, _ := store.InsertInvestigationPhase(&db.InvestigationPhaseInsert{
 		InvestigationID: invID, Name: "x", StartTs: 1, EndTs: 2, CreatedBy: "x",
 	})
@@ -163,13 +163,4 @@ func TestFederationInvestigationPhases_RejectsWithoutToken(t *testing.T) {
 	if w.Code != http.StatusUnauthorized {
 		t.Errorf("status = %d, want 401", w.Code)
 	}
-}
-
-func mustCreatePhasesInvestigation(t *testing.T, store *db.Store, title string) int64 {
-	t.Helper()
-	id, err := store.CreateInvestigation(&db.InvestigationInsert{Title: title})
-	if err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	return id
 }

@@ -86,6 +86,7 @@ func CreateInvestigationPhaseHandler(store *db.Store) http.HandlerFunc {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(w).Encode(map[string]any{"id": id})
 	}
 }
@@ -114,8 +115,12 @@ func UpdateInvestigationPhaseHandler(store *db.Store) http.HandlerFunc {
 			return
 		}
 		req.Name = strings.TrimSpace(req.Name)
-		if req.Name == "" || len(req.Name) > phaseNameMaxLen {
-			http.Error(w, "name required (1-100 chars)", http.StatusBadRequest)
+		if req.Name == "" {
+			http.Error(w, "name is required", http.StatusBadRequest)
+			return
+		}
+		if len(req.Name) > phaseNameMaxLen {
+			http.Error(w, "name exceeds 100 chars", http.StatusBadRequest)
 			return
 		}
 		if err := store.UpdateInvestigationPhaseName(invID, phaseID, req.Name); err != nil {
