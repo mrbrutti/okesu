@@ -60,13 +60,13 @@ func (s *Store) ListInvestigationPhases(invID int64) ([]InvestigationPhase, erro
 	out := []InvestigationPhase{}
 	for rows.Next() {
 		var p InvestigationPhase
-		var createdAt sql.NullTime
+		var createdAt sql.NullString
 		if err := rows.Scan(&p.ID, &p.InvestigationID, &p.Name,
 			&p.StartTs, &p.EndTs, &p.CreatedBy, &createdAt); err != nil {
 			return nil, err
 		}
 		if createdAt.Valid {
-			p.CreatedAt = createdAt.Time.UTC()
+			p.CreatedAt = ParseTimestamp(createdAt.String)
 		}
 		out = append(out, p)
 	}

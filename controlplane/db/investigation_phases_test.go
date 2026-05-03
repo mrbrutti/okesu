@@ -1,9 +1,6 @@
 package db
 
 import (
-	"database/sql"
-	"errors"
-	"strings"
 	"testing"
 )
 
@@ -42,6 +39,9 @@ func TestInvestigationPhase_InsertGet(t *testing.T) {
 	}
 	if !got.CreatedBy.Valid || got.CreatedBy.String != "alice@x" {
 		t.Errorf("created_by = %v, want alice@x", got.CreatedBy)
+	}
+	if got.CreatedAt.IsZero() {
+		t.Errorf("CreatedAt is zero — should be set by CURRENT_TIMESTAMP default")
 	}
 }
 
@@ -101,9 +101,6 @@ func TestInvestigationPhase_Delete(t *testing.T) {
 	if err := s.DeleteInvestigationPhase(invID, id); err != nil {
 		t.Errorf("second delete: %v", err)
 	}
-	_ = sql.ErrNoRows
-	_ = errors.Is
-	_ = strings.TrimSpace
 }
 
 func TestInvestigationPhase_RejectsBackwardsTimeRange(t *testing.T) {
