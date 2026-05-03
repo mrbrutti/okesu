@@ -8,12 +8,15 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/coder/websocket"
 	"github.com/section9labs/okesu/controlplane/auth"
 	"github.com/section9labs/okesu/controlplane/db"
+	"github.com/section9labs/okesu/controlplane/federation"
 )
 
 var draftAcceptOpts = &websocket.AcceptOptions{
@@ -182,6 +185,132 @@ func extractSyncStep2Payload(frame []byte) []byte {
 		return nil
 	}
 	return rest[i : uint64(i)+v]
+}
+
+// FederatedInvestigationDraftWS — parent-side wrapper. Proxies via
+// the WS proxy when ?cp is set; falls through to the local handler
+// otherwise.
+func FederatedInvestigationDraftWS(store *db.Store, hub *RelayHub, agg *federation.Aggregator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		cpID := r.URL.Query().Get("cp")
+		if cpID != "" {
+			proxyDraftWS(w, r, agg, cpID)
+			return
+		}
+		GetInvestigationDraftWSHandler(store, hub).ServeHTTP(w, r)
+	}
+}
+
+// proxyDraftWS upgrades the parent-side connection, dials the child
+// CP's federation WebSocket endpoint with the federation token, and
+// pumps bytes both directions until either side closes.
+func proxyDraftWS(w http.ResponseWriter, r *http.Request, agg *federation.Aggregator, cpID string) {
+	// Find the target child peer in the federation aggregator.
+	peers, _ := agg.HealthyPeers()
+	var target *federation.Peer
+	for i := range peers {
+		if peers[i].Snapshot.InstanceID == cpID {
+			target = &peers[i]
+			break
+		}
+	}
+	if target == nil {
+		http.Error(w, "target CP not found or unhealthy: "+cpID, http.StatusNotFound)
+		return
+	}
+
+	// Build the child URL: replace /api/investigations/ with the
+	// federation path, and switch http(s):// to ws(s)://.
+	childPath := strings.Replace(r.URL.Path, "/api/investigations/", "/api/v1/federation/investigations/", 1)
+	rawURL := target.Row.URL
+	rawURL = strings.Replace(rawURL, "https://", "wss://", 1)
+	rawURL = strings.Replace(rawURL, "http://", "ws://", 1)
+	childURL := strings.TrimRight(rawURL, "/") + childPath
+
+	// Dial the child with the federation token + operator email in
+	// the upgrade headers. Honour the request's context so a parent
+	// disconnect cancels the dial.
+	dialCtx, cancelDial := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancelDial()
+
+	childConn, _, err := websocket.Dial(dialCtx, childURL, &websocket.DialOptions{
+		HTTPHeader: http.Header{
+			"X-Okesu-Federation-Token":    {target.Row.Token},
+			"X-Okesu-Federation-Operator": {operatorEmailFromContext(r.Context())},
+		},
+	})
+	if err != nil {
+		http.Error(w, "cp unreachable: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	childConn.SetReadLimit(4 << 20)
+
+	// Upgrade the parent-side connection.
+	parentConn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
+		InsecureSkipVerify: true,
+	})
+	if err != nil {
+		childConn.Close(websocket.StatusAbnormalClosure, "parent upgrade failed")
+		return
+	}
+	parentConn.SetReadLimit(4 << 20)
+
+	// Two goroutines pump bytes bidirectionally. First close ends both.
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		defer cancel()
+		pumpDraftBytes(ctx, parentConn, childConn, "parent→child")
+	}()
+	go func() {
+		defer wg.Done()
+		defer cancel()
+		pumpDraftBytes(ctx, childConn, parentConn, "child→parent")
+	}()
+	wg.Wait()
+
+	// Best-effort close on both sides. Idempotent.
+	parentConn.Close(websocket.StatusNormalClosure, "")
+	childConn.Close(websocket.StatusNormalClosure, "")
+}
+
+// pumpDraftBytes copies binary frames from src to dst until either
+// the context cancels or a read/write errors. Logs the direction on
+// the first error for federation diagnostics.
+func pumpDraftBytes(ctx context.Context, src, dst *websocket.Conn, direction string) {
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		mt, frame, err := src.Read(ctx)
+		if err != nil {
+			return
+		}
+		if mt != websocket.MessageBinary {
+			// War-room protocol is binary-only. Silently drop other
+			// message types — defence against a misconfigured peer.
+			continue
+		}
+		if err := dst.Write(ctx, websocket.MessageBinary, frame); err != nil {
+			log.Printf("draft-ws proxy: %s write failed: %v", direction, err)
+			return
+		}
+	}
+}
+
+// operatorEmailFromContext extracts the operator's email from the
+// request context for forwarding to the child as a header. Empty
+// string when unauthenticated (acceptable — the child will fall
+// back to "federated-operator").
+func operatorEmailFromContext(ctx context.Context) string {
+	if u := auth.UserFromContext(ctx); u != nil {
+		return u.Email
+	}
+	return ""
 }
 
 // FederationInvestigationDraftWS — child-side, token-authed.

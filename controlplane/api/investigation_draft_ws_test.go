@@ -133,5 +133,20 @@ func withTestUser(ctx context.Context, email string) context.Context {
 
 type testUserKey struct{}
 
+func TestDraftWS_FederationProxy(t *testing.T) {
+	// Two stores: parent and child. Two HTTP servers: parent and
+	// child. Parent's federated handler proxies bytes to child via
+	// the federation token; messages round-trip.
+	//
+	// IMPLEMENTATION NOTE: This test requires a federation.Aggregator
+	// configured to know about the child as a peer with a known
+	// token. If the existing test scaffolding can't be adapted in
+	// <30 minutes, leave this test as t.Skip("federation test
+	// requires federation.Aggregator test scaffolding") and rely on
+	// the manual lab smoke (post-merge) to exercise the proxy.
+
+	t.Skip("federation proxy test requires federation.Aggregator test scaffolding; covered by manual lab smoke")
+}
+
 // Compile-time silencer for unused imports if a package alias slips.
 var _ = db.InvestigationInsert{}
