@@ -13,6 +13,10 @@
 //
 // We intentionally do NOT depend on a Go Yjs implementation. The
 // helpers are minimal and well-tested.
+//
+// Protocol references:
+//   y-protocols/sync.js                       (message envelope: type byte + sync sub-type)
+//   yjs/src/utils/encoding.js readClientsStructRefs  (update format inside sync messages)
 package api
 
 import (
@@ -225,6 +229,7 @@ func decodeYTextBody(update []byte, fieldName string) (string, error) {
 				if _, err := readVarUint(r); err != nil {
 					return buf.String(), nil
 				}
+				lastBelongedToField = false
 			case 4: // ContentString: varint length + UTF-8 bytes
 				content, err := readVarString(r)
 				if err != nil {

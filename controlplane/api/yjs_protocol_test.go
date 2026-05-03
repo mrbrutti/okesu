@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"encoding/hex"
 	"testing"
 )
 
@@ -115,62 +116,30 @@ func TestDecodeYTextBody_WrongFieldName(t *testing.T) {
 }
 
 func TestDecodeYTextBody_MalformedInputs(t *testing.T) {
-	// The decoder must not panic on truncated or malformed input.
-	cases := [][]byte{
-		nil,                  // nil slice
-		{},                   // empty slice
+	// For nil and empty input, the contract is: non-nil error.
+	for _, c := range [][]byte{nil, {}} {
+		_, err := decodeYTextBody(c, "body")
+		if err == nil {
+			t.Errorf("decodeYTextBody(%v) returned nil error; want non-nil", c)
+		}
+	}
+	// For other malformed inputs the contract is just no-panic; any
+	// (string, error) pair is acceptable.
+	for _, c := range [][]byte{
 		{0x01},               // numClients=1, then EOF
-		{0x01, 0x01},         // numClients=1, numStructs=1, then EOF
+		{0x01, 0x01},         // numClients=1, numStructs=1, then clientID EOF
 		{0xff, 0xff, 0xff},   // garbage varints
 		{0x01, 0x01, 0x00, 0x00, 0x04, 0x01, 0x04, 0x62}, // truncated mid-string
-	}
-	for i, c := range cases {
-		got, err := decodeYTextBody(c, "body")
-		// Either an error or a best-effort string is acceptable. The
-		// important contract: no panic, no infinite loop.
-		_ = got
-		_ = err
-		_ = i
+	} {
+		_, _ = decodeYTextBody(c, "body")
 	}
 }
 
 func mustHexDecode(t *testing.T, s string) []byte {
 	t.Helper()
-	out := make([]byte, 0, len(s)/2)
-	for i := 0; i+1 < len(s); i += 2 {
-		var b byte
-		_, err := bytesScanf(s[i:i+2], &b)
-		if err != nil {
-			t.Fatalf("hex decode at %d: %v", i, err)
-		}
-		out = append(out, b)
+	b, err := hex.DecodeString(s)
+	if err != nil {
+		t.Fatalf("hex decode: %v", err)
 	}
-	return out
+	return b
 }
-
-// bytesScanf is a tiny hex parser to avoid pulling in fmt.Sscanf.
-func bytesScanf(s string, b *byte) (int, error) {
-	hi := hexNibble(s[0])
-	lo := hexNibble(s[1])
-	if hi < 0 || lo < 0 {
-		return 0, &hexError{s: s}
-	}
-	*b = byte(hi<<4 | lo)
-	return 1, nil
-}
-
-func hexNibble(c byte) int {
-	switch {
-	case c >= '0' && c <= '9':
-		return int(c - '0')
-	case c >= 'a' && c <= 'f':
-		return int(c - 'a' + 10)
-	case c >= 'A' && c <= 'F':
-		return int(c - 'A' + 10)
-	}
-	return -1
-}
-
-type hexError struct{ s string }
-
-func (e *hexError) Error() string { return "invalid hex byte: " + e.s }
