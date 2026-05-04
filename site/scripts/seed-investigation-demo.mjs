@@ -55,14 +55,20 @@ async function login() {
 
 async function dispatchOrchestration() {
   console.log('> dispatch edr-critical-response');
-  // The CP's manual-run endpoint is /api/orchestrations/{name}/run with
-  // optional inputs. Empty inputs lets the orchestration's defaults apply.
-  const res = await api('/api/orchestrations/edr-critical-response/run', {
+  // The run endpoint expects a numeric orchestration id, not a name —
+  // look it up first by listing /api/orchestrations.
+  const list = await (await api('/api/orchestrations')).json();
+  const items = Array.isArray(list) ? list : (list.orchestrations ?? []);
+  const orch = items.find(o => (o.name ?? o.Name) === 'edr-critical-response');
+  if (!orch) throw new Error('edr-critical-response orchestration not found on this CP');
+  const orchId = orch.id ?? orch.ID;
+
+  const res = await api(`/api/orchestrations/${orchId}/run`, {
     method: 'POST',
     body: JSON.stringify({ inputs: {} }),
   });
   const body = await res.json();
-  return body.run_id ?? body.id;
+  return body.run_id ?? body.id ?? body.ID;
 }
 
 async function waitForRunCompletion(runId, timeoutMs = 90000) {
