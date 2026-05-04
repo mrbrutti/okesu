@@ -1,0 +1,96 @@
+---
+// Investigations / War room. 10-second loop:
+//   Faux textarea bound to a shared draft. Two presence chips visible.
+//   Operator A types the first line; operator B inserts a follow-up.
+//   At the end, "Send →" pulses to suggest the buffer becomes one
+//   immutable note row. Cursors blink in their respective colors.
+---
+
+<div class="bg-panel border border-border rounded-lg shadow-card p-4 max-w-md" role="img"
+     aria-label="Animated demo: a war-room draft panel with two operators editing the same buffer in real time. Two presence chips and two coloured cursors are visible.">
+  <div class="flex items-center gap-1.5 mb-2">
+    <span class="presence-chip presence-chip-a">A</span>
+    <span class="presence-chip presence-chip-b">B</span>
+    <span class="text-[10px] text-ink-mute ml-auto">2 editing · auto-saving</span>
+  </div>
+
+  <div class="war-room-text">
+    <div class="war-room-line">
+      <span class="war-room-typed-a">callback to 8.8.8.8 from web-prod-01 — netflow confirms</span>
+      <span class="war-room-cursor war-room-cursor-a"></span>
+    </div>
+    <div class="war-room-line war-room-line-b">
+      <span class="war-room-typed-b">EDR shows pid 4421 spawned by sshd — pulling memory snapshot now</span>
+      <span class="war-room-cursor war-room-cursor-b"></span>
+    </div>
+  </div>
+
+  <div class="flex gap-2 mt-3">
+    <button class="war-room-send" type="button" disabled>Send →</button>
+    <button class="war-room-cancel" type="button" disabled>Cancel</button>
+  </div>
+</div>
+
+<style>
+  .presence-chip {
+    font-size: 10px; width: 18px; height: 18px; border-radius: 9999px;
+    display: inline-flex; align-items: center; justify-content: center;
+    color: white; font-weight: 600; font-family: ui-monospace, monospace;
+  }
+  .presence-chip-a { background: #5b21b6; }
+  .presence-chip-b { background: #0ea5e9; }
+
+  .war-room-text {
+    background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px;
+    padding: 10px 12px; min-height: 80px; font-size: 12px; line-height: 1.55;
+    font-family: ui-monospace, monospace; color: #334155;
+  }
+  .war-room-line { display: block; min-height: 18px; position: relative; }
+  .war-room-line-b { color: #0ea5e9; }
+
+  .war-room-typed-a, .war-room-typed-b {
+    display: inline-block; overflow: hidden; white-space: nowrap;
+    vertical-align: bottom; max-width: 100%;
+  }
+
+  .war-room-cursor {
+    display: inline-block; width: 1.5px; height: 14px; vertical-align: text-bottom;
+    margin-left: 1px;
+  }
+  .war-room-cursor-a { background: #5b21b6; }
+  .war-room-cursor-b { background: #0ea5e9; }
+
+  .war-room-send, .war-room-cancel {
+    font-size: 11px; padding: 4px 10px; border-radius: 4px; cursor: not-allowed;
+  }
+  .war-room-send { background: #5b21b6; color: white; opacity: 0.5; }
+  .war-room-cancel { background: white; color: #64748b; border: 1px solid #e2e8f0; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .war-room-typed-a, .war-room-typed-b { width: 100%; }
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .war-room-typed-a { width: 0; animation: type-a 10s steps(48, end) infinite; }
+    .war-room-typed-b { width: 0; animation: type-b 10s steps(56, end) infinite; }
+    .war-room-cursor-a { animation: okesu-cursor-blink 1s steps(2, end) infinite; }
+    .war-room-cursor-b { animation: okesu-cursor-blink 1s steps(2, end) 0.5s infinite; }
+    .war-room-send { animation: send-pulse 10s ease-in-out infinite; }
+
+    @keyframes type-a {
+      0%, 5%   { width: 0; }
+      35%, 95% { width: 100%; }
+      100%     { width: 0; }
+    }
+    @keyframes type-b {
+      0%, 35%  { width: 0; }
+      65%, 95% { width: 100%; }
+      100%     { width: 0; }
+    }
+    @keyframes send-pulse {
+      0%, 80%  { opacity: 0.5; }
+      85%, 95% { opacity: 1; box-shadow: 0 0 0 3px rgba(91, 33, 182, 0.3); }
+      100%     { opacity: 0.5; }
+    }
+  }
+</style>
