@@ -1,5 +1,5 @@
 ---
-// Recipes — six worked YAML orchestration specs lifted directly from
+// Recipes — seven worked YAML orchestration specs lifted directly from
 // the demo control plane. Each one ships as-is in the platform; this
 // page presents them with a "what / when / what to notice" frame so a
 // reader can copy-paste and adapt.
@@ -10,7 +10,7 @@
 
 import Base from '../layouts/Base.astro';
 
-// Eager-load the 6 YAML strings.
+// Eager-load the 7 YAML strings.
 const yamlImports = import.meta.glob('../data/recipes/*.yaml', {
   eager: true,
   query: '?raw',
@@ -110,6 +110,18 @@ const recipes: Recipe[] = [
       'Production-shaped: every state-mutating step has an approval gate and an explicit allowlist — nothing rotates without human consent.',
     ],
   },
+  {
+    id: 't2-medium-noise-triage',
+    title: 'Medium-Severity Noise Triage (T2)',
+    tier: 'T2',
+    tagline: 'Conservative auto-classifier for MEDIUM findings — only auto-resolves what is unambiguously safe; the rest escalate with context attached.',
+    whenToUse: 'You\'re drowning in MEDIUM findings that are mostly background radiation but occasionally bury something real. You want a careful auto-triage layer that resolves the obvious noise without ever closing something that should have been escalated.',
+    highlights: [
+      'Refuses to auto-close anything ambiguous — defaults to escalate, not resolve. Optimised against false-resolutions, not against analyst time.',
+      'Uses `actions:` allowlist to set status, severity overrides, and tags — no approval gate needed because the action surface is tightly bounded.',
+      'Demonstrates how to wire severity-rule overrides + label-driven escalation into one playbook so a misconfigured fleet doesn\'t need to live with a wrong-severity baseline forever.',
+    ],
+  },
 ];
 
 const tierTone = (t: Recipe['tier']) => {
@@ -121,7 +133,7 @@ const tierTone = (t: Recipe['tier']) => {
 
 <Base
   title="Recipes"
-  description="Six worked YAML orchestrations, lifted from a real Okesu control plane. Copy, adapt, run."
+  description="Seven worked YAML orchestrations, lifted from a real Okesu control plane. Copy, adapt, run."
 >
   <div class="bg-panel border-b border-border">
     <div class="max-w-page mx-auto px-6 py-10">
@@ -132,7 +144,7 @@ const tierTone = (t: Recipe['tier']) => {
         <div>
           <h1 class="text-[28px] md:text-[32px] font-bold text-brand-700 leading-tight">Recipes</h1>
           <p class="mt-1.5 text-sm md:text-[15px] text-ink-dim leading-relaxed max-w-2xl">
-            Six worked YAML orchestrations, lifted directly from a running Okesu control plane.
+            Seven worked YAML orchestrations, lifted directly from a running Okesu control plane.
             Each is annotated with what it does, when to reach for it, and what to notice — copy,
             adapt, drop in your CP.
           </p>
@@ -202,7 +214,7 @@ const tierTone = (t: Recipe['tier']) => {
         <div class="mt-12 pt-8 border-t border-border">
           <h3 class="text-[15px] font-semibold text-ink mb-2">Roll your own</h3>
           <p class="text-[13px] text-ink-dim leading-relaxed">
-            All six of these started life as a regular orchestration draft in the visual editor.
+            All seven of these started life as a regular orchestration draft in the visual editor.
             The YAML you see here is what the editor serializes on save. To build one yourself,
             head to <strong>Automation → Orchestrations → New</strong> in the platform, drop a
             handful of agents on the canvas, wire them together, and click Save.
