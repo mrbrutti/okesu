@@ -23,6 +23,7 @@ import { fileURLToPath } from 'node:url';
 const URL      = process.env.OKESU_URL      ?? 'https://localhost:7443';
 const EMAIL    = process.env.OKESU_EMAIL    ?? 'admin@local';
 const PASSWORD = process.env.OKESU_PASSWORD ?? 'okesu-demo';
+const CASE_ID  = process.env.OKESU_CASE_ID; // produced by seed-investigation-demo.mjs
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const OUT_DIR   = join(__dirname, '..', 'public', 'screenshots');
@@ -105,6 +106,70 @@ async function captureFirstInvestigation(page) {
   console.log('  ✓ investigation-detail.png');
 }
 
+async function captureInvestigationSurfaces(page) {
+  if (!CASE_ID) {
+    console.log('  (OKESU_CASE_ID not set — skipping investigation surfaces)');
+    return;
+  }
+  const base = `${URL}/investigations/${CASE_ID}`;
+
+  // Overview
+  console.log('> investigation overview');
+  await page.goto(base, { waitUntil: 'networkidle' });
+  await page.waitForTimeout(1500);
+  await page.screenshot({ path: join(OUT_DIR, 'investigation-overview.png'), fullPage: false });
+  console.log('  ✓ investigation-overview.png');
+
+  // Timeline tab
+  console.log('> investigation timeline');
+  await page.goto(`${base}?tab=timeline`, { waitUntil: 'networkidle' });
+  await page.waitForTimeout(2500);
+  await page.screenshot({ path: join(OUT_DIR, 'investigation-timeline.png'), fullPage: false });
+  console.log('  ✓ investigation-timeline.png');
+
+  // Graph tab
+  console.log('> investigation graph');
+  await page.goto(`${base}?tab=graph`, { waitUntil: 'networkidle' });
+  await page.waitForTimeout(2500); // let react-flow settle
+  await page.screenshot({ path: join(OUT_DIR, 'investigation-graph.png'), fullPage: false });
+  console.log('  ✓ investigation-graph.png');
+
+  // War-room thumb (single-context — the multi-presence shot lives in capture-tour.mjs).
+  console.log('> investigation war-room thumb');
+  await page.goto(`${base}?tab=notes`, { waitUntil: 'networkidle' });
+  await page.waitForTimeout(1500);
+  // Fire-and-forget click; if the war-room button isn't there, we just
+  // capture the notes panel as-is and skip the dedicated thumb.
+  try {
+    const btn = page.locator('button').filter({ hasText: /war.?room/i }).first();
+    if (await btn.count() > 0) {
+      await btn.click();
+      await page.waitForTimeout(1500);
+    }
+  } catch (err) { /* skip */ }
+  await page.screenshot({ path: join(OUT_DIR, 'investigation-war-room-thumb.png'), fullPage: false });
+  console.log('  ✓ investigation-war-room-thumb.png');
+
+  // PDF page-1 — best-effort. If the endpoint serves an inline preview
+  // we capture it; otherwise we log + skip and the page falls back to a
+  // placeholder.
+  console.log('> investigation pdf page-1');
+  try {
+    const res = await page.goto(`${URL}/api/investigations/${CASE_ID}/report.pdf`, { waitUntil: 'networkidle' });
+    const ctype = (res?.headers() ?? {})['content-type'] ?? '';
+    if (ctype.includes('application/pdf')) {
+      // Browsers may render PDFs inline; if so the screenshot captures it.
+      await page.waitForTimeout(2000);
+      await page.screenshot({ path: join(OUT_DIR, 'investigation-pdf-page1.png'), fullPage: false });
+      console.log('  ✓ investigation-pdf-page1.png');
+    } else {
+      console.log('  (PDF endpoint did not return application/pdf — skipping)');
+    }
+  } catch (err) {
+    console.log(`  (PDF capture failed: ${err.message} — skipping)`);
+  }
+}
+
 async function main() {
   await mkdir(OUT_DIR, { recursive: true });
   console.log(`> Capturing screenshots from ${URL}`);
@@ -165,6 +230,8 @@ async function main() {
   } catch (err) {
     console.error(`  ✗ investigation-detail: ${err.message}`);
   }
+
+  await captureInvestigationSurfaces(page);
 
   await browser.close();
   console.log('> Done.');
