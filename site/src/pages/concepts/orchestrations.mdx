@@ -10,6 +10,7 @@ toc:
   - { id: fanout,      label: "Fan-out across hosts" }
   - { id: gates,       label: "Approval gates" }
   - { id: branching,   label: "Branching on results" }
+  - { id: selectors,   label: "Selectors & labels" }
   - { id: triggers,    label: "Triggers" }
   - { id: in-platform, label: "In the platform" }
   - { id: next,        label: "Where to next" }
@@ -19,6 +20,7 @@ import OrchestrationDAGDemo from '../../components/diagrams/OrchestrationDAGDemo
 import FanoutStripDemo from '../../components/diagrams/FanoutStripDemo.astro';
 import ApprovalGateDemo from '../../components/diagrams/ApprovalGateDemo.astro';
 import BindingsDemo from '../../components/diagrams/BindingsDemo.astro';
+import SelectorFanoutDemo from '../../components/diagrams/SelectorFanoutDemo.astro';
 import TriggersDemo from '../../components/diagrams/TriggersDemo.astro';
 import OperatorView from '../../components/OperatorView.astro';
 
@@ -88,6 +90,25 @@ import OperatorView from '../../components/OperatorView.astro';
 </div>
 
 <p>For runs that fanned out, each host's payload is also addressable: <code>{`{{stepN.byNode["host-1"].result.foo}}`}</code>.</p>
+
+<h2 id="selectors">Selectors & labels</h2>
+
+<p>Hard-coded host arrays don't scale. Okesu's <span class="term">labels</span> are a generic, cross-entity tagging system — every entity (hosts, daimons, agents, findings, investigations, IOCs) has a labels editor on its detail page. The label index lives in one table; the labels themselves are arbitrary key/value strings (<code>env=prod</code>, <code>tier=web</code>, <code>compliance=pci</code>).</p>
+
+<p>An orchestration step can replace the explicit <code>nodes:</code> array with a selector expression — the engine resolves the selector at dispatch time and fans out across whatever matches:</p>
+
+<div class="code-block">
+&nbsp;&nbsp;- <span class="key">id</span>: scan<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="key">agent</span>: edr-triage<br/>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="key">nodes_selector</span>: <span class="str">"label:env=prod AND label:tier=web"</span><br/>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="key">prompt</span>: <span class="str">"sweep for known IOCs"</span>
+</div>
+
+<p>Move a host between environments and the selector picks up the change automatically — no orchestration edit required. The same selectors drive notification rules and the cmd-K shortcut (<code>label:tier=web</code>) for jumping to filtered list pages.</p>
+
+<div class="my-6">
+  <SelectorFanoutDemo />
+</div>
 
 <h2 id="triggers">Triggers</h2>
 
