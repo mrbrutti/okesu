@@ -263,7 +263,7 @@ func CPBundleHandler(store *db.Store, cfg CPBundleConfig, cache *BundleCache, pa
 			// tar.gz themselves and will drop it onto a VM they manage.
 			// No need to also upload to the bucket — that's only
 			// required for the managed-deploy worker (cp_provision).
-			_, err = writeS3DeadDropBundle(w, store, bundle, req.TransportConfigID, cfg)
+			_, _, err = writeS3DeadDropBundle(w, store, bundle, req.TransportConfigID, cfg)
 		}
 		if err != nil {
 			// Tarball stream may have started — best we can do is log.

@@ -221,6 +221,17 @@ func (l *Loop) scanPeer(ctx context.Context, p db.FederationPeer) {
 	if err := l.store.RecordPeerSuccess(p.ID, string(body)); err != nil {
 		log.Printf("s3reader peer=%d record success: %v", p.ID, err)
 	}
+	// If this peer was created by a managed CP provision, this
+	// successful introspect is the "child is alive" signal — flip
+	// the cp_provisions row from bootstrap_pending → ready. The
+	// helper is idempotent (only acts on bootstrap_pending rows)
+	// so subsequent ticks are no-ops.
+	if advanced, err := l.store.AdvanceCPProvisionByPeer(p.ID); err != nil {
+		log.Printf("s3reader peer=%d advance provision: %v", p.ID, err)
+	} else if advanced {
+		_ = l.store.AppendCPProvisionLogByPeer(p.ID,
+			"✓ first introspect received over S3 — child CP is alive\n")
+	}
 
 	// Phase A.2 — also fetch the resource snapshots into the asset
 	// cache. Each is best-effort: a 404 / empty body just leaves the

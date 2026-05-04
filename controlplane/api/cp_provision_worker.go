@@ -196,10 +196,18 @@ func RunCPProvisionWorker(ctx context.Context, cfg CPProvisionWorkerConfig, prov
 			failNow("transport=s3_dead_drop but transport_config_id is unset on the row — handler validation should have caught this")
 			return
 		}
-		childInstanceID, err := writeS3DeadDropBundle(&buf, cfg.Store, bv, row.TransportConfigID.Int64, cfg.Bundle)
+		childInstanceID, peerID, err := writeS3DeadDropBundle(&buf, cfg.Store, bv, row.TransportConfigID.Int64, cfg.Bundle)
 		if err != nil {
 			failNow("build s3 bundle: " + err.Error())
 			return
+		}
+		// Link the cp_provisions row to its pre-registered peer so
+		// the s3reader can flip status=ready as soon as it sees the
+		// child's first introspect.json — there's no /api/v1/cp/bootstrap
+		// callback for s3_dead_drop transport, so peer-alive IS the
+		// "child registered" signal here.
+		if err := cfg.Store.SetCPProvisionPeer(provisionID, peerID); err != nil {
+			logf("warning: link provision %d to peer %d: %v", provisionID, peerID, err)
 		}
 		// The whole point of s3_dead_drop is "the child can't reach
 		// the parent over HTTPS". cloud-init can't curl the parent

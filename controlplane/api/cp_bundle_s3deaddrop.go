@@ -55,20 +55,23 @@ import (
 // pre-registers the federation peer on the parent so the operator
 // doesn't have to do a second curl after the bundle deploys.
 //
-// Returns the child instance_id minted for this bundle so callers
+// Returns the child instance_id minted for this bundle and the
+// federation_peers.id of the pre-registered peer row so callers
 // (e.g. the managed-deploy worker) can derive the bucket prefix
-// where they'll upload a presigned copy of these same bytes.
+// where they'll upload a presigned copy of these same bytes AND
+// link the cp_provisions row to the peer for the s3reader-driven
+// status flip.
 //
 // Binary selection: if cfg.LinuxBinaryAmd64Path + LinuxBinaryArm64Path
 // are both set, the bundle ships both binaries plus a multi-arch
 // Dockerfile that picks via TARGETARCH. Otherwise falls back to
 // cfg.LinuxBinaryPath as a single-arch bundle. Existing single-arch
 // callers see no change.
-func writeS3DeadDropBundle(w io.Writer, store *db.Store, b bundleVars, transportConfigID int64, cfg CPBundleConfig) (string, error) {
+func writeS3DeadDropBundle(w io.Writer, store *db.Store, b bundleVars, transportConfigID int64, cfg CPBundleConfig) (childInstanceID string, peerID int64, err error) {
 	// 1. Get the parent's instance_id so we can compute the prefix.
 	parentMeta, err := store.CPMeta()
 	if err != nil {
-		return "", fmt.Errorf("read parent cp_meta: %w", err)
+		return "", 0, fmt.Errorf("read parent cp_meta: %w", err)
 	}
 
 	// 2. Read the transport_config — bucket coords go inline into
@@ -76,14 +79,14 @@ func writeS3DeadDropBundle(w io.Writer, store *db.Store, b bundleVars, transport
 	//    on first boot.
 	tc, err := store.GetTransportConfig(transportConfigID)
 	if err != nil {
-		return "", fmt.Errorf("transport_config %d: %w", transportConfigID, err)
+		return "", 0, fmt.Errorf("transport_config %d: %w", transportConfigID, err)
 	}
 
 	// 3. Mint the child instance_id. UUID-shape so it slots into
 	//    cp_meta.instance_id verbatim.
-	childInstanceID, err := newUUID()
+	childInstanceID, err = newUUID()
 	if err != nil {
-		return "", fmt.Errorf("mint child instance_id: %w", err)
+		return "", 0, fmt.Errorf("mint child instance_id: %w", err)
 	}
 
 	// 4. Compute the prefix the child will publish to AND the
@@ -92,9 +95,11 @@ func writeS3DeadDropBundle(w io.Writer, store *db.Store, b bundleVars, transport
 
 	// 5. Pre-register the federation peer. The s3reader picks it up
 	//    on its next tick (within 30s).
-	if _, err := store.AddS3FederationPeer(b.DisplayName, prefix, transportConfigID, b.BootstrapToken); err != nil {
-		return "", fmt.Errorf("register federation peer: %w", err)
+	peer, err := store.AddS3FederationPeer(b.DisplayName, prefix, transportConfigID, b.BootstrapToken)
+	if err != nil {
+		return "", 0, fmt.Errorf("register federation peer: %w", err)
 	}
+	peerID = peer.ID
 
 	// 6. Choose the binary set. Multi-arch when both paths are set;
 	//    otherwise single-arch from LinuxBinaryPath. We read the
@@ -104,17 +109,17 @@ func writeS3DeadDropBundle(w io.Writer, store *db.Store, b bundleVars, transport
 	var amd64Bytes, arm64Bytes, singleBytes []byte
 	if multiArch {
 		if amd64Bytes, err = os.ReadFile(cfg.LinuxBinaryAmd64Path); err != nil {
-			return "", fmt.Errorf("read amd64 binary: %w", err)
+			return "", 0, fmt.Errorf("read amd64 binary: %w", err)
 		}
 		if arm64Bytes, err = os.ReadFile(cfg.LinuxBinaryArm64Path); err != nil {
-			return "", fmt.Errorf("read arm64 binary: %w", err)
+			return "", 0, fmt.Errorf("read arm64 binary: %w", err)
 		}
 	} else {
 		if cfg.LinuxBinaryPath == "" {
-			return "", fmt.Errorf("no linux binary path configured (set --cp-bootstrap-binary or both --cp-bootstrap-binary-amd64 + --cp-bootstrap-binary-arm64)")
+			return "", 0, fmt.Errorf("no linux binary path configured (set --cp-bootstrap-binary or both --cp-bootstrap-binary-amd64 + --cp-bootstrap-binary-arm64)")
 		}
 		if singleBytes, err = os.ReadFile(cfg.LinuxBinaryPath); err != nil {
-			return "", fmt.Errorf("read parent binary: %w", err)
+			return "", 0, fmt.Errorf("read parent binary: %w", err)
 		}
 	}
 
@@ -137,22 +142,22 @@ func writeS3DeadDropBundle(w io.Writer, store *db.Store, b bundleVars, transport
 	}
 	for _, f := range files {
 		if err := writeTarFile(t, root+"/"+f.name, []byte(f.content), f.mode); err != nil {
-			return "", err
+			return "", 0, err
 		}
 	}
 	if multiArch {
 		if err := writeTarFile(t, root+"/okesu-cp-binary-amd64", amd64Bytes, 0o755); err != nil {
-			return "", err
+			return "", 0, err
 		}
 		if err := writeTarFile(t, root+"/okesu-cp-binary-arm64", arm64Bytes, 0o755); err != nil {
-			return "", err
+			return "", 0, err
 		}
 	} else {
 		if err := writeTarFile(t, root+"/okesu-cp-binary", singleBytes, 0o755); err != nil {
-			return "", err
+			return "", 0, err
 		}
 	}
-	return childInstanceID, nil
+	return childInstanceID, peerID, nil
 }
 
 // dockerfileTemplateMultiArch builds an image that contains the
