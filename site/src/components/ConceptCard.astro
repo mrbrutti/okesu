@@ -11,13 +11,13 @@ const { href, title, glyph, description } = Astro.props;
 
 <a
   href={href}
-  class="group block bg-panel border border-border rounded-lg shadow-card p-5 hover:border-brand-100 hover:shadow-md transition-all"
+  class="group block bg-panel border border-border rounded-lg shadow-card p-4 lg:p-5 hover:border-brand-100 hover:shadow-md transition-all"
 >
   <div class="w-9 h-9 rounded-md bg-brand-50 text-brand-700 flex items-center justify-center text-base mb-3 border border-brand-100">
     <span class="font-mono">{glyph}</span>
   </div>
   <h3 class="text-[15px] font-semibold text-ink mb-1.5">{title}</h3>
-  <p class="text-xs text-ink-dim leading-relaxed mb-3">{description}</p>
+  <p class="text-xs text-ink-dim leading-relaxed mb-3 line-clamp-3 lg:line-clamp-none">{description}</p>
   <span class="text-xs text-brand-700 font-medium group-hover:text-brand-600">
     Learn more →
   </span>

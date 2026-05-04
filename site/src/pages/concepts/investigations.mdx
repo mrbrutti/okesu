@@ -1,0 +1,121 @@
+---
+layout: ../../layouts/Concept.astro
+title: Investigations
+subtitle: The case-file layer. A workspace that groups findings, IOCs, runs, and notes into one closed loop per incident.
+glyph: ◈
+description: An investigation is the case file Okesu builds around an incident — a timeline, a graph view, a real-time war-room for notes, and a one-click PDF report.
+toc:
+  - { id: what,        label: "What an investigation is" }
+  - { id: timeline,    label: "Timeline" }
+  - { id: graph,       label: "Graph view" }
+  - { id: war-room,    label: "War room" }
+  - { id: pdf,         label: "PDF report" }
+  - { id: next,        label: "Where to next" }
+---
+
+import TimelineLaneDemo from '../../components/diagrams/TimelineLaneDemo.astro';
+import GraphFanDemo from '../../components/diagrams/GraphFanDemo.astro';
+import WarRoomCursorsDemo from '../../components/diagrams/WarRoomCursorsDemo.astro';
+import PDFReportDemo from '../../components/diagrams/PDFReportDemo.astro';
+import OperatorView from '../../components/OperatorView.astro';
+
+<div class="bg-bg border border-border rounded-xl p-6 md:p-8 my-8">
+  <TimelineLaneDemo />
+</div>
+
+<h2 id="what">What an investigation is</h2>
+
+<p>An <span class="term">investigation</span> is the case file Okesu builds around an incident. It groups the findings that triggered the case, the IOCs they reference, the orchestration runs you spent investigating, the daimons that reported in, and the operators' notes — one closed loop per incident.</p>
+
+<p>The point is replayability. Six months later you can open the case and see exactly what happened, who did what when, and which evidence was used to close it. Investigations exist because findings alone aren't enough: a critical alert is the start of a story, not the end.</p>
+
+<div class="my-6">
+  <OperatorView
+    src="investigation-overview"
+    alt="Investigation detail in the Okesu Control Plane — header with status, summary cards (hosts/IOCs/daimons/runs), and the eight-tab navigation across the top."
+    url="okesu / Investigations / #31"
+    caption="The case detail header — status, summary cards, and the eight tabs (Overview, Timeline, Graph, Findings, Runs, IOCs, Daimons, Notes, Audit)."
+  />
+</div>
+
+<h2 id="timeline">Timeline</h2>
+
+<p>The Timeline tab is a horizontal lane view of everything that's happened in the case. Findings dots, run bars, IOC markers, daimon ticks, and notes — all drawn against the same time axis. A filter bar at the top lets you scope by severity, run-status, host, or agent. Saved searches let you stash a particular slice and come back to it.</p>
+
+<p>For long-running cases, an outlier-resistant <em>autoFit</em> keeps the most active cluster of events visible without zooming you out to a useless bird's-eye view.</p>
+
+<div class="my-6">
+  <OperatorView
+    src="investigation-timeline"
+    alt="Investigation timeline — three lanes (findings, runs, IOCs) drawn against a time axis with filter chips and a search bar above."
+    url="okesu / Investigations / #31 / Timeline"
+    caption="The timeline view, filtered to severity ≥ HIGH and run-status = approved."
+  />
+</div>
+
+<h2 id="graph">Graph view</h2>
+
+<p>The Graph tab renders the case's relationships as a bipartite layout — hosts on one side, IOCs on the other, edges showing which host saw which IOC. Hover an edge to see when and how the relationship was established (which finding observed it, which run confirmed it).</p>
+
+<p>The data comes from a server-side aggregation endpoint (<code>/api/investigations/&#123;id&#125;/structure</code>) — the CP rolls up host/IOC/daimon/run counts so the frontend doesn't have to walk the entity graph itself.</p>
+
+<div class="my-6">
+  <GraphFanDemo />
+</div>
+
+<div class="my-6">
+  <OperatorView
+    src="investigation-graph"
+    alt="Investigation graph view — bipartite layout, four hosts on the left, five IOCs on the right, edges drawn between them."
+    url="okesu / Investigations / #31 / Graph"
+    caption="The graph view — hosts on the left, IOCs on the right, relationships as edges."
+  />
+</div>
+
+<h2 id="war-room">War room</h2>
+
+<p>When two or more operators are working a live incident, the <span class="term">war room</span> gives them a shared draft buffer to think out loud together. Open the war room from the case detail page; everyone connected sees each other's cursors, types into the same textarea, and reads each other's contributions in real time.</p>
+
+<p>Under the hood it's a <a href="https://yjs.dev" target="_blank" rel="noopener">Yjs</a> CRDT — operations are eventually consistent across all clients with no central serialiser, so a brief network blip doesn't lose anyone's input. The CP runs a thin <em>relay</em> that forwards Yjs sync messages between connected clients and persists the snapshot every five seconds.</p>
+
+<p>When the team's done thinking, one operator hits <strong>Send</strong> and the current draft becomes one immutable <code>InvestigationNote</code> row — preserving the existing audit chain. The simple-note path stays available for quick comments; the war room is the right tool when multiple people need to think together.</p>
+
+<div class="my-6">
+  <WarRoomCursorsDemo />
+</div>
+
+<div class="my-6">
+  <OperatorView
+    src="investigation-war-room"
+    alt="War room panel mid-edit — two presence chips visible, partial draft text in the textarea, two coloured cursors."
+    url="okesu / Investigations / #31 / Notes"
+    caption="A war-room session in flight: two operators editing the same buffer, presence chips up top, Send produces one note row."
+  />
+</div>
+
+<h2 id="pdf">PDF report</h2>
+
+<p>One click, one PDF. The report stitches together the case's executive summary, the chronological narrative, every linked finding/IOC/run/audit-event, and a final reference table — formatted for the kind of stakeholder who'll never log into Okesu.</p>
+
+<p>The report endpoint is federated: a parent CP serves a report for a child's case by proxying the request through the federation token. A consistent header/footer frame and page numbering keep the document stakeholder-ready.</p>
+
+<div class="my-6">
+  <PDFReportDemo />
+</div>
+
+<div class="my-6">
+  <OperatorView
+    src="investigation-pdf-page1"
+    alt="Page one of an investigation PDF report — executive summary, status, host counts, finding counts."
+    url="okesu / Investigations / #31 / Export"
+    caption="Page one of the export — executive summary plus key counts."
+  />
+</div>
+
+<h2 id="next">Where to next</h2>
+
+<ul>
+  <li><a href="/concepts/orchestrations">Orchestrations</a> — runs hang off cases; an orchestration's run-detail links back to its case.</li>
+  <li><a href="/concepts/daimons">Daimons</a> — continuous monitoring is what produces the findings cases get built around.</li>
+  <li><a href="/recipes">Recipes</a> — every recipe on the playbook list is the kind of run that ends up linked to an investigation.</li>
+</ul>

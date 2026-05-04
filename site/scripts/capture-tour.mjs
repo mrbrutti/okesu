@@ -18,6 +18,7 @@ const EMAIL    = process.env.OKESU_EMAIL    ?? 'admin@local';
 const PASSWORD = process.env.OKESU_PASSWORD ?? 'okesu-demo';
 const RUN_ID   = process.env.OKESU_RUN_ID;       // optional: a specific run-detail page id
 const FANOUT_RUN_ID = process.env.OKESU_FANOUT_RUN_ID; // optional: pure-fanout run
+const CASE_ID = process.env.OKESU_CASE_ID;
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const OUT_DIR   = join(__dirname, '..', 'public', 'screenshots');
@@ -110,6 +111,121 @@ async function main() {
     }
   } catch (err) {
     console.error(`  ✗ ${err.message}`);
+  }
+
+  if (!CASE_ID) {
+    console.log('  (OKESU_CASE_ID not set — skipping tour investigation tail)');
+  } else {
+    const base = `${URL}/investigations/${CASE_ID}`;
+
+    // The SPA tracks the active tab in component state — click the
+    // tab button. Tab labels may have a count badge appended (e.g.
+    // "Notes 0"), so we match by substring rather than exact text.
+    async function clickTab(label) {
+      const btn = page.locator('button').filter({ hasText: new RegExp(label, 'i') }).first();
+      if (await btn.count() > 0) {
+        await btn.click();
+        await page.waitForTimeout(1500);
+      }
+    }
+
+    await page.goto(base, { waitUntil: 'networkidle' });
+    await page.waitForTimeout(1500);
+
+    // ── 7. Timeline lives on the Overview tab — capture it from the
+    //    landing view.
+    console.log('> tour: investigation timeline (Overview)');
+    await shoot(page, 'investigation-timeline');
+
+    // ── 8. Graph.
+    console.log('> tour: investigation graph');
+    await clickTab('Graph');
+    await page.waitForTimeout(1500); // let react-flow settle
+    await shoot(page, 'investigation-graph');
+
+    // ── 10. PDF page-1 (handled before war-room because war-room
+    //       opens a second context that we want to tear down last).
+    console.log('> tour: investigation pdf');
+    try {
+      const res = await page.goto(`${URL}/api/investigations/${CASE_ID}/report.pdf`, { waitUntil: 'networkidle' });
+      const ctype = (res?.headers() ?? {})['content-type'] ?? '';
+      if (ctype.includes('application/pdf')) {
+        await page.waitForTimeout(2000);
+        await shoot(page, 'investigation-pdf');
+      } else {
+        console.log('  (PDF endpoint did not return application/pdf — skipping)');
+      }
+    } catch (err) {
+      console.log(`  (PDF capture failed: ${err.message} — skipping)`);
+    }
+  }
+
+  if (CASE_ID) {
+    console.log('> tour: investigation war-room (two contexts)');
+    let altContext;
+    try {
+      // Open a second browser context as a different operator.
+      altContext = await browser.newContext({
+        ignoreHTTPSErrors: true,
+        viewport: { width: 1440, height: 900 },
+        deviceScaleFactor: 2,
+      });
+      const altPage = await altContext.newPage();
+
+      // Login on the alt context (uses the same admin user — distinct
+      // session yields a distinct presence chip via session id).
+      await altPage.goto(`${URL}/login`, { waitUntil: 'networkidle' });
+      await altPage.fill('input[type="email"]', EMAIL);
+      await altPage.fill('input[type="password"]', PASSWORD);
+      await altPage.click('button[type="submit"]');
+      await altPage.waitForFunction(() => !location.pathname.startsWith('/login'), { timeout: 10000 });
+
+      // Both contexts navigate to the case detail page, then click
+      // the Notes tab (URL ?tab= isn't read by the SPA).
+      const url = `${URL}/investigations/${CASE_ID}`;
+      await page.goto(url, { waitUntil: 'networkidle' });
+      await altPage.goto(url, { waitUntil: 'networkidle' });
+      await page.waitForTimeout(1500);
+
+      // Click "Notes" tab on each (substring match — button may
+      // include a count badge).
+      for (const p of [page, altPage]) {
+        try {
+          const tab = p.locator('button').filter({ hasText: /Notes/i }).first();
+          if (await tab.count() > 0) {
+            await tab.click();
+            await p.waitForTimeout(800);
+          }
+        } catch (e) { /* skip */ }
+      }
+
+      // Open the war room on each (button text may be "Start war room"
+      // or similar — match anything containing "war").
+      for (const p of [page, altPage]) {
+        try {
+          const btn = p.locator('button').filter({ hasText: /war/i }).first();
+          if (await btn.count() > 0) await btn.click();
+        } catch (e) { /* skip */ }
+      }
+      await page.waitForTimeout(1500);
+
+      // Type into both — produces real cursor positions + presence.
+      const textareaA = page.locator('textarea').first();
+      const textareaB = altPage.locator('textarea').first();
+      if (await textareaA.count() > 0) {
+        await textareaA.fill('callback to 8.8.8.8 from web-prod-01 — netflow confirms');
+      }
+      if (await textareaB.count() > 0) {
+        await textareaB.fill('EDR shows pid 4421 spawned by sshd — pulling memory snapshot now');
+      }
+      await page.waitForTimeout(1200);
+
+      await shoot(page, 'investigation-war-room');
+    } catch (err) {
+      console.log(`  (war-room two-context capture failed: ${err.message} — skipping)`);
+    } finally {
+      if (altContext) await altContext.close();
+    }
   }
 
   await browser.close();

@@ -103,6 +103,8 @@ indicator, emit a finding event with the appropriate severity.
 
 <p>The <strong>Agents</strong> tab in the Control Plane is the agent catalog. Markdown-frontmatter specs are sourced from <code>~/.claude/agents</code> and the project's own <code>agents/</code> directory; provider badges show whether each agent is wired to Claude or Codex.</p>
 
+<p>Agents run with <strong>per-fleet LLM credentials</strong> — the CP threads provider keys (Claude / Codex / others) into <code>/etc/okesu/jobs.env</code> on each daimon at deploy time, so the agent picks them up without per-host secret juggling. <strong>RBAC credential bindings</strong> let an orchestration step request scoped, time-boxed credentials from the CP at dispatch — useful for steps that hit cloud APIs or other production systems where you want a paper trail.</p>
+
 <div class="my-6">
   <OperatorView
     src="agents-library"

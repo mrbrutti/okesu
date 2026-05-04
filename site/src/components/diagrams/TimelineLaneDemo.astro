@@ -1,0 +1,90 @@
+---
+// Investigations / Timeline. 8-second loop:
+//   three horizontal lanes (findings dots, runs bars, IOC dots) slide
+//   in left-to-right; a "filter chip" cycles between all/findings/runs
+//   to dim the un-selected lanes.
+---
+
+<div class="bg-panel border border-border rounded-lg shadow-card p-4 max-w-md" role="img"
+     aria-label="Animated demo: a case timeline with three lanes — findings, runs, IOCs. Dots and bars slide in left-to-right.">
+  <div class="flex gap-1.5 mb-3">
+    <span class="filter-chip filter-chip-all">all</span>
+    <span class="filter-chip filter-chip-findings">findings</span>
+    <span class="filter-chip filter-chip-runs">runs</span>
+    <span class="filter-chip filter-chip-iocs">IOCs</span>
+  </div>
+
+  <div class="space-y-2">
+    <div class="lane lane-findings">
+      <span class="lane-label">findings</span>
+      <div class="lane-track">
+        <span class="lane-dot lane-dot-1 bg-rose-500"></span>
+        <span class="lane-dot lane-dot-2 bg-amber-500"></span>
+        <span class="lane-dot lane-dot-3 bg-rose-500"></span>
+        <span class="lane-dot lane-dot-4 bg-amber-500"></span>
+        <span class="lane-dot lane-dot-5 bg-rose-500"></span>
+      </div>
+    </div>
+    <div class="lane lane-runs">
+      <span class="lane-label">runs</span>
+      <div class="lane-track">
+        <span class="lane-bar lane-bar-1"></span>
+        <span class="lane-bar lane-bar-2"></span>
+      </div>
+    </div>
+    <div class="lane lane-iocs">
+      <span class="lane-label">IOCs</span>
+      <div class="lane-track">
+        <span class="lane-dot lane-dot-6 bg-violet-500"></span>
+        <span class="lane-dot lane-dot-7 bg-violet-500"></span>
+        <span class="lane-dot lane-dot-8 bg-violet-500"></span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<style>
+  .filter-chip { font-size: 10px; padding: 2px 7px; border-radius: 9999px; background: #f1f5f9; color: #64748b; border: 1px solid #e2e8f0; }
+  .filter-chip-all { background: #ede9fe; color: #5b21b6; border-color: #ddd6fe; }
+
+  .lane { display: flex; align-items: center; gap: 8px; }
+  .lane-label { font-size: 10px; color: #94a3b8; width: 56px; flex-shrink: 0; text-align: right; }
+  .lane-track { flex: 1; position: relative; height: 14px; display: flex; align-items: center; gap: 6px; padding-left: 4px; }
+
+  .lane-dot { width: 8px; height: 8px; border-radius: 9999px; opacity: 0; }
+  .lane-bar { height: 6px; border-radius: 3px; background: #3b82f6; opacity: 0; }
+  .lane-bar-1 { width: 60px; }
+  .lane-bar-2 { width: 90px; margin-left: 16px; background: #22c55e; }
+
+  /* Static fallback for reduced-motion: show everything at full opacity. */
+  @media (prefers-reduced-motion: reduce) {
+    .lane-dot, .lane-bar { opacity: 1; }
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .lane-dot-1 { animation: okesu-lane-slide 8s ease-in-out 0.2s infinite; }
+    .lane-dot-2 { animation: okesu-lane-slide 8s ease-in-out 0.6s infinite; }
+    .lane-dot-3 { animation: okesu-lane-slide 8s ease-in-out 1.0s infinite; }
+    .lane-dot-4 { animation: okesu-lane-slide 8s ease-in-out 1.4s infinite; }
+    .lane-dot-5 { animation: okesu-lane-slide 8s ease-in-out 1.8s infinite; }
+    .lane-bar-1 { animation: okesu-lane-slide 8s ease-in-out 0.8s infinite; }
+    .lane-bar-2 { animation: okesu-lane-slide 8s ease-in-out 1.6s infinite; }
+    .lane-dot-6 { animation: okesu-lane-slide 8s ease-in-out 0.4s infinite; }
+    .lane-dot-7 { animation: okesu-lane-slide 8s ease-in-out 1.0s infinite; }
+    .lane-dot-8 { animation: okesu-lane-slide 8s ease-in-out 1.6s infinite; }
+
+    /* Filter cycle: 0-3s "all", 3-5s "findings" (dim runs+iocs), 5-7s "runs" (dim findings+iocs), 7-8s "all". */
+    .lane-runs     { animation: filter-dim-runs-iocs 8s ease-in-out infinite; }
+    .lane-findings { animation: filter-dim-findings-iocs 8s ease-in-out infinite; }
+    .lane-iocs     { animation: filter-dim-runs-iocs 8s ease-in-out infinite, filter-dim-findings-iocs 8s ease-in-out infinite; }
+
+    @keyframes filter-dim-runs-iocs {
+      0%, 37%, 88%, 100% { opacity: 1; }
+      40%, 60% { opacity: 0.25; }
+    }
+    @keyframes filter-dim-findings-iocs {
+      0%, 62%, 88%, 100% { opacity: 1; }
+      65%, 85% { opacity: 0.25; }
+    }
+  }
+</style>

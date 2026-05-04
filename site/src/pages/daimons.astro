@@ -46,6 +46,7 @@ import OperatorView from '../components/OperatorView.astro';
             <li><a class="text-ink-dim hover:text-brand-700" href="#flexibility">What you can build</a></li>
             <li><a class="text-ink-dim hover:text-brand-700" href="#runtime">Runtime model</a></li>
             <li><a class="text-ink-dim hover:text-brand-700" href="#why">Why this shape</a></li>
+            <li><a class="text-ink-dim hover:text-brand-700" href="#sigma-pipeline">Sigma rules pipeline</a></li>
           </ul>
         </div>
       </aside>
@@ -361,6 +362,14 @@ Analyze the telemetry above. <span class="cmt">[…domain instructions, decision
         <p><strong>The same shape for monitors and one-shots.</strong> An on-demand triage agent and an always-running EDR look identical at the spec level — just <code>mode: oneshot</code> vs <code>mode: daemon</code>. That uniformity means an orchestration step can dispatch to either kind of agent without caring which it is.</p>
 
         <p>The point isn't that any single piece is novel. It's that the pieces fit. A markdown file with eight section headers can express a Linux EDR <em>and</em> a cost watcher <em>and</em> an FinOps auditor <em>and</em> a custom thing you needed yesterday — and the same runtime drives all of them.</p>
+
+        <h2 id="sigma-pipeline">The Sigma rules pipeline</h2>
+
+        <p>The <code>log-sigma-hunter</code> daimon — added in May 2026 — is the first to demonstrate a deeper coupling between the CP catalog and a daimon's runtime. Instead of carrying its detection logic inline (the way <code>edr</code> or <code>instance-threat</code> do), it evaluates <a href="https://github.com/SigmaHQ/sigma" target="_blank" rel="noopener" class="text-brand-700 font-medium hover:underline">Sigma</a> rules against the host's local logs (auth, audit, application). When a rule fires, the daimon emits a finding carrying the rule id, matched event, and severity from the rule definition itself.</p>
+
+        <p>Rule curation lives at the CP, not the host. The <strong>IOC feeds</strong> admin page (<em>Settings → IOC feeds</em>) lets you subscribe a fleet to upstream Sigma rule sources or load your own. Rules push to <code>log-sigma-hunter</code> daimons over the standard tunnel; offline daimons pick them up on their next bucket pull. There's no host-side rule editing — everything flows from the CP outward.</p>
+
+        <p>This is the daimon spec's flexibility paying off: the same eight section headers (identity, provider, schedule, state, tools, collectors, prompt, outputs) describe a custom log-investigation daimon, the EDR daimon, and now a continuously-updating rule-evaluating daimon. The shape held; the catalog grew.</p>
 
         <div class="mt-12 pt-6 border-t border-border">
           <h3 class="text-[15px] font-semibold text-ink mb-2">Where to next</h3>

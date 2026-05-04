@@ -1,0 +1,89 @@
+---
+// Orchestrations / Selectors. 8-second loop:
+//   selector pill `label:env=prod` shows briefly, then 5 host chips
+//   pop into existence with a "matching…" hint, then a fan-out strip
+//   below dispatches across them.
+---
+
+<div class="bg-panel border border-border rounded-lg shadow-card p-4 max-w-md" role="img"
+     aria-label="Animated demo: a label selector resolves into 5 host chips and a fan-out strip dispatches across them.">
+  <div class="flex items-center gap-2 mb-3">
+    <span class="text-[10px] uppercase tracking-wide text-ink-mute font-bold">selector</span>
+    <span class="selector-pill">label:env=prod</span>
+    <span class="selector-arrow">→</span>
+    <span class="selector-count">5 hosts</span>
+  </div>
+
+  <div class="flex flex-wrap gap-1 mb-3">
+    <span class="host-chip host-chip-1">web-01</span>
+    <span class="host-chip host-chip-2">web-02</span>
+    <span class="host-chip host-chip-3">api-01</span>
+    <span class="host-chip host-chip-4">api-02</span>
+    <span class="host-chip host-chip-5">api-03</span>
+  </div>
+
+  <div class="border-t border-border pt-2">
+    <div class="flex items-center gap-2">
+      <div class="flex-1 h-1.5 bg-slate-200 rounded overflow-hidden">
+        <div class="sel-hist-bar h-full bg-green-500"></div>
+      </div>
+      <span class="sel-strip-count text-[10px] font-mono text-ink-dim">0/5</span>
+    </div>
+    <div class="flex gap-1 mt-1.5">
+      <span class="sel-dot sel-dot-1 w-2 h-2 rounded-full bg-slate-300"></span>
+      <span class="sel-dot sel-dot-2 w-2 h-2 rounded-full bg-slate-300"></span>
+      <span class="sel-dot sel-dot-3 w-2 h-2 rounded-full bg-slate-300"></span>
+      <span class="sel-dot sel-dot-4 w-2 h-2 rounded-full bg-slate-300"></span>
+      <span class="sel-dot sel-dot-5 w-2 h-2 rounded-full bg-slate-300"></span>
+    </div>
+  </div>
+</div>
+
+<style>
+  .selector-pill {
+    font-size: 11px; padding: 2px 8px; border-radius: 4px;
+    background: #ede9fe; color: #5b21b6; font-family: ui-monospace, monospace;
+    border: 1px solid #ddd6fe;
+  }
+  .selector-arrow { color: #94a3b8; font-size: 12px; }
+  .selector-count { font-size: 10px; color: #64748b; }
+
+  .host-chip {
+    font-size: 10px; padding: 2px 6px; border-radius: 4px;
+    background: #f1f5f9; color: #334155; opacity: 0;
+  }
+
+  .sel-hist-bar { width: 0%; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .host-chip { opacity: 1; }
+    .sel-hist-bar { width: 100%; }
+    .sel-dot { background: #22c55e; }
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .host-chip-1 { animation: okesu-chip-resolve 8s ease-in-out 0.6s infinite; }
+    .host-chip-2 { animation: okesu-chip-resolve 8s ease-in-out 0.9s infinite; }
+    .host-chip-3 { animation: okesu-chip-resolve 8s ease-in-out 1.2s infinite; }
+    .host-chip-4 { animation: okesu-chip-resolve 8s ease-in-out 1.5s infinite; }
+    .host-chip-5 { animation: okesu-chip-resolve 8s ease-in-out 1.8s infinite; }
+
+    .sel-hist-bar { animation: sel-hist-grow 8s linear infinite; }
+    @keyframes sel-hist-grow {
+      0%, 25%  { width: 0; }
+      85%, 95% { width: 100%; }
+      100%     { width: 0; }
+    }
+
+    .sel-dot-1 { animation: sel-dot-fill 8s linear 2.6s infinite; }
+    .sel-dot-2 { animation: sel-dot-fill 8s linear 3.0s infinite; }
+    .sel-dot-3 { animation: sel-dot-fill 8s linear 3.4s infinite; }
+    .sel-dot-4 { animation: sel-dot-fill 8s linear 3.8s infinite; }
+    .sel-dot-5 { animation: sel-dot-fill 8s linear 4.2s infinite; }
+    @keyframes sel-dot-fill {
+      0%, 5%   { background-color: #cbd5e1; }
+      6%, 90%  { background-color: #22c55e; }
+      95%, 100% { background-color: #cbd5e1; }
+    }
+  }
+</style>

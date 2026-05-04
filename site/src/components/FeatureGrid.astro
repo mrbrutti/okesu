@@ -15,7 +15,7 @@ const features: Feature[] = [
   },
   {
     title: 'Investigations as a workspace',
-    body: 'Group findings into a case file. Notes, timeline, and orchestrations all hang off one investigation entity.',
+    body: 'A case file with timeline, graph view, collaborative notes, and one-click PDF export. Findings, IOCs, runs, and audit events all hang off one entity.',
   },
   {
     title: 'Approval gates + action allowlists',
@@ -24,6 +24,10 @@ const features: Feature[] = [
   {
     title: 'Per-host fan-out',
     body: 'Run an agent on N hosts in parallel; live histogram + per-host status in the run viewer.',
+  },
+  {
+    title: 'Real-time war room',
+    body: 'Multiple operators co-edit one case-scoped draft buffer in real time, see each other\'s cursors, then Send produces one immutable note. Yjs CRDT under the hood.',
   },
   {
     title: 'Single-binary install',

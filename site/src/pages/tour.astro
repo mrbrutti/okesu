@@ -11,7 +11,7 @@ import OperatorView from '../components/OperatorView.astro';
     <div class="max-w-page mx-auto px-6 py-12 text-center">
       <p class="text-[10px] uppercase tracking-wide text-brand-700 font-bold mb-2">A 10-minute tour</p>
       <h1 class="text-[32px] md:text-[40px] font-bold text-ink leading-tight max-w-3xl mx-auto">
-        From a finding to a closed investigation, in seven screens.
+        From a finding to a closed investigation, in ten screens.
       </h1>
       <p class="mt-4 text-[15px] md:text-base text-ink-dim leading-relaxed max-w-2xl mx-auto">
         Every screenshot below is the live platform — captured from a federated demo stack,
@@ -132,7 +132,97 @@ import OperatorView from '../components/OperatorView.astro';
         src="tour-investigation-detail"
         alt="Investigation detail — header with status, six tabs (Overview, Findings, Runs, IOCs, Daimons, Orchestrations, Notes, Audit), summary, and identity panel."
         url="okesu / Investigations / #1"
-        caption="The case file shape: tabs across the top, identity + linked entities on the right."
+        caption="The case file shape: tabs across the top, identity + linked entities on the right. The next four screens walk through the tabs that do the actual work."
+      />
+    </section>
+
+
+    {/* ── 7 ─────────────────────────────────────────────────────── */}
+    <section>
+      <div class="flex items-baseline gap-3 mb-3">
+        <span class="text-[28px] font-bold text-brand-700 leading-none">07</span>
+        <h2 class="text-[22px] font-semibold text-ink leading-tight">The timeline</h2>
+      </div>
+      <p class="text-[14px] text-ink-dim leading-relaxed mb-5">
+        The Timeline tab draws every event in the case against one shared time axis.
+        Findings dots, run bars, IOC markers, daimon ticks — same axis, different
+        lanes. The filter bar at the top scopes by severity, run status, host,
+        and agent; saved searches stash a useful slice for next time. An
+        outlier-resistant <em>autoFit</em> keeps the active cluster visible
+        rather than zooming out to nothing.
+      </p>
+      <OperatorView
+        src="tour-investigation-timeline"
+        alt="Investigation timeline — three lanes (findings, runs, IOCs) with filter chips and a saved-search bar above."
+        url="okesu / Investigations / #31 / Timeline"
+        caption="Timeline filtered to severity ≥ HIGH and run-status = approved."
+      />
+    </section>
+
+    {/* ── 8 ─────────────────────────────────────────────────────── */}
+    <section>
+      <div class="flex items-baseline gap-3 mb-3">
+        <span class="text-[28px] font-bold text-brand-700 leading-none">08</span>
+        <h2 class="text-[22px] font-semibold text-ink leading-tight">The graph</h2>
+      </div>
+      <p class="text-[14px] text-ink-dim leading-relaxed mb-5">
+        The Graph tab shows the case's relationships as a bipartite layout — hosts
+        on one side, IOCs on the other, edges for each observed relationship.
+        Server-side aggregation rolls up host/IOC/daimon/run counts so the
+        frontend doesn't walk the entity graph itself; the response shape is
+        the same whether the case is owned by this CP or proxied from a child.
+      </p>
+      <OperatorView
+        src="tour-investigation-graph"
+        alt="Investigation graph view — hosts on the left, IOCs on the right, edges drawn between them."
+        url="okesu / Investigations / #31 / Graph"
+        caption="Graph view — relationships as edges between hosts and IOCs."
+      />
+    </section>
+
+    {/* ── 9 ─────────────────────────────────────────────────────── */}
+    <section>
+      <div class="flex items-baseline gap-3 mb-3">
+        <span class="text-[28px] font-bold text-brand-700 leading-none">09</span>
+        <h2 class="text-[22px] font-semibold text-ink leading-tight">The war room</h2>
+      </div>
+      <p class="text-[14px] text-ink-dim leading-relaxed mb-5">
+        The Notes tab has two modes: a quick comment composer for one-off
+        observations, and a <strong>war room</strong> draft buffer for live
+        collaborative thinking. Open the war room from the case detail page
+        and everyone connected sees each other's cursors, types into the same
+        textarea, reads each other's contributions in real time. Yjs CRDT
+        under the hood — operations are eventually consistent, brief network
+        blips don't lose anyone's input. When the team's done, one operator
+        hits Send and the draft becomes one immutable note row.
+      </p>
+      <OperatorView
+        src="tour-investigation-war-room"
+        alt="War room panel mid-edit — two presence chips visible, partial draft text in the textarea, two coloured cursors."
+        url="okesu / Investigations / #31 / Notes"
+        caption="Two operators editing the same buffer. Send produces one immutable note row."
+      />
+    </section>
+
+    {/* ── 10 ────────────────────────────────────────────────────── */}
+    <section>
+      <div class="flex items-baseline gap-3 mb-3">
+        <span class="text-[28px] font-bold text-brand-700 leading-none">10</span>
+        <h2 class="text-[22px] font-semibold text-ink leading-tight">The handoff</h2>
+      </div>
+      <p class="text-[14px] text-ink-dim leading-relaxed mb-5">
+        Stakeholders rarely log into Okesu. The PDF export gives them
+        everything they need without one: an executive summary on page one,
+        a chronological narrative through the investigation, every linked
+        finding/IOC/run/audit event in formatted reference tables. The
+        endpoint is federated — a parent CP can serve a report for a child's
+        case by proxying the request through the federation token.
+      </p>
+      <OperatorView
+        src="tour-investigation-pdf"
+        alt="Page one of an investigation PDF report — executive summary plus key counts."
+        url="okesu / Investigations / #31 / Export"
+        caption="Page one of the rendered PDF. One click, stakeholder-ready."
       />
     </section>
 
@@ -141,7 +231,8 @@ import OperatorView from '../components/OperatorView.astro';
       <h3 class="text-[18px] font-semibold text-ink mb-3">That was the loop.</h3>
       <p class="text-[14px] text-ink leading-relaxed mb-4">
         Daimon emits a finding. CP routes it. Orchestration triages it. Investigation files it.
-        Daimons keep ticking; the same loop runs the next time something interesting happens.
+        Operators thinking together close it; the PDF goes to whoever needs it. Daimons keep
+        ticking; the same loop runs the next time something interesting happens.
       </p>
       <p class="text-[14px] text-ink-dim leading-relaxed mb-6">
         What you saw is what ships. There's nothing demo-only above — the daimons,

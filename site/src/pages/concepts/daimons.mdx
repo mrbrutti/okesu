@@ -34,7 +34,9 @@ import OperatorView from '../../components/OperatorView.astro';
 
 <p>One daimon per host. It's the piece that runs.</p>
 
-<p>The Go binary is called <code>okesu</code>; the same binary serves as daemon and CLI depending on the subcommand. Out of the box it ships with a small library of built-in agents (<code>edr</code>, <code>instance-integrity</code>, <code>instance-threat</code>, <code>sre-health</code>) so a fresh daimon has something to do on tick zero.</p>
+<p>The Go binary is called <code>okesu</code>; the same binary serves as daemon and CLI depending on the subcommand. Out of the box it ships with a small library of built-in agents (<code>edr</code>, <code>instance-integrity</code>, <code>instance-threat</code>, <code>sre-health</code>, <code>log-investigator</code>, <code>log-sigma-hunter</code>) so a fresh daimon has something to do on tick zero.</p>
+
+<p>The <code>log-sigma-hunter</code> daimon ships paired with an <strong>IOC feeds + Sigma rules</strong> catalog: the CP curates Sigma detection rules per fleet, the daimon evaluates them against local logs, and matches surface as ordinary findings. Cross-references <code>log-investigator</code> for deeper analysis on whatever it surfaces.</p>
 
 <h2 id="where">Where it runs</h2>
 
