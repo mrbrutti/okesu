@@ -494,7 +494,12 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-Type=simple
+# Type=exec (not simple) so systemd waits for execve() to return
+# before considering the unit "started". Under install.sh's set -e,
+# a missing dynamic-linker target or bad bootstrap surfaces as a
+# non-zero exit from systemctl enable --now and aborts cloud-init
+# instead of leaving a silently-half-installed VM.
+Type=exec
 ExecStart=/usr/local/bin/okesu s3-jobs --bootstrap /etc/okesu/bootstrap.json
 Restart=on-failure
 RestartSec=5
