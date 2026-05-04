@@ -1,0 +1,54 @@
+---
+// Investigations / PDF report. 4-second loop:
+//   stack of three faux page outlines + a download icon that pulses.
+//   Compact — meant for an inline section diagram, not the section's
+//   centerpiece (the screenshot does that job).
+---
+
+<div class="bg-panel border border-border rounded-lg shadow-card p-4 max-w-xs" role="img"
+     aria-label="Animated demo: a stack of three PDF page outlines with a pulsing download icon, indicating one-click report export.">
+  <div class="flex items-center gap-3">
+    <div class="pdf-stack relative w-16 h-20">
+      <div class="pdf-page pdf-page-3"></div>
+      <div class="pdf-page pdf-page-2"></div>
+      <div class="pdf-page pdf-page-1">
+        <div class="pdf-line w-8"></div>
+        <div class="pdf-line w-10"></div>
+        <div class="pdf-line w-7"></div>
+      </div>
+    </div>
+    <div class="flex-1">
+      <div class="text-[12px] font-semibold text-ink">incident-31.pdf</div>
+      <div class="text-[10px] text-ink-mute mb-2">12 pages · 240 KB</div>
+      <button class="pdf-dl-btn" type="button" disabled>
+        <span aria-hidden="true">↓</span> Download
+      </button>
+    </div>
+  </div>
+</div>
+
+<style>
+  .pdf-page {
+    position: absolute; width: 56px; height: 72px; background: white;
+    border: 1px solid #e2e8f0; border-radius: 3px; padding: 6px;
+  }
+  .pdf-page-1 { top: 0; left: 0; z-index: 3; }
+  .pdf-page-2 { top: 4px; left: 4px; z-index: 2; opacity: 0.7; }
+  .pdf-page-3 { top: 8px; left: 8px; z-index: 1; opacity: 0.4; }
+
+  .pdf-line { height: 2px; background: #cbd5e1; border-radius: 2px; margin-bottom: 3px; }
+
+  .pdf-dl-btn {
+    font-size: 10px; padding: 3px 8px; border-radius: 4px;
+    background: #5b21b6; color: white; cursor: not-allowed;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .pdf-dl-btn { animation: dl-pulse 4s ease-in-out infinite; }
+    @keyframes dl-pulse {
+      0%, 70%   { box-shadow: 0 0 0 0 rgba(91, 33, 182, 0); }
+      80%       { box-shadow: 0 0 0 4px rgba(91, 33, 182, 0.4); }
+      90%, 100% { box-shadow: 0 0 0 0 rgba(91, 33, 182, 0); }
+    }
+  }
+</style>
