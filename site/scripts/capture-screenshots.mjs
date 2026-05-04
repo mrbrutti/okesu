@@ -120,24 +120,37 @@ async function captureInvestigationSurfaces(page) {
   await page.screenshot({ path: join(OUT_DIR, 'investigation-overview.png'), fullPage: false });
   console.log('  ✓ investigation-overview.png');
 
-  // Timeline tab
-  console.log('> investigation timeline');
-  await page.goto(`${base}?tab=timeline`, { waitUntil: 'networkidle' });
-  await page.waitForTimeout(2500);
+  // The SPA tracks the active tab in component state, not URL — we
+  // click the tab button to switch. Tab buttons may have a count
+  // badge appended ("Notes 0") so we match by substring rather than
+  // exact text.
+  async function clickTab(label) {
+    const btn = page.locator('button').filter({ hasText: new RegExp(label, 'i') }).first();
+    if (await btn.count() > 0) {
+      await btn.click();
+      await page.waitForTimeout(1500);
+    }
+  }
+
+  // Timeline view lives on the Overview tab (the case timeline panel
+  // with severity/host/agent filter chips). The investigation-timeline
+  // asset captures the same surface — just framed differently for
+  // the concept page's "timeline" section. We re-screenshot here to
+  // make the asset name explicit.
+  console.log('> investigation timeline (Overview tab)');
   await page.screenshot({ path: join(OUT_DIR, 'investigation-timeline.png'), fullPage: false });
   console.log('  ✓ investigation-timeline.png');
 
   // Graph tab
   console.log('> investigation graph');
-  await page.goto(`${base}?tab=graph`, { waitUntil: 'networkidle' });
-  await page.waitForTimeout(2500); // let react-flow settle
+  await clickTab('Graph');
+  await page.waitForTimeout(1500); // let react-flow settle
   await page.screenshot({ path: join(OUT_DIR, 'investigation-graph.png'), fullPage: false });
   console.log('  ✓ investigation-graph.png');
 
   // War-room thumb (single-context — the multi-presence shot lives in capture-tour.mjs).
   console.log('> investigation war-room thumb');
-  await page.goto(`${base}?tab=notes`, { waitUntil: 'networkidle' });
-  await page.waitForTimeout(1500);
+  await clickTab('Notes');
   // Fire-and-forget click; if the war-room button isn't there, we just
   // capture the notes panel as-is and skip the dedicated thumb.
   try {

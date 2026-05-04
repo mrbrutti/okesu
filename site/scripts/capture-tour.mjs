@@ -118,16 +118,29 @@ async function main() {
   } else {
     const base = `${URL}/investigations/${CASE_ID}`;
 
-    // ── 7. Timeline.
-    console.log('> tour: investigation timeline');
-    await page.goto(`${base}?tab=timeline`, { waitUntil: 'networkidle' });
-    await page.waitForTimeout(2500);
+    // The SPA tracks the active tab in component state — click the
+    // tab button. Tab labels may have a count badge appended (e.g.
+    // "Notes 0"), so we match by substring rather than exact text.
+    async function clickTab(label) {
+      const btn = page.locator('button').filter({ hasText: new RegExp(label, 'i') }).first();
+      if (await btn.count() > 0) {
+        await btn.click();
+        await page.waitForTimeout(1500);
+      }
+    }
+
+    await page.goto(base, { waitUntil: 'networkidle' });
+    await page.waitForTimeout(1500);
+
+    // ── 7. Timeline lives on the Overview tab — capture it from the
+    //    landing view.
+    console.log('> tour: investigation timeline (Overview)');
     await shoot(page, 'investigation-timeline');
 
     // ── 8. Graph.
     console.log('> tour: investigation graph');
-    await page.goto(`${base}?tab=graph`, { waitUntil: 'networkidle' });
-    await page.waitForTimeout(2500);
+    await clickTab('Graph');
+    await page.waitForTimeout(1500); // let react-flow settle
     await shoot(page, 'investigation-graph');
 
     // ── 10. PDF page-1 (handled before war-room because war-room
@@ -167,11 +180,24 @@ async function main() {
       await altPage.click('button[type="submit"]');
       await altPage.waitForFunction(() => !location.pathname.startsWith('/login'), { timeout: 10000 });
 
-      // Both contexts navigate to the war room.
-      const url = `${URL}/investigations/${CASE_ID}?tab=notes`;
+      // Both contexts navigate to the case detail page, then click
+      // the Notes tab (URL ?tab= isn't read by the SPA).
+      const url = `${URL}/investigations/${CASE_ID}`;
       await page.goto(url, { waitUntil: 'networkidle' });
       await altPage.goto(url, { waitUntil: 'networkidle' });
       await page.waitForTimeout(1500);
+
+      // Click "Notes" tab on each (substring match — button may
+      // include a count badge).
+      for (const p of [page, altPage]) {
+        try {
+          const tab = p.locator('button').filter({ hasText: /Notes/i }).first();
+          if (await tab.count() > 0) {
+            await tab.click();
+            await p.waitForTimeout(800);
+          }
+        } catch (e) { /* skip */ }
+      }
 
       // Open the war room on each (button text may be "Start war room"
       // or similar — match anything containing "war").
