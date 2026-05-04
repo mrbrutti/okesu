@@ -74,8 +74,9 @@
     .lane-dot-8 { animation: okesu-lane-slide 8s ease-in-out 1.6s infinite; }
 
     /* Filter cycle: 0-3s "all", 3-5s "findings" (dim runs+iocs), 5-7s "runs" (dim findings+iocs), 7-8s "all". */
-    .lane-runs, .lane-iocs { animation: filter-dim-runs-iocs 8s ease-in-out infinite; }
-    .lane-findings, .lane-iocs { animation: filter-dim-findings-iocs 8s ease-in-out infinite; }
+    .lane-runs     { animation: filter-dim-runs-iocs 8s ease-in-out infinite; }
+    .lane-findings { animation: filter-dim-findings-iocs 8s ease-in-out infinite; }
+    .lane-iocs     { animation: filter-dim-runs-iocs 8s ease-in-out infinite, filter-dim-findings-iocs 8s ease-in-out infinite; }
 
     @keyframes filter-dim-runs-iocs {
       0%, 37%, 88%, 100% { opacity: 1; }
