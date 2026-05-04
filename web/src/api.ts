@@ -49,18 +49,16 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     const text = await res.text().catch(() => res.statusText);
     throw new ApiError(res.status, text || res.statusText, text);
   }
-  // 204 No Content (RFC 7231) and 202 Accepted both routinely arrive
-  // with empty bodies. Reading them via res.json() would throw a
-  // SyntaxError on the empty string; WebKit surfaces this as
-  // "The string did not match the expected pattern" rather than the
-  // V8/Firefox "Unexpected end of JSON input". Short-circuit instead.
-  if (res.status === 204 || res.status === 202) return undefined as T;
-  // Defensive fallback: if any other 2xx returns Content-Length: 0,
-  // treat it as empty too rather than letting JSON.parse throw on an
-  // empty string. Cheap to check, generous to handlers that omit the
-  // body for nominal success paths.
-  if (res.headers.get('Content-Length') === '0') return undefined as T;
-  return res.json();
+  // 204 No Content is empty by spec. 202 Accepted may or may not
+  // carry a body — some handlers (e.g. cp-provision.create) return
+  // the just-inserted row alongside 202 so the UI gets the row id
+  // synchronously, others return 202 bare. Parse only when there's
+  // actually content; otherwise res.json() throws on the empty
+  // string (WebKit: "The string did not match the expected pattern").
+  if (res.status === 204) return undefined as T;
+  const text = await res.text();
+  if (!text) return undefined as T;
+  return JSON.parse(text) as T;
 }
 
 // DaimonItem describes a registered long-running agent (a "daimon") as

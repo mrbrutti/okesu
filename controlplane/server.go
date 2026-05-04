@@ -1085,10 +1085,12 @@ func (s *Server) routes() http.Handler {
 				// Bootstrap target is the UI port — that's where
 				// /api/v1/cp/bootstrap lives. Mgmt port is mTLS-only
 				// and the new child has no client cert yet.
-				ParentMgmtURL:     s.cfg.EffectivePublicURL(),
-				LinuxBinaryPath:   s.cfg.CPBootstrapBinaryPath,
-				LinuxImageTarPath: s.cfg.CPBootstrapImageTarPath,
-				Version:           Version(),
+				ParentMgmtURL:        s.cfg.EffectivePublicURL(),
+				LinuxBinaryPath:      s.cfg.CPBootstrapBinaryPath,
+				LinuxBinaryAmd64Path: s.cfg.CPBootstrapBinaryAmd64Path,
+				LinuxBinaryArm64Path: s.cfg.CPBootstrapBinaryArm64Path,
+				LinuxImageTarPath:    s.cfg.CPBootstrapImageTarPath,
+				Version:              Version(),
 			}, s.bundleCache, s.cfg.EffectivePublicURL()))
 
 			// Phase 21.3 — managed CP provisioning. Admin-only.
@@ -1103,10 +1105,12 @@ func (s *Server) routes() http.Handler {
 					Registry: s.cpProvisioners,
 					Cache:    s.bundleCache,
 					Bundle: api.CPBundleConfig{
-						ParentMgmtURL:     s.cfg.EffectivePublicURL(),
-						LinuxBinaryPath:   s.cfg.CPBootstrapBinaryPath,
-						LinuxImageTarPath: s.cfg.CPBootstrapImageTarPath,
-						Version:           Version(),
+						ParentMgmtURL:        s.cfg.EffectivePublicURL(),
+						LinuxBinaryPath:      s.cfg.CPBootstrapBinaryPath,
+						LinuxBinaryAmd64Path: s.cfg.CPBootstrapBinaryAmd64Path,
+						LinuxBinaryArm64Path: s.cfg.CPBootstrapBinaryArm64Path,
+						LinuxImageTarPath:    s.cfg.CPBootstrapImageTarPath,
+						Version:              Version(),
 					},
 					ParentBaseURL: s.cfg.EffectivePublicURL(),
 				},

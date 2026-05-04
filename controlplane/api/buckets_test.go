@@ -110,7 +110,9 @@ func TestBucketProvision_CreateMode(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if got.Bucket != "newbucket" || got.Endpoint != "https://fake.example" {
+	// BucketProvision strips the scheme on storage and lets UseSSL
+	// drive the secure flag, so the URL is split into host + UseSSL=true.
+	if got.Bucket != "newbucket" || got.Endpoint != "fake.example" || !got.UseSSL {
 		t.Errorf("unexpected transport_config: %+v", got)
 	}
 }

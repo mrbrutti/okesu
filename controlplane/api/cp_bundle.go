@@ -67,10 +67,21 @@ type CPBundleConfig struct {
 	// per-bundle in the request body.
 	ParentMgmtURL string
 
-	// LinuxBinaryPath is the path to the okesu-cp linux binary the
-	// dockerfile bundle ships. Empty disables dockerfile mode and
-	// returns a 503-style error so the modal can surface it.
+	// LinuxBinaryPath is the single-arch path to the okesu-cp linux
+	// binary the dockerfile bundle ships. Empty disables dockerfile
+	// mode and returns a 503-style error so the modal can surface it.
+	// Used as a fallback when LinuxBinaryAmd64Path /
+	// LinuxBinaryArm64Path are both empty.
 	LinuxBinaryPath string
+
+	// LinuxBinaryAmd64Path / LinuxBinaryArm64Path enable a multi-arch
+	// bundle: when both are non-empty, writeS3DeadDropBundle (and the
+	// dockerfile bundle path) ship both binaries plus a Dockerfile
+	// that copies the right one via ARG TARGETARCH at build time on
+	// the cloud VM. This is what lets an arm64 mac operator deploy
+	// to amd64 OCI/EC2 shapes without rebuilding manually.
+	LinuxBinaryAmd64Path string
+	LinuxBinaryArm64Path string
 
 	// LinuxImageTarPath is the path to a `docker save`-format tarball
 	// of the okesu-cp image. Empty disables compose mode (operator
@@ -248,7 +259,11 @@ func CPBundleHandler(store *db.Store, cfg CPBundleConfig, cache *BundleCache, pa
 		case BundleFormatTerraform:
 			err = writeTerraformBundle(w, bundle, req.Cloud, cfg, cache, parentBaseURL, tokenID)
 		case BundleFormatS3DeadDrop:
-			err = writeS3DeadDropBundle(w, store, bundle, req.TransportConfigID, cfg.LinuxBinaryPath)
+			// Direct-download path: the operator is downloading the
+			// tar.gz themselves and will drop it onto a VM they manage.
+			// No need to also upload to the bucket — that's only
+			// required for the managed-deploy worker (cp_provision).
+			_, _, err = writeS3DeadDropBundle(w, store, bundle, req.TransportConfigID, cfg)
 		}
 		if err != nil {
 			// Tarball stream may have started — best we can do is log.

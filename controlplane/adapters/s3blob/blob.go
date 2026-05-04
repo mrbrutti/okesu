@@ -15,7 +15,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"strings"
+	"time"
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
@@ -51,9 +53,14 @@ func New(ctx context.Context, c Config) (*Adapter, error) {
 	if c.AccessKey == "" || c.SecretKey == "" {
 		return nil, errors.New("s3blob: access_key + secret_key required")
 	}
-	cli, err := minio.New(c.Endpoint, &minio.Options{
+	// Defensive: see stripScheme rationale in agent/s3transport/client.go.
+	// minio-go rejects fully-qualified endpoint URLs ("Endpoint url cannot
+	// have fully qualified paths"), and a few legacy transport_configs
+	// rows still carry a "https://…" prefix from the OCI provisioner.
+	endpoint, secure := stripScheme(c.Endpoint, c.UseSSL)
+	cli, err := minio.New(endpoint, &minio.Options{
 		Creds:  credentials.NewStaticV4(c.AccessKey, c.SecretKey, ""),
-		Secure: c.UseSSL,
+		Secure: secure,
 		Region: c.Region,
 	})
 	if err != nil {
@@ -71,6 +78,40 @@ func New(ctx context.Context, c Config) (*Adapter, error) {
 	}
 
 	return &Adapter{cli: cli, bucket: c.Bucket}, nil
+}
+
+// stripScheme normalises an S3 endpoint to host[:port] form. Mirrors
+// the helper in agent/s3transport/client.go — kept duplicated rather
+// than promoted to a shared module because the agent must not import
+// the controlplane and vice-versa.
+func stripScheme(endpoint string, fallbackSecure bool) (string, bool) {
+	endpoint = strings.TrimSpace(endpoint)
+	switch {
+	case strings.HasPrefix(endpoint, "https://"):
+		endpoint = strings.TrimPrefix(endpoint, "https://")
+		fallbackSecure = true
+	case strings.HasPrefix(endpoint, "http://"):
+		endpoint = strings.TrimPrefix(endpoint, "http://")
+		fallbackSecure = false
+	}
+	if i := strings.IndexByte(endpoint, '/'); i >= 0 {
+		endpoint = endpoint[:i]
+	}
+	return endpoint, fallbackSecure
+}
+
+// PresignedGetURL returns a time-limited GET URL for an object. Used
+// by the managed-deploy flow to hand a fresh OCI VM a curl-able URL
+// for its bootstrap bundle without exposing bucket credentials in
+// the cloud-init script. The URL self-authenticates via SigV4 query
+// params; the only thing the VM needs is plain DNS + outbound HTTPS
+// to the bucket endpoint.
+func (a *Adapter) PresignedGetURL(ctx context.Context, key string, expiry time.Duration) (string, error) {
+	u, err := a.cli.PresignedGetObject(ctx, a.bucket, key, expiry, url.Values{})
+	if err != nil {
+		return "", fmt.Errorf("s3blob: presign %q: %w", key, err)
+	}
+	return u.String(), nil
 }
 
 func (a *Adapter) Put(ctx context.Context, key string, data io.Reader, contentType string) error {

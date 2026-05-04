@@ -227,6 +227,40 @@ func (s *Store) SetCPProvisionPeer(id, peerID int64) error {
 	return err
 }
 
+// AdvanceCPProvisionByPeer flips a bootstrap_pending row to ready
+// when the parent first observes a successful federation poll for
+// the linked peer. Used by the s3reader path — there's no /bootstrap
+// callback for s3_dead_drop transport, so the equivalent moment of
+// "child is alive" is the first introspect.json the parent reads
+// from the bucket. Idempotent: a no-op if no row matches or the
+// row is already past bootstrap_pending. Returns whether a row was
+// actually advanced so callers can append a log line just once.
+func (s *Store) AdvanceCPProvisionByPeer(peerID int64) (advanced bool, err error) {
+	res, err := s.Exec(`
+		UPDATE cp_provisions
+		SET status = 'ready', ended_at = CURRENT_TIMESTAMP
+		WHERE peer_id = ? AND status = 'bootstrap_pending'
+	`, peerID)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
+// AppendCPProvisionLogByPeer is a convenience for the s3reader path
+// where the caller knows the peer id but not the provision id —
+// matches at most one row (peer_id is unique per provision in
+// practice). No-op if no row matches.
+func (s *Store) AppendCPProvisionLogByPeer(peerID int64, line string) error {
+	_, err := s.Exec(`
+		UPDATE cp_provisions
+		SET log = log || ?
+		WHERE peer_id = ?
+	`, line, peerID)
+	return err
+}
+
 // SetCPProvisionError records a terminal error string and flips
 // status=failed in one round-trip.
 func (s *Store) SetCPProvisionError(id int64, msg string) error {
