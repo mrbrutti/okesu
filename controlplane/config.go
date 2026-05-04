@@ -273,7 +273,24 @@ type Config struct {
 	// disables the dockerfile bundle (operators can still use the
 	// compose+image-tar bundle, when CPBootstrapImageTarPath is set,
 	// or the terraform module). Required to issue dockerfile bundles.
+	//
+	// Single-arch convenience: when only this path is set the bundle
+	// ships a single binary at /usr/local/bin/okesu-cp and the
+	// Dockerfile copies it directly. Operators who deploy across
+	// host architectures (e.g. an arm64 mac generating bundles for
+	// amd64 OCI VMs) should set CPBootstrapBinaryAmd64Path +
+	// CPBootstrapBinaryArm64Path instead — the multi-arch Dockerfile
+	// then selects via TARGETARCH at build time on the cloud VM.
 	CPBootstrapBinaryPath string
+
+	// CPBootstrapBinaryAmd64Path / CPBootstrapBinaryArm64Path are the
+	// linux/amd64 + linux/arm64 builds of `okesu-cp`. When both are
+	// set, the bundle ships a multi-arch tarball and the Dockerfile
+	// uses ARG TARGETARCH to copy the matching binary. Either alone
+	// is a no-op (operator gets a single-arch bundle as before from
+	// CPBootstrapBinaryPath).
+	CPBootstrapBinaryAmd64Path string
+	CPBootstrapBinaryArm64Path string
 
 	// CPBootstrapImageTarPath is a `docker save`-format tarball of
 	// the okesu-cp container image, embedded in compose-format

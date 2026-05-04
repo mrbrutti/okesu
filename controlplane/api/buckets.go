@@ -191,13 +191,19 @@ func BucketProvision(store *db.Store, registry *cpprovision.BucketRegistry) http
 			return
 		}
 
+		// minio-go's New(endpoint, ...) builds the URL itself from the
+		// scheme implied by UseSSL, so a fully-qualified URL stored
+		// here gets concatenated into "https://https://host…" and the
+		// validator rejects it as "fully qualified paths". Strip the
+		// scheme on write and let UseSSL drive the secure flag.
+		endpointHost, secure := splitS3Endpoint(info.Endpoint)
 		tc := db.TransportConfig{
 			Name:              strings.TrimSpace(req.DisplayName),
 			Kind:              "s3",
 			Bucket:            info.Name,
-			Endpoint:          info.Endpoint,
+			Endpoint:          endpointHost,
 			Region:            bucketsNullableString(info.Region),
-			UseSSL:            strings.HasPrefix(info.Endpoint, "https://"),
+			UseSSL:            secure,
 			AccessKey:         bucketsNullableString(access),
 			SecretKey:         bucketsNullableString(secret),
 			ScannerIntervalMs: req.ScannerIntervalMs,
@@ -249,4 +255,30 @@ func randomCPID() string {
 	var buf [16]byte
 	_, _ = rand.Read(buf[:])
 	return hex.EncodeToString(buf[:])
+}
+
+// splitS3Endpoint normalises an S3-style endpoint string into the
+// host[:port] form that minio-go expects, plus a derived secure flag.
+// The provisioners (e.g. ociS3Endpoint) emit a fully-qualified URL
+// like "https://ns.compat.objectstorage.region.oraclecloud.com" because
+// that's what an operator copy-pastes into a doc — but minio-go's
+// New(endpoint, …) prepends its own scheme based on Options.Secure,
+// so leaving the prefix in place produces "https://https://…", which
+// the validator rejects with "Endpoint url cannot have fully qualified
+// paths". A trailing path/slash is stripped too.
+func splitS3Endpoint(in string) (host string, useSSL bool) {
+	in = strings.TrimSpace(in)
+	useSSL = true
+	switch {
+	case strings.HasPrefix(in, "https://"):
+		in = strings.TrimPrefix(in, "https://")
+		useSSL = true
+	case strings.HasPrefix(in, "http://"):
+		in = strings.TrimPrefix(in, "http://")
+		useSSL = false
+	}
+	if i := strings.IndexByte(in, '/'); i >= 0 {
+		in = in[:i]
+	}
+	return in, useSSL
 }

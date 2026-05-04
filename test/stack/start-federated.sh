@@ -70,13 +70,18 @@ DAEMON_LINUX_BIN="$ROOT/okesu-linux-${GO_TARGET_ARCH}"
 log "cross-compiling daemon for linux/$GO_TARGET_ARCH (make detects up-to-date)"
 ( cd "$ROOT" && make -s daemon DAEMON_GOOS=linux DAEMON_GOARCH=$GO_TARGET_ARCH )
 
-# Phase 21.1 — cross-compile a linux okesu-cp so the bundle endpoint
-# can hand fresh child CPs a runnable binary inside the dockerfile
-# format. CGO disabled because runtime/cgo's setresgid macro requires
-# a Linux SDK we don't ship with the macOS toolchain. Skips
-# silently when the binary is up-to-date.
-log "cross-compiling okesu-cp for linux/$GO_TARGET_ARCH (CP bootstrap bundle)"
-( cd "$ROOT" && CGO_ENABLED=0 GOOS=linux GOARCH=$GO_TARGET_ARCH go build -o "okesu-cp-linux-${GO_TARGET_ARCH}" ./cmd/cp ) || warn "cp linux cross-compile failed; bundle endpoint will be disabled"
+# Phase 21.1 — cross-compile linux okesu-cp binaries so the bundle
+# endpoint can hand fresh child CPs a runnable binary inside the
+# dockerfile format. We build BOTH amd64 and arm64 unconditionally:
+# the host arch is irrelevant — the binary that ships in the bundle
+# must match the *cloud VM's* shape, and a Mac (arm64) operator
+# routinely deploys to amd64 EC2/OCI shapes (and vice-versa). The
+# multi-arch Dockerfile inside the bundle picks the right binary
+# via TARGETARCH at build time on the VM. CGO disabled — runtime/cgo
+# would need a cross Linux SDK we don't ship with the macOS toolchain.
+log "cross-compiling okesu-cp for linux/{amd64,arm64} (CP bootstrap bundles)"
+( cd "$ROOT" && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o "okesu-cp-linux-amd64" ./cmd/cp ) || warn "cp linux/amd64 cross-compile failed"
+( cd "$ROOT" && CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o "okesu-cp-linux-arm64" ./cmd/cp ) || warn "cp linux/arm64 cross-compile failed"
 [[ -f "$ROOT/controlplane/ui/dist/index.html" ]] || {
     log "building web UI"
     have npm || fail "npm required to build web UI"
@@ -127,8 +132,20 @@ boot_cp() {
     # cross-compile once at the top of start-federated.sh; pass the
     # path here when present so the bundle endpoint is enabled.
     local cp_bootstrap_args=()
+    # Single-arch fallback (host arch) keeps the dockerfile-bundle
+    # endpoint working even if one of the cross-builds failed.
     if [[ -f "$ROOT/okesu-cp-linux-${GO_TARGET_ARCH}" ]]; then
         cp_bootstrap_args+=(--cp-bootstrap-binary "$ROOT/okesu-cp-linux-${GO_TARGET_ARCH}")
+    fi
+    # Multi-arch — when both linux builds exist the s3-dead-drop
+    # bundle ships both binaries and the Dockerfile picks via
+    # TARGETARCH. Lets an arm64 mac generate bundles for amd64
+    # OCI/EC2 shapes (and vice-versa) without manual rebuilds.
+    if [[ -f "$ROOT/okesu-cp-linux-amd64" ]]; then
+        cp_bootstrap_args+=(--cp-bootstrap-binary-amd64 "$ROOT/okesu-cp-linux-amd64")
+    fi
+    if [[ -f "$ROOT/okesu-cp-linux-arm64" ]]; then
+        cp_bootstrap_args+=(--cp-bootstrap-binary-arm64 "$ROOT/okesu-cp-linux-arm64")
     fi
 
     "$ROOT/okesu-cp" serve \

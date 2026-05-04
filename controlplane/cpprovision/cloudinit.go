@@ -97,8 +97,8 @@ mkdir -p "$WORKDIR"
 cd "$WORKDIR"
 echo "==> fetching bundle from {{.BundleURL}}"
 curl -fSL --retry 6 --retry-delay 5 \
-     -H "Authorization: Bearer {{.BundleToken}}" \
-     -o "{{.BundleFilename}}" \
+     {{if .BundleToken}}-H "Authorization: Bearer {{.BundleToken}}" \
+     {{end}}-o "{{.BundleFilename}}" \
      "{{.BundleURL}}"
 tar -xzf "{{.BundleFilename}}"
 # Bundle root dir is the only directory the tar contains — descend.

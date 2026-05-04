@@ -32,6 +32,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/section9labs/okesu/controlplane/adapters/s3blob"
 	"github.com/section9labs/okesu/controlplane/cpprovision"
 	"github.com/section9labs/okesu/controlplane/db"
 )
@@ -178,6 +179,7 @@ func RunCPProvisionWorker(ctx context.Context, cfg CPProvisionWorkerConfig, prov
 		IssuedAt:       time.Now().UTC().Format(time.RFC3339),
 	}
 	var buf bytes.Buffer
+	var s3BundleURL string // populated for transport=s3_dead_drop
 	switch row.Transport {
 	case "s3_dead_drop":
 		// Phase 21.6 — managed deploy targeting the bucket pipe.
@@ -185,18 +187,54 @@ func RunCPProvisionWorker(ctx context.Context, cfg CPProvisionWorkerConfig, prov
 		// itself, so no /api/v1/cp/bootstrap callback is needed; the
 		// child auto-publishes to the bucket on first boot and the
 		// parent's s3reader picks it up within ~30s.
-		if cfg.Bundle.LinuxBinaryPath == "" {
-			failNow("transport=s3_dead_drop requires --daemon-binary on the parent (no linux binary configured)")
+		hasMulti := cfg.Bundle.LinuxBinaryAmd64Path != "" && cfg.Bundle.LinuxBinaryArm64Path != ""
+		if cfg.Bundle.LinuxBinaryPath == "" && !hasMulti {
+			failNow("transport=s3_dead_drop requires --cp-bootstrap-binary (or both --cp-bootstrap-binary-amd64 + --cp-bootstrap-binary-arm64) on the parent")
 			return
 		}
 		if !row.TransportConfigID.Valid || row.TransportConfigID.Int64 == 0 {
 			failNow("transport=s3_dead_drop but transport_config_id is unset on the row — handler validation should have caught this")
 			return
 		}
-		if err := writeS3DeadDropBundle(&buf, cfg.Store, bv, row.TransportConfigID.Int64, cfg.Bundle.LinuxBinaryPath); err != nil {
+		childInstanceID, err := writeS3DeadDropBundle(&buf, cfg.Store, bv, row.TransportConfigID.Int64, cfg.Bundle)
+		if err != nil {
 			failNow("build s3 bundle: " + err.Error())
 			return
 		}
+		// The whole point of s3_dead_drop is "the child can't reach
+		// the parent over HTTPS". cloud-init can't curl the parent
+		// for the bundle, so we put the bundle in the same bucket
+		// the runtime uses and hand the VM a presigned GET URL.
+		// 1h TTL covers a slow apt-get + Docker install with margin.
+		tc, err := cfg.Store.GetTransportConfig(row.TransportConfigID.Int64)
+		if err != nil {
+			failNow("read transport_config for bundle upload: " + err.Error())
+			return
+		}
+		blob, err := s3blob.New(ctx, s3blob.Config{
+			Endpoint:  tc.Endpoint,
+			Region:    tc.Region.String,
+			Bucket:    tc.Bucket,
+			AccessKey: tc.AccessKey.String,
+			SecretKey: tc.SecretKey.String,
+			UseSSL:    tc.UseSSL,
+		})
+		if err != nil {
+			failNow("s3 client for bundle upload: " + err.Error())
+			return
+		}
+		bundleKey := fmt.Sprintf("cp/%s/bootstrap/bundle.tar.gz", childInstanceID)
+		if err := blob.Put(ctx, bundleKey, bytes.NewReader(buf.Bytes()), "application/gzip"); err != nil {
+			failNow("upload bundle to bucket: " + err.Error())
+			return
+		}
+		presigned, err := blob.PresignedGetURL(ctx, bundleKey, time.Hour)
+		if err != nil {
+			failNow("presign bundle URL: " + err.Error())
+			return
+		}
+		s3BundleURL = presigned
+		logf("✓ bundle uploaded to s3://%s/%s, presigned URL valid 1h", tc.Bucket, bundleKey)
 	default:
 		// "https" path (default + legacy).
 		if cfg.Bundle.LinuxBinaryPath != "" {
@@ -216,16 +254,28 @@ func RunCPProvisionWorker(ctx context.Context, cfg CPProvisionWorkerConfig, prov
 	}
 	bundleBytes := buf.Bytes()
 	bundleFilename := fmt.Sprintf("okesu-cp-%s.tar.gz", slugify(row.DisplayName))
+	// Cache the bytes for the parent's /api/federation/cp-bundle/download
+	// endpoint. For s3_dead_drop the bundle is also in the bucket; the
+	// cache is harmless redundancy that costs only RAM and lets a
+	// reachable operator still pull the same bytes by token.
 	cfg.Cache.Put(row.BundleTokenID.Int64, bundleFilename, bundleBytes)
 	logf("✓ bundle generated (%d bytes), cached for download", len(bundleBytes))
 
-	// Render cloud-init.
+	// Render cloud-init. For s3_dead_drop the BundleURL is a presigned
+	// S3 GET — self-authenticating, so we drop the Bearer token to
+	// avoid sending an irrelevant Authorization header. The HTTPS
+	// path keeps the parent-served URL + bearer.
 	bundleURL := strings.TrimRight(cfg.ParentBaseURL, "/") + "/api/federation/cp-bundle/download"
+	bundleToken := plaintext
+	if row.Transport == "s3_dead_drop" {
+		bundleURL = s3BundleURL
+		bundleToken = ""
+	}
 	cloudInit, err := cpprovision.RenderCloudInit(cpprovision.CloudInitVars{
 		DisplayName:    row.DisplayName,
 		Region:         row.Region,
 		BundleURL:      bundleURL,
-		BundleToken:    plaintext,
+		BundleToken:    bundleToken,
 		BundleFilename: bundleFilename,
 		ProvisionID:    provisionID,
 	})

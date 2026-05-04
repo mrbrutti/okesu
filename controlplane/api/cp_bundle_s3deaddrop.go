@@ -54,11 +54,21 @@ import (
 // Dockerfile/compose/env wired for S3-dead-drop publishing. ALSO
 // pre-registers the federation peer on the parent so the operator
 // doesn't have to do a second curl after the bundle deploys.
-func writeS3DeadDropBundle(w io.Writer, store *db.Store, b bundleVars, transportConfigID int64, binaryPath string) error {
+//
+// Returns the child instance_id minted for this bundle so callers
+// (e.g. the managed-deploy worker) can derive the bucket prefix
+// where they'll upload a presigned copy of these same bytes.
+//
+// Binary selection: if cfg.LinuxBinaryAmd64Path + LinuxBinaryArm64Path
+// are both set, the bundle ships both binaries plus a multi-arch
+// Dockerfile that picks via TARGETARCH. Otherwise falls back to
+// cfg.LinuxBinaryPath as a single-arch bundle. Existing single-arch
+// callers see no change.
+func writeS3DeadDropBundle(w io.Writer, store *db.Store, b bundleVars, transportConfigID int64, cfg CPBundleConfig) (string, error) {
 	// 1. Get the parent's instance_id so we can compute the prefix.
 	parentMeta, err := store.CPMeta()
 	if err != nil {
-		return fmt.Errorf("read parent cp_meta: %w", err)
+		return "", fmt.Errorf("read parent cp_meta: %w", err)
 	}
 
 	// 2. Read the transport_config — bucket coords go inline into
@@ -66,14 +76,14 @@ func writeS3DeadDropBundle(w io.Writer, store *db.Store, b bundleVars, transport
 	//    on first boot.
 	tc, err := store.GetTransportConfig(transportConfigID)
 	if err != nil {
-		return fmt.Errorf("transport_config %d: %w", transportConfigID, err)
+		return "", fmt.Errorf("transport_config %d: %w", transportConfigID, err)
 	}
 
 	// 3. Mint the child instance_id. UUID-shape so it slots into
 	//    cp_meta.instance_id verbatim.
 	childInstanceID, err := newUUID()
 	if err != nil {
-		return fmt.Errorf("mint child instance_id: %w", err)
+		return "", fmt.Errorf("mint child instance_id: %w", err)
 	}
 
 	// 4. Compute the prefix the child will publish to AND the
@@ -83,14 +93,29 @@ func writeS3DeadDropBundle(w io.Writer, store *db.Store, b bundleVars, transport
 	// 5. Pre-register the federation peer. The s3reader picks it up
 	//    on its next tick (within 30s).
 	if _, err := store.AddS3FederationPeer(b.DisplayName, prefix, transportConfigID, b.BootstrapToken); err != nil {
-		return fmt.Errorf("register federation peer: %w", err)
+		return "", fmt.Errorf("register federation peer: %w", err)
 	}
 
-	// 6. Read the linux binary. (Same path the dockerfile bundle
-	//    uses; the helper is shared.)
-	binaryBytes, err := os.ReadFile(binaryPath)
-	if err != nil {
-		return fmt.Errorf("read parent binary: %w", err)
+	// 6. Choose the binary set. Multi-arch when both paths are set;
+	//    otherwise single-arch from LinuxBinaryPath. We read the
+	//    bytes here rather than in the tarball loop so a missing
+	//    file fails before we register the peer's filesystem footprint.
+	multiArch := cfg.LinuxBinaryAmd64Path != "" && cfg.LinuxBinaryArm64Path != ""
+	var amd64Bytes, arm64Bytes, singleBytes []byte
+	if multiArch {
+		if amd64Bytes, err = os.ReadFile(cfg.LinuxBinaryAmd64Path); err != nil {
+			return "", fmt.Errorf("read amd64 binary: %w", err)
+		}
+		if arm64Bytes, err = os.ReadFile(cfg.LinuxBinaryArm64Path); err != nil {
+			return "", fmt.Errorf("read arm64 binary: %w", err)
+		}
+	} else {
+		if cfg.LinuxBinaryPath == "" {
+			return "", fmt.Errorf("no linux binary path configured (set --cp-bootstrap-binary or both --cp-bootstrap-binary-amd64 + --cp-bootstrap-binary-arm64)")
+		}
+		if singleBytes, err = os.ReadFile(cfg.LinuxBinaryPath); err != nil {
+			return "", fmt.Errorf("read parent binary: %w", err)
+		}
 	}
 
 	// 7. Pack the tarball.
@@ -100,21 +125,66 @@ func writeS3DeadDropBundle(w io.Writer, store *db.Store, b bundleVars, transport
 	defer t.Close()
 
 	root := bundleRootDir(b)
+	dockerfile := dockerfileTemplate(b)
+	if multiArch {
+		dockerfile = dockerfileTemplateMultiArch(b)
+	}
 	files := []bundleFile{
-		{name: "Dockerfile", mode: 0o644, content: dockerfileTemplate(b)},
+		{name: "Dockerfile", mode: 0o644, content: dockerfile},
 		{name: "docker-compose.yml", mode: 0o644, content: composeTemplateForS3DeadDrop(b)},
 		{name: ".env", mode: 0o600, content: envTemplateForS3DeadDrop(b, childInstanceID, parentMeta.InstanceID, prefix, tc)},
 		{name: "README.md", mode: 0o644, content: readmeTemplateForS3DeadDrop(b, childInstanceID, parentMeta.InstanceID, prefix, tc)},
 	}
 	for _, f := range files {
 		if err := writeTarFile(t, root+"/"+f.name, []byte(f.content), f.mode); err != nil {
-			return err
+			return "", err
 		}
 	}
-	if err := writeTarFile(t, root+"/okesu-cp-binary", binaryBytes, 0o755); err != nil {
-		return err
+	if multiArch {
+		if err := writeTarFile(t, root+"/okesu-cp-binary-amd64", amd64Bytes, 0o755); err != nil {
+			return "", err
+		}
+		if err := writeTarFile(t, root+"/okesu-cp-binary-arm64", arm64Bytes, 0o755); err != nil {
+			return "", err
+		}
+	} else {
+		if err := writeTarFile(t, root+"/okesu-cp-binary", singleBytes, 0o755); err != nil {
+			return "", err
+		}
 	}
-	return nil
+	return childInstanceID, nil
+}
+
+// dockerfileTemplateMultiArch builds an image that contains the
+// architecture-specific okesu-cp binary the cloud VM needs. BuildKit
+// sets TARGETARCH automatically — `docker compose up` on the VM
+// ends up copying okesu-cp-binary-amd64 (on x86_64 hosts) or
+// okesu-cp-binary-arm64 (on ARM hosts) into /usr/local/bin/okesu-cp.
+func dockerfileTemplateMultiArch(b bundleVars) string {
+	_ = b
+	return `# Multistage build — base stays small, the binary that
+# matches the host's architecture lands in /usr/local/bin.
+FROM debian:bookworm-slim AS runtime
+ARG TARGETARCH
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# BuildKit sets TARGETARCH from the docker daemon's host arch
+# unless overridden. okesu-cp-binary-${TARGETARCH} is the linux
+# build matching the cloud VM's CPU.
+COPY okesu-cp-binary-${TARGETARCH} /usr/local/bin/okesu-cp
+RUN chmod +x /usr/local/bin/okesu-cp
+
+# State volumes the child needs. Compose maps these to named volumes
+# (not bind mounts) so SELinux + virtiofs hosts don't refuse writes.
+RUN mkdir -p /var/lib/okesu /etc/okesu /var/log/okesu
+
+EXPOSE 8443 8444
+
+ENTRYPOINT ["/usr/local/bin/okesu-cp"]
+CMD ["serve"]
+`
 }
 
 // envTemplateForS3DeadDrop bakes the federation publisher's bucket
@@ -153,11 +223,33 @@ func envTemplateForS3DeadDrop(b bundleVars, childInstanceID, parentInstanceID, p
 
 // composeTemplateForS3DeadDrop renders a compose file that runs
 // okesu-cp with env_file pointing at the .env.
+//
+// Uses named docker volumes (not host bind mounts) for okesu-cp's
+// state directories. Reason: bind mounts hit two separate failure
+// modes on real-world hosts:
+//
+//   - macOS / Lima / Colima: bind mounts surface inside the
+//     container as virtiofs(ro), so SQLite hits SQLITE_CANTOPEN
+//     ("unable to open database file") trying to create cp.db.
+//   - Oracle Linux 10 / RHEL with SELinux enforcing: an unlabelled
+//     bind mount denies the container write access by default; you
+//     have to either disable SELinux for the mount, set the host
+//     dir's context manually, or add `:Z` to every bind line.
+//
+// Named volumes sidestep both — Docker manages them, the container
+// writes freely, and persistence across restarts is guaranteed
+// (until `docker compose down -v`). Operators rarely need direct
+// host access to the child CP's DB; for the cases that do, a
+// `docker cp okesu-cp-<name>:/var/lib/okesu .` call extracts state.
 func composeTemplateForS3DeadDrop(b bundleVars) string {
 	return fmt.Sprintf(`# Generated by parent CP %s on %s.
 # S3-dead-drop federation: this child writes its introspect manifest
 # to the bucket every 30s. The parent's s3reader picks it up — no
 # inbound HTTPS path required between them.
+volumes:
+  okesu-db:
+  okesu-etc:
+  okesu-log:
 services:
   okesu-cp:
     build: .
@@ -169,9 +261,9 @@ services:
       - "%d:%d"
       - "%d:%d"
     volumes:
-      - ./data/db:/var/lib/okesu
-      - ./data/etc:/etc/okesu
-      - ./data/log:/var/log/okesu
+      - okesu-db:/var/lib/okesu
+      - okesu-etc:/etc/okesu
+      - okesu-log:/var/log/okesu
     command:
       - "serve"
       - "--db=/var/lib/okesu/cp.db"

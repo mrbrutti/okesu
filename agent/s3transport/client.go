@@ -45,9 +45,15 @@ func NewClient(ctx context.Context, c ClientConfig) (*Client, error) {
 	if c.AccessKey == "" || c.SecretKey == "" {
 		return nil, errors.New("s3transport: access_key + secret_key required")
 	}
-	cli, err := minio.New(c.Endpoint, &minio.Options{
+	// Defensive: legacy transport_configs rows occasionally carry a
+	// fully-qualified URL (e.g. "https://host.example") because the
+	// OCI provisioner used to store the public endpoint verbatim. The
+	// minio-go validator rejects those — strip the scheme here and
+	// honour it on UseSSL so old rows keep working without a manual fix.
+	endpoint, secure := stripScheme(c.Endpoint, c.UseSSL)
+	cli, err := minio.New(endpoint, &minio.Options{
 		Creds:  credentials.NewStaticV4(c.AccessKey, c.SecretKey, ""),
-		Secure: c.UseSSL,
+		Secure: secure,
 		Region: c.Region,
 	})
 	if err != nil {
@@ -61,6 +67,28 @@ func NewClient(ctx context.Context, c ClientConfig) (*Client, error) {
 		return nil, fmt.Errorf("s3transport: bucket %q does not exist", c.Bucket)
 	}
 	return &Client{cli: cli, bucket: c.Bucket}, nil
+}
+
+// stripScheme normalises an S3 endpoint to host[:port] form. If the
+// caller passed "https://host" we honour the scheme as the secure
+// signal; an explicit fallback flag covers the bare-host case so the
+// original UseSSL passed in by the caller still wins. Trailing path
+// is dropped so the minio-go validator (which rejects "fully
+// qualified paths") accepts the result.
+func stripScheme(endpoint string, fallbackSecure bool) (string, bool) {
+	endpoint = strings.TrimSpace(endpoint)
+	switch {
+	case strings.HasPrefix(endpoint, "https://"):
+		endpoint = strings.TrimPrefix(endpoint, "https://")
+		fallbackSecure = true
+	case strings.HasPrefix(endpoint, "http://"):
+		endpoint = strings.TrimPrefix(endpoint, "http://")
+		fallbackSecure = false
+	}
+	if i := strings.IndexByte(endpoint, '/'); i >= 0 {
+		endpoint = endpoint[:i]
+	}
+	return endpoint, fallbackSecure
 }
 
 // ErrNotFound surfaces 404 from the underlying S3 service.
