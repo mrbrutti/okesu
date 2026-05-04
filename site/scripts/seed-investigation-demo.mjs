@@ -75,7 +75,7 @@ async function waitForRunCompletion(runId, timeoutMs = 90000) {
   console.log(`> wait for run ${runId} to complete (or hit approval gate)`);
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
-    const res = await api(`/api/orchestrations/runs/${runId}`);
+    const res = await api(`/api/orchestration-runs/${runId}`);
     const run = await res.json();
     const status = run.status ?? '';
     if (status === 'completed' || status === 'failed' || status === 'approval_required') {
@@ -90,7 +90,7 @@ async function waitForRunCompletion(runId, timeoutMs = 90000) {
 async function findOrCreateCase(runId) {
   console.log('> find or create investigation for run');
   // First, see whether the run has already attached to a case.
-  const res = await api(`/api/orchestrations/runs/${runId}`);
+  const res = await api(`/api/orchestration-runs/${runId}`);
   const run = await res.json();
   if (run.investigation_id) return run.investigation_id;
 
@@ -104,7 +104,7 @@ async function findOrCreateCase(runId) {
     }),
   });
   const body = await create.json();
-  return body.id;
+  return body.id ?? body.ID;
 }
 
 async function addNote(caseId, body) {
