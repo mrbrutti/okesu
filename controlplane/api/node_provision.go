@@ -28,6 +28,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/section9labs/okesu/controlplane/audit"
 	"github.com/section9labs/okesu/controlplane/auth"
@@ -75,11 +76,24 @@ func NodeProvisionCreateHandler(
 			http.Error(w, "no provisioner for cloud "+req.Cloud, http.StatusBadRequest)
 			return
 		}
+		// Cred-cloud cross-check: catch "AWS cred picked for OCI request"
+		// synchronously here rather than letting the worker fail on
+		// decrypt/unmarshal. Mirrors cp_provision.go.
+		cred, err := store.GetCloudCredential(req.CredentialID)
+		if err != nil {
+			http.Error(w, "credential not found", http.StatusBadRequest)
+			return
+		}
+		if cred.Cloud != req.Cloud {
+			http.Error(w, fmt.Sprintf("credential is for cloud %q, request says %q", cred.Cloud, req.Cloud), http.StatusBadRequest)
+			return
+		}
 		if _, err := store.GetTransportConfig(req.TransportConfigID); err != nil {
 			http.Error(w, "transport_config not found", http.StatusBadRequest)
 			return
 		}
-		if missing := nodeCloudParamsMissingFields(req.Cloud, req.CloudParams); len(missing) > 0 {
+		shape, _ := req.CloudParams["shape"].(string)
+		if missing := nodeCloudParamsMissingFields(req.Cloud, shape, req.CloudParams); len(missing) > 0 {
 			http.Error(w, fmt.Sprintf("missing cloud_params: %v", missing), http.StatusBadRequest)
 			return
 		}
@@ -91,13 +105,13 @@ func NodeProvisionCreateHandler(
 			userID = u.ID
 			userEmail = u.Email
 		}
-		shape, _ := req.CloudParams["shape"].(string)
 
 		row, err := store.InsertNodeProvision(db.NodeProvisionInsert{
 			DisplayName:       req.DisplayName,
 			Region:            req.Region,
 			Cloud:             req.Cloud,
 			CredentialID:      sql.NullInt64{Int64: req.CredentialID, Valid: req.CredentialID != 0},
+			CredentialName:    cred.Name,
 			CloudParamsJSON:   string(paramsJSON),
 			TransportConfigID: req.TransportConfigID,
 			InstanceShape:     shape,
@@ -135,34 +149,70 @@ func NodeProvisionCreateHandler(
 }
 
 // nodeCloudParamsMissingFields lists per-cloud required cloud_params
-// keys. Mirrors the OCI/AWS provisioner's own validation so the form
-// blocks before the worker rejects it.
-func nodeCloudParamsMissingFields(cloud string, params map[string]any) []string {
+// keys. Mirrors the OCI/AWS provisioner's own validation
+// (controlplane/cpprovision/{oci,aws}/*.go::decodeLaunchParams) so
+// the form blocks before the worker would. The shape argument lets
+// us conditionally require flex-shape sizing keys (ocpus +
+// memory_in_gbs) on OCI without rejecting fixed shapes.
+func nodeCloudParamsMissingFields(cloud, shape string, params map[string]any) []string {
 	required := map[string][]string{
-		"oci": {"shape", "subnet_id", "image_id", "availability_domain", "ocpus", "memory_in_gbs"},
-		"aws": {"instance_type", "subnet_id", "ami_id"},
+		// Mirror oci.decodeLaunchParams: compartment_id, availability_domain,
+		// subnet_id, image_id, shape are unconditional. ocpus + memory_in_gbs
+		// are conditional on isFlexShape — handled below.
+		"oci": {"compartment_id", "availability_domain", "subnet_id", "image_id", "shape"},
+		// Mirror aws.decodeLaunchParams: instance_type + subnet_id + ami_id +
+		// security_group_ids unconditional.
+		"aws": {"instance_type", "subnet_id", "ami_id", "security_group_ids"},
 	}
 	keys, ok := required[cloud]
 	if !ok {
 		return nil
 	}
-	var missing []string
-	for _, k := range keys {
+	missing := []string{}
+	check := func(k string) {
 		v, has := params[k]
 		if !has {
 			missing = append(missing, k)
-			continue
+			return
 		}
 		switch tv := v.(type) {
 		case string:
 			if tv == "" {
 				missing = append(missing, k)
 			}
+		case []any:
+			if len(tv) == 0 {
+				missing = append(missing, k)
+			}
 		case nil:
 			missing = append(missing, k)
 		}
 	}
+	for _, k := range keys {
+		check(k)
+	}
+	// OCI flex-shape conditional: ocpus + memory_in_gbs only required
+	// when the shape itself ends in .Flex (matches isFlexShape in
+	// oci.go:321). Fixed shapes accept either presence-or-absence.
+	if cloud == "oci" && isFlexLikeShape(shape) {
+		// Numeric values (json.Decode produces float64); presence is
+		// what we check, the worker validates the value range.
+		if _, has := params["ocpus"]; !has {
+			missing = append(missing, "ocpus")
+		}
+		if _, has := params["memory_in_gbs"]; !has {
+			missing = append(missing, "memory_in_gbs")
+		}
+	}
 	return missing
+}
+
+// isFlexLikeShape mirrors cpprovision/oci.isFlexShape — duplicated
+// here because the api package must not depend on the per-cloud
+// provisioner. Kept tiny on purpose so the next reader can confirm
+// it's the same check.
+func isFlexLikeShape(s string) bool {
+	return strings.HasSuffix(s, ".Flex") || strings.HasSuffix(s, ".Flex.A1")
 }
 
 // toNodeProvisionJSON renders a NodeProvision row as a wire map. The

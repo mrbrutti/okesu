@@ -82,6 +82,7 @@ func TestNodeProvisionCreate_HappyPath(t *testing.T) {
 		"transport_config_id": tcID,
 		"cloud_params": map[string]any{
 			"shape":               "VM.Standard.E4.Flex",
+			"compartment_id":      "ocid1.compartment.x",
 			"subnet_id":           "ocid1.subnet.x",
 			"image_id":            "ocid1.image.x",
 			"availability_domain": "BzLN:PHX-AD-1",
@@ -108,6 +109,73 @@ func TestNodeProvisionCreate_HappyPath(t *testing.T) {
 	}
 	if got["display_name"] != "edge-1" {
 		t.Errorf("display_name=%v", got["display_name"])
+	}
+	// Cred-name persisted on the row from the GetCloudCredential lookup.
+	if got["credential_name"] != "oci-test" {
+		t.Errorf("credential_name=%v want oci-test", got["credential_name"])
+	}
+}
+
+// TestNodeProvisionCreate_BadCredential rejects when the credential id
+// is unknown — synchronous 400 instead of letting the worker fail.
+func TestNodeProvisionCreate_BadCredential(t *testing.T) {
+	st := newSeededTestStore(t)
+	tcID, _ := st.CreateTransportConfig(db.TransportConfig{Name: "t", Kind: "s3", Bucket: "b", Endpoint: "h"})
+	body := map[string]any{
+		"display_name":        "edge-1",
+		"region":              "us-phoenix-1",
+		"cloud":               "oci",
+		"credential_id":       99999, // no row
+		"transport_config_id": tcID,
+		"cloud_params": map[string]any{
+			"shape": "VM.Standard.E4.Flex", "compartment_id": "x",
+			"subnet_id": "x", "image_id": "x", "availability_domain": "x",
+			"ocpus": 1, "memory_in_gbs": 8,
+		},
+	}
+	buf, _ := json.Marshal(body)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/api/node-provision", bytes.NewReader(buf))
+	NodeProvisionCreateHandler(st, fakeNodeProvisionerRegistry(t), NodeProvisionWorkerConfig{})(rec, req)
+	if rec.Code != 400 {
+		t.Errorf("status=%d body=%s want 400", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "credential") {
+		t.Errorf("error should mention credential, got: %s", rec.Body.String())
+	}
+}
+
+// TestNodeProvisionCreate_CloudCredentialMismatch rejects when the
+// picked credential's cloud doesn't match the request's cloud — keeps
+// the worker from failing on decrypt later.
+func TestNodeProvisionCreate_CloudCredentialMismatch(t *testing.T) {
+	st := newSeededTestStore(t)
+	tcID, _ := st.CreateTransportConfig(db.TransportConfig{Name: "t", Kind: "s3", Bucket: "b", Endpoint: "h"})
+	mk, _ := st.MasterKeyFromMeta()
+	awsCred, _ := st.InsertCloudCredential(db.CloudCredentialInsert{
+		Cloud: "aws", Name: "aws-test", Region: "us-east-1", Payload: []byte(`{}`),
+	}, mk)
+	body := map[string]any{
+		"display_name":        "edge-1",
+		"region":              "us-phoenix-1",
+		"cloud":               "oci",
+		"credential_id":       awsCred.ID, // AWS cred for OCI request
+		"transport_config_id": tcID,
+		"cloud_params": map[string]any{
+			"shape": "VM.Standard.E4.Flex", "compartment_id": "x",
+			"subnet_id": "x", "image_id": "x", "availability_domain": "x",
+			"ocpus": 1, "memory_in_gbs": 8,
+		},
+	}
+	buf, _ := json.Marshal(body)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/api/node-provision", bytes.NewReader(buf))
+	NodeProvisionCreateHandler(st, fakeNodeProvisionerRegistry(t), NodeProvisionWorkerConfig{})(rec, req)
+	if rec.Code != 400 {
+		t.Errorf("status=%d body=%s want 400", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "aws") {
+		t.Errorf("error should mention aws cloud mismatch, got: %s", rec.Body.String())
 	}
 }
 
