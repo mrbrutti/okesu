@@ -13,13 +13,17 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/section9labs/okesu/controlplane/adapters/s3blob"
 	"github.com/section9labs/okesu/controlplane/audit"
 	"github.com/section9labs/okesu/controlplane/cpprovision"
 	"github.com/section9labs/okesu/controlplane/db"
@@ -131,6 +135,16 @@ func NodeProvisionDeleteHandler(store *db.Store, registry *cpprovision.Registry)
 			_ = store.DeleteNode(row.NodeID.Int64)
 		}
 
+		// Drop the one-time package blob from the bucket. Mirrors the
+		// cp_provision destroy path (deleteCPProvisionBootstrapBlob).
+		// Best-effort: a Stale Object delete is harmless, and we'd
+		// rather a failed S3 round-trip not block the row delete.
+		if row.TransportConfigID != 0 {
+			if err := deleteNodeProvisionPackageBlob(r.Context(), store, row.TransportConfigID, row.ID); err != nil {
+				log.Printf("node_provisions delete %d: package blob cleanup: %v", row.ID, err)
+			}
+		}
+
 		if err := store.DeleteNodeProvision(id); err != nil {
 			http.Error(w, "delete: "+err.Error(), http.StatusInternalServerError)
 			return
@@ -164,4 +178,34 @@ func NodeProvisionDeleteHandler(store *db.Store, registry *cpprovision.Registry)
 		}
 		w.WriteHeader(http.StatusNoContent)
 	}
+}
+
+// deleteNodeProvisionPackageBlob removes the one-time
+// `provisions/nodes/<id>/package.tar.gz` object the worker
+// uploaded for cloud-init to fetch. Mirrors
+// deleteCPProvisionBootstrapBlob in cp_provision.go.
+//
+// Best-effort: missing transport_config or unreachable bucket
+// surfaces as a logged error; the destroy-row path proceeds.
+func deleteNodeProvisionPackageBlob(ctx context.Context, store *db.Store, transportConfigID, provisionID int64) error {
+	tc, err := store.GetTransportConfig(transportConfigID)
+	if err != nil {
+		return fmt.Errorf("transport_config: %w", err)
+	}
+	if !tc.AccessKey.Valid || !tc.SecretKey.Valid {
+		return errors.New("transport_config has no access keys")
+	}
+	blob, err := s3blob.New(ctx, s3blob.Config{
+		Endpoint:  tc.Endpoint,
+		Region:    tc.Region.String,
+		Bucket:    tc.Bucket,
+		AccessKey: tc.AccessKey.String,
+		SecretKey: tc.SecretKey.String,
+		UseSSL:    tc.UseSSL,
+	})
+	if err != nil {
+		return fmt.Errorf("s3 client: %w", err)
+	}
+	key := fmt.Sprintf("provisions/nodes/%d/package.tar.gz", provisionID)
+	return blob.Delete(ctx, key)
 }
