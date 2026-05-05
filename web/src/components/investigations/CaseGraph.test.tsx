@@ -113,3 +113,69 @@ describe('CaseGraph', () => {
     }
   });
 });
+
+describe('CaseGraph custom node renderers', () => {
+  it('renders FindingNode body for finding nodes', async () => {
+    (api.investigations.graph as ReturnType<typeof vi.fn>).mockResolvedValue({
+      total_findings: 1,
+      limit_applied: 20,
+      nodes: [
+        { id: 'f:1', kind: 'finding' as const, label: 'Suspicious cron', severity: 'CRITICAL', host: 'h1', agent: 'edr' },
+      ],
+      edges: [],
+    });
+
+    render(
+      <MemoryRouter>
+        <CaseGraph investigationID={1} bundleFindingsCount={1} />
+      </MemoryRouter>,
+    );
+    await waitFor(() => expect(screen.getByText(/Suspicious cron/)).toBeTruthy());
+    // Severity badge from FindingNode
+    expect(screen.getByText('CRITICAL')).toBeTruthy();
+    expect(screen.getByText(/^#1$/)).toBeTruthy();
+  });
+
+  it('renders MiniMap when there are >= 10 finding nodes', async () => {
+    const mkFinding = (n: number) => ({
+      id: `f:${n}`,
+      kind: 'finding' as const,
+      label: `Finding ${n}`,
+      severity: 'HIGH',
+      host: `h${n}`,
+      agent: 'edr',
+    });
+    (api.investigations.graph as ReturnType<typeof vi.fn>).mockResolvedValue({
+      total_findings: 10,
+      limit_applied: 20,
+      nodes: Array.from({ length: 10 }, (_, i) => mkFinding(i + 1)),
+      edges: [],
+    });
+
+    const { container } = render(
+      <MemoryRouter>
+        <CaseGraph investigationID={1} bundleFindingsCount={10} />
+      </MemoryRouter>,
+    );
+    await waitFor(() => expect(container.querySelector('.react-flow__minimap')).toBeTruthy());
+  });
+
+  it('does not render MiniMap when there are < 10 finding nodes', async () => {
+    (api.investigations.graph as ReturnType<typeof vi.fn>).mockResolvedValue({
+      total_findings: 1,
+      limit_applied: 20,
+      nodes: [
+        { id: 'f:1', kind: 'finding' as const, label: 'one', severity: 'LOW', host: 'h1', agent: 'edr' },
+      ],
+      edges: [],
+    });
+
+    const { container } = render(
+      <MemoryRouter>
+        <CaseGraph investigationID={1} bundleFindingsCount={1} />
+      </MemoryRouter>,
+    );
+    await waitFor(() => expect(screen.getByText('one')).toBeTruthy());
+    expect(container.querySelector('.react-flow__minimap')).toBeNull();
+  });
+});
