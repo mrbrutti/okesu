@@ -8,28 +8,15 @@ package api
 
 import (
 	"bytes"
-	"context"
 	"database/sql"
 	"encoding/json"
-	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
 
-	"github.com/go-chi/chi/v5"
-
 	"github.com/section9labs/okesu/controlplane/db"
 )
-
-// withChiParam stamps a single chi URL param onto a test request. Same
-// shape as withChiParams in investigations_test.go but specialised for
-// the one-key case the node-provisions handlers need.
-func withChiParam(req *http.Request, key, value string) *http.Request {
-	rctx := chi.NewRouteContext()
-	rctx.URLParams.Add(key, value)
-	return req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
-}
 
 func TestNodeProvisionsList_Empty(t *testing.T) {
 	st := newSeededTestStore(t)
@@ -81,7 +68,7 @@ func TestNodeProvisionGet_NotFound(t *testing.T) {
 	st := newSeededTestStore(t)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("GET", "/api/node-provisions/9999", nil)
-	req = withChiParam(req, "id", "9999")
+	req = withChiParams(req, "id", "9999")
 	NodeProvisionGetHandler(st)(rec, req)
 	if rec.Code != 404 {
 		t.Errorf("status=%d want 404", rec.Code)
@@ -103,7 +90,7 @@ func TestNodeProvisionGet_Found(t *testing.T) {
 	}
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("GET", "/api/node-provisions/"+strconv.FormatInt(row.ID, 10), nil)
-	req = withChiParam(req, "id", strconv.FormatInt(row.ID, 10))
+	req = withChiParams(req, "id", strconv.FormatInt(row.ID, 10))
 	NodeProvisionGetHandler(st)(rec, req)
 	if rec.Code != 200 {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
@@ -134,7 +121,7 @@ func TestNodeProvisionDelete_Idempotent(t *testing.T) {
 	}
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("DELETE", "/api/node-provisions/"+strconv.FormatInt(row.ID, 10), nil)
-	req = withChiParam(req, "id", strconv.FormatInt(row.ID, 10))
+	req = withChiParams(req, "id", strconv.FormatInt(row.ID, 10))
 	NodeProvisionDeleteHandler(st, fakeNodeProvisionerRegistry(t))(rec, req)
 	if rec.Code != 204 {
 		t.Errorf("status=%d body=%s want 204", rec.Code, rec.Body.String())
@@ -170,7 +157,7 @@ func TestNodeProvisionDelete_RemovesLinkedNode(t *testing.T) {
 	}
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("DELETE", "/api/node-provisions/"+strconv.FormatInt(row.ID, 10), nil)
-	req = withChiParam(req, "id", strconv.FormatInt(row.ID, 10))
+	req = withChiParams(req, "id", strconv.FormatInt(row.ID, 10))
 	NodeProvisionDeleteHandler(st, fakeNodeProvisionerRegistry(t))(rec, req)
 	if rec.Code != 204 {
 		t.Errorf("status=%d body=%s want 204", rec.Code, rec.Body.String())
@@ -210,7 +197,7 @@ func TestNodeProvisionDelete_DestroyTrue(t *testing.T) {
 	}
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("DELETE", "/api/node-provisions/"+strconv.FormatInt(row.ID, 10)+"?destroy=true", nil)
-	req = withChiParam(req, "id", strconv.FormatInt(row.ID, 10))
+	req = withChiParams(req, "id", strconv.FormatInt(row.ID, 10))
 	NodeProvisionDeleteHandler(st, fakeNodeProvisionerRegistry(t))(rec, req)
 	if rec.Code != 204 {
 		t.Errorf("status=%d body=%s want 204", rec.Code, rec.Body.String())

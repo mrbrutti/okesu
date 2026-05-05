@@ -22,20 +22,28 @@ import (
 )
 
 type nodeProvisionEstimateReq struct {
-	Cloud        string         `json:"cloud"`
-	CredentialID int64          `json:"credential_id"`
-	CloudParams  map[string]any `json:"cloud_params"`
+	Cloud       string         `json:"cloud"`
+	CloudParams map[string]any `json:"cloud_params"`
 }
 
 // NodeProvisionEstimateHandler is the read-only preview the +Add Node
 // modal calls. Admin-only at the route layer; we don't repeat that
 // gate here. Returns hourly_usd=0 for unknown shapes — the modal
 // surfaces a "no catalog entry" hint based on the empty number.
+//
+// Empty cloud is rejected with 400: every legitimate caller (the
+// modal) populates this field before requesting an estimate; a
+// missing cloud is a frontend bug we want to surface fast rather
+// than silently rendering "$0/hr" the same way an unknown shape does.
 func NodeProvisionEstimateHandler(store *db.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req nodeProvisionEstimateReq
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		if req.Cloud == "" {
+			http.Error(w, "missing required: cloud", http.StatusBadRequest)
 			return
 		}
 		shape := cpprovision.ExtractInstanceShape(req.Cloud, req.CloudParams)
