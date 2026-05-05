@@ -2057,10 +2057,20 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(req),
     }),
-  nodeProvisionDelete: (id: number, destroy = false) =>
-    request<void | { deleted: boolean; destroy_error?: string; cloud_resource?: string }>(
-      `/api/node-provisions/${id}${destroy ? '?destroy=true' : ''}`,
+  nodeProvisionDelete: (id: number, opts: { destroy?: boolean; purge?: boolean } = {}) => {
+    const qs: string[] = [];
+    if (opts.destroy) qs.push('destroy=true');
+    if (opts.purge) qs.push('purge=true');
+    return request<void | { deleted: boolean; destroy_error?: string; cloud_resource?: string }>(
+      `/api/node-provisions/${id}${qs.length ? '?' + qs.join('&') : ''}`,
       { method: 'DELETE' },
+    );
+  },
+  archiveNode: (id: number) =>
+    request<void>(`/api/nodes/${id}/archive`, { method: 'POST' }),
+  archiveNodeProvision: (id: number) =>
+    request<void | { archived: boolean; destroy_error?: string }>(
+      `/api/node-provisions/${id}/archive`, { method: 'POST' },
     ),
   nodeProvisionEstimate: (req: { cloud: string; cloud_params: Record<string, unknown> }) =>
     request<{ hourly_usd: number }>('/api/node-provision/estimate', {
