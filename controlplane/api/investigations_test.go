@@ -201,7 +201,12 @@ func TestGetInvestigation_SurfacesListErrors(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 
-	// Force an error: drop the table the enriched query references.
+	// Dropping a single list-source table is sufficient to exercise
+	// the recordWarn path: the closure is structurally identical for
+	// all six list calls (findings/runs/iocs/daimons/orchestrations/
+	// notes), so a regression that re-introduces silent discards would
+	// fail the warnings[0] prefix assertion below regardless of which
+	// table we break.
 	if _, err := store.Exec(`DROP TABLE investigation_findings`); err != nil {
 		t.Fatalf("schema break: %v", err)
 	}
