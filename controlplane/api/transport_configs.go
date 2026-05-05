@@ -493,20 +493,32 @@ func EnrollmentPackageDownload(store *db.Store, binResolver func(string) ([]byte
 		if pkg.DefaultsJSON.Valid {
 			_ = json.Unmarshal([]byte(pkg.DefaultsJSON.String), &defaults)
 		}
+		// Read fleet LLM keys for jobs.env. Same rationale as the
+		// node_provision_worker — without these the agent_run code
+		// path fails on the operator's first run with "no API key".
+		var anthropicKey, openaiKey string
+		if mk, mkErr := store.MasterKeyFromMeta(); mkErr == nil {
+			if fe, feErr := store.GetFleetEnvWithKeys(mk); feErr == nil {
+				anthropicKey = fe.AnthropicAPIKey
+				openaiKey = fe.OpenAIAPIKey
+			}
+		}
 		buildReq := packaging.BuildRequest{
-			DisplayName:    pkg.DisplayName,
-			PackageID:      pkg.ID,
-			Bucket:         cfg.Bucket,
-			Endpoint:       cfg.Endpoint,
-			Region:         cfg.Region.String,
-			UseSSL:         cfg.UseSSL,
-			AccessKey:      cfg.AccessKey.String,
-			SecretKey:      cfg.SecretKey.String,
-			CPID:           cfg.CPID.String,
-			FleetPubkeyPEM: cfg.FleetPubkeyPEM.String,
-			PackageCertPEM: pkg.PackageCertPEM,
-			PackageKeyPEM:  pkg.PackageKeyPEM,
-			Defaults:       defaults,
+			DisplayName:     pkg.DisplayName,
+			PackageID:       pkg.ID,
+			Bucket:          cfg.Bucket,
+			Endpoint:        cfg.Endpoint,
+			Region:          cfg.Region.String,
+			UseSSL:          cfg.UseSSL,
+			AccessKey:       cfg.AccessKey.String,
+			SecretKey:       cfg.SecretKey.String,
+			CPID:            cfg.CPID.String,
+			FleetPubkeyPEM:  cfg.FleetPubkeyPEM.String,
+			PackageCertPEM:  pkg.PackageCertPEM,
+			PackageKeyPEM:   pkg.PackageKeyPEM,
+			AnthropicAPIKey: anthropicKey,
+			OpenAIAPIKey:    openaiKey,
+			Defaults:        defaults,
 			Binaries:       bins,
 			Format:         format,
 		}

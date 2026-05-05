@@ -153,26 +153,45 @@ func RunNodeProvisionWorker(ctx context.Context, cfg NodeProvisionWorkerConfig, 
 		return
 	}
 
+	// Fetch fleet LLM keys so the package's jobs.env carries them
+	// — without this the agent_run code path fails with "no API key"
+	// the moment the daemon spawns `okesu claude`. Best-effort: an
+	// empty fleet_env just means the operator hasn't seeded keys
+	// yet, the package still builds, the unit's EnvironmentFile=-
+	// tolerates the missing file, and agent_run surfaces a clearer
+	// runtime error than an opaque exit-1.
+	var anthropicKey, openaiKey string
+	if mk, mkErr := store.MasterKeyFromMeta(); mkErr == nil {
+		if fe, feErr := store.GetFleetEnvWithKeys(mk); feErr == nil {
+			anthropicKey = fe.AnthropicAPIKey
+			openaiKey = fe.OpenAIAPIKey
+		} else {
+			logf("warning: read fleet_env keys: %v (jobs.env will be empty)", feErr)
+		}
+	}
+
 	// 3. Build the tarball (same shape as EnrollmentPackageDownload).
 	build := cfg.PackageBuilder
 	if build == nil {
 		build = packaging.Build
 	}
 	res, err := build(packaging.BuildRequest{
-		DisplayName:    row.DisplayName,
-		PackageID:      pkg.ID,
-		Bucket:         tc.Bucket,
-		Endpoint:       tc.Endpoint,
-		Region:         tc.Region.String,
-		UseSSL:         tc.UseSSL,
-		AccessKey:      tc.AccessKey.String,
-		SecretKey:      tc.SecretKey.String,
-		CPID:           tc.CPID.String,
-		FleetPubkeyPEM: tc.FleetPubkeyPEM.String,
-		PackageCertPEM: certPEM,
-		PackageKeyPEM:  keyPEM,
-		Binaries:       bins,
-		Format:         "tar.gz",
+		DisplayName:     row.DisplayName,
+		PackageID:       pkg.ID,
+		Bucket:          tc.Bucket,
+		Endpoint:        tc.Endpoint,
+		Region:          tc.Region.String,
+		UseSSL:          tc.UseSSL,
+		AccessKey:       tc.AccessKey.String,
+		SecretKey:       tc.SecretKey.String,
+		CPID:            tc.CPID.String,
+		FleetPubkeyPEM:  tc.FleetPubkeyPEM.String,
+		PackageCertPEM:  certPEM,
+		PackageKeyPEM:   keyPEM,
+		Binaries:        bins,
+		AnthropicAPIKey: anthropicKey,
+		OpenAIAPIKey:    openaiKey,
+		Format:          "tar.gz",
 	})
 	if err != nil {
 		failNow("build package: " + err.Error())
