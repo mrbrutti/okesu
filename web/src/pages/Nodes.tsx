@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import {
   AlertCircle,
+  Archive,
   CheckCircle2,
   ChevronRight,
   Circle,
@@ -29,20 +30,22 @@ import { NodeProvisionsPanel } from '../components/nodes/NodeProvisionsPanel';
 
 const NODES_PAGE_SIZE = 500;
 
-type Bucket = 'ready' | 'deploying' | 'failed' | 'pending';
+type Bucket = 'ready' | 'deploying' | 'failed' | 'pending' | 'archived';
 
-const BUCKET_ORDER: Bucket[] = ['ready', 'deploying', 'failed', 'pending'];
+const BUCKET_ORDER: Bucket[] = ['ready', 'deploying', 'failed', 'pending', 'archived'];
 const BUCKET_LABEL: Record<Bucket, string> = {
   ready:     'Ready',
   deploying: 'Deploying',
   failed:    'Failed',
   pending:   'Pending',
+  archived:  'Archived',
 };
 const BUCKET_TONE: Record<Bucket, SectionTone> = {
   ready:     'good',
   deploying: 'progress',
   failed:    'bad',
   pending:   'muted',
+  archived:  'muted',
 };
 
 export default function NodesPage() {
@@ -518,13 +521,14 @@ function NodeRow({
 }
 
 function StatusPill({ status, message }: { status: NodeItem['status']; message?: string }) {
-  const config = {
+  const config: Record<NodeItem['status'], { label: string; icon: typeof Circle; cls: string }> = {
     pending:   { label: 'pending',   icon: Circle,        cls: 'text-ink-mute bg-slate-50 ring-slate-200' },
     deploying: { label: 'deploying', icon: Loader2,       cls: 'text-brand-700 bg-brand-50 ring-brand-100' },
     ready:     { label: 'ready',     icon: CheckCircle2,  cls: 'text-green-700 bg-green-50 ring-green-200' },
     failed:    { label: 'failed',    icon: AlertCircle,   cls: 'text-red-700 bg-red-50 ring-red-200' },
+    archived:  { label: 'archived',  icon: Archive,       cls: 'text-ink-mute bg-slate-100 ring-slate-200' },
   };
-  const c = config[status];
+  const c = config[status] ?? config.pending;
   return (
     <span title={message}
       className={cn(
@@ -539,9 +543,10 @@ function StatusPill({ status, message }: { status: NodeItem['status']; message?:
 }
 
 function groupNodes(list: NodeItem[]): Record<Bucket, NodeItem[]> {
-  const out: Record<Bucket, NodeItem[]> = { ready: [], deploying: [], failed: [], pending: [] };
+  const out: Record<Bucket, NodeItem[]> = { ready: [], deploying: [], failed: [], pending: [], archived: [] };
   for (const n of list) {
-    out[n.status as Bucket].push(n);
+    const bucket = out[n.status as Bucket];
+    if (bucket) bucket.push(n);
   }
   return out;
 }

@@ -297,14 +297,16 @@ function BackLink() {
 }
 
 function StatusPill({ status, message }: { status: NodeItem['status']; message?: string }) {
-  const cfg = {
+  const cfg: Record<NodeItem['status'], string> = {
     pending:   'text-ink-mute bg-slate-50 ring-slate-200',
     deploying: 'text-brand-700 bg-brand-50 ring-brand-100',
     ready:     'text-green-700 bg-green-50 ring-green-200',
     failed:    'text-red-700 bg-red-50 ring-red-200',
-  }[status];
+    archived:  'text-ink-mute bg-slate-100 ring-slate-200',
+  };
+  const cls = cfg[status] ?? cfg.pending;
   return (
-    <span title={message} className={cn('text-[10px] uppercase tracking-wide font-medium px-1.5 py-0.5 rounded ring-1', cfg)}>
+    <span title={message} className={cn('text-[10px] uppercase tracking-wide font-medium px-1.5 py-0.5 rounded ring-1', cls)}>
       {status}
     </span>
   );
