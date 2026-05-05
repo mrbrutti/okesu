@@ -500,6 +500,12 @@ Wants=network-online.target
 # non-zero exit from systemctl enable --now and aborts cloud-init
 # instead of leaving a silently-half-installed VM.
 Type=exec
+# HOME is unset by default for systemd services and the agent_run
+# code path calls os.UserHomeDir() before spawning claude/codex
+# (looks for ~/.claude/agents and ~/.codex/agents). Without this,
+# every agent_run on an s3-mode node fails with "$HOME is not
+# defined" before the LLM CLI is ever invoked.
+Environment="HOME=/root"
 ExecStart=/usr/local/bin/okesu s3-jobs --bootstrap /etc/okesu/bootstrap.json
 Restart=on-failure
 RestartSec=5
