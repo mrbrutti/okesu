@@ -90,6 +90,12 @@ func NodeProvisionGetHandler(store *db.Store) http.HandlerFunc {
 // the provision linked one. Without this an operator who deletes a
 // managed-deploy would still see a ghost node in the inventory.
 //
+// Cleanup-gap from PR #133 (Task 5 of node-archive-vs-delete): when
+// `purge=true` is set, also (a) drops every events/findings/runs/agents
+// row keyed by the host name (orphan-by-name otherwise) and (b) sweeps
+// the per-node bucket prefix `cp/<cp>/nodes/<n>/*`. Without purge the
+// existing destroy-then-delete behavior is preserved exactly.
+//
 // Idempotent: deleting a missing id returns 204.
 func NodeProvisionDeleteHandler(store *db.Store, registry *cpprovision.Registry) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -106,8 +112,27 @@ func NodeProvisionDeleteHandler(store *db.Store, registry *cpprovision.Registry)
 			return
 		}
 
-		var destroyErr string
 		destroy := r.URL.Query().Get("destroy") == "true"
+		purge := r.URL.Query().Get("purge") == "true"
+
+		// Capture identity bits BEFORE any cascading delete so the
+		// purge branches can use them: DeleteNode SET-NULLs the FK,
+		// and the bucket sweep needs cp_id from the transport_config
+		// row (which is still around but easier to look up here than
+		// after the row deletes interleave).
+		var hostName, cpIDForSweep string
+		if row.NodeID.Valid && row.NodeID.Int64 != 0 {
+			if n, err := store.NodeByID(row.NodeID.Int64); err == nil && n != nil {
+				hostName = n.Name
+			}
+		}
+		if purge && row.TransportConfigID != 0 {
+			if tc, err := store.GetTransportConfig(row.TransportConfigID); err == nil && tc.CPID.Valid {
+				cpIDForSweep = tc.CPID.String
+			}
+		}
+
+		var destroyErr string
 		if destroy && row.CloudResourceID.Valid && row.CloudResourceID.String != "" {
 			prov, perr := registry.Get(row.Cloud)
 			if perr != nil {
@@ -129,6 +154,15 @@ func NodeProvisionDeleteHandler(store *db.Store, registry *cpprovision.Registry)
 			}
 		}
 
+		// Drop the dead-weight package blob — unconditional, same as
+		// the archive path. The cloud-init payload is single-use and
+		// lingers as garbage in the bucket once the VM is gone.
+		if row.TransportConfigID != 0 {
+			if err := deleteNodeProvisionPackageBlob(r.Context(), store, row.TransportConfigID, row.ID); err != nil {
+				log.Printf("node_provisions delete %d: package blob cleanup: %v", row.ID, err)
+			}
+		}
+
 		// Cleanup-gap from PR #129: drop the linked nodes row first so
 		// the inventory matches operator intent. Best-effort — a stale
 		// FK is not a reason to fail the provision-row delete.
@@ -141,15 +175,49 @@ func NodeProvisionDeleteHandler(store *db.Store, registry *cpprovision.Registry)
 			return
 		}
 
+		// Purge-only branches: history rows + per-node bucket prefix.
+		// Both are best-effort; failures are logged but don't fail the
+		// outer delete.
+		var purgedHistoryRows int64
+		if purge && hostName != "" {
+			n, perr := store.PurgeHostHistory(hostName)
+			if perr != nil {
+				log.Printf("node_provisions delete %d: purge history for %q: %v", row.ID, hostName, perr)
+			}
+			purgedHistoryRows = n
+		}
+		if purge && cpIDForSweep != "" && row.NodeID.Valid && row.NodeID.Int64 != 0 && row.TransportConfigID != 0 {
+			if tc, err := store.GetTransportConfig(row.TransportConfigID); err == nil &&
+				tc.AccessKey.Valid && tc.SecretKey.Valid {
+				if blob, blobErr := s3blob.New(r.Context(), s3blob.Config{
+					Endpoint:  tc.Endpoint,
+					Region:    tc.Region.String,
+					Bucket:    tc.Bucket,
+					UseSSL:    tc.UseSSL,
+					AccessKey: tc.AccessKey.String,
+					SecretKey: tc.SecretKey.String,
+				}); blobErr == nil {
+					prefix := fmt.Sprintf("cp/%s/nodes/%d/", cpIDForSweep, row.NodeID.Int64)
+					if err := blob.DeletePrefix(r.Context(), prefix); err != nil {
+						log.Printf("node_provisions delete %d: bucket sweep %q: %v", row.ID, prefix, err)
+					}
+				} else {
+					log.Printf("node_provisions delete %d: s3 client for sweep: %v", row.ID, blobErr)
+				}
+			}
+		}
+
 		audit.Emit(r, store, db.AuditEntry{
 			Action: "node_provision.delete",
 			Target: fmt.Sprintf("node_provision:%d", id),
 			Metadata: map[string]any{
-				"display_name":      row.DisplayName,
-				"cloud":             row.Cloud,
-				"status":            string(row.Status),
-				"destroy_attempted": destroy,
-				"destroy_error":     destroyErr,
+				"display_name":        row.DisplayName,
+				"cloud":               row.Cloud,
+				"status":              string(row.Status),
+				"destroy_attempted":   destroy,
+				"destroy_error":       destroyErr,
+				"purge_attempted":     purge,
+				"purged_history_rows": purgedHistoryRows,
 			},
 		})
 

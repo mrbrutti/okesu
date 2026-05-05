@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/section9labs/okesu/controlplane/db"
 )
@@ -204,6 +205,128 @@ func TestNodeProvisionDelete_DestroyTrue(t *testing.T) {
 	}
 	if _, err := st.NodeProvision(row.ID); err == nil {
 		t.Error("row still exists after destroy=true delete")
+	}
+}
+
+// TestNodeProvisionDelete_PurgeTrue covers Task 5 of the node-archive-
+// vs-delete plan: ?purge=true also drops events/findings/runs/agents
+// keyed by host name (so the historical footprint goes away with the
+// row) AND attempts a per-node bucket sweep. The bucket assertion is
+// covered by Task 7 on real OCI; this unit test only checks the DB
+// side and verifies a sentinel host's history is preserved.
+func TestNodeProvisionDelete_PurgeTrue(t *testing.T) {
+	st := newSeededTestStore(t)
+	tcID, err := st.CreateTransportConfig(db.TransportConfig{
+		Name: "t", Kind: "s3", Bucket: "b", Endpoint: "h",
+		CPID: sql.NullString{String: "cp-test", Valid: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const hostPurge = "h1-purge"
+	const hostKeep = "h2-keep"
+	nodeID, err := st.CreateNode(hostPurge, "10.0.0.1", "root", 22, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	row, err := st.InsertNodeProvision(db.NodeProvisionInsert{
+		DisplayName:       "edge",
+		Region:            "r",
+		Cloud:             "oci",
+		TransportConfigID: tcID,
+		CloudParamsJSON:   "{}",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetNodeProvisionNode(row.ID, nodeID); err != nil {
+		t.Fatal(err)
+	}
+
+	// --- Seed history for both hostPurge and the sentinel hostKeep.
+	// Pattern lifted from db.TestPurgeHostHistory so the column
+	// shape stays in sync with the migration. ---
+	seedHostHistory := func(host, agent string) {
+		t.Helper()
+		res, err := st.Exec(
+			`INSERT INTO events (ts, type, agent, host, raw_json) VALUES (?, 'finding', ?, ?, '{}')`,
+			time.Now().UnixMilli(), agent, host,
+		)
+		if err != nil {
+			t.Fatalf("seed event %s: %v", host, err)
+		}
+		eventID, _ := res.LastInsertId()
+		if _, err := st.InsertFinding(&db.FindingInsert{
+			EventID: eventID, Ts: time.Now().UnixMilli(),
+			Agent: agent, Host: host, Severity: "MEDIUM", Title: host + "-finding",
+		}); err != nil {
+			t.Fatalf("InsertFinding %s: %v", host, err)
+		}
+		if err := st.CreateRun(db.RunInsert{
+			ID: "run-" + host, NodeName: host, Prompt: "p", AgentName: agent,
+		}); err != nil {
+			t.Fatalf("CreateRun %s: %v", host, err)
+		}
+		if err := st.UpsertAgentRegistration(agent, host, "claude", "model", "v1", ""); err != nil {
+			t.Fatalf("UpsertAgentRegistration %s: %v", host, err)
+		}
+	}
+	seedHostHistory(hostPurge, "a1")
+	seedHostHistory(hostKeep, "a2")
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("DELETE",
+		"/api/node-provisions/"+strconv.FormatInt(row.ID, 10)+"?purge=true", nil)
+	req = withChiParams(req, "id", strconv.FormatInt(row.ID, 10))
+	NodeProvisionDeleteHandler(st, fakeNodeProvisionerRegistry(t))(rec, req)
+	if rec.Code != 204 {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	// Provision row + linked node row both gone (existing contract).
+	if _, err := st.NodeProvision(row.ID); err == nil {
+		t.Error("provision row still exists after delete")
+	}
+	if _, err := st.NodeByID(nodeID); err == nil {
+		t.Error("linked nodes row still exists after delete")
+	}
+
+	// hostPurge: zero across all four history tables.
+	for _, c := range []struct {
+		name  string
+		query string
+	}{
+		{"events", `SELECT COUNT(*) FROM events WHERE host = ?`},
+		{"findings", `SELECT COUNT(*) FROM findings WHERE host = ?`},
+		{"runs", `SELECT COUNT(*) FROM runs WHERE node_name = ?`},
+		{"agents", `SELECT COUNT(*) FROM agents WHERE host = ?`},
+	} {
+		var count int
+		if err := st.QueryRow(c.query, hostPurge).Scan(&count); err != nil {
+			t.Fatalf("count %s purge: %v", c.name, err)
+		}
+		if count != 0 {
+			t.Errorf("%s: %d %s rows remain after purge", c.name, count, hostPurge)
+		}
+	}
+
+	// hostKeep: still present in every table.
+	for _, c := range []struct {
+		name  string
+		query string
+	}{
+		{"events", `SELECT COUNT(*) FROM events WHERE host = ?`},
+		{"findings", `SELECT COUNT(*) FROM findings WHERE host = ?`},
+		{"runs", `SELECT COUNT(*) FROM runs WHERE node_name = ?`},
+		{"agents", `SELECT COUNT(*) FROM agents WHERE host = ?`},
+	} {
+		var count int
+		if err := st.QueryRow(c.query, hostKeep).Scan(&count); err != nil {
+			t.Fatalf("count %s keep: %v", c.name, err)
+		}
+		if count == 0 {
+			t.Errorf("%s: sentinel %s rows wrongly purged", c.name, hostKeep)
+		}
 	}
 }
 
