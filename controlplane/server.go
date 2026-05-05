@@ -1128,6 +1128,28 @@ func (s *Server) routes() http.Handler {
 			// create endpoint; never mints tokens or inserts rows.
 			r.Post("/api/federation/cp-provision/estimate", api.CPProvisionEstimateHandler(s.store))
 
+			// Phase 21.7 — managed node deploy. Same admin-only gate
+			// + same per-cloud Provisioner registry as cp-provisions;
+			// node-side state machine driven by node_provision_worker.go.
+			// BinaryResolver is the same daemon-binary lookup the
+			// enrollment-package download path uses, so the cloud-init
+			// tarball matches what a manual S3 install would unpack.
+			nodeProvBinResolver := func(target string) ([]byte, error) {
+				return resolvePackageBinary(s, target)
+			}
+			r.Get("/api/node-provisions", api.NodeProvisionsListHandler(s.store))
+			r.Get("/api/node-provisions/{id}", api.NodeProvisionGetHandler(s.store))
+			r.Delete("/api/node-provisions/{id}", api.NodeProvisionDeleteHandler(s.store, s.cpProvisioners))
+			r.Post("/api/node-provision", api.NodeProvisionCreateHandler(
+				s.store, s.cpProvisioners,
+				api.NodeProvisionWorkerConfig{
+					Store:          s.store,
+					Registry:       s.cpProvisioners,
+					BinaryResolver: nodeProvBinResolver,
+				},
+			))
+			r.Post("/api/node-provision/estimate", api.NodeProvisionEstimateHandler(s.store))
+
 			// System / database (admin)
 			r.Get("/api/system/db/stats", api.DBStats(s.store, api.SystemDBConfig{
 				EventTTLDays: s.cfg.EventTTLDays,
