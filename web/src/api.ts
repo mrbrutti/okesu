@@ -2039,6 +2039,32 @@ export const api = {
       body: JSON.stringify(req),
     }),
 
+  // Phase 21.7 — node managed deploys. Sister of cpProvision* over a
+  // near-identical wire shape; backend handler is the node parallel
+  // of CPProvisionCreateHandler so the operator's mental model is
+  // uniform across CP-deploy and node-deploy.
+  nodeProvisionsList: (limit?: number) => {
+    const qs = limit ? `?limit=${limit}` : '';
+    return request<NodeProvision[]>(`/api/node-provisions${qs}`);
+  },
+  nodeProvision: (id: number) =>
+    request<NodeProvision>(`/api/node-provisions/${id}`),
+  nodeProvisionCreate: (req: NodeProvisionRequest) =>
+    request<NodeProvision>('/api/node-provision', {
+      method: 'POST',
+      body: JSON.stringify(req),
+    }),
+  nodeProvisionDelete: (id: number, destroy = false) =>
+    request<void | { deleted: boolean; destroy_error?: string; cloud_resource?: string }>(
+      `/api/node-provisions/${id}${destroy ? '?destroy=true' : ''}`,
+      { method: 'DELETE' },
+    ),
+  nodeProvisionEstimate: (req: { cloud: string; cloud_params: Record<string, unknown> }) =>
+    request<{ hourly_usd: number }>('/api/node-provision/estimate', {
+      method: 'POST',
+      body: JSON.stringify(req),
+    }),
+
   // Cloud-side discovery: dropdown population for the +Add CP managed
   // deploy form. The server decrypts the credential, calls the OCI
   // SDK, and returns {id, name, attrs}[] so the UI doesn't need to
@@ -2990,6 +3016,42 @@ export interface CPProvisionBudgetExceeded {
   projected_monthly_usd: number;
   new_monthly_usd: number;
   unknown_active_count: number;
+}
+
+// Phase 21.7 — managed-node deploy. Sister of CPProvision over a
+// near-identical wire shape. node_id is set by the s3scanner when
+// the freshly-provisioned VM publishes its first heartbeat to the
+// dead-drop bucket; until then the row sits at status=bootstrap_pending.
+export interface NodeProvision {
+  id: number;
+  display_name: string;
+  region: string;
+  cloud: string;
+  transport_config_id: number;
+  status: string;
+  cloud_resource_id?: string;
+  cloud_resource_url?: string;
+  node_id?: number;
+  credential_id?: number;
+  credential_name?: string;
+  instance_shape?: string;
+  est_cost_per_hour_usd?: number;
+  error?: string;
+  log?: string;
+  cloud_params?: Record<string, unknown>;
+  started_at?: string;
+  ended_at?: string;
+  created_at: string;
+  created_by_email?: string;
+}
+
+export interface NodeProvisionRequest {
+  display_name: string;
+  region: string;
+  cloud: CloudKind;
+  credential_id: number;
+  cloud_params: Record<string, unknown>;
+  transport_config_id: number;
 }
 
 // Phase 23 — IOC Feeds (Settings → Feeds + Catalog → Feeds tab).

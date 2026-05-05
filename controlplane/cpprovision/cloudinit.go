@@ -107,5 +107,5 @@ cd "$(find . -mindepth 1 -maxdepth 1 -type d | head -n 1)"
 # ── 3. Run ──────────────────────────────────────────────────────────
 echo "==> docker compose up -d"
 docker compose up -d
-echo "==> bootstrap script done. The CP container should now POST to its parent's /api/v1/cp/bootstrap."
+echo "==> bootstrap script done. The CP container will now register with its parent — via /api/v1/cp/bootstrap (HTTPS mode) or by writing introspect.json to the bucket (S3 dead-drop mode)."
 `

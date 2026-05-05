@@ -483,14 +483,40 @@ install -m 0600 "$HERE/package-key.pem"  /etc/okesu/package-key.pem
 # responds via the bucket within ~10 minutes.
 /usr/local/bin/okesu enroll --bootstrap /etc/okesu/bootstrap.json
 
-# Start the S3-mode jobs runtime in the background. Production
-# installs would register a service unit (systemd / launchd / rc.d /
-# SMF); for the quick install we just nohup it. Operators can wire
-# it through their service manager of choice afterwards.
-nohup /usr/local/bin/okesu s3-jobs --bootstrap /etc/okesu/bootstrap.json >/var/log/okesu-jobs.log 2>&1 &
-disown 2>/dev/null || true
+# Prefer systemd when present (managed deploys + most production
+# installs). nohup is the fallback for laptops / quick smoke tests
+# where the operator just wants the daemon running this session.
+if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+    cat > /etc/systemd/system/okesu.service <<'UNIT'
+[Unit]
+Description=Okesu daemon (S3 jobs runtime)
+After=network-online.target
+Wants=network-online.target
 
-echo "okesu: enrolled and running."
+[Service]
+# Type=exec (not simple) so systemd waits for execve() to return
+# before considering the unit "started". Under install.sh's set -e,
+# a missing dynamic-linker target or bad bootstrap surfaces as a
+# non-zero exit from systemctl enable --now and aborts cloud-init
+# instead of leaving a silently-half-installed VM.
+Type=exec
+ExecStart=/usr/local/bin/okesu s3-jobs --bootstrap /etc/okesu/bootstrap.json
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+    systemctl daemon-reload
+    systemctl enable --now okesu.service
+    echo "okesu: enrolled, systemd unit started."
+else
+    nohup /usr/local/bin/okesu s3-jobs --bootstrap /etc/okesu/bootstrap.json >/var/log/okesu-jobs.log 2>&1 &
+    disown 2>/dev/null || true
+    echo "okesu: enrolled and running (nohup; no systemd detected)."
+fi
 `
 
 func readmeText(req BuildRequest) string {

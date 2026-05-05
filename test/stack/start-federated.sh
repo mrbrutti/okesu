@@ -67,8 +67,14 @@ case "$TARGET_ARCH" in
     *) fail "unsupported arch $TARGET_ARCH";;
 esac
 DAEMON_LINUX_BIN="$ROOT/okesu-linux-${GO_TARGET_ARCH}"
-log "cross-compiling daemon for linux/$GO_TARGET_ARCH (make detects up-to-date)"
-( cd "$ROOT" && make -s daemon DAEMON_GOOS=linux DAEMON_GOARCH=$GO_TARGET_ARCH )
+# Cross-compile BOTH linux daemon arches unconditionally — same
+# rationale as the okesu-cp block below. The managed-node-deploy
+# worker's enrollment package picks the binary that matches the
+# cloud VM's shape, so an arm64 mac operator deploying to amd64
+# OCI shapes needs both binaries available locally.
+log "cross-compiling daemon for linux/{amd64,arm64} (managed-node bundles)"
+( cd "$ROOT" && make -s daemon DAEMON_GOOS=linux DAEMON_GOARCH=amd64 DAEMON_OUT=okesu-linux-amd64 ) || warn "daemon linux/amd64 cross-compile failed"
+( cd "$ROOT" && make -s daemon DAEMON_GOOS=linux DAEMON_GOARCH=arm64 DAEMON_OUT=okesu-linux-arm64 ) || warn "daemon linux/arm64 cross-compile failed"
 
 # Phase 21.1 — cross-compile linux okesu-cp binaries so the bundle
 # endpoint can hand fresh child CPs a runnable binary inside the
@@ -122,7 +128,13 @@ boot_cp() {
     local certs_dir="$STACK_DIR/run-fed/certs/$name"
     local bin_dir="$run_dir/binaries"
     mkdir -p "$run_dir" "$certs_dir" "$bin_dir"
-    cp "$DAEMON_LINUX_BIN" "$bin_dir/okesu-linux-${GO_TARGET_ARCH}"
+    # Stage both linux daemon arches into the per-CP binaries dir so
+    # the daemon-binaries-dir resolver can pick the one that matches
+    # each managed-node target's shape (Mac-host operator deploying
+    # to amd64 OCI shape needs the amd64 build available even though
+    # the lab containers run host arch).
+    [[ -f "$ROOT/okesu-linux-amd64" ]] && cp "$ROOT/okesu-linux-amd64" "$bin_dir/okesu-linux-amd64"
+    [[ -f "$ROOT/okesu-linux-arm64" ]] && cp "$ROOT/okesu-linux-arm64" "$bin_dir/okesu-linux-arm64"
 
     log "starting CP \"$name\" on https://localhost:$ui_port (region=$region)"
     local fed_flag=""
