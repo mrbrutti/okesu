@@ -13,14 +13,19 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/section9labs/okesu/controlplane/adapters/s3blob"
 	"github.com/section9labs/okesu/controlplane/audit"
+	"github.com/section9labs/okesu/controlplane/auth"
 	"github.com/section9labs/okesu/controlplane/cpprovision"
 	"github.com/section9labs/okesu/controlplane/db"
 )
@@ -164,4 +169,120 @@ func NodeProvisionDeleteHandler(store *db.Store, registry *cpprovision.Registry)
 		}
 		w.WriteHeader(http.StatusNoContent)
 	}
+}
+
+// NodeProvisionArchiveHandler terminates the cloud VM (best-effort,
+// same chain as NodeProvisionDeleteHandler) and archives both the
+// linked nodes row AND the node_provisions row. Unlike the destroy
+// path, neither row is dropped — the operator can still see the
+// host's history in the Nodes UI under the "Archived" filter and
+// the provisions panel keeps the row for audit.
+//
+// Bucket-side: the one-time package blob is deleted (it's dead
+// weight after the VM is gone). Per-node runtime prefix
+// (cp/<cp>/nodes/<n>/*) is preserved so any in-flight log files
+// or last-known-state JSON are still inspectable via mc.
+func NodeProvisionArchiveHandler(
+	store *db.Store, registry *cpprovision.Registry,
+) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+		if err != nil {
+			http.Error(w, "bad id", http.StatusBadRequest)
+			return
+		}
+		row, err := store.NodeProvision(id)
+		if err != nil {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+
+		var byEmail, destroyErr string
+		if u := auth.UserFromContext(r.Context()); u != nil {
+			byEmail = u.Email
+		}
+
+		// Terminate the VM if there is one — that's the archive intent
+		// (compute gone, data preserved).
+		if row.CloudResourceID.Valid && row.CloudResourceID.String != "" && row.CredentialID.Valid {
+			if prov, perr := registry.Get(row.Cloud); perr == nil {
+				if mk, mkErr := store.MasterKeyFromMeta(); mkErr == nil {
+					if credBytes, derr := store.DecryptCloudCredential(row.CredentialID.Int64, mk); derr == nil {
+						if dErr := prov.Destroy(r.Context(), row.CloudResourceID.String, row.Region, credBytes); dErr != nil {
+							destroyErr = dErr.Error()
+						}
+					}
+				}
+			}
+		}
+
+		// Drop the dead-weight package blob.
+		if row.TransportConfigID != 0 {
+			if err := deleteNodeProvisionPackageBlob(r.Context(), store, row.TransportConfigID, row.ID); err != nil {
+				log.Printf("node_provisions archive %d: package blob cleanup: %v", row.ID, err)
+			}
+		}
+
+		// Archive both rows — keep, don't delete.
+		if row.NodeID.Valid && row.NodeID.Int64 != 0 {
+			if err := store.ArchiveNode(row.NodeID.Int64, byEmail); err != nil {
+				log.Printf("node_provisions archive %d: archive node %d: %v", row.ID, row.NodeID.Int64, err)
+			}
+		}
+		if err := store.ArchiveNodeProvision(id, byEmail); err != nil {
+			http.Error(w, "archive: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		audit.Emit(r, store, db.AuditEntry{
+			Action: "node_provision.archive",
+			Target: fmt.Sprintf("node_provision:%d", id),
+			Metadata: map[string]any{
+				"display_name":  row.DisplayName,
+				"cloud":         row.Cloud,
+				"destroy_error": destroyErr,
+			},
+		})
+		if destroyErr != "" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"archived":      true,
+				"destroy_error": destroyErr,
+			})
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+// deleteNodeProvisionPackageBlob removes the one-time
+// `provisions/nodes/<id>/package.tar.gz` object from the bucket. The
+// blob is the cloud-init payload the new node pulls on first boot;
+// once the VM is gone (archive or destroy) it's dead weight.
+//
+// Errors are returned for the caller to log + carry on — losing the
+// blob is recoverable (operator can manually delete it from the
+// console, or it sits there until the bucket is decommissioned).
+func deleteNodeProvisionPackageBlob(ctx context.Context, store *db.Store, transportConfigID, provisionID int64) error {
+	tc, err := store.GetTransportConfig(transportConfigID)
+	if err != nil {
+		return fmt.Errorf("transport_config: %w", err)
+	}
+	if !tc.AccessKey.Valid || !tc.SecretKey.Valid {
+		return errors.New("transport_config has no access keys")
+	}
+	blob, err := s3blob.New(ctx, s3blob.Config{
+		Endpoint:  tc.Endpoint,
+		Region:    tc.Region.String,
+		Bucket:    tc.Bucket,
+		AccessKey: tc.AccessKey.String,
+		SecretKey: tc.SecretKey.String,
+		UseSSL:    tc.UseSSL,
+	})
+	if err != nil {
+		return fmt.Errorf("s3 client: %w", err)
+	}
+	key := fmt.Sprintf("provisions/nodes/%d/package.tar.gz", provisionID)
+	return blob.Delete(ctx, key)
 }

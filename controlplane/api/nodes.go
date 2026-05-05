@@ -478,6 +478,46 @@ func NodeDelete(store *db.Store) http.HandlerFunc {
 	}
 }
 
+// NodeArchiveHandler is the offboarding action for nodes that don't
+// have a managed-deploy provision (SSH-push or manual). Flips the
+// node's status to 'archived' and stamps archived_at — every row
+// that references the host name (events, findings, runs, agents)
+// stays attributable for retrospective analysis.
+//
+// For managed-deploy nodes use POST /api/node-provisions/{id}/archive
+// instead — that path also terminates the cloud VM and drops the
+// one-time package blob.
+func NodeArchiveHandler(store *db.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+		if err != nil {
+			http.Error(w, "bad id", http.StatusBadRequest)
+			return
+		}
+		row, _ := store.NodeByID(id)
+		var byEmail string
+		if u := auth.UserFromContext(r.Context()); u != nil {
+			byEmail = u.Email
+		}
+		if err := store.ArchiveNode(id, byEmail); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		name := ""
+		if row != nil {
+			name = row.Name
+		}
+		audit.Emit(r, store, db.AuditEntry{
+			Action: "node.archive",
+			Target: fmt.Sprintf("node:%d", id),
+			Metadata: map[string]any{
+				"name": name,
+			},
+		})
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
 // AgentLibrary returns the names of agent files the CP can deploy.
 func AgentLibrary(cfg NodesConfig) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {

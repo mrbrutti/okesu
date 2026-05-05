@@ -207,6 +207,69 @@ func TestNodeProvisionDelete_DestroyTrue(t *testing.T) {
 	}
 }
 
+// TestNodeProvisionArchive verifies the archive offboarding path: both
+// the linked nodes row AND the node_provisions row are flipped to
+// status='archived' (with archived_at stamped) but neither row is
+// deleted, so operators can still inspect them under the "Archived"
+// filter for retrospective analysis.
+func TestNodeProvisionArchive(t *testing.T) {
+	st := newSeededTestStore(t)
+	tcID, err := st.CreateTransportConfig(db.TransportConfig{
+		Name: "t", Kind: "s3", Bucket: "b", Endpoint: "h",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Seed a managed-deploy provision row + a linked node row.
+	row, err := st.InsertNodeProvision(db.NodeProvisionInsert{
+		DisplayName:       "n",
+		Region:            "r",
+		Cloud:             "oci",
+		TransportConfigID: tcID,
+		CloudParamsJSON:   "{}",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	nodeID, err := st.CreateNode("h-archive", "10.0.0.1", "root", 22, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetNodeProvisionNode(row.ID, nodeID); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/api/node-provisions/"+strconv.FormatInt(row.ID, 10)+"/archive", nil)
+	req = withChiParams(req, "id", strconv.FormatInt(row.ID, 10))
+	NodeProvisionArchiveHandler(st, fakeNodeProvisionerRegistry(t))(rec, req)
+
+	if rec.Code != 204 {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	// Both rows still exist.
+	got, err := st.NodeProvision(row.ID)
+	if err != nil {
+		t.Fatalf("provision row gone after archive: %v", err)
+	}
+	if got.Status != db.NodeProvisionArchived {
+		t.Errorf("provision status=%q want archived", got.Status)
+	}
+	if !got.ArchivedAt.Valid {
+		t.Error("provision archived_at not set")
+	}
+	node, err := st.NodeByID(nodeID)
+	if err != nil {
+		t.Fatalf("node row gone after archive: %v", err)
+	}
+	if node.Status != db.NodeStatusArchived {
+		t.Errorf("node status=%q want archived", node.Status)
+	}
+	if !node.ArchivedAt.Valid {
+		t.Error("node archived_at not set")
+	}
+}
+
 // TestNodeProvisionEstimate_OCI: the read-only preview returns hourly_usd
 // for a known catalog entry. Mirrors cp_provision_estimate's wire shape.
 func TestNodeProvisionEstimate_OCI(t *testing.T) {
