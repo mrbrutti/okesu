@@ -25,6 +25,7 @@ package s3reader
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -34,6 +35,7 @@ import (
 	"time"
 
 	"github.com/section9labs/okesu/agent/s3transport"
+	"github.com/section9labs/okesu/controlplane/adapters/s3blob"
 	"github.com/section9labs/okesu/controlplane/db"
 )
 
@@ -231,6 +233,18 @@ func (l *Loop) scanPeer(ctx context.Context, p db.FederationPeer) {
 	} else if advanced {
 		_ = l.store.AppendCPProvisionLogByPeer(p.ID,
 			"✓ first introspect received over S3 — child CP is alive\n")
+		// PR #129 follow-up (Task 9): now that the child has the
+		// bytes, the one-time bootstrap blob in
+		// `cp/<child>/bootstrap/bundle.tar.gz` is dead weight.
+		// Best-effort: detached goroutine so a slow / unreachable
+		// bucket doesn't stall the per-peer poll. context.Background
+		// is intentional — we don't want this DELETE cancelled when
+		// the parent ctx ticks for the next round.
+		go func(peerID int64) {
+			if err := deleteBootstrapBlobByPeer(context.Background(), l.store, peerID); err != nil {
+				log.Printf("s3reader peer=%d bootstrap blob cleanup: %v", peerID, err)
+			}
+		}(p.ID)
 	}
 
 	// Phase A.2 — also fetch the resource snapshots into the asset
@@ -332,6 +346,52 @@ func (l *Loop) clientFor(ctx context.Context, configID int64, prefix string) (*s
 	l.clients[configID] = &peerClient{configID: configID, prefix: prefix, cli: cli}
 	l.mu.Unlock()
 	return cli, nil
+}
+
+// deleteBootstrapBlobByPeer removes the one-time
+// `cp/<child>/bootstrap/bundle.tar.gz` from the bucket once the
+// child has been observed alive via its first introspect. Returns
+// nil for legacy / pre-061 peers that have no child_instance_id
+// stamped (nothing to clean up). Errors propagate so the caller
+// can log + carry on; never downgrades peer health.
+//
+// Helper lives here (not in api/) because the s3reader package
+// already pulls in s3blob and importing the api package would
+// create a cycle (api → federation/* → api).
+func deleteBootstrapBlobByPeer(ctx context.Context, store *db.Store, peerID int64) error {
+	prov, err := store.FindCPProvisionByPeerID(peerID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil // peer wasn't created by managed deploy
+		}
+		return err
+	}
+	if !prov.ChildInstanceID.Valid || prov.ChildInstanceID.String == "" {
+		return nil // pre-061 row, nothing to clean up
+	}
+	if !prov.TransportConfigID.Valid || prov.TransportConfigID.Int64 == 0 {
+		return nil
+	}
+	tc, err := store.GetTransportConfig(prov.TransportConfigID.Int64)
+	if err != nil {
+		return fmt.Errorf("transport_config: %w", err)
+	}
+	if !tc.AccessKey.Valid || !tc.SecretKey.Valid {
+		return errors.New("transport_config has no access keys")
+	}
+	blob, err := s3blob.New(ctx, s3blob.Config{
+		Endpoint:  tc.Endpoint,
+		Region:    tc.Region.String,
+		Bucket:    tc.Bucket,
+		AccessKey: tc.AccessKey.String,
+		SecretKey: tc.SecretKey.String,
+		UseSSL:    tc.UseSSL,
+	})
+	if err != nil {
+		return fmt.Errorf("s3 client: %w", err)
+	}
+	key := fmt.Sprintf("cp/%s/bootstrap/bundle.tar.gz", prov.ChildInstanceID.String)
+	return blob.Delete(ctx, key)
 }
 
 // Compile-time guard so a removed RecordPeerFailure helper would

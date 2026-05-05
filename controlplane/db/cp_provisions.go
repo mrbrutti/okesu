@@ -66,6 +66,12 @@ type CPProvision struct {
 	// transport_configs[transport_config_id].
 	Transport         string
 	TransportConfigID sql.NullInt64
+	// ChildInstanceID is the UUID minted at bundle-generation time
+	// for transport='s3_dead_drop' deploys (writeS3DeadDropBundle).
+	// Populated only after migration 061; legacy rows leave this NULL.
+	// The destroy path uses it to compute the bootstrap-blob bucket
+	// key (`cp/<child-id>/bootstrap/bundle.tar.gz`) for cleanup.
+	ChildInstanceID   sql.NullString
 	CreatedAt         time.Time
 	StartedAt         sql.NullTime
 	EndedAt           sql.NullTime
@@ -140,7 +146,7 @@ func (s *Store) GetCPProvision(id int64) (*CPProvision, error) {
 		       cloud_params_json, status, cloud_resource_id, cloud_resource_url,
 		       bundle_token_id, peer_id, log, error,
 		       est_cost_per_hour_usd, instance_shape,
-		       transport, transport_config_id,
+		       transport, transport_config_id, child_instance_id,
 		       created_at, started_at, ended_at,
 		       created_by_user_id, created_by_email
 		FROM cp_provisions WHERE id = ?
@@ -160,7 +166,7 @@ func (s *Store) ListCPProvisions(limit int) ([]CPProvision, error) {
 		       cloud_params_json, status, cloud_resource_id, cloud_resource_url,
 		       bundle_token_id, peer_id, log, error,
 		       est_cost_per_hour_usd, instance_shape,
-		       transport, transport_config_id,
+		       transport, transport_config_id, child_instance_id,
 		       created_at, started_at, ended_at,
 		       created_by_user_id, created_by_email
 		FROM cp_provisions ORDER BY created_at DESC LIMIT ?
@@ -227,6 +233,16 @@ func (s *Store) SetCPProvisionPeer(id, peerID int64) error {
 	return err
 }
 
+// SetCPProvisionChildInstanceID is called by writeS3DeadDropBundle to
+// persist the child UUID minted at bundle-generation time. The
+// destroy path uses this to compute the bootstrap-blob bucket key
+// (`cp/<child-id>/bootstrap/bundle.tar.gz`) so it can clean it up.
+// Idempotent: caller can stamp the same value again on retry.
+func (s *Store) SetCPProvisionChildInstanceID(id int64, childInstanceID string) error {
+	_, err := s.Exec(`UPDATE cp_provisions SET child_instance_id = ? WHERE id = ?`, childInstanceID, id)
+	return err
+}
+
 // AdvanceCPProvisionByPeer flips a bootstrap_pending row to ready
 // when the parent first observes a successful federation poll for
 // the linked peer. Used by the s3reader path — there's no /bootstrap
@@ -282,6 +298,32 @@ func (s *Store) DeleteCPProvision(id int64) error {
 	return err
 }
 
+// FindCPProvisionByPeerID looks up the provision row whose peer_id
+// matches. Used by the s3reader's first-success cleanup hook to
+// resolve {peer_id → child_instance_id, transport_config_id} for
+// the bootstrap-blob delete. Returns sql.ErrNoRows when no match
+// (e.g. the peer was created manually, not via managed deploy).
+func (s *Store) FindCPProvisionByPeerID(peerID int64) (*CPProvision, error) {
+	row := s.QueryRow(`
+		SELECT id, display_name, region, cloud, credential_id, credential_name,
+		       cloud_params_json, status, cloud_resource_id, cloud_resource_url,
+		       bundle_token_id, peer_id, log, error,
+		       est_cost_per_hour_usd, instance_shape,
+		       transport, transport_config_id, child_instance_id,
+		       created_at, started_at, ended_at,
+		       created_by_user_id, created_by_email
+		FROM cp_provisions WHERE peer_id = ?
+	`, peerID)
+	c, err := scanCPProvision(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, sql.ErrNoRows
+		}
+		return nil, err
+	}
+	return c, nil
+}
+
 // FindCPProvisionByBundleToken looks up the provision row a given
 // bootstrap token belongs to — called from the bootstrap handler so
 // it can advance the matching provision row to "ready" + record the
@@ -292,7 +334,7 @@ func (s *Store) FindCPProvisionByBundleToken(tokenID int64) (*CPProvision, error
 		       cloud_params_json, status, cloud_resource_id, cloud_resource_url,
 		       bundle_token_id, peer_id, log, error,
 		       est_cost_per_hour_usd, instance_shape,
-		       transport, transport_config_id,
+		       transport, transport_config_id, child_instance_id,
 		       created_at, started_at, ended_at,
 		       created_by_user_id, created_by_email
 		FROM cp_provisions WHERE bundle_token_id = ?
@@ -317,7 +359,7 @@ func scanCPProvision(s rowScanner) (*CPProvision, error) {
 		&c.CloudResourceID, &c.CloudResourceURL,
 		&c.BundleTokenID, &c.PeerID, &c.Log, &c.Error,
 		&c.EstCostPerHourUSD, &c.InstanceShape,
-		&c.Transport, &c.TransportConfigID,
+		&c.Transport, &c.TransportConfigID, &c.ChildInstanceID,
 		&c.CreatedAt, &c.StartedAt, &c.EndedAt,
 		&c.CreatedByUserID, &c.CreatedByEmail,
 	); err != nil {

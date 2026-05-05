@@ -209,6 +209,13 @@ func RunCPProvisionWorker(ctx context.Context, cfg CPProvisionWorkerConfig, prov
 		if err := cfg.Store.SetCPProvisionPeer(provisionID, peerID); err != nil {
 			logf("warning: link provision %d to peer %d: %v", provisionID, peerID, err)
 		}
+		// Stamp the child instance UUID so the destroy path (and the
+		// s3reader's first-success cleanup hook) can compute the
+		// bootstrap-blob bucket key without parsing bucket_prefix.
+		// PR #129 follow-up (Task 9 cleanup gap).
+		if err := cfg.Store.SetCPProvisionChildInstanceID(provisionID, childInstanceID); err != nil {
+			logf("warning: stamp child_instance_id on provision %d: %v", provisionID, err)
+		}
 		// The whole point of s3_dead_drop is "the child can't reach
 		// the parent over HTTPS". cloud-init can't curl the parent
 		// for the bundle, so we put the bundle in the same bucket

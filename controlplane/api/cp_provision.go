@@ -29,11 +29,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/section9labs/okesu/controlplane/adapters/s3blob"
 	"github.com/section9labs/okesu/controlplane/audit"
 	"github.com/section9labs/okesu/controlplane/auth"
 	"github.com/section9labs/okesu/controlplane/cpprovision"
@@ -368,6 +370,28 @@ func CPProvisionDeleteHandler(store *db.Store, reg *cpprovision.Registry) http.H
 			}
 		}
 
+		// Cleanup-gap from PR #129 (Task 9): also delete the
+		// pre-registered federation_peers row so the operator doesn't
+		// see an orphan peer in the UI after destroying the provision.
+		// Best-effort: a missing FK or already-deleted peer isn't a
+		// reason to fail the provision-row delete.
+		if row.PeerID.Valid && row.PeerID.Int64 != 0 {
+			if err := store.DeleteFederationPeer(row.PeerID.Int64); err != nil {
+				log.Printf("cp_provisions delete %d: federation_peers cleanup: %v", row.ID, err)
+			}
+		}
+		// Cleanup-gap from PR #129 (Task 9): delete the one-time
+		// bootstrap blob `cp/<child>/bootstrap/bundle.tar.gz` from the
+		// bucket. The child has the bytes from after first boot — the
+		// blob is dead weight. Best-effort: legacy / pre-061 rows
+		// without child_instance_id and bucket-unreachable failures
+		// log + carry on.
+		if row.ChildInstanceID.Valid && row.ChildInstanceID.String != "" && row.TransportConfigID.Valid && row.TransportConfigID.Int64 != 0 {
+			if err := deleteCPProvisionBootstrapBlob(r.Context(), store, row.TransportConfigID.Int64, row.ChildInstanceID.String); err != nil {
+				log.Printf("cp_provisions delete %d: bootstrap blob cleanup: %v", row.ID, err)
+			}
+		}
+
 		if err := store.DeleteCPProvision(id); err != nil {
 			http.Error(w, "delete: "+err.Error(), http.StatusInternalServerError)
 			return
@@ -426,6 +450,39 @@ type cpProvisionJSON struct {
 	StartedAt         string         `json:"started_at,omitempty"`
 	EndedAt           string         `json:"ended_at,omitempty"`
 	CreatedByEmail    string         `json:"created_by_email,omitempty"`
+}
+
+// deleteCPProvisionBootstrapBlob removes the one-time
+// `cp/<child>/bootstrap/bundle.tar.gz` object from the bucket. Used
+// by both the destroy path AND the s3reader's first-success hook
+// (Task 9 closure of the PR #129 cleanup gap). The blob is the
+// presigned-GET source the new VM's cloud-init pulls on first boot;
+// after the child is alive it's dead weight in the bucket.
+//
+// Errors are returned for the caller to log + carry on — losing the
+// blob is recoverable (the operator can manually delete it from the
+// console, or it just sits there until the bucket is decomissioned).
+func deleteCPProvisionBootstrapBlob(ctx context.Context, store *db.Store, transportConfigID int64, childInstanceID string) error {
+	tc, err := store.GetTransportConfig(transportConfigID)
+	if err != nil {
+		return fmt.Errorf("transport_config: %w", err)
+	}
+	if !tc.AccessKey.Valid || !tc.SecretKey.Valid {
+		return errors.New("transport_config has no access keys")
+	}
+	blob, err := s3blob.New(ctx, s3blob.Config{
+		Endpoint:  tc.Endpoint,
+		Region:    tc.Region.String,
+		Bucket:    tc.Bucket,
+		AccessKey: tc.AccessKey.String,
+		SecretKey: tc.SecretKey.String,
+		UseSSL:    tc.UseSSL,
+	})
+	if err != nil {
+		return fmt.Errorf("s3 client: %w", err)
+	}
+	key := fmt.Sprintf("cp/%s/bootstrap/bundle.tar.gz", childInstanceID)
+	return blob.Delete(ctx, key)
 }
 
 func toCPProvisionJSON(p *db.CPProvision) cpProvisionJSON {
