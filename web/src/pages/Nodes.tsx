@@ -24,6 +24,8 @@ import { useSelection } from '../lib/useSelection';
 import { BulkActionBar, BulkActionButton } from '../components/BulkActionBar';
 import { BulkBinaryUpdateDialog } from '../components/BulkBinaryUpdateDialog';
 import { CPSourceChip } from '../components/CPSourceChip';
+import { AddNodeManaged } from '../components/nodes/AddNodeManaged';
+import { NodeProvisionsPanel } from '../components/nodes/NodeProvisionsPanel';
 
 const NODES_PAGE_SIZE = 500;
 
@@ -236,6 +238,11 @@ export default function NodesPage() {
                 : `— end of ${nodes.length} nodes —`}
           </div>
         )}
+
+        {/* Phase 21.7 — in-flight + recent managed-deploy provisions.
+            Self-renders only when ≥1 row exists, so it stays out of
+            the way on fleets that never use the managed-deploy tab. */}
+        <NodeProvisionsPanel />
       </div>
 
       {showAdd && (
@@ -556,7 +563,7 @@ function groupNodes(list: NodeItem[]): Record<Bucket, NodeItem[]> {
 // tab so a half-filled SSH form isn't lost when the operator peeks at
 // the package generator.
 
-type AddTab = 'ssh' | 's3';
+type AddTab = 'ssh' | 's3' | 'managed';
 
 function AddNodeModal({ onClose, onCreated }: { onClose: () => void; onCreated: (n: NodeItem) => void }) {
   const [tab, setTab] = useState<AddTab>('ssh');
@@ -589,15 +596,24 @@ function AddNodeModal({ onClose, onCreated }: { onClose: () => void; onCreated: 
               >
                 S3 dead-drop
               </button>
+              <button
+                onClick={() => setTab('managed')}
+                className={cn(
+                  'px-2.5 py-1 rounded-md font-medium',
+                  tab === 'managed'
+                    ? 'bg-brand-50 text-brand-700 ring-1 ring-brand-200'
+                    : 'text-ink-dim hover:bg-slate-100',
+                )}
+              >
+                Managed deploy
+              </button>
             </nav>
           </div>
           <button onClick={onClose} className="p-1 text-ink-dim hover:text-ink rounded-md"><X size={16} /></button>
         </header>
-        {tab === 'ssh' ? (
-          <AddNodeSSH onClose={onClose} onCreated={onCreated} />
-        ) : (
-          <AddNodeS3 onClose={onClose} />
-        )}
+        {tab === 'ssh' && <AddNodeSSH onClose={onClose} onCreated={onCreated} />}
+        {tab === 's3' && <AddNodeS3 onClose={onClose} />}
+        {tab === 'managed' && <AddNodeManaged onClose={onClose} />}
       </div>
     </div>
   );
