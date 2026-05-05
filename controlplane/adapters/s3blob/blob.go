@@ -146,6 +146,38 @@ func (a *Adapter) Delete(ctx context.Context, key string) error {
 	return a.cli.RemoveObject(ctx, a.bucket, key, minio.RemoveObjectOptions{})
 }
 
+// DeletePrefix removes every object whose key starts with the given
+// prefix. Used by the node/cp destroy paths to sweep the per-node
+// or per-CP bucket folder (cp/<id>/nodes/<n>/* and cp/<child>/*).
+// Lists in batches and removes via the bulk RemoveObjects channel
+// so a thousand-object delete completes in one round-trip.
+//
+// Best-effort semantics: a partial failure does not roll back; the
+// caller logs the error and proceeds. Delete-of-row is the operator's
+// final intent and a stale JSON object in the bucket is harmless.
+func (a *Adapter) DeletePrefix(ctx context.Context, prefix string) error {
+	objCh := make(chan minio.ObjectInfo)
+	go func() {
+		defer close(objCh)
+		for obj := range a.cli.ListObjects(ctx, a.bucket, minio.ListObjectsOptions{
+			Prefix:    prefix,
+			Recursive: true,
+		}) {
+			if obj.Err != nil {
+				continue
+			}
+			objCh <- obj
+		}
+	}()
+	errCh := a.cli.RemoveObjects(ctx, a.bucket, objCh, minio.RemoveObjectsOptions{})
+	for e := range errCh {
+		if e.Err != nil {
+			return fmt.Errorf("s3blob: delete prefix %q: %w", prefix, e.Err)
+		}
+	}
+	return nil
+}
+
 func (a *Adapter) List(ctx context.Context, prefix string, limit int) ([]ports.BlobInfo, error) {
 	if limit <= 0 {
 		limit = 1000

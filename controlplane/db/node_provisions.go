@@ -37,6 +37,10 @@ const (
 	NodeProvisionBootstrapPending NodeProvisionStatus = "bootstrap_pending"
 	NodeProvisionReady            NodeProvisionStatus = "ready"
 	NodeProvisionFailed           NodeProvisionStatus = "failed"
+	// NodeProvisionArchived is the post-destroy terminal state set by
+	// ArchiveNodeProvision. The cloud VM is gone but the row + log +
+	// cloud_resource_id survive for forensic review (migration 062).
+	NodeProvisionArchived NodeProvisionStatus = "archived"
 )
 
 // NodeProvision is the full job row. Plaintext credentials never live
@@ -64,6 +68,11 @@ type NodeProvision struct {
 	EndedAt           sql.NullTime
 	CreatedByUserID   sql.NullInt64
 	CreatedByEmail    sql.NullString
+	// Archive state (migration 062). Populated by ArchiveNodeProvision
+	// after the operator destroys the cloud VM but elects to keep the
+	// log + cloud_resource_id around for forensic review.
+	ArchivedAt      sql.NullTime
+	ArchivedByEmail sql.NullString
 }
 
 // NodeProvisionInsert is the input shape for InsertNodeProvision.
@@ -254,6 +263,21 @@ func (s *Store) SetNodeProvisionError(id int64, msg string) error {
 	return err
 }
 
+// ArchiveNodeProvision marks the row as archived: status='archived',
+// archived_at + archived_by_email stamped, ended_at set so the row
+// drops out of "in-flight" lists. The row is NOT deleted — operator
+// can still inspect the log + cloud_resource_id for forensic
+// purposes after the cloud VM is gone.
+func (s *Store) ArchiveNodeProvision(id int64, byEmail string) error {
+	_, err := s.Exec(`
+		UPDATE node_provisions
+		SET status = 'archived', archived_at = CURRENT_TIMESTAMP,
+		    archived_by_email = ?, ended_at = CURRENT_TIMESTAMP
+		WHERE id = ?
+	`, nullable(byEmail), id)
+	return err
+}
+
 // DeleteNodeProvision removes a provision row by id. Idempotent.
 // Cloud-side resources are NOT touched here — the api handler decides
 // whether to call Provisioner.Destroy first based on operator intent.
@@ -268,7 +292,8 @@ const nodeProvisionSelect = `
 	       cloud_resource_id, cloud_resource_url, node_id,
 	       log, error, est_cost_per_hour_usd, instance_shape,
 	       created_at, started_at, ended_at,
-	       created_by_user_id, created_by_email
+	       created_by_user_id, created_by_email,
+	       archived_at, archived_by_email
 	  FROM node_provisions`
 
 func scanNodeProvision(r rowScanner) (*NodeProvision, error) {
@@ -282,6 +307,7 @@ func scanNodeProvision(r rowScanner) (*NodeProvision, error) {
 		&p.Log, &p.Error, &p.EstCostPerHourUSD, &p.InstanceShape,
 		&p.CreatedAt, &p.StartedAt, &p.EndedAt,
 		&p.CreatedByUserID, &p.CreatedByEmail,
+		&p.ArchivedAt, &p.ArchivedByEmail,
 	); err != nil {
 		return nil, fmt.Errorf("scan node_provision: %w", err)
 	}

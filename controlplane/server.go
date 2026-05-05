@@ -1140,6 +1140,7 @@ func (s *Server) routes() http.Handler {
 			r.Get("/api/node-provisions", api.NodeProvisionsListHandler(s.store))
 			r.Get("/api/node-provisions/{id}", api.NodeProvisionGetHandler(s.store))
 			r.Delete("/api/node-provisions/{id}", api.NodeProvisionDeleteHandler(s.store, s.cpProvisioners))
+			r.Post("/api/node-provisions/{id}/archive", api.NodeProvisionArchiveHandler(s.store, s.cpProvisioners))
 			r.Post("/api/node-provision", api.NodeProvisionCreateHandler(
 				s.store, s.cpProvisioners,
 				api.NodeProvisionWorkerConfig{
@@ -1184,6 +1185,7 @@ func (s *Server) routes() http.Handler {
 			r.Delete("/api/findings/severity-rules", api.SeverityRuleDelete(s.store))
 			r.Post("/api/nodes", api.ForwardingNodeCreate(s.store, s.fedAgg))
 			r.Delete("/api/nodes/{id}", api.NodeDelete(s.store))
+			r.Post("/api/nodes/{id}/archive", api.NodeArchiveHandler(s.store))
 			r.Post("/api/nodes/{id}/refresh-metadata", api.NodeRefreshMetadata(s.store, s.tunReg))
 			r.Put("/api/nodes/{id}/auto-update", api.NodeAutoUpdateToggle(s.store))
 			r.Get("/api/system/deploy-ssh-key", api.DeployKeyGet(s.secrets))

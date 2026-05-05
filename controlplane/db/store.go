@@ -251,6 +251,9 @@ var sqliteM060 string
 //go:embed migrations/sqlite/061_cp_provisions_child_instance_id.sql
 var sqliteM061 string
 
+//go:embed migrations/sqlite/062_archived_at.sql
+var sqliteM062 string
+
 var sqliteMigrations = []string{
 	sqliteM001, sqliteM002, sqliteM003,
 	sqliteM004, sqliteM005, sqliteM006, sqliteM007,
@@ -267,6 +270,7 @@ var sqliteMigrations = []string{
 	sqliteM059,
 	sqliteM060,
 	sqliteM061,
+	sqliteM062,
 }
 
 //go:embed migrations/postgres/001_init.sql
@@ -453,6 +457,9 @@ var pgM060 string
 //go:embed migrations/postgres/061_cp_provisions_child_instance_id.sql
 var pgM061 string
 
+//go:embed migrations/postgres/062_archived_at.sql
+var pgM062 string
+
 var postgresMigrations = []string{
 	pgM001, pgM002, pgM003,
 	pgM004, pgM005, pgM006, pgM007,
@@ -467,6 +474,7 @@ var postgresMigrations = []string{
 	pgM059,
 	pgM060,
 	pgM061,
+	pgM062,
 }
 
 // migrationsForDialect returns the embedded list matching the dialect.

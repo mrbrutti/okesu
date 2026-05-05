@@ -10,6 +10,7 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
+  Archive,
   ChevronDown,
   ChevronRight,
   ExternalLink,
@@ -66,55 +67,8 @@ export function NodeProvisionsPanel() {
     });
   }
 
-  async function handleDelete(row: NodeProvision) {
-    // Two-tier confirm: row delete is always safe, cloud destroy is
-    // opt-in. Failed/cancelled rows almost always have no live VM,
-    // so we don't even offer destroy for them — the row delete is
-    // the entire intent.
-    const hasCloudResource = !!row.cloud_resource_id && row.cloud_resource_id.length > 0;
-    const isTerminalNoCloud = row.status === 'failed' || row.status === 'cancelled';
-    let destroy = false;
-
-    if (hasCloudResource && !isTerminalNoCloud) {
-      // Deploy succeeded or is in flight with a real VM — give the
-      // operator the choice.
-      const choice = window.confirm(
-        `Delete node provision #${row.id} (${row.display_name})?\n\n` +
-        `Cloud resource: ${row.cloud_resource_id}\n\n` +
-        `OK = ALSO destroy the cloud instance via ${row.cloud}.Destroy()\n` +
-        `Cancel = back out without deleting\n\n` +
-        `(To delete the row but leave the cloud instance running, click OK on the next prompt instead of this one.)`,
-      );
-      if (!choice) {
-        const recordOnly = window.confirm(
-          `Delete node provision #${row.id} record only?\n\n` +
-          `The cloud instance ${row.cloud_resource_id} will keep running and you'll need to clean it up via the cloud console.`,
-        );
-        if (!recordOnly) return;
-      } else {
-        destroy = true;
-      }
-    } else {
-      // Failed/cancelled or no cloud_resource_id — single confirm.
-      const ok = window.confirm(
-        `Delete node provision #${row.id} (${row.display_name})?\n\n` +
-        (hasCloudResource ? `Cloud resource ${row.cloud_resource_id} (already terminated) will not be touched.` : 'No cloud resource was created — this is a record-only delete.'),
-      );
-      if (!ok) return;
-    }
-
-    try {
-      const res = await api.nodeProvisionDelete(row.id, destroy);
-      // Optimistically prune from the visible list.
-      setRows((prev) => (prev ?? []).filter((r) => r.id !== row.id));
-      // Surface destroy errors inline — the row IS gone but the cloud
-      // instance may still be running, which is operator-actionable.
-      if (res && typeof res === 'object' && 'destroy_error' in res && res.destroy_error) {
-        setError(`row deleted, but destroy failed: ${res.destroy_error} — clean up ${res.cloud_resource} via cloud console`);
-      }
-    } catch (e) {
-      setError(`delete: ${String(e)}`);
-    }
+  function pruneRow(id: number) {
+    setRows((prev) => (prev ?? []).filter((r) => r.id !== id));
   }
 
   return (
@@ -136,7 +90,8 @@ export function NodeProvisionsPanel() {
             row={r}
             expanded={expanded.has(r.id)}
             onToggle={() => toggleExpand(r.id)}
-            onDelete={() => handleDelete(r)}
+            onPruned={() => pruneRow(r.id)}
+            onError={setError}
           />
         ))}
       </ul>
@@ -144,11 +99,12 @@ export function NodeProvisionsPanel() {
   );
 }
 
-function NodeProvisionRow({ row, expanded, onToggle, onDelete }: {
+function NodeProvisionRow({ row, expanded, onToggle, onPruned, onError }: {
   row: NodeProvision;
   expanded: boolean;
   onToggle: () => void;
-  onDelete: () => void;
+  onPruned: () => void;
+  onError: (msg: string | null) => void;
 }) {
   const Icon = expanded ? ChevronDown : ChevronRight;
   return (
@@ -200,17 +156,195 @@ function NodeProvisionRow({ row, expanded, onToggle, onDelete }: {
             <div className="text-ink-mute italic">queued — waiting for the worker to pick this up.</div>
           )}
           <div className="flex justify-end pt-1">
-            <button
-              onClick={onDelete}
-              title="Delete this node-provision row (and optionally destroy the cloud instance)"
-              className="text-[11px] px-2 py-1 border border-border hover:bg-red-50 hover:text-red-700 rounded inline-flex items-center gap-1"
-            >
-              <Trash2 size={11} /> Delete
-            </button>
+            <RetireMenu row={row} onPruned={onPruned} onError={onError} />
           </div>
         </div>
       )}
     </li>
+  );
+}
+
+// RetireMenu — replaces the prior single "Delete" button. Operators
+// have two distinct intents on a node-provision:
+//
+//   1. Archive (clean offboarding) — VM is gone, but we keep the row
+//      and its provenance/history. One click; no extra confirm beyond
+//      opening the popover.
+//   2. Delete & purge history (irreversible nuke) — VM gone, row gone,
+//      and all events/findings/runs/agents for the host plus the
+//      bucket prefix are swept. Requires the operator to type the
+//      display name as a guardrail.
+//
+// Both surface server errors inline so the operator sees destroy
+// failures (cloud instance still alive) without losing context.
+function RetireMenu({ row, onPruned, onError }: {
+  row: NodeProvision;
+  onPruned: () => void;
+  onError: (msg: string | null) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [purgeMode, setPurgeMode] = useState(false);
+  const [confirmText, setConfirmText] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [localError, setLocalError] = useState<string | null>(null);
+
+  function reset() {
+    setOpen(false);
+    setPurgeMode(false);
+    setConfirmText('');
+    setLocalError(null);
+  }
+
+  async function archive() {
+    setBusy(true);
+    setLocalError(null);
+    onError(null);
+    try {
+      const res = await api.archiveNodeProvision(row.id);
+      // Surface destroy errors inline — the row IS archived but the
+      // cloud instance may still be running, which is operator-actionable.
+      if (res && typeof res === 'object' && 'destroy_error' in res && res.destroy_error) {
+        onError(`row archived, but destroy failed: ${res.destroy_error} — clean up via cloud console`);
+      }
+      onPruned();
+      reset();
+    } catch (e) {
+      setLocalError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function deleteAndPurge() {
+    if (confirmText !== row.display_name) {
+      setLocalError(`type "${row.display_name}" exactly to confirm`);
+      return;
+    }
+    setBusy(true);
+    setLocalError(null);
+    onError(null);
+    try {
+      const res = await api.nodeProvisionDelete(row.id, { destroy: true, purge: true });
+      if (res && typeof res === 'object' && 'destroy_error' in res && res.destroy_error) {
+        onError(`row deleted, but destroy failed: ${res.destroy_error} — clean up ${res.cloud_resource} via cloud console`);
+      }
+      onPruned();
+      reset();
+    } catch (e) {
+      setLocalError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!open) {
+    return (
+      <button
+        onClick={() => setOpen(true)}
+        title="Retire this node-provision"
+        className="text-[11px] px-2 py-1 border border-border hover:bg-slate-50 rounded inline-flex items-center gap-1"
+      >
+        Retire
+        <ChevronDown size={11} />
+      </button>
+    );
+  }
+
+  return (
+    <div className="relative">
+      <button
+        onClick={reset}
+        className="text-[11px] px-2 py-1 border border-border bg-slate-50 rounded inline-flex items-center gap-1"
+      >
+        Retire
+        <ChevronDown size={11} />
+      </button>
+      <div
+        className="absolute right-0 top-full mt-1 z-30 bg-white border border-border rounded-md shadow-md w-72 p-1"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Archive — single-click, default action */}
+        <button
+          onClick={archive}
+          disabled={busy}
+          className="w-full text-left px-2.5 py-2 rounded-md hover:bg-slate-50 disabled:opacity-50 inline-flex items-start gap-2"
+        >
+          <Archive size={12} className="mt-0.5 text-ink-mute shrink-0" />
+          <span className="flex-1">
+            <span className="block text-[12px] font-medium text-ink">Archive</span>
+            <span className="block text-[10px] text-ink-mute leading-snug">
+              Terminate cloud VM. Keep node row + history.
+            </span>
+          </span>
+        </button>
+
+        {/* Delete & purge — two-step typed confirm */}
+        {!purgeMode ? (
+          <button
+            onClick={() => { setPurgeMode(true); setLocalError(null); }}
+            disabled={busy}
+            className="w-full text-left px-2.5 py-2 rounded-md hover:bg-red-50 disabled:opacity-50 inline-flex items-start gap-2 text-red-700"
+          >
+            <Trash2 size={12} className="mt-0.5 shrink-0" />
+            <span className="flex-1">
+              <span className="block text-[12px] font-medium">Delete &amp; purge history</span>
+              <span className="block text-[10px] leading-snug text-red-600/80">
+                Terminate VM, delete row, purge events / findings / runs / agents for this host, sweep bucket prefix. Irreversible.
+              </span>
+            </span>
+          </button>
+        ) : (
+          <div className="px-2.5 py-2 space-y-1.5">
+            <div className="text-[11px] font-medium text-red-700 inline-flex items-center gap-1">
+              <Trash2 size={11} /> Delete &amp; purge history
+            </div>
+            <div className="text-[10px] text-ink-mute leading-snug">
+              Type the display name <code className="bg-slate-100 px-1 rounded">{row.display_name}</code> to confirm.
+            </div>
+            <input
+              autoFocus
+              type="text"
+              value={confirmText}
+              onChange={(e) => setConfirmText(e.target.value)}
+              placeholder={row.display_name}
+              disabled={busy}
+              className="w-full text-[11px] px-2 py-1 border border-red-300 rounded outline-none focus:ring-2 focus:ring-red-500/30 font-mono"
+            />
+            <div className="flex gap-1.5 justify-end">
+              <button
+                onClick={() => { setPurgeMode(false); setConfirmText(''); setLocalError(null); }}
+                disabled={busy}
+                className="text-[11px] px-2 py-1 border border-border rounded hover:bg-slate-50 disabled:opacity-50"
+              >
+                Back
+              </button>
+              <button
+                onClick={deleteAndPurge}
+                disabled={busy || confirmText !== row.display_name}
+                className="text-[11px] px-2 py-1 bg-red-600 text-white rounded hover:bg-red-700 disabled:opacity-40 disabled:cursor-not-allowed inline-flex items-center gap-1"
+              >
+                <Trash2 size={11} /> Delete &amp; purge
+              </button>
+            </div>
+          </div>
+        )}
+
+        {localError && (
+          <div className="mx-1 my-1 px-2 py-1 text-[10px] text-red-700 bg-red-50 border border-red-200 rounded">
+            {localError}
+          </div>
+        )}
+        <div className="px-2.5 py-1 border-t border-border mt-1">
+          <button
+            onClick={reset}
+            disabled={busy}
+            className="text-[10px] text-ink-mute hover:text-ink"
+          >
+            Cancel
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
