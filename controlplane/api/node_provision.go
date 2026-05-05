@@ -36,6 +36,9 @@ import (
 	"github.com/section9labs/okesu/controlplane/db"
 )
 
+// NodeProvisionWorkerConfig + RunNodeProvisionWorker live in
+// node_provision_worker.go.
+
 // nodeProvisionReq is the JSON body for POST /api/node-provision.
 // CloudParams is the per-cloud knob bag (subnet OCID, AD, image OCID,
 // shape for OCI; subnet id, AMI id, instance type for AWS) — the
@@ -273,23 +276,3 @@ func toNodeProvisionJSON(p *db.NodeProvision) map[string]any {
 	return out
 }
 
-// NodeProvisionWorkerConfig is the worker dependency bag.
-//
-// TODO(Task 5): expand this struct + replace the RunNodeProvisionWorker
-// stub below with the real implementation. Task 4 only needs the
-// Store field so the handler's `workerCfg.Store == nil` short-circuit
-// works for tests, and so server-boot wiring can pass a real Store
-// once Task 5 lands.
-type NodeProvisionWorkerConfig struct {
-	Store    *db.Store
-	Registry *cpprovision.Registry
-	// (full config in Task 5: bundle/cache/transport plumbing.)
-}
-
-// RunNodeProvisionWorker is a Task-4 stub. The real implementation
-// lands in Task 5 (controlplane/api/node_provision_worker.go) and
-// MUST replace this declaration — do not leave both. Keeping the stub
-// in this file lets Task 4 ship + test independently.
-//
-// TODO(Task 5): delete this stub when node_provision_worker.go lands.
-func RunNodeProvisionWorker(_ context.Context, _ NodeProvisionWorkerConfig, _ int64) {}
