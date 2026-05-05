@@ -2328,7 +2328,7 @@ export interface NodeItem {
   daemon_hostname?: string;
   ssh_user: string;
   ssh_port: number;
-  status: 'pending' | 'deploying' | 'ready' | 'failed';
+  status: 'pending' | 'deploying' | 'ready' | 'failed' | 'archived';
   status_message?: string;
   last_status_at?: string;
   last_deployed_at?: string;
