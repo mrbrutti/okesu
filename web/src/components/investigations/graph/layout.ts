@@ -2,7 +2,7 @@
 // (x, y) positions for each node:
 //
 //   - Findings stack vertically in the left column (x=80).
-//   - Right column (x=520) groups by kind: hosts top, then daimons,
+//   - Right column (x=560) groups by kind: hosts top, then daimons,
 //     then IOCs, with vertical gaps between kinds.
 //   - Within each column-section, nodes sort by edge degree desc
 //     (most-connected at the top).
@@ -17,9 +17,9 @@ export interface Position {
 }
 
 export const LEFT_X = 80;
-export const RIGHT_X = 520;
-export const NODE_HEIGHT = 56;
-export const VERTICAL_GAP = 12;
+export const RIGHT_X = 560;        // widened to fit 240-px finding cards in the left column
+export const FINDING_PITCH = 100;  // 86-tall card + 14 gap
+export const ENTITY_PITCH  = 60;   // 56-tall IOC card + 4 gap (host/daimon at 44 also fit)
 export const KIND_GAP = 24;
 
 export function computePositions(
@@ -63,24 +63,24 @@ export function computePositions(
   let y = 40;
   for (const f of findings) {
     out.set(f.id, { x: LEFT_X, y });
-    y += NODE_HEIGHT + VERTICAL_GAP;
+    y += FINDING_PITCH;
   }
 
   // Place hosts, daimons, IOCs in the right column with kind gaps.
   y = 40;
   for (const h of hosts) {
     out.set(h.id, { x: RIGHT_X, y });
-    y += NODE_HEIGHT + VERTICAL_GAP;
+    y += ENTITY_PITCH;
   }
   if (hosts.length > 0 && (daimons.length > 0 || iocs.length > 0)) y += KIND_GAP;
   for (const d of daimons) {
     out.set(d.id, { x: RIGHT_X, y });
-    y += NODE_HEIGHT + VERTICAL_GAP;
+    y += ENTITY_PITCH;
   }
   if (daimons.length > 0 && iocs.length > 0) y += KIND_GAP;
   for (const i of iocs) {
     out.set(i.id, { x: RIGHT_X, y });
-    y += NODE_HEIGHT + VERTICAL_GAP;
+    y += ENTITY_PITCH;
   }
   return out;
 }

@@ -10,7 +10,9 @@
 // navigates to /findings filtered by host instead.
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ReactFlow, Background, BackgroundVariant, Controls, type Edge, type Node } from '@xyflow/react';
+import { ReactFlow, Background, BackgroundVariant, Controls, MiniMap, type Edge, type Node } from '@xyflow/react';
+import { nodeTypes } from './graph/nodes';
+import { styleForEdgeWeight, weightByTarget } from './graph/edges';
 import '@xyflow/react/dist/style.css';
 import { api, type GraphNode, type GraphResponse } from '../../api';
 import { computePositions } from './graph/layout';
@@ -55,24 +57,31 @@ export function CaseGraph({ investigationID, cpInstanceID, bundleFindingsCount }
   const { rfNodes, rfEdges } = useMemo(() => {
     if (!data) return { rfNodes: [] as Node[], rfEdges: [] as Edge[] };
     const positions = computePositions(data.nodes, data.edges);
+    const weights = weightByTarget(data.edges);
+
     const rfNodes: Node[] = data.nodes.map((n) => {
       const pos = positions.get(n.id) ?? { x: 0, y: 0 };
       return {
         id: n.id,
-        type: 'default',
+        type: n.kind,
         position: pos,
-        data: { label: renderNodeLabel(n), graphNode: n },
+        data: { ...nodeDataFor(n), graphNode: n },
         draggable: false,
         selectable: true,
       };
     });
-    const rfEdges: Edge[] = data.edges.map((e) => ({
-      id: e.id,
-      source: e.source,
-      target: e.target,
-      type: 'smoothstep',
-      style: { stroke: '#94a3b8', strokeWidth: 1 },
-    }));
+
+    const rfEdges: Edge[] = data.edges.map((e) => {
+      const style = styleForEdgeWeight(weights.get(e.target) ?? 1);
+      return {
+        id: e.id,
+        source: e.source,
+        target: e.target,
+        type: 'smoothstep',
+        style: { stroke: style.stroke, strokeWidth: style.strokeWidth, opacity: style.opacity },
+        animated: false,
+      };
+    });
     return { rfNodes, rfEdges };
   }, [data]);
 
@@ -133,19 +142,29 @@ export function CaseGraph({ investigationID, cpInstanceID, bundleFindingsCount }
         <div className="p-8 text-center text-sm text-ink-mute italic">Loading graph…</div>
       )}
       {data && (
-        <div style={{ height: 600 }}>
+        <div
+          style={{
+            height: 600,
+            background: 'linear-gradient(to bottom, #faf8ff, #ffffff), radial-gradient(circle at 8px 8px, #e9d5ff 1px, transparent 1px) 0 0 / 16px 16px',
+          }}
+        >
           <ReactFlow
             nodes={rfNodes}
             edges={rfEdges}
+            nodeTypes={nodeTypes}
             onNodeClick={handleNodeClick}
             nodesDraggable={false}
             nodesConnectable={false}
-            elementsSelectable={true}
+            elementsSelectable
             fitView
+            fitViewOptions={{ padding: 0.15 }}
             proOptions={{ hideAttribution: true }}
           >
             <Background variant={BackgroundVariant.Dots} gap={16} size={1} />
             <Controls showInteractive={false} />
+            {data.nodes.filter((n) => n.kind === 'finding').length >= 10 && (
+              <MiniMap pannable zoomable nodeStrokeWidth={2} />
+            )}
           </ReactFlow>
         </div>
       )}
@@ -153,21 +172,24 @@ export function CaseGraph({ investigationID, cpInstanceID, bundleFindingsCount }
   );
 }
 
-function renderNodeLabel(n: GraphNode): string {
-  if (n.kind === 'finding') {
-    const idNum = n.id.slice(2);
-    return `Finding #${idNum} — ${truncate(n.label, 40)}`;
+function nodeDataFor(n: GraphNode) {
+  switch (n.kind) {
+    case 'finding': return {
+      id: n.id,
+      numericID: Number(n.id.slice(2)),
+      title: n.label,
+      severity: n.severity ?? 'INFO',
+      host: n.host ?? '',
+      agent: n.agent ?? '',
+    };
+    case 'host':   return { label: n.label, finding_count: n.finding_count };
+    case 'daimon': return { label: n.label, finding_count: n.finding_count };
+    case 'ioc':    return {
+      ioc_kind: n.ioc_kind ?? '',
+      ioc_value: n.ioc_value ?? n.label,
+      obs_count: n.obs_count,
+      host_count: n.host_count,
+    };
+    default: return { label: n.label };
   }
-  if (n.kind === 'daimon') {
-    return `${n.label} (${n.finding_count ?? 0} findings)`;
-  }
-  if (n.kind === 'ioc') {
-    return `${n.label} — ${n.obs_count ?? 0} obs / ${n.host_count ?? 0} hosts`;
-  }
-  return n.label;
-}
-
-function truncate(s: string, n: number): string {
-  if (s.length <= n) return s;
-  return s.slice(0, n - 1) + '…';
 }

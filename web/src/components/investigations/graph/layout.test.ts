@@ -29,7 +29,7 @@ describe('computePositions', () => {
     expect(f!.x).toBe(80);
   });
 
-  it('places hosts/daimons/IOCs in the right column at x=520', () => {
+  it('places hosts/daimons/IOCs in the right column at x=560', () => {
     const out = computePositions(
       [makeFinding(1), makeHost('h1'), makeDaimon('a'), makeIOC('sha256', 'deadbeef')],
       [
@@ -38,9 +38,9 @@ describe('computePositions', () => {
         edge('f:1', 'i:sha256:deadbeef'),
       ],
     );
-    expect(out.get('h:h1')!.x).toBe(520);
-    expect(out.get('d:a')!.x).toBe(520);
-    expect(out.get('i:sha256:deadbeef')!.x).toBe(520);
+    expect(out.get('h:h1')!.x).toBe(560);
+    expect(out.get('d:a')!.x).toBe(560);
+    expect(out.get('i:sha256:deadbeef')!.x).toBe(560);
   });
 
   it('orders right-column nodes hosts → daimons → IOCs', () => {

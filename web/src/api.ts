@@ -786,6 +786,9 @@ export interface InvestigationDetail {
   /** True iff any linked finding carries the `war-bridge` tag.
    *  UI flips into red-banner war-room mode + faster auto-refresh. */
   war_room: boolean;
+  /** Server-emitted partial-failure list — one entry per failing list
+   *  method (e.g. "findings: no such table"). Omitted on clean loads. */
+  bundle_warnings?: string[];
 }
 
 // Graph view types. Returned by GET /api/investigations/{id}/graph.
