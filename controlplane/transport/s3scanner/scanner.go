@@ -216,6 +216,23 @@ func (s *Scanner) handleRegistration(ctx context.Context, key string) {
 		log.Printf("s3scanner: bind transport node=%d: %v", id, err)
 	}
 
+	// If this registration is from a managed-deploy provision, find the
+	// pending row by transport_config_id and link/advance it. Idempotent:
+	// silent no-op when no provision is waiting (e.g. operator-driven
+	// fleet enrollment where there's no node_provisions row at all).
+	if prov, err := s.store.FindPendingNodeProvisionByTransportConfig(s.cfgID); err == nil {
+		if linkErr := s.store.SetNodeProvisionNode(prov.ID, id); linkErr != nil {
+			log.Printf("s3scanner cfg=%d link node_provision %d → node %d: %v",
+				s.cfgID, prov.ID, id, linkErr)
+		} else if advanced, advErr := s.store.AdvanceNodeProvisionByNode(id); advErr != nil {
+			log.Printf("s3scanner cfg=%d advance node_provision %d: %v",
+				s.cfgID, prov.ID, advErr)
+		} else if advanced {
+			_ = s.store.AppendNodeProvisionLogByNode(id,
+				"✓ first registration received over S3 — node provisioning ready\n")
+		}
+	}
+
 	// Sign the CSR using the CP's mTLS CA (same path the manual
 	// enroll endpoint uses). Result cert lands at
 	// cp/<cp-id>/nodes/<id>/cert.pem.

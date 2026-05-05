@@ -223,6 +223,26 @@ func (s *Store) AppendNodeProvisionLogByNode(nodeID int64, line string) error {
 	return err
 }
 
+// FindPendingNodeProvisionByTransportConfig finds the oldest
+// node_provisions row matching transport_config_id where
+// status='bootstrap_pending' AND node_id IS NULL. Returns
+// sql.ErrNoRows when none exists. Used by the s3scanner to link a
+// freshly-registered node to its provision row at the moment of
+// registration. If two provisions race for the same transport_config,
+// the oldest one wins — this can misattribute under heavy concurrent
+// launches but is acceptable for v1 (operator can retry / destroy +
+// relaunch).
+func (s *Store) FindPendingNodeProvisionByTransportConfig(tcID int64) (*NodeProvision, error) {
+	// id ASC tiebreaker handles same-second inserts (CURRENT_TIMESTAMP
+	// has second resolution in SQLite); auto-increment ids are
+	// monotonic so this is equivalent to "oldest insert wins".
+	row := s.QueryRow(nodeProvisionSelect+`
+		WHERE transport_config_id = ? AND status = 'bootstrap_pending'
+		      AND node_id IS NULL
+		ORDER BY created_at ASC, id ASC LIMIT 1`, tcID)
+	return scanNodeProvision(row)
+}
+
 // SetNodeProvisionError records a terminal error string and flips
 // status=failed in one round-trip.
 func (s *Store) SetNodeProvisionError(id int64, msg string) error {
