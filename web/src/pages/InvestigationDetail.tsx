@@ -318,6 +318,19 @@ export default function InvestigationDetailPage() {
         </div>
       </header>
 
+      {bundle.bundle_warnings && bundle.bundle_warnings.length > 0 && (
+        <div className="mx-6 mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+          <div className="font-medium mb-1">
+            Some bundle data couldn't be loaded — case may render incomplete.
+          </div>
+          <ul className="list-disc pl-5 space-y-0.5">
+            {bundle.bundle_warnings.map((w, i) => (
+              <li key={i} className="font-mono">{w}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {/* Tab strip */}
       <nav className="px-6 border-b border-border flex items-center gap-1 bg-panel">
         <TabButton current={tab} value="overview"      onClick={setTab} icon={FileText}     label="Overview" />

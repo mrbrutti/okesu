@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 
@@ -199,12 +200,28 @@ func GetInvestigationHandler(store *db.Store) http.HandlerFunc {
 			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
-		findings, _ := store.ListFindingsForInvestigationEnriched(id)
-		runs, _ := store.ListRunsForInvestigationEnriched(id)
-		iocs, _ := store.ListIOCsForInvestigation(id)
-		daimons, _ := store.ListDaimonsForInvestigation(id)
-		orchs, _ := store.ListOrchestrationsForInvestigation(id)
-		notes, _ := store.ListInvestigationNotes(id)
+
+		var warnings []string
+		recordWarn := func(name string, err error) {
+			if err == nil {
+				return
+			}
+			log.Printf("investigation bundle %d: %s: %v", id, name, err)
+			warnings = append(warnings, fmt.Sprintf("%s: %s", name, err.Error()))
+		}
+
+		findings, fErr := store.ListFindingsForInvestigationEnriched(id)
+		recordWarn("findings", fErr)
+		runs, rErr := store.ListRunsForInvestigationEnriched(id)
+		recordWarn("runs", rErr)
+		iocs, iErr := store.ListIOCsForInvestigation(id)
+		recordWarn("iocs", iErr)
+		daimons, dErr := store.ListDaimonsForInvestigation(id)
+		recordWarn("daimons", dErr)
+		orchs, oErr := store.ListOrchestrationsForInvestigation(id)
+		recordWarn("orchestrations", oErr)
+		notes, nErr := store.ListInvestigationNotes(id)
+		recordWarn("notes", nErr)
 		warRoom, _ := store.IsInvestigationWarRoom(id)
 
 		// Defensive nil → empty so JSON consumers see [], not null.
@@ -228,14 +245,17 @@ func GetInvestigationHandler(store *db.Store) http.HandlerFunc {
 		}
 
 		resp := map[string]any{
-			"investigation":   inv,
-			"findings":        findings,
-			"runs":            runs,
-			"iocs":            iocs,
-			"daimons":         daimons,
-			"orchestrations":  orchs,
-			"notes":           notes,
-			"war_room":        warRoom,
+			"investigation":  inv,
+			"findings":       findings,
+			"runs":           runs,
+			"iocs":           iocs,
+			"daimons":        daimons,
+			"orchestrations": orchs,
+			"notes":          notes,
+			"war_room":       warRoom,
+		}
+		if len(warnings) > 0 {
+			resp["bundle_warnings"] = warnings
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(resp)

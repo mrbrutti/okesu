@@ -193,3 +193,66 @@ func TestLinkFindingToInvestigation_HTTP_RejectsBadParams(t *testing.T) {
 		}
 	}
 }
+
+func TestGetInvestigation_SurfacesListErrors(t *testing.T) {
+	store := newSeededTestStore(t)
+	invID, err := store.CreateInvestigation(&db.InvestigationInsert{Title: "case"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	// Force an error: drop the table the enriched query references.
+	if _, err := store.Exec(`DROP TABLE investigation_findings`); err != nil {
+		t.Fatalf("schema break: %v", err)
+	}
+
+	router := chi.NewRouter()
+	router.Get("/api/investigations/{id}", GetInvestigationHandler(store))
+
+	req := httptest.NewRequest("GET", "/api/investigations/"+strconv.FormatInt(invID, 10), nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	var resp map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	warnings, ok := resp["bundle_warnings"].([]any)
+	if !ok || len(warnings) == 0 {
+		t.Fatalf("expected bundle_warnings entry; got %v", resp["bundle_warnings"])
+	}
+	first, _ := warnings[0].(string)
+	if !strings.HasPrefix(first, "findings:") {
+		t.Errorf("warning[0] = %q, want prefix \"findings:\"", first)
+	}
+	// Other arrays should still be empty slices, not missing.
+	if _, ok := resp["findings"].([]any); !ok {
+		t.Errorf("findings should be [] not nil")
+	}
+}
+
+func TestGetInvestigation_NoWarningsOnSuccess(t *testing.T) {
+	store := newSeededTestStore(t)
+	invID, err := store.CreateInvestigation(&db.InvestigationInsert{Title: "case"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	router := chi.NewRouter()
+	router.Get("/api/investigations/{id}", GetInvestigationHandler(store))
+
+	req := httptest.NewRequest("GET", "/api/investigations/"+strconv.FormatInt(invID, 10), nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	var resp map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := resp["bundle_warnings"]; ok {
+		t.Errorf("bundle_warnings should be omitted on success; got %v", resp["bundle_warnings"])
+	}
+}
