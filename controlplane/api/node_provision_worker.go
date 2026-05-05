@@ -251,11 +251,18 @@ func (l nodeProvisionLogger) Logf(format string, args ...any) {
 // systemd unit when systemd is present (see
 // packaging.installShellScript).
 func nodeManagedCloudInit(bundleURL, filename string) string {
-	// Note: the bundleURL contains '?' query params from S3 SigV4.
-	// The %q for the URL keeps shell metacharacters from being
-	// interpreted by bash. The directory walk after extract handles
-	// the case where the tar.gz has a single top-level dir (typical)
-	// AND the case where it lays files at the root.
+	// The bundleURL is an S3 SigV4 presigned GET — query params include
+	// '&', '=', and '/' in the path. We use single-quote escaping
+	// (shellSingleQuote) rather than Go's %q because Go's quoting
+	// preserves $, backtick, and !, which bash double-quotes still
+	// expand. Single quotes disable all shell metacharacter handling
+	// inside, so any future input that leaks a $-shape can't escape
+	// to RCE.
+	//
+	// The package-manager fall-through must explicitly fail on hosts
+	// without dnf/apt-get; otherwise `set -euo pipefail` lets the
+	// conditional exit 0 and we hit a confusing "curl: not found"
+	// later. Mirrors cpprovision/cloudinit.go's pattern.
 	return fmt.Sprintf(`#!/usr/bin/env bash
 set -euo pipefail
 exec > >(tee -a /var/log/okesu-bootstrap.log) 2>&1
@@ -267,12 +274,17 @@ elif command -v apt-get >/dev/null 2>&1; then
     export DEBIAN_FRONTEND=noninteractive
     apt-get update -y
     apt-get install -y curl tar ca-certificates
+else
+    echo "no apt-get or dnf — cannot install curl/tar. Use a Debian or RHEL family image." >&2
+    exit 1
 fi
 
 mkdir -p /opt/okesu-node
 cd /opt/okesu-node
-curl -fSL --retry 6 --retry-delay 5 -o %q %q
-tar -xzf %q
+BUNDLE_URL=%s
+BUNDLE_FILE=%s
+curl -fSL --retry 6 --retry-delay 5 -o "$BUNDLE_FILE" "$BUNDLE_URL"
+tar -xzf "$BUNDLE_FILE"
 # The packaging tar.gz lays files at the root; if a future formatter
 # changes that, descend into the single top-level dir.
 if [ -f ./install.sh ]; then
@@ -282,7 +294,16 @@ else
     sudo ./install.sh
 fi
 echo "==> okesu node managed bootstrap done"
-`, filename, bundleURL, filename)
+`, shellSingleQuote(bundleURL), shellSingleQuote(filename))
+}
+
+// shellSingleQuote wraps a string in shell single-quotes, with any
+// embedded single-quote escaped as '\''. This disables ALL shell
+// metacharacter expansion inside the quoted string — unlike double
+// quotes (which still expand $, backtick, and !) or Go's fmt.%q
+// (which only handles double-quote-relevant Go escapes).
+func shellSingleQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // defaultBlobUploader connects to the configured S3 endpoint, puts
