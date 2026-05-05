@@ -12,6 +12,12 @@ const (
 	NodeStatusDeploying = "deploying"
 	NodeStatusReady     = "ready"
 	NodeStatusFailed    = "failed"
+	// NodeStatusArchived marks a node whose cloud-side resource is gone
+	// but whose row + history (events, findings, runs, agents) survive
+	// for retrospective analysis. Set by ArchiveNode; the corresponding
+	// archived_at and archived_by_email columns are stamped at the same
+	// moment (migration 062).
+	NodeStatusArchived = "archived"
 )
 
 // Node is a registered remote host the CP knows how to deploy to.
@@ -69,7 +75,14 @@ type Node struct {
 	PollIntervalMs    sql.NullInt64
 	NodeUUID          sql.NullString
 
-	CreatedAt       time.Time
+	// Archive state (migration 062). When status='archived', ArchivedAt
+	// and ArchivedByEmail are populated by ArchiveNode. The row + all
+	// history (events, findings, runs, agents — keyed by host name) are
+	// retained for retrospective analysis.
+	ArchivedAt      sql.NullTime
+	ArchivedByEmail sql.NullString
+
+	CreatedAt time.Time
 }
 
 // CreateNode inserts a new node row.
@@ -103,6 +116,7 @@ func (s *Store) NodeByID(id int64) (*Node, error) {
 		       auto_update_paused,
 		       jobs_runtime_seen_at, tunnel_running, preferred_dispatch,
 		       transport, transport_config_id, poll_interval_ms, node_uuid,
+		       archived_at, archived_by_email,
 		       created_at
 		FROM nodes WHERE id = ?
 	`, id).Scan(
@@ -114,6 +128,7 @@ func (s *Store) NodeByID(id int64) (*Node, error) {
 			&n.AutoUpdatePaused,
 			&n.JobsRuntimeSeenAt, &tunnelRunning, &n.PreferredDispatch,
 			&n.Transport, &n.TransportConfigID, &n.PollIntervalMs, &n.NodeUUID,
+			&n.ArchivedAt, &n.ArchivedByEmail,
 			&n.CreatedAt,
 	)
 	if err != nil {
@@ -142,6 +157,7 @@ func (s *Store) ListNodes(limit, offset int) ([]*Node, error) {
 		       auto_update_paused,
 		       jobs_runtime_seen_at, tunnel_running, preferred_dispatch,
 		       transport, transport_config_id, poll_interval_ms, node_uuid,
+		       archived_at, archived_by_email,
 		       created_at
 		FROM nodes ORDER BY created_at DESC
 		LIMIT ? OFFSET ?
@@ -163,6 +179,7 @@ func (s *Store) ListNodes(limit, offset int) ([]*Node, error) {
 			&n.AutoUpdatePaused,
 			&n.JobsRuntimeSeenAt, &tunnelRunning, &n.PreferredDispatch,
 			&n.Transport, &n.TransportConfigID, &n.PollIntervalMs, &n.NodeUUID,
+			&n.ArchivedAt, &n.ArchivedByEmail,
 			&n.CreatedAt,
 		); err != nil {
 			return nil, err
@@ -181,6 +198,56 @@ func (s *Store) UpdateNodeStatus(id int64, status, message string) error {
 		WHERE id = ?
 	`, status, nullable(message), id)
 	return err
+}
+
+// ArchiveNode marks a node as archived: sets status='archived',
+// stamps archived_at = CURRENT_TIMESTAMP, records the operator's
+// email. The node row + all history (events, findings, runs,
+// agents — keyed by host name, not FK) survive intact for
+// retrospective analysis. Idempotent: archiving an already-
+// archived node refreshes the timestamp + email.
+func (s *Store) ArchiveNode(id int64, byEmail string) error {
+	_, err := s.Exec(`
+		UPDATE nodes
+		SET status = ?, archived_at = CURRENT_TIMESTAMP,
+		    archived_by_email = ?, last_status_at = CURRENT_TIMESTAMP,
+		    status_message = 'archived'
+		WHERE id = ?
+	`, NodeStatusArchived, nullable(byEmail), id)
+	return err
+}
+
+// PurgeHostHistory removes all history rows that reference a node
+// by host name (not FK): events, findings, runs, agents. Used by
+// the node-delete-with-purge path so the operator can fully retire
+// a host's footprint. Returns the total rows deleted across tables
+// so the audit log can record it.
+//
+// Best-effort idempotent: running on an unknown host returns 0, no
+// error. Caller is responsible for ordering this BEFORE any FK-
+// cascading delete that would null the join column.
+//
+// Column conventions (verified against migrations 001/002/003/010):
+//   events.host, findings.host, agents.host, runs.node_name.
+func (s *Store) PurgeHostHistory(host string) (int64, error) {
+	if host == "" {
+		return 0, nil
+	}
+	var total int64
+	for _, q := range []string{
+		`DELETE FROM events     WHERE host = ?`,
+		`DELETE FROM findings   WHERE host = ?`,
+		`DELETE FROM runs       WHERE node_name = ?`,
+		`DELETE FROM agents     WHERE host = ?`,
+	} {
+		res, err := s.Exec(q, host)
+		if err != nil {
+			return total, err
+		}
+		n, _ := res.RowsAffected()
+		total += n
+	}
+	return total, nil
 }
 
 // MarkNodeDeployed records a successful deploy and the agent set installed.
