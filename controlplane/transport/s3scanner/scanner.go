@@ -215,6 +215,15 @@ func (s *Scanner) handleRegistration(ctx context.Context, key string) {
 	if _, err := s.store.Exec(`UPDATE nodes SET transport = 's3', transport_config_id = ?, node_uuid = ? WHERE id = ?`, s.cfgID, rr.NodeUUID, id); err != nil {
 		log.Printf("s3scanner: bind transport node=%d: %v", id, err)
 	}
+	// S3-enrolled nodes have already run install.sh on the host before
+	// the registration request even reaches us — there is no separate
+	// "deploy" step like the SSH-push flow. Flip status from the default
+	// 'pending' straight to 'ready' so the UI doesn't show a perpetual
+	// pending badge on auto-enrolled nodes. Idempotent on subsequent
+	// registrations (UpdateNodeStatus is just an UPDATE).
+	if err := s.store.UpdateNodeStatus(id, db.NodeStatusReady, "auto-enrolled via s3 transport"); err != nil {
+		log.Printf("s3scanner: mark node=%d ready: %v", id, err)
+	}
 
 	// If this registration is from a managed-deploy provision, find the
 	// pending row by transport_config_id and link/advance it. Idempotent:
