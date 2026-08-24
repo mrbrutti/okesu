@@ -846,6 +846,39 @@ actions:
       - tool: list_files
 ```
 
+### Two Kinds of "reason"
+
+The rule schema carries two similarly-named keys that do opposite things. They are separate on purpose:
+
+| Key | Written by | Effect |
+|---|---|---|
+| `reason:` (string) | the policy author | Documentation. On a **deny** rule it is also the text the model receives when the call is blocked. Ignored on allow rules. |
+| `require_reason: true` | the policy author | An obligation on the **model**: it must pass a `reason` argument justifying each individual call. Meaningful on **allow** rules only. |
+
+### Per-Call Justification — `require_reason`
+
+```yaml
+actions:
+  rbac:
+    allow:
+      - tool: read_file
+      - tool: bash
+        require_reason: true                        # model must justify each call
+        reason: "targeted investigation only"       # documentation, unchanged
+    deny: []
+```
+
+Enforced in two layers, both required:
+
+1. **Schema injection** (`WithReasonParam`, `agent/tools.go`) adds a required `reason` string property to each policed tool's JSON Schema before the toolset reaches the provider. This is what actually gets a justification out of the model. It deep-copies `Parameters`, the nested `properties` map, and the `Required` slice — `ActiveTools` shares all three with the package-level `Tools` var, so injecting in place would leak one agent's policy into every other agent in the process.
+2. **Runtime check** (`CheckRBAC`) denies a matching call whose `reason` is absent, blank, or not a string. This is what enforces the obligation and emits the `action_denied` audit event; schema alone can be ignored by the model.
+
+Both runners build their toolset through `activeToolsFor(cfg.AllowedTools, cfg.RBAC)` so the two providers cannot drift.
+
+A wildcard rule (`tool: "*"`) with `require_reason` binds every tool in the shared toolset. The obligation needs an explicit **allow** entry to attach to: with an empty allow list, `CheckRBAC` takes the default-allow path and no rule matches.
+
+The supplied reason rides in the `Input` map of the existing `EventToolCall`, so it reaches JSONL → webhook → CP events table with no extra plumbing.
+
 ### Integration Points
 
 - **Claude** (`buildBetaTools`): RBAC is checked inside every tool handler closure.

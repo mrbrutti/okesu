@@ -40,6 +40,12 @@ actions:
       - tool: list_files
       - tool: search
       - tool: bash
+        # The model must pass a `reason` argument with every shell call,
+        # justifying that specific command. Calls without one are denied and
+        # logged as action_denied. The prose `reason:` below is a note for
+        # humans reading this file; `require_reason:` is the obligation on
+        # the model.
+        require_reason: true
         reason: "allowed but logged; used for targeted investigation only"
     deny: []
 
