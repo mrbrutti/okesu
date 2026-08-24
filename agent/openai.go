@@ -29,7 +29,7 @@ func RunOpenAI(cfg Config) error {
 		Tick:     cfg.Tick,
 	})
 
-	tools := buildResponsesTools(ActiveTools(cfg.AllowedTools))
+	tools := buildResponsesTools(activeToolsFor(cfg.AllowedTools, cfg.RBAC))
 
 	// Build base request params (reused each turn).
 	baseParams := responses.ResponseNewParams{

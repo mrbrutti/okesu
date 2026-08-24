@@ -157,6 +157,87 @@ func ActiveTools(names []string) []ToolDef {
 	return result
 }
 
+// activeToolsFor builds the toolset a provider runner hands to the model:
+// filtered by the agent's `tools:` list, then carrying whatever `reason`
+// obligations the RBAC policy imposes. Both runners go through here so the
+// two providers cannot drift on what the model is asked to supply.
+func activeToolsFor(names []string, rbac *RBACPolicy) []ToolDef {
+	return WithReasonParam(ActiveTools(names), ReasonRequiredTools(rbac))
+}
+
+// reasonParamDescription is what the model reads when a tool is under a
+// require_reason policy. It has to be specific enough that the model writes a
+// real justification rather than echoing the command back.
+const reasonParamDescription = "Why this call is necessary — a brief justification " +
+	"(what you are trying to establish and why this specific call is the way to do it). " +
+	"Recorded in the audit trail. Required by this agent's RBAC policy."
+
+// WithReasonParam returns a copy of defs in which every tool named in
+// required has gained a mandatory `reason` string property.
+//
+// This is the proactive half of the require_reason policy: marking the
+// property required in the JSON Schema is what actually gets a justification
+// out of the model. CheckRBAC still verifies it at call time — the schema
+// persuades, the RBAC check enforces and audits.
+//
+// The copy is not incidental. ToolDef.Parameters is a map hanging off the
+// package-level Tools var, and ActiveTools copies the structs but shares that
+// map — along with its nested "properties" map and the Required slice's
+// backing array. Injecting in place would leak one agent's policy into every
+// other agent in the process.
+func WithReasonParam(defs []ToolDef, required map[string]bool) []ToolDef {
+	if len(required) == 0 {
+		return defs
+	}
+	out := make([]ToolDef, len(defs))
+	for i, def := range defs {
+		if required[def.Name] {
+			def = def.withReasonParam()
+		}
+		out[i] = def
+	}
+	return out
+}
+
+// withReasonParam returns a copy of t carrying a required `reason` property.
+// t is a value receiver, so the field assignments below touch only the copy.
+func (t ToolDef) withReasonParam() ToolDef {
+	params := make(map[string]interface{}, len(t.Parameters)+1)
+	for k, v := range t.Parameters {
+		params[k] = v
+	}
+
+	existing, _ := t.Parameters["properties"].(map[string]interface{})
+	properties := make(map[string]interface{}, len(existing)+1)
+	for k, v := range existing {
+		properties[k] = v
+	}
+	properties["reason"] = map[string]interface{}{
+		"type":        "string",
+		"description": reasonParamDescription,
+	}
+	params["properties"] = properties
+
+	req := make([]string, len(t.Required), len(t.Required)+1)
+	copy(req, t.Required)
+	if !containsString(req, "reason") {
+		req = append(req, "reason")
+	}
+
+	t.Parameters = params
+	t.Required = req
+	return t
+}
+
+func containsString(haystack []string, needle string) bool {
+	for _, s := range haystack {
+		if s == needle {
+			return true
+		}
+	}
+	return false
+}
+
 // normalizeToolName maps Claude Code CLI and okesu tool names to the canonical
 // okesu tool name. Returns "" for unknown/unsupported tools.
 func normalizeToolName(name string) string {

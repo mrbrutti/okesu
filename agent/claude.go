@@ -69,7 +69,7 @@ func RunClaude(cfg Config) error {
 		Tick:     cfg.Tick,
 	})
 
-	tools, err := buildBetaTools(ActiveTools(cfg.AllowedTools), cfg.RBAC, cfg.IsDaemon, cfg.Name, cfg.Host, cfg.Tick, cfg.LookupFindings)
+	tools, err := buildBetaTools(activeToolsFor(cfg.AllowedTools, cfg.RBAC), cfg.RBAC, cfg.IsDaemon, cfg.Name, cfg.Host, cfg.Tick, cfg.LookupFindings)
 	if err != nil {
 		return fmt.Errorf("building tools: %w", err)
 	}
